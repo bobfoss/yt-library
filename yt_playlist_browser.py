@@ -18,10 +18,12 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,6 +38,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = ROOT / "yt_playlists.sqlite3"
 DEFAULT_THUMB_DIR = ROOT / "thumbs"
 DEFAULT_ARCHIVARIX_THUMB_DIR = ROOT / "archivarix_thumbs"
+DEFAULT_VIDEO_THUMB_DIR = ROOT / "video_thumbs"
 COOKIE_FILE = ROOT / "YT cookies.txt"
 ARCHIVARIX_COOKIE_FILE = ROOT / "archivarix.net cookies.txt"
 POCKETTUBE_EXPORT = ROOT / "youtube_playlist_manager_2026-07-02-17_13.json"
@@ -165,6 +168,51 @@ CREATE TABLE IF NOT EXISTS snapshot_video_recovery (
   PRIMARY KEY (snapshot_key, video_id)
 );
 
+CREATE TABLE IF NOT EXISTS video_metadata (
+  video_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  channel TEXT NOT NULL DEFAULT '',
+  duration_text TEXT NOT NULL DEFAULT '',
+  view_count TEXT NOT NULL DEFAULT '',
+  upload_date TEXT NOT NULL DEFAULT '',
+  thumbnail_url TEXT NOT NULL DEFAULT '',
+  thumbnail_path TEXT NOT NULL DEFAULT '',
+  watch_url TEXT NOT NULL DEFAULT '',
+  yt_status TEXT NOT NULL DEFAULT '',
+  fetch_status TEXT NOT NULL DEFAULT '',
+  fetch_error TEXT NOT NULL DEFAULT '',
+  fetched_at INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS metadata_worker_runs (
+  run_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT '',
+  started_at INTEGER NOT NULL DEFAULT 0,
+  finished_at INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  processed INTEGER NOT NULL DEFAULT 0,
+  found INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  delay_seconds REAL NOT NULL DEFAULT 0,
+  requested_limit INTEGER NOT NULL DEFAULT 0,
+  force INTEGER NOT NULL DEFAULT 0,
+  stale_days INTEGER NOT NULL DEFAULT 0,
+  last_video_id TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS metadata_worker_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  level TEXT NOT NULL DEFAULT '',
+  video_id TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_groups_parent_position ON groups(parent_key, position);
 CREATE INDEX IF NOT EXISTS idx_group_playlists_position ON group_playlists(group_key, position);
 CREATE INDEX IF NOT EXISTS idx_playlist_videos_hidden ON playlist_videos(is_playable, playlist_id, position);
@@ -172,6 +220,8 @@ CREATE INDEX IF NOT EXISTS idx_archivarix_candidates_playlist ON archivarix_cand
 CREATE INDEX IF NOT EXISTS idx_snapshot_videos_video ON snapshot_videos(snapshot_key, video_id);
 CREATE INDEX IF NOT EXISTS idx_snapshot_videos_playlist ON snapshot_videos(snapshot_key, playlist_id, position);
 CREATE INDEX IF NOT EXISTS idx_snapshot_video_recovery_status ON snapshot_video_recovery(snapshot_key, search_status);
+CREATE INDEX IF NOT EXISTS idx_video_metadata_status ON video_metadata(fetch_status, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_run ON metadata_worker_log(run_id, created_at);
 """
 
 
@@ -703,6 +753,30 @@ def cache_thumbnail(
     return str(target.relative_to(ROOT)).replace("\\", "/")
 
 
+def cache_video_thumbnail(
+    opener: urllib.request.OpenerDirector,
+    video_id: str,
+    thumbnail_url: str,
+    thumb_dir: Path,
+) -> str:
+    if not video_id or not thumbnail_url:
+        return ""
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        body, content_type = request_bytes(
+            opener,
+            thumbnail_url,
+            timeout=30,
+            referer=f"https://www.youtube.com/watch?v={video_id}",
+        )
+    except Exception:
+        return ""
+    ext = thumbnail_extension(content_type, thumbnail_url)
+    target = thumb_dir / f"{safe_name(video_id)}{ext}"
+    target.write_bytes(body)
+    return str(target.relative_to(ROOT)).replace("\\", "/")
+
+
 def safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
 
@@ -934,6 +1008,62 @@ def parse_video_renderer(
         "availability": reason,
         "url": f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}" if video_id else "",
     }
+
+
+def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
+    player = extract_json_assignment(html_text, "ytInitialPlayerResponse")
+    details = player.get("videoDetails", {}) if isinstance(player, dict) else {}
+    playability = player.get("playabilityStatus", {}) if isinstance(player, dict) else {}
+    microformat = (
+        player.get("microformat", {}).get("playerMicroformatRenderer", {})
+        if isinstance(player, dict)
+        else {}
+    )
+    title = str(details.get("title") or "").strip()
+    if not title:
+        found = re.search(r"<title>(.*?)</title>", html_text, flags=re.DOTALL)
+        if found:
+            title = html.unescape(re.sub(r"\s+", " ", found.group(1))).strip()
+            title = re.sub(r"\s+-\s+YouTube$", "", title)
+    thumbnails = []
+    if isinstance(details.get("thumbnail"), dict):
+        thumbnails = details.get("thumbnail", {}).get("thumbnails", []) or []
+    thumbnail_url = pick_thumbnail(thumbnails)
+    if not thumbnail_url:
+        thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    status = str(playability.get("status") or "").strip()
+    reason = text_from_runs(playability.get("reason")).strip()
+    if reason and status and reason not in status:
+        status = f"{status}: {reason}"
+    return {
+        "video_id": video_id,
+        "title": title,
+        "description": str(details.get("shortDescription") or "").strip(),
+        "channel": str(details.get("author") or "").strip(),
+        "duration_text": format_duration(details.get("lengthSeconds")),
+        "view_count": str(details.get("viewCount") or ""),
+        "upload_date": str(microformat.get("uploadDate") or microformat.get("publishDate") or ""),
+        "thumbnail_url": thumbnail_url,
+        "watch_url": f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}",
+        "yt_status": status or ("OK" if title else ""),
+    }
+
+
+def fetch_watch_metadata(
+    opener: urllib.request.OpenerDirector,
+    video_id: str,
+    thumb_dir: Path,
+) -> dict[str, str]:
+    watch_url = f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}"
+    page = request_text(opener, watch_url)
+    metadata = extract_watch_metadata(page, video_id)
+    metadata["thumbnail_path"] = cache_video_thumbnail(
+        opener,
+        video_id,
+        metadata["thumbnail_url"],
+        thumb_dir,
+    )
+    return metadata
 
 
 def scan_playlist_videos(
@@ -1273,6 +1403,332 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
         f"to {args.group_name}."
     )
     print(f"Wrote {db_path}")
+
+
+def log_worker_event(
+    conn: sqlite3.Connection,
+    run_id: str,
+    level: str,
+    message: str,
+    video_id: str = "",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO metadata_worker_log(run_id, created_at, level, video_id, message)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (run_id, int(time.time()), level, video_id, message),
+    )
+
+
+def metadata_queue_rows(
+    conn: sqlite3.Connection,
+    limit: int = 0,
+    force: bool = False,
+    stale_days: int = 30,
+) -> list[sqlite3.Row]:
+    stale_before = int(time.time()) - max(stale_days, 0) * 86400
+    where = ["pv.video_id <> ''"]
+    params: list[Any] = []
+    if not force:
+        where.append(
+            """
+            (
+              vm.video_id IS NULL
+              OR vm.fetch_status = 'error'
+              OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
+            )
+            """
+        )
+        params.append(stale_before)
+    sql = f"""
+        SELECT pv.video_id,
+               COUNT(DISTINCT pv.playlist_id) AS playlist_count,
+               MIN(pv.title) AS current_title
+        FROM playlist_videos pv
+        LEFT JOIN video_metadata vm ON vm.video_id = pv.video_id
+        WHERE {" AND ".join(where)}
+        GROUP BY pv.video_id
+        ORDER BY COALESCE(vm.fetched_at, 0), pv.video_id
+    """
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    return conn.execute(sql, params).fetchall()
+
+
+def metadata_admin_status(
+    db_path: Path,
+    worker: "MetadataWorker | None" = None,
+) -> dict[str, Any]:
+    conn = connect(db_path)
+    try:
+        counts = dict(
+            conn.execute(
+                """
+                SELECT
+                  COUNT(DISTINCT video_id) AS distinct_playlist_videos,
+                  COUNT(*) AS playlist_video_rows
+                FROM playlist_videos
+                WHERE video_id <> ''
+                """
+            ).fetchone()
+        )
+        metadata_counts = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT COALESCE(fetch_status, '') AS fetch_status, COUNT(*) AS count
+                FROM video_metadata
+                GROUP BY COALESCE(fetch_status, '')
+                ORDER BY count DESC
+                """
+            )
+        ]
+        queue_count = len(metadata_queue_rows(conn, force=False, stale_days=30))
+        latest_run = conn.execute(
+            """
+            SELECT *
+            FROM metadata_worker_runs
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        logs = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM metadata_worker_log
+                ORDER BY id DESC
+                LIMIT 80
+                """
+            )
+        ]
+    finally:
+        conn.close()
+    return {
+        "running": worker.is_running() if worker else False,
+        "counts": counts,
+        "metadataCounts": metadata_counts,
+        "queueCount": queue_count,
+        "latestRun": dict(latest_run) if latest_run else None,
+        "logs": logs,
+    }
+
+
+class MetadataWorker:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._run_id = ""
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return bool(self._thread and self._thread.is_alive())
+
+    def start(
+        self,
+        db_path: Path,
+        cookie_file: Path,
+        thumb_dir: Path,
+        delay: float,
+        limit: int,
+        force: bool,
+        stale_days: int,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return {"started": False, "run_id": self._run_id, "message": "Worker already running"}
+            self._stop.clear()
+            self._run_id = uuid.uuid4().hex
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(self._run_id, db_path, cookie_file, thumb_dir, delay, limit, force, stale_days),
+                daemon=True,
+            )
+            self._thread.start()
+            return {"started": True, "run_id": self._run_id, "message": "Worker started"}
+
+    def stop(self) -> dict[str, Any]:
+        with self._lock:
+            if not self._thread or not self._thread.is_alive():
+                return {"stopping": False, "message": "Worker is not running"}
+            self._stop.set()
+            return {"stopping": True, "run_id": self._run_id, "message": "Stop requested"}
+
+    def _run(
+        self,
+        run_id: str,
+        db_path: Path,
+        cookie_file: Path,
+        thumb_dir: Path,
+        delay: float,
+        limit: int,
+        force: bool,
+        stale_days: int,
+    ) -> None:
+        conn = connect(db_path)
+        opener = load_cookie_opener(cookie_file)
+        try:
+            rows = metadata_queue_rows(conn, limit=limit, force=force, stale_days=stale_days)
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO metadata_worker_runs(
+                      run_id, status, started_at, total, delay_seconds,
+                      requested_limit, force, stale_days, message
+                    )
+                    VALUES (?, 'running', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        int(time.time()),
+                        len(rows),
+                        delay,
+                        limit,
+                        1 if force else 0,
+                        stale_days,
+                        "Metadata worker started",
+                    ),
+                )
+                log_worker_event(conn, run_id, "info", f"Queued {len(rows)} videos")
+
+            processed = 0
+            found = 0
+            failed = 0
+            for row in rows:
+                if self._stop.is_set():
+                    with conn:
+                        conn.execute(
+                            """
+                            UPDATE metadata_worker_runs
+                            SET status = 'stopped', finished_at = ?, message = ?
+                            WHERE run_id = ?
+                            """,
+                            (int(time.time()), "Stop requested", run_id),
+                        )
+                        log_worker_event(conn, run_id, "warn", "Worker stopped by request")
+                    return
+                video_id = row["video_id"]
+                status = "ok"
+                error = ""
+                metadata: dict[str, str] = {
+                    "video_id": video_id,
+                    "title": "",
+                    "description": "",
+                    "channel": "",
+                    "duration_text": "",
+                    "view_count": "",
+                    "upload_date": "",
+                    "thumbnail_url": "",
+                    "thumbnail_path": "",
+                    "watch_url": f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}",
+                    "yt_status": "",
+                }
+                try:
+                    metadata = fetch_watch_metadata(opener, video_id, thumb_dir)
+                    if not metadata.get("title"):
+                        status = "no_metadata"
+                except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                    status = "error"
+                    error = str(exc)
+                now = int(time.time())
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO video_metadata(
+                          video_id, title, description, channel, duration_text, view_count,
+                          upload_date, thumbnail_url, thumbnail_path, watch_url,
+                          yt_status, fetch_status, fetch_error, fetched_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(video_id) DO UPDATE SET
+                          title=excluded.title,
+                          description=excluded.description,
+                          channel=excluded.channel,
+                          duration_text=excluded.duration_text,
+                          view_count=excluded.view_count,
+                          upload_date=excluded.upload_date,
+                          thumbnail_url=excluded.thumbnail_url,
+                          thumbnail_path=excluded.thumbnail_path,
+                          watch_url=excluded.watch_url,
+                          yt_status=excluded.yt_status,
+                          fetch_status=excluded.fetch_status,
+                          fetch_error=excluded.fetch_error,
+                          fetched_at=excluded.fetched_at,
+                          updated_at=excluded.updated_at
+                        """,
+                        (
+                            video_id,
+                            metadata.get("title", ""),
+                            metadata.get("description", ""),
+                            metadata.get("channel", ""),
+                            metadata.get("duration_text", ""),
+                            metadata.get("view_count", ""),
+                            metadata.get("upload_date", ""),
+                            metadata.get("thumbnail_url", ""),
+                            metadata.get("thumbnail_path", ""),
+                            metadata.get("watch_url", ""),
+                            metadata.get("yt_status", ""),
+                            status,
+                            error,
+                            now,
+                            now,
+                        ),
+                    )
+                    processed += 1
+                    if status == "error":
+                        failed += 1
+                        log_worker_event(conn, run_id, "error", error, video_id)
+                    else:
+                        found += 1
+                        title = metadata.get("title") or video_id
+                        log_worker_event(conn, run_id, "info", f"{status}: {title}", video_id)
+                    conn.execute(
+                        """
+                        UPDATE metadata_worker_runs
+                        SET processed = ?, found = ?, failed = ?, last_video_id = ?, message = ?
+                        WHERE run_id = ?
+                        """,
+                        (
+                            processed,
+                            found,
+                            failed,
+                            video_id,
+                            f"Processed {processed} of {len(rows)}",
+                            run_id,
+                        ),
+                    )
+                if delay and processed < len(rows):
+                    time.sleep(delay)
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE metadata_worker_runs
+                    SET status = 'complete', finished_at = ?, message = ?
+                    WHERE run_id = ?
+                    """,
+                    (int(time.time()), f"Completed {processed} videos", run_id),
+                )
+                log_worker_event(conn, run_id, "info", f"Worker complete: {processed} processed")
+        except Exception as exc:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE metadata_worker_runs
+                    SET status = 'error', finished_at = ?, message = ?
+                    WHERE run_id = ?
+                    """,
+                    (int(time.time()), str(exc), run_id),
+                )
+                log_worker_event(conn, run_id, "error", f"Worker crashed: {exc}")
+        finally:
+            conn.close()
+
+
+METADATA_WORKER = MetadataWorker()
 
 
 def scan_hidden(args: argparse.Namespace) -> None:
@@ -2417,9 +2873,209 @@ INDEX_HTML = """<!doctype html>
 """
 
 
+ADMIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YT Project Admin</title>
+  <style>
+    :root {
+      --bg: #f7f4ef;
+      --panel: #fffaf2;
+      --ink: #22201d;
+      --muted: #6b655c;
+      --line: #ded6cb;
+      --accent: #0b7285;
+      --accent-soft: #d7f2f4;
+      --warn: #9a3412;
+      --ok: #166534;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161513;
+        --panel: #211f1b;
+        --ink: #f4efe7;
+        --muted: #b8afa3;
+        --line: #39342d;
+        --accent: #67d8e6;
+        --accent-soft: #173b40;
+        --warn: #f4a261;
+        --ok: #86efac;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); }
+    main { max-width: 1180px; margin: 0 auto; padding: 24px; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    h1 { font-size: 28px; margin: 0; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; }
+    .metric { color: var(--muted); font-size: 13px; }
+    .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
+    .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0 18px; }
+    label { color: var(--muted); display: grid; gap: 5px; font-size: 13px; }
+    input { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 8px 10px; font: inherit; width: 120px; }
+    label.checkbox { display: flex; flex-direction: row; align-items: center; gap: 7px; padding-bottom: 8px; }
+    label.checkbox input { width: auto; }
+    button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 9px 12px; font: inherit; cursor: pointer; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button:hover { background: var(--accent-soft); color: var(--ink); }
+    .status { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 14px; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; }
+    .running { color: var(--ok); }
+    .warn { color: var(--warn); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .logs { max-height: 430px; overflow: auto; }
+    .message { overflow-wrap: anywhere; }
+    @media (max-width: 700px) {
+      main { padding: 16px; }
+      header { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>YT Project Admin</h1>
+      <nav><a href="/">Playlist browser</a></nav>
+    </header>
+
+    <section class="grid">
+      <div class="panel"><div class="metric">Playlist video rows</div><div id="playlistRows" class="value">0</div></div>
+      <div class="panel"><div class="metric">Distinct video IDs</div><div id="distinctVideos" class="value">0</div></div>
+      <div class="panel"><div class="metric">Metadata queue</div><div id="queueCount" class="value">0</div></div>
+      <div class="panel"><div class="metric">Worker</div><div id="workerState" class="value">idle</div></div>
+    </section>
+
+    <section class="panel">
+      <div class="controls">
+        <label>Limit<input id="limit" type="number" min="0" step="1" value="10"></label>
+        <label>Delay seconds<input id="delay" type="number" min="1" step="1" value="12"></label>
+        <label>Stale days<input id="staleDays" type="number" min="0" step="1" value="30"></label>
+        <label class="checkbox"><input id="force" type="checkbox">Refresh already fetched</label>
+        <button id="start" class="primary" type="button">Check for updates</button>
+        <button id="stop" type="button">Stop</button>
+        <button id="refresh" type="button">Refresh status</button>
+      </div>
+      <div id="runStatus" class="status"></div>
+    </section>
+
+    <section class="grid" id="metadataCounts"></section>
+
+    <section class="panel logs">
+      <table>
+        <thead><tr><th>Time</th><th>Level</th><th>Video</th><th>Message</th></tr></thead>
+        <tbody id="logs"></tbody>
+      </table>
+    </section>
+  </main>
+  <script>
+    const fields = {
+      playlistRows: document.getElementById('playlistRows'),
+      distinctVideos: document.getElementById('distinctVideos'),
+      queueCount: document.getElementById('queueCount'),
+      workerState: document.getElementById('workerState'),
+      runStatus: document.getElementById('runStatus'),
+      metadataCounts: document.getElementById('metadataCounts'),
+      logs: document.getElementById('logs'),
+      limit: document.getElementById('limit'),
+      delay: document.getElementById('delay'),
+      staleDays: document.getElementById('staleDays'),
+      force: document.getElementById('force'),
+    };
+
+    function escapeHtml(value) {
+      return String(value || '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
+    function fmtTime(value) {
+      if (!value) return '';
+      return new Date(value * 1000).toLocaleString();
+    }
+
+    function render(data) {
+      fields.playlistRows.textContent = data.counts.playlist_video_rows || 0;
+      fields.distinctVideos.textContent = data.counts.distinct_playlist_videos || 0;
+      fields.queueCount.textContent = data.queueCount || 0;
+      fields.workerState.textContent = data.running ? 'running' : 'idle';
+      fields.workerState.className = `value ${data.running ? 'running' : ''}`;
+
+      const run = data.latestRun;
+      fields.runStatus.innerHTML = run ? `
+        <span class="badge">${escapeHtml(run.status)}</span>
+        <span class="badge">${run.processed}/${run.total} processed</span>
+        <span class="badge">${run.found} ok</span>
+        <span class="badge ${run.failed ? 'warn' : ''}">${run.failed} failed</span>
+        <span class="badge">${escapeHtml(run.message)}</span>
+        <span class="badge">Started ${fmtTime(run.started_at)}</span>
+      ` : '<span class="badge">No runs yet</span>';
+
+      fields.metadataCounts.replaceChildren(...(data.metadataCounts || []).map(row => {
+        const div = document.createElement('div');
+        div.className = 'panel';
+        div.innerHTML = `<div class="metric">${escapeHtml(row.fetch_status || 'blank')}</div><div class="value">${row.count}</div>`;
+        return div;
+      }));
+
+      fields.logs.innerHTML = (data.logs || []).map(log => `
+        <tr>
+          <td>${fmtTime(log.created_at)}</td>
+          <td>${escapeHtml(log.level)}</td>
+          <td>${escapeHtml(log.video_id)}</td>
+          <td class="message">${escapeHtml(log.message)}</td>
+        </tr>
+      `).join('');
+    }
+
+    async function loadStatus() {
+      const response = await fetch('/api/admin/status', { cache: 'no-store' });
+      if (!response.ok) throw new Error(`Status failed: ${response.status}`);
+      render(await response.json());
+    }
+
+    async function post(path, params = {}) {
+      const response = await fetch(`${path}?${new URLSearchParams(params)}`, { method: 'POST' });
+      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+      await loadStatus();
+    }
+
+    document.getElementById('start').addEventListener('click', () => post('/api/admin/worker/start', {
+      limit: fields.limit.value,
+      delay: fields.delay.value,
+      stale_days: fields.staleDays.value,
+      force: fields.force.checked ? '1' : '0',
+    }).catch(error => alert(error.message)));
+    document.getElementById('stop').addEventListener('click', () => post('/api/admin/worker/stop').catch(error => alert(error.message)));
+    document.getElementById('refresh').addEventListener('click', () => loadStatus().catch(error => alert(error.message)));
+    loadStatus().catch(error => { fields.runStatus.textContent = error.message; });
+    setInterval(loadStatus, 5000);
+  </script>
+</body>
+</html>
+"""
+
+
 class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
-    def __init__(self, *args, db_path: Path, directory: str | None = None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        db_path: Path,
+        cookie_file: Path,
+        video_thumbs: Path,
+        directory: str | None = None,
+        **kwargs,
+    ):
         self.db_path = db_path
+        self.cookie_file = cookie_file
+        self.video_thumbs = video_thumbs
         super().__init__(*args, directory=directory, **kwargs)
 
     def do_GET(self) -> None:
@@ -2433,21 +3089,60 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if parsed.path == "/admin":
+            body = ADMIN_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path == "/api/data":
             conn = connect(self.db_path)
             try:
                 data = fetch_app_data(conn)
             finally:
                 conn.close()
-            body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.send_json(data)
+            return
+        if parsed.path == "/api/admin/status":
+            self.send_json(metadata_admin_status(self.db_path, METADATA_WORKER))
             return
         return super().do_GET()
+
+    def do_POST(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        if parsed.path == "/api/admin/worker/start":
+            limit = max(0, int((params.get("limit") or ["25"])[0] or 0))
+            delay = max(1.0, float((params.get("delay") or ["12"])[0] or 12))
+            stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
+            force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
+            result = METADATA_WORKER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                delay=delay,
+                limit=limit,
+                force=force,
+                stale_days=stale_days,
+            )
+            self.send_json(result)
+            return
+        if parsed.path == "/api/admin/worker/stop":
+            self.send_json(METADATA_WORKER.stop())
+            return
+        self.send_error(404, "Not found")
+
+    def send_json(self, data: Any, status: int = 200) -> None:
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def translate_path(self, path: str) -> str:
         path = urllib.parse.urlparse(path).path
@@ -2468,7 +3163,14 @@ def serve(args: argparse.Namespace) -> None:
         raise SystemExit(f"Database not found: {db_path}. Run import first.")
 
     def handler(*handler_args, **handler_kwargs):
-        return PlaylistHandler(*handler_args, db_path=db_path, directory=str(ROOT), **handler_kwargs)
+        return PlaylistHandler(
+            *handler_args,
+            db_path=db_path,
+            cookie_file=Path(args.cookies),
+            video_thumbs=Path(args.video_thumbs),
+            directory=str(ROOT),
+            **handler_kwargs,
+        )
 
     server = http.server.ThreadingHTTPServer((args.host, args.port), handler)
     print(f"Serving http://{args.host}:{args.port}")
@@ -2544,6 +3246,8 @@ def main(argv: list[str] | None = None) -> int:
 
     serve_parser = subparsers.add_parser("serve", help="Serve the playlist browser")
     serve_parser.add_argument("--db", default=str(DEFAULT_DB))
+    serve_parser.add_argument("--cookies", default=str(COOKIE_FILE))
+    serve_parser.add_argument("--video-thumbs", default=str(DEFAULT_VIDEO_THUMB_DIR))
     serve_parser.add_argument("--host", default="0.0.0.0")
     serve_parser.add_argument("--port", type=int, default=8765)
     serve_parser.set_defaults(func=serve)
