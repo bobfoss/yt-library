@@ -1760,6 +1760,17 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             """
         )
     ]
+    playlist_videos = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT v.*, p.title AS playlist_title, p.url AS playlist_url
+            FROM playlist_videos v
+            JOIN playlists p ON p.playlist_id = v.playlist_id
+            ORDER BY p.title COLLATE NOCASE, v.position
+            """
+        )
+    ]
     archivarix_candidates = [
         dict(row)
         for row in conn.execute(
@@ -1837,6 +1848,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
         "groups": groups,
         "playlists": playlists,
         "memberships": memberships,
+        "playlistVideos": playlist_videos,
         "hiddenVideos": hidden_videos,
         "archivarixCandidates": archivarix_candidates,
         "snapshots": snapshots,
@@ -1893,10 +1905,16 @@ INDEX_HTML = """<!doctype html>
     .meta { color: var(--muted); font-size: 14px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
     .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
+    .thumb-link { display: block; }
     .thumb { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: linear-gradient(135deg, #24424a, #d98948); }
     .body { padding: 11px 12px 13px; }
+    .title-row { display: flex; align-items: flex-start; gap: 8px; }
     .playlist-title { display: block; color: var(--ink); font-weight: 650; line-height: 1.25; text-decoration: none; overflow-wrap: anywhere; }
     .playlist-title:hover { color: var(--accent); }
+    .title-row .playlist-title { flex: 1; min-width: 0; }
+    .external-link { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 6px; color: var(--accent); text-decoration: none; }
+    .external-link:hover { background: var(--accent-soft); }
+    .external-link svg { width: 15px; height: 15px; }
     .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
     .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
     .badge { color: var(--warn); font-weight: 650; }
@@ -1941,6 +1959,7 @@ INDEX_HTML = """<!doctype html>
     let playlists = new Map();
     let memberships = new Map();
     let children = new Map();
+    let playlistVideos = new Map();
 
     let selected = '';
     const search = document.getElementById('search');
@@ -1958,6 +1977,11 @@ INDEX_HTML = """<!doctype html>
       if (!response.ok) throw new Error(`Data refresh failed: ${response.status}`);
       data = await response.json();
       playlists = new Map(data.playlists.map(p => [p.playlist_id, p]));
+      playlistVideos = new Map();
+      for (const video of data.playlistVideos || []) {
+        if (!playlistVideos.has(video.playlist_id)) playlistVideos.set(video.playlist_id, []);
+        playlistVideos.get(video.playlist_id).push(video);
+      }
       memberships = new Map();
       for (const item of data.memberships) {
         if (!memberships.has(item.group_key)) memberships.set(item.group_key, []);
@@ -1969,10 +1993,43 @@ INDEX_HTML = """<!doctype html>
         if (!children.has(parent)) children.set(parent, []);
         children.get(parent).push(group);
       }
+      selected = selectionFromHash();
       renderGroups();
       render();
       refresh.disabled = false;
       refresh.textContent = 'Refresh';
+    }
+
+    function playlistSelection(playlistId) {
+      return `__playlist__:${playlistId}`;
+    }
+
+    function localPlaylistHref(playlistId) {
+      return `#playlist=${encodeURIComponent(playlistId)}`;
+    }
+
+    function selectionFromHash() {
+      const hash = window.location.hash || '';
+      if (hash.startsWith('#playlist=')) {
+        const playlistId = decodeURIComponent(hash.slice('#playlist='.length));
+        if (playlistId) return playlistSelection(playlistId);
+      }
+      return selected.startsWith('__playlist__:') ? '' : selected;
+    }
+
+    function setSelected(value) {
+      selected = value;
+      if (value.startsWith('__playlist__:')) {
+        const playlistId = value.slice('__playlist__:'.length);
+        if (window.location.hash !== localPlaylistHref(playlistId)) {
+          window.location.hash = localPlaylistHref(playlistId);
+          return;
+        }
+      } else if (window.location.hash) {
+        history.pushState('', document.title, window.location.pathname + window.location.search);
+      }
+      renderGroups();
+      render();
     }
 
     function groupCount(groupKey) {
@@ -2002,10 +2059,7 @@ INDEX_HTML = """<!doctype html>
       button.className = `group ${child ? 'child' : ''}`;
       button.dataset.key = group.group_key;
       button.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="count">${groupCount(group.group_key)}</span>`;
-      button.addEventListener('click', () => {
-        selected = group.group_key;
-        render();
-      });
+      button.addEventListener('click', () => setSelected(group.group_key));
       return button;
     }
 
@@ -2016,37 +2070,37 @@ INDEX_HTML = """<!doctype html>
       all.className = 'group';
       all.dataset.key = '';
       all.innerHTML = `<span>All playlists</span><span class="count">${data.playlists.length}</span>`;
-      all.addEventListener('click', () => { selected = ''; render(); });
+      all.addEventListener('click', () => setSelected(''));
       groupsEl.appendChild(all);
       const hidden = document.createElement('button');
       hidden.className = 'group';
       hidden.dataset.key = '__hidden__';
       hidden.innerHTML = `<span>Hidden videos</span><span class="count">${data.hiddenVideos.length}</span>`;
-      hidden.addEventListener('click', () => { selected = '__hidden__'; render(); });
+      hidden.addEventListener('click', () => setSelected('__hidden__'));
       groupsEl.appendChild(hidden);
       const candidates = document.createElement('button');
       candidates.className = 'group';
       candidates.dataset.key = '__archivarix__';
       candidates.innerHTML = `<span>Video thumbnails</span><span class="count">${data.archivarixCandidates.length}</span>`;
-      candidates.addEventListener('click', () => { selected = '__archivarix__'; render(); });
+      candidates.addEventListener('click', () => setSelected('__archivarix__'));
       groupsEl.appendChild(candidates);
       const snapshot = document.createElement('button');
       snapshot.className = 'group';
       snapshot.dataset.key = '__snapshot__';
       snapshot.innerHTML = `<span>Takeout snapshot</span><span class="count">${data.snapshotPlaylists.length}</span>`;
-      snapshot.addEventListener('click', () => { selected = '__snapshot__'; render(); });
+      snapshot.addEventListener('click', () => setSelected('__snapshot__'));
       groupsEl.appendChild(snapshot);
       const missing = document.createElement('button');
       missing.className = 'group';
       missing.dataset.key = '__snapshot_missing__';
       missing.innerHTML = `<span>Snapshot missing</span><span class="count">${data.snapshotMissing.length}</span>`;
-      missing.addEventListener('click', () => { selected = '__snapshot_missing__'; render(); });
+      missing.addEventListener('click', () => setSelected('__snapshot_missing__'));
       groupsEl.appendChild(missing);
       const likelyHidden = document.createElement('button');
       likelyHidden.className = 'group';
       likelyHidden.dataset.key = '__snapshot_likely_hidden__';
       likelyHidden.innerHTML = `<span>Likely hidden IDs</span><span class="count">${data.snapshotLikelyHidden.length}</span>`;
-      likelyHidden.addEventListener('click', () => { selected = '__snapshot_likely_hidden__'; render(); });
+      likelyHidden.addEventListener('click', () => setSelected('__snapshot_likely_hidden__'));
       groupsEl.appendChild(likelyHidden);
       for (const group of children.get('') || []) {
         groupsEl.appendChild(buttonFor(group));
@@ -2063,8 +2117,34 @@ INDEX_HTML = """<!doctype html>
         return;
       }
       const query = search.value.trim().toLowerCase();
+      empty.textContent = 'No playlists match.';
       for (const button of groupsEl.querySelectorAll('.group')) {
         button.classList.toggle('active', button.dataset.key === selected);
+      }
+      if (selected.startsWith('__playlist__:')) {
+        const playlistId = selected.slice('__playlist__:'.length);
+        const playlist = playlists.get(playlistId);
+        if (!playlist) {
+          title.textContent = 'Playlist not found';
+          meta.textContent = playlistId;
+          grid.replaceChildren();
+          empty.hidden = false;
+          return;
+        }
+        const rows = (playlistVideos.get(playlistId) || []).filter(video => {
+          const haystack = `${video.title} ${video.channel} ${video.availability} ${video.video_id}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        title.textContent = playlist.title;
+        meta.innerHTML = `
+          <a class="playlist-link" href="${playlist.url}" target="_blank" rel="noreferrer">YouTube</a>
+          <span>${rows.length} videos</span>
+          ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} hidden</span>` : ''}
+        `;
+        grid.replaceChildren(...rows.map(playlistVideoCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.';
+        return;
       }
       if (selected === '__hidden__') {
         title.textContent = 'Hidden videos';
@@ -2137,15 +2217,25 @@ INDEX_HTML = """<!doctype html>
     function cardFor(playlist) {
       const article = document.createElement('article');
       article.className = 'card';
+      const localHref = localPlaylistHref(playlist.playlist_id);
       const img = document.createElement('img');
       img.className = 'thumb';
       img.loading = 'lazy';
       img.alt = '';
       img.src = playlist.thumbnail_path ? `/${playlist.thumbnail_path}` : '';
+      const thumbLink = document.createElement('a');
+      thumbLink.className = 'thumb-link';
+      thumbLink.href = localHref;
+      thumbLink.append(img);
       const body = document.createElement('div');
       body.className = 'body';
       body.innerHTML = `
-        <a class="playlist-title" href="${playlist.url}" target="_blank" rel="noreferrer">${escapeHtml(playlist.title)}</a>
+        <div class="title-row">
+          <a class="playlist-title" href="${localHref}">${escapeHtml(playlist.title)}</a>
+          <a class="external-link" href="${playlist.url}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(playlist.title)} on YouTube">
+            ${externalLinkSvg()}
+          </a>
+        </div>
         <div class="details">
           ${playlist.video_count_text ? `<span>${escapeHtml(playlist.video_count_text)}</span>` : ''}
           ${playlist.scanned_video_count ? `<span>${playlist.scanned_video_count} scanned</span>` : ''}
@@ -2155,8 +2245,34 @@ INDEX_HTML = """<!doctype html>
           ${playlist.fetch_status === 'error' ? '<span class="status">Fetch failed</span>' : ''}
         </div>
       `;
-      article.append(img, body);
+      article.append(thumbLink, body);
       return article;
+    }
+
+    function playlistVideoCardFor(video) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      const body = document.createElement('div');
+      body.className = 'body';
+      const watchUrl = video.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}&list=${encodeURIComponent(video.playlist_id)}` : '';
+      body.innerHTML = `
+        <div class="position">#${video.position}</div>
+        ${watchUrl
+          ? `<a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(video.title)}</a>`
+          : `<div class="video-title">${escapeHtml(video.title)}</div>`}
+        <div class="details">
+          ${video.is_playable ? '' : `<span class="badge">${escapeHtml(video.availability || 'Hidden')}</span>`}
+          ${video.duration_text ? `<span>${escapeHtml(video.duration_text)}</span>` : ''}
+          ${video.channel ? `<span>${escapeHtml(video.channel)}</span>` : ''}
+          ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
+        </div>
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function externalLinkSvg() {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"></path><path d="M8 7h9v9"></path><path d="M7 7H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"></path></svg>';
     }
 
     function candidateCountFor(playlistId) {
@@ -2279,6 +2395,11 @@ INDEX_HTML = """<!doctype html>
     }
 
     search.addEventListener('input', render);
+    window.addEventListener('hashchange', () => {
+      selected = selectionFromHash();
+      renderGroups();
+      render();
+    });
     refresh.addEventListener('click', () => loadData().catch(error => {
       meta.textContent = error.message;
       refresh.disabled = false;
