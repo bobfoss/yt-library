@@ -1662,6 +1662,9 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
             )
             if thumbnail_path:
                 cached += 1
+        recovered_status = (video or {}).get("status") or ""
+        if status == "not_found":
+            recovered_status = "NOT_FOUND"
         with conn:
             conn.execute(
                 """
@@ -1693,7 +1696,7 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
                     (video or {}).get("title") or "",
                     (video or {}).get("description") or "",
                     (video or {}).get("channelTitle") or "",
-                    (video or {}).get("status") or "",
+                    recovered_status,
                     format_duration((video or {}).get("duration")),
                     (video or {}).get("uploadDate") or "",
                     str((video or {}).get("viewCount") or ""),
