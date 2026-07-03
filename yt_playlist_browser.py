@@ -1573,8 +1573,24 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
     thumb_dir = Path(args.thumbs)
     conn = connect(db_path)
     archivarix_opener = load_cookie_opener(Path(args.archivarix_cookies))
+    where_clauses = [
+        "sv.snapshot_key = ?",
+        "pv.video_id IS NULL",
+    ]
+    params: list[Any] = [args.snapshot_key]
+    if args.likely_hidden_only:
+        where_clauses.append(
+            """
+            EXISTS (
+              SELECT 1
+              FROM playlist_scans ps
+              WHERE ps.playlist_id = sv.playlist_id
+                AND ps.hidden_count > 0
+            )
+            """
+        )
     rows = conn.execute(
-        """
+        f"""
         SELECT DISTINCT sv.snapshot_key, sv.video_id
         FROM snapshot_videos sv
         JOIN playlists p ON p.playlist_id = sv.playlist_id
@@ -1582,11 +1598,10 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
           ON pv.playlist_id = sv.playlist_id
          AND pv.video_id = sv.video_id
          AND pv.is_playable = 1
-        WHERE sv.snapshot_key = ?
-          AND pv.video_id IS NULL
+        WHERE {" AND ".join(where_clauses)}
         ORDER BY sv.video_id
         """,
-        (args.snapshot_key,),
+        params,
     ).fetchall()
     if args.video_id:
         rows = [row for row in rows if row["video_id"] == args.video_id]
@@ -1606,7 +1621,8 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
         ]
     if args.limit:
         rows = rows[: args.limit]
-    print(f"Recovering Archivarix thumbnails for {len(rows)} missing snapshot video IDs...")
+    scope = "likely hidden" if args.likely_hidden_only else "missing snapshot"
+    print(f"Recovering Archivarix thumbnails for {len(rows)} {scope} video IDs...")
     found = 0
     cached = 0
     for index, row in enumerate(rows, start=1):
@@ -2396,6 +2412,7 @@ def main(argv: list[str] | None = None) -> int:
     recover_missing_parser.add_argument("--video-id", default="")
     recover_missing_parser.add_argument("--limit", type=int, default=0)
     recover_missing_parser.add_argument("--only-missing", action="store_true")
+    recover_missing_parser.add_argument("--likely-hidden-only", action="store_true")
     recover_missing_parser.add_argument("--no-api", action="store_true", help="Only try direct Archivarix thumbnail URLs")
     recover_missing_parser.add_argument("--delay", type=float, default=3.0, help="Seconds to wait before each Archivarix API search")
     recover_missing_parser.add_argument("--refresh-metadata", action="store_true", help="Use Archivarix API even when a thumbnail is already cached")
