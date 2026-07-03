@@ -1,0 +1,2416 @@
+#!/usr/bin/env python3
+"""Import YouTube playlists from PocketTube export and browse them locally."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import html
+import http.cookiejar
+import http.server
+import json
+import mimetypes
+import os
+import posixpath
+import re
+import shutil
+import sqlite3
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
+
+ROOT = Path(__file__).resolve().parent
+DEFAULT_DB = ROOT / "yt_playlists.sqlite3"
+DEFAULT_THUMB_DIR = ROOT / "thumbs"
+DEFAULT_ARCHIVARIX_THUMB_DIR = ROOT / "archivarix_thumbs"
+COOKIE_FILE = ROOT / "YT cookies.txt"
+ARCHIVARIX_COOKIE_FILE = ROOT / "archivarix.net cookies.txt"
+POCKETTUBE_EXPORT = ROOT / "youtube_playlist_manager_2026-07-02-17_13.json"
+TAKEOUT_DIR = ROOT / "YouTube and YouTube Music"
+
+
+SCHEMA = """
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS playlists (
+  playlist_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  owner TEXT NOT NULL DEFAULT '',
+  video_count_text TEXT NOT NULL DEFAULT '',
+  thumbnail_url TEXT NOT NULL DEFAULT '',
+  thumbnail_path TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  fetch_status TEXT NOT NULL DEFAULT '',
+  fetch_error TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS groups (
+  group_key TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  parent_key TEXT REFERENCES groups(group_key) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  icon TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS group_playlists (
+  group_key TEXT NOT NULL REFERENCES groups(group_key) ON DELETE CASCADE,
+  playlist_id TEXT NOT NULL REFERENCES playlists(playlist_id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  PRIMARY KEY (group_key, playlist_id)
+);
+
+CREATE TABLE IF NOT EXISTS playlist_scans (
+  playlist_id TEXT PRIMARY KEY REFERENCES playlists(playlist_id) ON DELETE CASCADE,
+  scanned_at INTEGER NOT NULL DEFAULT 0,
+  video_count INTEGER NOT NULL DEFAULT 0,
+  hidden_count INTEGER NOT NULL DEFAULT 0,
+  scan_status TEXT NOT NULL DEFAULT '',
+  scan_error TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS playlist_videos (
+  playlist_id TEXT NOT NULL REFERENCES playlists(playlist_id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  video_id TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  channel TEXT NOT NULL DEFAULT '',
+  duration_text TEXT NOT NULL DEFAULT '',
+  is_playable INTEGER NOT NULL DEFAULT 1,
+  availability TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (playlist_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS archivarix_candidates (
+  playlist_id TEXT NOT NULL REFERENCES playlists(playlist_id) ON DELETE CASCADE,
+  video_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  channel TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  duration_text TEXT NOT NULL DEFAULT '',
+  upload_date TEXT NOT NULL DEFAULT '',
+  view_count TEXT NOT NULL DEFAULT '',
+  thumbnail_url TEXT NOT NULL DEFAULT '',
+  thumbnail_path TEXT NOT NULL DEFAULT '',
+  archive_url TEXT NOT NULL DEFAULT '',
+  video_file_url TEXT NOT NULL DEFAULT '',
+  query TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (playlist_id, video_id)
+);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+  snapshot_key TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  source_path TEXT NOT NULL DEFAULT '',
+  imported_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS snapshot_playlists (
+  snapshot_key TEXT NOT NULL REFERENCES snapshots(snapshot_key) ON DELETE CASCADE,
+  playlist_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT '',
+  visibility TEXT NOT NULL DEFAULT '',
+  video_order TEXT NOT NULL DEFAULT '',
+  source_file TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (snapshot_key, playlist_id)
+);
+
+CREATE TABLE IF NOT EXISTS snapshot_videos (
+  snapshot_key TEXT NOT NULL REFERENCES snapshots(snapshot_key) ON DELETE CASCADE,
+  playlist_id TEXT NOT NULL,
+  playlist_title TEXT NOT NULL DEFAULT '',
+  position INTEGER NOT NULL,
+  video_id TEXT NOT NULL,
+  added_at TEXT NOT NULL DEFAULT '',
+  source_file TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (snapshot_key, playlist_id, position, video_id)
+);
+
+CREATE TABLE IF NOT EXISTS snapshot_video_recovery (
+  snapshot_key TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  channel TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  duration_text TEXT NOT NULL DEFAULT '',
+  upload_date TEXT NOT NULL DEFAULT '',
+  view_count TEXT NOT NULL DEFAULT '',
+  thumbnail_url TEXT NOT NULL DEFAULT '',
+  thumbnail_path TEXT NOT NULL DEFAULT '',
+  archive_url TEXT NOT NULL DEFAULT '',
+  video_file_url TEXT NOT NULL DEFAULT '',
+  searched_at INTEGER NOT NULL DEFAULT 0,
+  search_status TEXT NOT NULL DEFAULT '',
+  search_error TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (snapshot_key, video_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_groups_parent_position ON groups(parent_key, position);
+CREATE INDEX IF NOT EXISTS idx_group_playlists_position ON group_playlists(group_key, position);
+CREATE INDEX IF NOT EXISTS idx_playlist_videos_hidden ON playlist_videos(is_playable, playlist_id, position);
+CREATE INDEX IF NOT EXISTS idx_archivarix_candidates_playlist ON archivarix_candidates(playlist_id, title);
+CREATE INDEX IF NOT EXISTS idx_snapshot_videos_video ON snapshot_videos(snapshot_key, video_id);
+CREATE INDEX IF NOT EXISTS idx_snapshot_videos_playlist ON snapshot_videos(snapshot_key, playlist_id, position);
+CREATE INDEX IF NOT EXISTS idx_snapshot_video_recovery_status ON snapshot_video_recovery(snapshot_key, search_status);
+"""
+
+
+@dataclass(frozen=True)
+class GroupNode:
+    key: str
+    name: str
+    parent_key: str | None
+    position: int
+    icon: str
+
+
+def connect(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SCHEMA)
+    ensure_columns(
+        conn,
+        "snapshot_video_recovery",
+        {"description": "TEXT NOT NULL DEFAULT ''"},
+    )
+    return conn
+
+
+def ensure_columns(
+    conn: sqlite3.Connection,
+    table: str,
+    columns: dict[str, str],
+) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def load_cookie_jar(cookie_file: Path) -> http.cookiejar.MozillaCookieJar:
+    jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+    if cookie_file.exists():
+        try:
+            jar.load(ignore_discard=True, ignore_expires=True)
+        except http.cookiejar.LoadError:
+            text = cookie_file.read_text(encoding="utf-8", errors="replace")
+            header = text.find("# Netscape HTTP Cookie File")
+            if header < 0:
+                raise
+            with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as handle:
+                handle.write(text[header:])
+                temp_name = handle.name
+            try:
+                jar = http.cookiejar.MozillaCookieJar(temp_name)
+                jar.load(ignore_discard=True, ignore_expires=True)
+            finally:
+                try:
+                    Path(temp_name).unlink()
+                except OSError:
+                    pass
+    return jar
+
+
+def load_cookie_opener(cookie_file: Path) -> urllib.request.OpenerDirector:
+    jar = load_cookie_jar(cookie_file)
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+
+
+def request_bytes(
+    opener: urllib.request.OpenerDirector,
+    url: str,
+    timeout: int = 30,
+    referer: str | None = None,
+) -> tuple[bytes, str]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    if referer:
+        headers["Referer"] = referer
+    req = urllib.request.Request(url, headers=headers)
+    with opener.open(req, timeout=timeout) as response:
+        return response.read(), response.headers.get_content_type()
+
+
+def request_text(opener: urllib.request.OpenerDirector, url: str) -> str:
+    body, _ = request_bytes(opener, url)
+    return body.decode("utf-8", "replace")
+
+
+def group_sort_tree(export: dict[str, Any]) -> list[GroupNode]:
+    meta = export.get("ysc_meta", {})
+    sub_groups = export.get("ysc_settings", {}).get("sub_groups", {})
+    nodes: list[GroupNode] = []
+    child_names = {
+        child_name
+        for children in sub_groups.values()
+        if isinstance(children, dict)
+        for child_name in children.keys()
+    }
+
+    top_level_names = [
+        name
+        for name, value in export.items()
+        if isinstance(value, list) and name not in child_names
+    ]
+
+    seen: set[str] = set()
+
+    def add_node(name: str, parent_key: str | None, position: int) -> None:
+        if name in seen:
+            return
+        seen.add(name)
+        nodes.append(
+            GroupNode(
+                key=name,
+                name=name,
+                parent_key=parent_key,
+                position=position,
+                icon=meta.get(name, {}).get("img", ""),
+            )
+        )
+        children = sub_groups.get(name, {})
+        if isinstance(children, dict):
+            for child_position, child_name in enumerate(children.keys()):
+                add_node(child_name, name, child_position)
+
+    for position, name in enumerate(top_level_names):
+        add_node(name, None, position)
+
+    return nodes
+
+
+def extract_playlist_id(value: str) -> str | None:
+    value = value.strip()
+    if not value:
+        return None
+    if value.startswith("PL") or value.startswith("OLAK"):
+        return value
+    parsed = urllib.parse.urlparse(value)
+    params = urllib.parse.parse_qs(parsed.query)
+    if "list" in params and params["list"]:
+        return params["list"][0]
+    return None
+
+
+def load_pockettube(path: Path) -> tuple[dict[str, Any], list[GroupNode], dict[str, list[str]]]:
+    with path.open("r", encoding="utf-8") as handle:
+        export = json.load(handle)
+    groups = group_sort_tree(export)
+    group_keys_by_name = {node.name: node.key for node in groups}
+    memberships: dict[str, list[str]] = {}
+    for name, values in export.items():
+        if not isinstance(values, list):
+            continue
+        group_key = group_keys_by_name.get(name, name)
+        memberships[group_key] = [
+            playlist_id
+            for value in values
+            if isinstance(value, str)
+            for playlist_id in [extract_playlist_id(value)]
+            if playlist_id
+        ]
+    return export, groups, memberships
+
+
+def extract_json_assignment(html_text: str, name: str) -> dict[str, Any]:
+    start = -1
+    for pattern in (
+        rf"var\s+{re.escape(name)}\s*=",
+        rf"window\[['\"]{re.escape(name)}['\"]\]\s*=",
+        rf"{re.escape(name)}\s*=",
+    ):
+        found = re.search(pattern, html_text)
+        if found:
+            start = found.end()
+            break
+    if start == -1:
+        return {}
+
+    index = html_text.find("{", start)
+    if index == -1:
+        return {}
+    depth = 0
+    in_string = False
+    escape = False
+    for pos in range(index, len(html_text)):
+        char = html_text[pos]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(html_text[index : pos + 1])
+                except json.JSONDecodeError:
+                    return {}
+    return {}
+
+
+def extract_ytcfg(html_text: str) -> dict[str, Any]:
+    config: dict[str, Any] = {}
+    for key in (
+        "INNERTUBE_API_KEY",
+        "INNERTUBE_CLIENT_NAME",
+        "INNERTUBE_CLIENT_VERSION",
+        "VISITOR_DATA",
+        "DELEGATED_SESSION_ID",
+    ):
+        found = re.search(rf'"{re.escape(key)}":\s*"([^"]*)"', html_text)
+        if found:
+            config[key] = html.unescape(found.group(1))
+    return config
+
+
+def request_json(
+    opener: urllib.request.OpenerDirector,
+    url: str,
+    payload: dict[str, Any],
+    referer: str,
+) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.youtube.com",
+        "Referer": referer,
+    }
+    req = urllib.request.Request(url, data=body, headers=headers)
+    with opener.open(req, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8", "replace"))
+
+
+def cookie_value(jar: http.cookiejar.CookieJar, names: tuple[str, ...]) -> str:
+    for cookie in jar:
+        if cookie.name in names and cookie.value:
+            return cookie.value
+    return ""
+
+
+def sapisid_auth_header(jar: http.cookiejar.CookieJar, origin: str) -> str:
+    sapisid = cookie_value(jar, ("SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID"))
+    if not sapisid:
+        return ""
+    timestamp = str(int(time.time()))
+    digest = hashlib.sha1(f"{timestamp} {sapisid} {origin}".encode("utf-8")).hexdigest()
+    return f"SAPISIDHASH {timestamp}_{digest}"
+
+
+def request_youtubei_json(
+    opener: urllib.request.OpenerDirector,
+    jar: http.cookiejar.CookieJar,
+    api_key: str,
+    payload: dict[str, Any],
+    referer: str,
+    client_version: str,
+) -> dict[str, Any]:
+    origin = "https://www.youtube.com"
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": origin,
+        "Referer": referer,
+        "X-Origin": origin,
+        "X-Youtube-Client-Name": "1",
+        "X-Youtube-Client-Version": client_version,
+    }
+    auth = sapisid_auth_header(jar, origin)
+    if auth:
+        headers["Authorization"] = auth
+    url = f"https://www.youtube.com/youtubei/v1/browse?key={urllib.parse.quote(api_key)}"
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+    with opener.open(req, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8", "replace"))
+
+
+def walk(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk(child)
+
+
+def text_from_runs(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return ""
+    if isinstance(value.get("simpleText"), str):
+        return value["simpleText"]
+    runs = value.get("runs")
+    if isinstance(runs, list):
+        return "".join(run.get("text", "") for run in runs if isinstance(run, dict))
+    content = value.get("content")
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def pick_thumbnail(thumbnails: list[dict[str, Any]]) -> str:
+    candidates = [
+        item
+        for item in thumbnails
+        if isinstance(item, dict) and isinstance(item.get("url"), str)
+    ]
+    if not candidates:
+        return ""
+    best = max(candidates, key=lambda item: int(item.get("width") or 0))
+    return html.unescape(best["url"])
+
+
+def content_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return ""
+    if isinstance(value.get("content"), str):
+        return value["content"]
+    return text_from_runs(value)
+
+
+def pick_lockup_thumbnail(lockup: dict[str, Any]) -> str:
+    best_url = ""
+    best_width = -1
+    for node in walk(lockup):
+        if not isinstance(node, dict):
+            continue
+        sources = node.get("sources")
+        if not isinstance(sources, list):
+            continue
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            url = source.get("url")
+            if not isinstance(url, str) or not url.startswith("http"):
+                continue
+            width = int(source.get("width") or 0)
+            if width > best_width:
+                best_url = html.unescape(url)
+                best_width = width
+    return best_url
+
+
+def lockup_metadata_rows(lockup: dict[str, Any]) -> list[list[str]]:
+    metadata = (
+        lockup.get("metadata", {})
+        .get("lockupMetadataViewModel", {})
+        .get("metadata", {})
+        .get("contentMetadataViewModel", {})
+    )
+    rows = []
+    for row in metadata.get("metadataRows", []) or []:
+        if not isinstance(row, dict):
+            continue
+        parts = []
+        for part in row.get("metadataParts", []) or []:
+            if isinstance(part, dict):
+                text = content_text(part.get("text")).strip()
+                if text:
+                    parts.append(text)
+        if parts:
+            rows.append(parts)
+    return rows
+
+
+def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, str] | None:
+    playlist_id = lockup.get("contentId")
+    if not isinstance(playlist_id, str) or not playlist_id:
+        return None
+    if lockup.get("contentType") != "LOCKUP_CONTENT_TYPE_PLAYLIST":
+        return None
+
+    title = content_text(
+        lockup.get("metadata", {}).get("lockupMetadataViewModel", {}).get("title")
+    ).strip()
+    rows = lockup_metadata_rows(lockup)
+    privacy = ""
+    video_count_text = ""
+    updated_text = ""
+    for parts in rows:
+        joined = " • ".join(parts)
+        if "Playlist" in parts and parts:
+            privacy = parts[0]
+        if re.search(r"\bvideos?\b", joined, re.I):
+            video_count_text = joined
+        if joined.lower().startswith("updated"):
+            updated_text = joined
+    if not video_count_text:
+        for node in walk(lockup):
+            if not isinstance(node, dict):
+                continue
+            badge = node.get("thumbnailBadgeViewModel")
+            if isinstance(badge, dict):
+                text = badge.get("text")
+                if isinstance(text, str) and re.search(r"\bvideos?\b", text, re.I):
+                    video_count_text = text
+                    break
+
+    return {
+        "playlist_id": playlist_id,
+        "title": title or playlist_id,
+        "description": updated_text,
+        "owner": privacy,
+        "video_count_text": video_count_text,
+        "thumbnail_url": pick_lockup_thumbnail(lockup),
+        "url": f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}",
+    }
+
+
+def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, str]:
+    initial_data = extract_json_assignment(html_text, "ytInitialData")
+    metadata = {
+        "playlist_id": playlist_id,
+        "title": "",
+        "description": "",
+        "owner": "",
+        "video_count_text": "",
+        "thumbnail_url": "",
+        "url": f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}",
+    }
+
+    for prop in ("og:title", "twitter:title"):
+        found = re.search(
+            rf'<meta\s+(?:property|name)="{re.escape(prop)}"\s+content="([^"]*)"',
+            html_text,
+        )
+        if found and not metadata["title"]:
+            metadata["title"] = html.unescape(found.group(1))
+    found = re.search(r'<meta\s+property="og:image"\s+content="([^"]*)"', html_text)
+    if found:
+        metadata["thumbnail_url"] = html.unescape(found.group(1))
+    found = re.search(r'<meta\s+property="og:description"\s+content="([^"]*)"', html_text)
+    if found:
+        metadata["description"] = html.unescape(found.group(1))
+
+    for node in walk(initial_data):
+        renderer = node.get("playlistHeaderRenderer")
+        if not isinstance(renderer, dict):
+            renderer = node.get("pageHeaderRenderer")
+        if not isinstance(renderer, dict):
+            continue
+        title = text_from_runs(renderer.get("title"))
+        if title and not metadata["title"]:
+            metadata["title"] = title
+        description = text_from_runs(renderer.get("description"))
+        if description and not metadata["description"]:
+            metadata["description"] = description
+        owner = text_from_runs(renderer.get("ownerText") or renderer.get("subtitle"))
+        if owner and not metadata["owner"]:
+            metadata["owner"] = owner
+        for key in ("numVideosText", "numVideosTextText", "videoCountText"):
+            count_text = text_from_runs(renderer.get(key))
+            if count_text and not metadata["video_count_text"]:
+                metadata["video_count_text"] = count_text
+        thumbnail = renderer.get("playlistHeaderBanner")
+        if isinstance(thumbnail, dict):
+            thumbs = thumbnail.get("heroPlaylistThumbnailRenderer", {}).get("thumbnail", {}).get("thumbnails", [])
+            if thumbs and not metadata["thumbnail_url"]:
+                metadata["thumbnail_url"] = pick_thumbnail(thumbs)
+
+    if not metadata["thumbnail_url"]:
+        for node in walk(initial_data):
+            thumbnail = node.get("thumbnail")
+            if isinstance(thumbnail, dict):
+                url = pick_thumbnail(thumbnail.get("thumbnails", []))
+                if url:
+                    metadata["thumbnail_url"] = url
+                    break
+
+    if not metadata["title"]:
+        found = re.search(r"<title>(.*?)</title>", html_text, flags=re.DOTALL)
+        if found:
+            title = html.unescape(re.sub(r"\s+", " ", found.group(1))).strip()
+            metadata["title"] = re.sub(r"\s+-\s+YouTube$", "", title)
+    if not metadata["title"]:
+        metadata["title"] = playlist_id
+    return metadata
+
+
+def thumbnail_extension(content_type: str, url: str) -> str:
+    guessed = mimetypes.guess_extension(content_type) if content_type else None
+    if guessed:
+        return ".jpg" if guessed == ".jpe" else guessed
+    suffix = Path(urllib.parse.urlparse(url).path).suffix.lower()
+    return suffix if suffix in {".jpg", ".jpeg", ".png", ".webp"} else ".jpg"
+
+
+def cache_thumbnail(
+    opener: urllib.request.OpenerDirector,
+    playlist_id: str,
+    thumbnail_url: str,
+    thumb_dir: Path,
+) -> str:
+    if not thumbnail_url:
+        return ""
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        body, content_type = request_bytes(
+            opener,
+            thumbnail_url,
+            timeout=30,
+            referer=f"https://www.youtube.com/playlist?list={playlist_id}",
+        )
+    except Exception:
+        return ""
+    ext = thumbnail_extension(content_type, thumbnail_url)
+    target = thumb_dir / f"{safe_name(playlist_id)}{ext}"
+    target.write_bytes(body)
+    return str(target.relative_to(ROOT)).replace("\\", "/")
+
+
+def safe_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+
+
+def format_duration(seconds: Any) -> str:
+    try:
+        total = int(seconds)
+    except (TypeError, ValueError):
+        return ""
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def archivarix_search_deleted(query: str, page_size: int = 50) -> list[dict[str, Any]]:
+    params = urllib.parse.urlencode(
+        {"q": query, "page": "1", "pageSize": str(page_size), "status": "deleted"}
+    )
+    url = f"https://tube.archivarix.net/api/fts?{params}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+            ),
+            "Accept": "application/json",
+            "Referer": f"https://tube.archivarix.net/?q={urllib.parse.quote(query)}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8", "replace"))
+    data = payload.get("data", {})
+    videos = data.get("videos", [])
+    return videos if isinstance(videos, list) else []
+
+
+def archivarix_lookup_video(
+    video_id: str,
+    opener: urllib.request.OpenerDirector | None = None,
+) -> dict[str, Any] | None:
+    opener = opener or urllib.request.build_opener()
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+    request = urllib.request.Request(
+        "https://tube.archivarix.net/api/search",
+        data=json.dumps({"query": youtube_url}).encode("utf-8"),
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+            ),
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Referer": "https://tube.archivarix.net/",
+        },
+        method="POST",
+    )
+    with opener.open(request, timeout=20) as response:
+        session = json.loads(response.read().decode("utf-8", "replace")).get("data", {})
+    endpoint = session.get("sseEndpointUrl")
+    if not isinstance(endpoint, str) or not endpoint:
+        return None
+    stream_url = urllib.parse.urljoin("https://tube.archivarix.net", endpoint)
+    stream_request = urllib.request.Request(
+        stream_url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+            ),
+            "Accept": "text/event-stream",
+            "Referer": f"https://tube.archivarix.net/?q={urllib.parse.quote(youtube_url)}",
+        },
+    )
+    event = ""
+    with opener.open(stream_request, timeout=25) as response:
+        for raw_line in response:
+            line = raw_line.decode("utf-8", "replace").strip()
+            if not line:
+                event = ""
+                continue
+            if line.startswith("event:"):
+                event = line.partition(":")[2].strip()
+                continue
+            if not line.startswith("data:"):
+                continue
+            payload_text = line.partition(":")[2].strip()
+            if event == "search:video":
+                payload = json.loads(payload_text)
+                if payload.get("videoId") == video_id:
+                    return payload
+            if event in {"search:complete", "search:error"}:
+                return None
+    return None
+
+
+def cache_archivarix_thumbnail(
+    video_id: str,
+    thumbnail_url: str,
+    thumb_dir: Path,
+    opener: urllib.request.OpenerDirector | None = None,
+) -> str:
+    if not video_id:
+        return ""
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    opener = opener or urllib.request.build_opener()
+    sources = [
+        f"https://tube.archivarix.net/media/thumbnails/{video_id[:2]}/{video_id[2:4]}/{video_id}.jpg",
+        f"https://web.archive.org/web/0im_/https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+    ]
+    if thumbnail_url:
+        sources.append(thumbnail_url)
+    body = b""
+    content_type = ""
+    for source in sources:
+        try:
+            body, content_type = request_bytes(
+                opener,
+                source,
+                timeout=12,
+                referer=f"https://tube.archivarix.net/?q={urllib.parse.quote(video_id)}",
+            )
+            if body:
+                break
+        except Exception:
+            continue
+    if not body:
+        return ""
+    ext = thumbnail_extension(content_type, thumbnail_url)
+    target = thumb_dir / f"{safe_name(video_id)}{ext}"
+    target.write_bytes(body)
+    return str(target.relative_to(ROOT)).replace("\\", "/")
+
+
+def continuation_token(data: dict[str, Any]) -> str:
+    for node in walk(data):
+        if not isinstance(node, dict):
+            continue
+        renderer = node.get("continuationItemRenderer")
+        if not isinstance(renderer, dict):
+            continue
+        endpoint = renderer.get("continuationEndpoint", {})
+        command = endpoint.get("continuationCommand", {})
+        token = command.get("token")
+        if isinstance(token, str) and token:
+            return token
+    return ""
+
+
+def playlist_video_renderers(data: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        node["playlistVideoRenderer"]
+        for node in walk(data)
+        if isinstance(node, dict) and isinstance(node.get("playlistVideoRenderer"), dict)
+    ]
+
+
+def hidden_alert_count(data: dict[str, Any]) -> int:
+    total = 0
+    for node in walk(data):
+        if not isinstance(node, dict):
+            continue
+        renderer = node.get("alertWithButtonRenderer")
+        if not isinstance(renderer, dict):
+            continue
+        text = text_from_runs(renderer.get("text"))
+        found = re.search(r"(\d+)\s+unavailable\s+videos?\s+is\s+hidden", text, re.I)
+        if not found:
+            found = re.search(r"(\d+)\s+unavailable\s+videos?\s+are\s+hidden", text, re.I)
+        if found:
+            total += int(found.group(1))
+    return total
+
+
+def unavailable_reason(renderer: dict[str, Any], title: str) -> str:
+    reason = text_from_runs(renderer.get("unplayableText"))
+    if reason:
+        return reason
+    lower_title = title.strip().lower()
+    if lower_title in {"deleted video", "private video"}:
+        return title
+    if "unavailable" in lower_title:
+        return title
+    badges = []
+    for badge in renderer.get("badges", []) or []:
+        if isinstance(badge, dict):
+            label = text_from_runs(badge.get("metadataBadgeRenderer", {}).get("label"))
+            if label:
+                badges.append(label)
+    return ", ".join(badges)
+
+
+def is_hidden_video(renderer: dict[str, Any], title: str, reason: str) -> bool:
+    if renderer.get("isPlayable") is False:
+        return True
+    lower_title = title.strip().lower()
+    if lower_title in {"deleted video", "private video"}:
+        return True
+    if "unavailable" in lower_title or "deleted" in lower_title or "private" in lower_title:
+        return True
+    lower_reason = reason.lower()
+    return any(word in lower_reason for word in ("unavailable", "deleted", "private"))
+
+
+def parse_video_renderer(
+    playlist_id: str,
+    renderer: dict[str, Any],
+    fallback_position: int,
+) -> dict[str, Any]:
+    index_text = text_from_runs(renderer.get("index"))
+    found_index = re.search(r"\d+", index_text)
+    position = int(found_index.group(0)) if found_index else fallback_position
+    video_id = renderer.get("videoId") if isinstance(renderer.get("videoId"), str) else ""
+    title = text_from_runs(renderer.get("title")).strip() or "(untitled)"
+    channel = text_from_runs(renderer.get("shortBylineText")).strip()
+    duration = text_from_runs(renderer.get("lengthText")).strip()
+    reason = unavailable_reason(renderer, title)
+    hidden = is_hidden_video(renderer, title, reason)
+    return {
+        "playlist_id": playlist_id,
+        "position": position,
+        "video_id": video_id,
+        "title": title,
+        "channel": channel,
+        "duration_text": duration,
+        "is_playable": 0 if hidden else 1,
+        "availability": reason,
+        "url": f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}" if video_id else "",
+    }
+
+
+def scan_playlist_videos(
+    opener: urllib.request.OpenerDirector,
+    playlist_id: str,
+) -> list[dict[str, Any]]:
+    playlist_url = f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}"
+    page = request_text(opener, playlist_url)
+    initial_data = extract_json_assignment(page, "ytInitialData")
+    config = extract_ytcfg(page)
+    pages = [initial_data]
+    token = continuation_token(initial_data)
+
+    api_key = config.get("INNERTUBE_API_KEY", "")
+    client_name = config.get("INNERTUBE_CLIENT_NAME", "WEB")
+    client_version = config.get("INNERTUBE_CLIENT_VERSION", "")
+    visitor_data = config.get("VISITOR_DATA", "")
+    seen_tokens: set[str] = set()
+    while token and token not in seen_tokens and api_key and client_version:
+        seen_tokens.add(token)
+        payload = {
+            "context": {
+                "client": {
+                    "clientName": client_name,
+                    "clientVersion": client_version,
+                    "visitorData": visitor_data,
+                }
+            },
+            "continuation": token,
+        }
+        data = request_json(
+            opener,
+            f"https://www.youtube.com/youtubei/v1/browse?key={urllib.parse.quote(api_key)}",
+            payload,
+            playlist_url,
+        )
+        pages.append(data)
+        token = continuation_token(data)
+
+    videos: list[dict[str, Any]] = []
+    seen_positions: set[int] = set()
+    hidden_alerts = 0
+    for page_data in pages:
+        hidden_alerts += hidden_alert_count(page_data)
+        for renderer in playlist_video_renderers(page_data):
+            fallback = len(videos) + 1
+            video = parse_video_renderer(playlist_id, renderer, fallback)
+            while video["position"] in seen_positions:
+                video["position"] += 1
+            seen_positions.add(video["position"])
+            videos.append(video)
+    explicit_hidden = sum(1 for video in videos if not video["is_playable"])
+    for offset in range(max(0, hidden_alerts - explicit_hidden)):
+        position = max(seen_positions, default=0) + 1
+        seen_positions.add(position)
+        videos.append(
+            {
+                "playlist_id": playlist_id,
+                "position": position,
+                "video_id": "",
+                "title": "Unavailable video hidden by YouTube",
+                "channel": "",
+                "duration_text": "",
+                "is_playable": 0,
+                "availability": "Unavailable video is hidden",
+                "url": "",
+            }
+        )
+    return sorted(videos, key=lambda item: item["position"])
+
+
+def import_playlists(args: argparse.Namespace) -> None:
+    db_path = Path(args.db)
+    thumb_dir = Path(args.thumbs)
+    _, groups, memberships = load_pockettube(Path(args.pockettube))
+    all_playlist_ids = []
+    seen: set[str] = set()
+    for playlist_ids in memberships.values():
+        for playlist_id in playlist_ids:
+            if playlist_id not in seen:
+                all_playlist_ids.append(playlist_id)
+                seen.add(playlist_id)
+
+    opener = load_cookie_opener(Path(args.cookies))
+    conn = connect(db_path)
+    with conn:
+        conn.execute("DELETE FROM group_playlists")
+        conn.execute("DELETE FROM groups")
+        for node in groups:
+            conn.execute(
+                """
+                INSERT INTO groups(group_key, name, parent_key, position, icon)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (node.key, node.name, node.parent_key, node.position, node.icon),
+            )
+
+    print(f"Importing {len(all_playlist_ids)} playlists from {len(groups)} PocketTube groups...")
+    for index, playlist_id in enumerate(all_playlist_ids, start=1):
+        url = f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}"
+        status = "ok"
+        error = ""
+        try:
+            page = request_text(opener, url)
+            metadata = extract_playlist_metadata(page, playlist_id)
+            thumbnail_path = cache_thumbnail(
+                opener, playlist_id, metadata["thumbnail_url"], thumb_dir
+            )
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+            metadata = {
+                "playlist_id": playlist_id,
+                "title": playlist_id,
+                "description": "",
+                "owner": "",
+                "video_count_text": "",
+                "thumbnail_url": "",
+                "url": url,
+            }
+            thumbnail_path = ""
+            status = "error"
+            error = str(exc)
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO playlists(
+                  playlist_id, title, description, owner, video_count_text,
+                  thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(playlist_id) DO UPDATE SET
+                  title=excluded.title,
+                  description=excluded.description,
+                  owner=excluded.owner,
+                  video_count_text=excluded.video_count_text,
+                  thumbnail_url=excluded.thumbnail_url,
+                  thumbnail_path=excluded.thumbnail_path,
+                  url=excluded.url,
+                  fetch_status=excluded.fetch_status,
+                  fetch_error=excluded.fetch_error,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    playlist_id,
+                    metadata["title"],
+                    metadata["description"],
+                    metadata["owner"],
+                    metadata["video_count_text"],
+                    metadata["thumbnail_url"],
+                    thumbnail_path,
+                    metadata["url"],
+                    status,
+                    error,
+                    int(time.time()),
+                ),
+            )
+        print(f"[{index:03d}/{len(all_playlist_ids):03d}] {status} {metadata['title']}")
+
+    with conn:
+        for group_key, playlist_ids in memberships.items():
+            for position, playlist_id in enumerate(playlist_ids):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO group_playlists(group_key, playlist_id, position)
+                    VALUES (?, ?, ?)
+                    """,
+                    (group_key, playlist_id, position),
+                )
+    print(f"Wrote {db_path}")
+
+
+def youtube_web_context(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "client": {
+            "clientName": config.get("INNERTUBE_CLIENT_NAME", "WEB"),
+            "clientVersion": config.get("INNERTUBE_CLIENT_VERSION", ""),
+            "visitorData": urllib.parse.unquote(config.get("VISITOR_DATA", "")),
+        }
+    }
+
+
+def fetch_current_youtube_playlists(
+    cookie_file: Path,
+    browse_id: str = "FEplaylist_aggregation",
+) -> tuple[urllib.request.OpenerDirector, list[dict[str, str]]]:
+    jar = load_cookie_jar(cookie_file)
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    referer = "https://www.youtube.com/feed/playlists"
+    page = request_text(opener, referer)
+    config = extract_ytcfg(page)
+    api_key = config.get("INNERTUBE_API_KEY", "")
+    client_version = config.get("INNERTUBE_CLIENT_VERSION", "")
+    if not api_key or not client_version:
+        raise RuntimeError("Could not find YouTube web API configuration in the playlists page.")
+
+    payload = {
+        "context": youtube_web_context(config),
+        "browseId": browse_id,
+    }
+    pages = [
+        request_youtubei_json(opener, jar, api_key, payload, referer, client_version)
+    ]
+    token = continuation_token(pages[0])
+    seen_tokens: set[str] = set()
+    while token and token not in seen_tokens:
+        seen_tokens.add(token)
+        pages.append(
+            request_youtubei_json(
+                opener,
+                jar,
+                api_key,
+                {"context": youtube_web_context(config), "continuation": token},
+                referer,
+                client_version,
+            )
+        )
+        token = continuation_token(pages[-1])
+
+    records: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for page_data in pages:
+        for node in walk(page_data):
+            if not isinstance(node, dict):
+                continue
+            lockup = node.get("lockupViewModel")
+            if not isinstance(lockup, dict):
+                continue
+            record = parse_playlist_lockup(lockup)
+            if not record:
+                continue
+            playlist_id = record["playlist_id"]
+            if playlist_id in seen_ids:
+                continue
+            seen_ids.add(playlist_id)
+            records.append(record)
+    return opener, records
+
+
+def is_system_playlist(playlist_id: str) -> bool:
+    return playlist_id in {"LL", "LM", "WL"} or playlist_id.startswith("RD")
+
+
+def discover_current_playlists(args: argparse.Namespace) -> None:
+    db_path = Path(args.db)
+    thumb_dir = Path(args.thumbs)
+    opener, records = fetch_current_youtube_playlists(Path(args.cookies), args.browse_id)
+    if not args.include_system:
+        records = [record for record in records if not is_system_playlist(record["playlist_id"])]
+
+    conn = connect(db_path)
+    existing_groups = {
+        row["playlist_id"]
+        for row in conn.execute("SELECT DISTINCT playlist_id FROM group_playlists")
+    }
+    inserted_ungrouped: list[str] = []
+    with conn:
+        top_position = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM groups WHERE parent_key IS NULL"
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO groups(group_key, name, parent_key, position, icon)
+            VALUES (?, ?, NULL, ?, '')
+            ON CONFLICT(group_key) DO UPDATE SET
+              name=excluded.name,
+              parent_key=NULL,
+              position=groups.position
+            """,
+            (args.group_key, args.group_name, top_position),
+        )
+        group_position = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM group_playlists WHERE group_key = ?",
+            (args.group_key,),
+        ).fetchone()[0]
+
+    print(f"Discovered {len(records)} current YouTube playlists.")
+    for index, record in enumerate(records, start=1):
+        playlist_id = record["playlist_id"]
+        existing = conn.execute(
+            "SELECT thumbnail_path FROM playlists WHERE playlist_id = ?",
+            (playlist_id,),
+        ).fetchone()
+        thumbnail_path = cache_thumbnail(
+            opener,
+            playlist_id,
+            record["thumbnail_url"],
+            thumb_dir,
+        )
+        if not thumbnail_path and existing:
+            thumbnail_path = existing["thumbnail_path"]
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO playlists(
+                  playlist_id, title, description, owner, video_count_text,
+                  thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ok', '', ?)
+                ON CONFLICT(playlist_id) DO UPDATE SET
+                  title=excluded.title,
+                  description=excluded.description,
+                  owner=excluded.owner,
+                  video_count_text=excluded.video_count_text,
+                  thumbnail_url=excluded.thumbnail_url,
+                  thumbnail_path=excluded.thumbnail_path,
+                  url=excluded.url,
+                  fetch_status='ok',
+                  fetch_error='',
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    playlist_id,
+                    record["title"],
+                    record["description"],
+                    record["owner"],
+                    record["video_count_text"],
+                    record["thumbnail_url"],
+                    thumbnail_path,
+                    record["url"],
+                    int(time.time()),
+                ),
+            )
+            if playlist_id not in existing_groups:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO group_playlists(group_key, playlist_id, position)
+                    VALUES (?, ?, ?)
+                    """,
+                    (args.group_key, playlist_id, group_position),
+                )
+                existing_groups.add(playlist_id)
+                inserted_ungrouped.append(playlist_id)
+                group_position += 1
+        print(f"[{index:03d}/{len(records):03d}] {record['title']}")
+
+    print(
+        f"Updated {len(records)} playlists; added {len(inserted_ungrouped)} "
+        f"to {args.group_name}."
+    )
+    print(f"Wrote {db_path}")
+
+
+def scan_hidden(args: argparse.Namespace) -> None:
+    db_path = Path(args.db)
+    conn = connect(db_path)
+    opener = load_cookie_opener(Path(args.cookies))
+    rows = conn.execute(
+        "SELECT playlist_id, title FROM playlists ORDER BY title COLLATE NOCASE"
+    ).fetchall()
+    if args.limit:
+        rows = rows[: args.limit]
+    print(f"Scanning {len(rows)} playlists for hidden videos...")
+    total_hidden = 0
+    for index, row in enumerate(rows, start=1):
+        playlist_id = row["playlist_id"]
+        title = row["title"]
+        status = "ok"
+        error = ""
+        videos: list[dict[str, Any]] = []
+        try:
+            videos = scan_playlist_videos(opener, playlist_id)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            status = "error"
+            error = str(exc)
+        hidden_count = sum(1 for video in videos if not video["is_playable"])
+        total_hidden += hidden_count
+        with conn:
+            conn.execute("DELETE FROM playlist_videos WHERE playlist_id = ?", (playlist_id,))
+            now = int(time.time())
+            for video in videos:
+                conn.execute(
+                    """
+                    INSERT INTO playlist_videos(
+                      playlist_id, position, video_id, title, channel, duration_text,
+                      is_playable, availability, url, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        video["playlist_id"],
+                        video["position"],
+                        video["video_id"],
+                        video["title"],
+                        video["channel"],
+                        video["duration_text"],
+                        video["is_playable"],
+                        video["availability"],
+                        video["url"],
+                        now,
+                    ),
+                )
+            conn.execute(
+                """
+                INSERT INTO playlist_scans(
+                  playlist_id, scanned_at, video_count, hidden_count, scan_status, scan_error
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(playlist_id) DO UPDATE SET
+                  scanned_at=excluded.scanned_at,
+                  video_count=excluded.video_count,
+                  hidden_count=excluded.hidden_count,
+                  scan_status=excluded.scan_status,
+                  scan_error=excluded.scan_error
+                """,
+                (playlist_id, now, len(videos), hidden_count, status, error),
+            )
+        suffix = f"{hidden_count} hidden / {len(videos)} videos"
+        if status != "ok":
+            suffix = f"ERROR {error}"
+        print(f"[{index:03d}/{len(rows):03d}] {suffix} - {title}")
+    print(f"Found {total_hidden} hidden videos.")
+
+
+def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
+    db_path = Path(args.db)
+    thumb_dir = Path(args.thumbs)
+    conn = connect(db_path)
+    rows = conn.execute(
+        """
+        SELECT p.playlist_id, p.title, s.hidden_count
+        FROM playlist_scans s
+        JOIN playlists p ON p.playlist_id = s.playlist_id
+        WHERE s.hidden_count > 0
+        ORDER BY s.hidden_count DESC, p.title COLLATE NOCASE
+        """
+    ).fetchall()
+    if args.limit:
+        rows = rows[: args.limit]
+    print(f"Searching Archivarix for {len(rows)} affected playlists...")
+    total_candidates = 0
+    total_cached = 0
+    for index, row in enumerate(rows, start=1):
+        playlist_id = row["playlist_id"]
+        query = row["title"]
+        try:
+            videos = archivarix_search_deleted(query, page_size=args.page_size)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            print(f"[{index:03d}/{len(rows):03d}] ERROR {query}: {exc}")
+            continue
+        candidates = [
+            video
+            for video in videos
+            if isinstance(video, dict)
+            and isinstance(video.get("videoId"), str)
+            and video.get("status", "").upper().startswith("DELETED")
+        ]
+        cached = 0
+        with conn:
+            conn.execute(
+                "DELETE FROM archivarix_candidates WHERE playlist_id = ?", (playlist_id,)
+            )
+            now = int(time.time())
+            for video in candidates:
+                video_id = video["videoId"]
+                thumbnail_url = (
+                    video.get("thumbnailArchiveUrl")
+                    or video.get("thumbnailUrl")
+                    or ""
+                )
+                thumbnail_path = cache_archivarix_thumbnail(
+                    video_id, thumbnail_url, thumb_dir
+                )
+                if thumbnail_path:
+                    cached += 1
+                conn.execute(
+                    """
+                    INSERT INTO archivarix_candidates(
+                      playlist_id, video_id, title, channel, status, duration_text,
+                      upload_date, view_count, thumbnail_url, thumbnail_path,
+                      archive_url, video_file_url, query, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(playlist_id, video_id) DO UPDATE SET
+                      title=excluded.title,
+                      channel=excluded.channel,
+                      status=excluded.status,
+                      duration_text=excluded.duration_text,
+                      upload_date=excluded.upload_date,
+                      view_count=excluded.view_count,
+                      thumbnail_url=excluded.thumbnail_url,
+                      thumbnail_path=excluded.thumbnail_path,
+                      archive_url=excluded.archive_url,
+                      video_file_url=excluded.video_file_url,
+                      query=excluded.query,
+                      updated_at=excluded.updated_at
+                    """,
+                    (
+                        playlist_id,
+                        video_id,
+                        video.get("title") or "",
+                        video.get("channelTitle") or "",
+                        video.get("status") or "",
+                        format_duration(video.get("duration")),
+                        video.get("uploadDate") or "",
+                        str(video.get("viewCount") or ""),
+                        thumbnail_url,
+                        thumbnail_path,
+                        video.get("archiveUrl") or "",
+                        video.get("videoFileUrl") or "",
+                        query,
+                        now,
+                    ),
+                )
+        total_candidates += len(candidates)
+        total_cached += cached
+        print(
+            f"[{index:03d}/{len(rows):03d}] "
+            f"{len(candidates)} candidates, {cached} thumbnails - {query}"
+        )
+    print(f"Found {total_candidates} candidates and cached {total_cached} thumbnails.")
+
+
+def normalized_playlist_title(value: str) -> str:
+    value = re.sub(r"\(\d+\)$", "", value).strip()
+    return value
+
+
+def import_takeout_snapshot(args: argparse.Namespace) -> None:
+    db_path = Path(args.db)
+    takeout_dir = Path(args.takeout)
+    playlists_dir = takeout_dir / "playlists"
+    playlists_csv = playlists_dir / "playlists.csv"
+    if not playlists_csv.exists():
+        raise SystemExit(f"Takeout playlists.csv not found: {playlists_csv}")
+
+    conn = connect(db_path)
+    snapshot_key = args.snapshot_key
+    now = int(time.time())
+    playlist_rows: list[dict[str, str]] = []
+    with playlists_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+        playlist_rows = list(csv.DictReader(handle))
+
+    playlist_by_title: dict[str, dict[str, str]] = {}
+    for row in playlist_rows:
+        title = row.get("Playlist Title (Original)", "").strip()
+        if title:
+            playlist_by_title[title.casefold()] = row
+
+    with conn:
+        conn.execute("DELETE FROM snapshots WHERE snapshot_key = ?", (snapshot_key,))
+        conn.execute(
+            "INSERT INTO snapshots(snapshot_key, label, source_path, imported_at) VALUES (?, ?, ?, ?)",
+            (snapshot_key, args.label, str(takeout_dir), now),
+        )
+        for row in playlist_rows:
+            playlist_id = row.get("Playlist ID", "").strip()
+            if not playlist_id:
+                continue
+            conn.execute(
+                """
+                INSERT INTO snapshot_playlists(
+                  snapshot_key, playlist_id, title, created_at, updated_at,
+                  visibility, video_order, source_file
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_key,
+                    playlist_id,
+                    row.get("Playlist Title (Original)", "").strip(),
+                    row.get("Playlist Create Timestamp", "").strip(),
+                    row.get("Playlist Update Timestamp", "").strip(),
+                    row.get("Playlist Visibility", "").strip(),
+                    row.get("Playlist Video Order", "").strip(),
+                    str(playlists_csv.relative_to(ROOT)).replace("\\", "/"),
+                ),
+            )
+
+    imported_video_rows = 0
+    unmatched_files: list[str] = []
+    video_files = sorted(playlists_dir.glob("*-videos.csv"))
+    with conn:
+        for video_file in video_files:
+            title_from_file = normalized_playlist_title(video_file.name[: -len("-videos.csv")])
+            playlist_row = playlist_by_title.get(title_from_file.casefold())
+            if playlist_row is None:
+                playlist_row = playlist_by_title.get(title_from_file.replace("_", "/").casefold())
+            if playlist_row is None and title_from_file.endswith("_"):
+                playlist_row = playlist_by_title.get((title_from_file[:-1] + "?").casefold())
+            if playlist_row is None:
+                unmatched_files.append(video_file.name)
+                playlist_id = f"takeout:{title_from_file}"
+                playlist_title = title_from_file
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO snapshot_playlists(
+                      snapshot_key, playlist_id, title, source_file
+                    )
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        snapshot_key,
+                        playlist_id,
+                        playlist_title,
+                        str(video_file.relative_to(ROOT)).replace("\\", "/"),
+                    ),
+                )
+            else:
+                playlist_id = playlist_row.get("Playlist ID", "").strip()
+                playlist_title = playlist_row.get("Playlist Title (Original)", "").strip()
+            if not playlist_id:
+                continue
+            with video_file.open("r", encoding="utf-8-sig", newline="") as handle:
+                for position, row in enumerate(csv.DictReader(handle), start=1):
+                    video_id = row.get("Video ID", "").strip()
+                    if not video_id:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO snapshot_videos(
+                          snapshot_key, playlist_id, playlist_title, position,
+                          video_id, added_at, source_file
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            snapshot_key,
+                            playlist_id,
+                            playlist_title,
+                            position,
+                            video_id,
+                            row.get("Playlist Video Creation Timestamp", "").strip(),
+                            str(video_file.relative_to(ROOT)).replace("\\", "/"),
+                        ),
+                    )
+                    imported_video_rows += 1
+
+    print(
+        f"Imported {len(playlist_rows)} snapshot playlists and "
+        f"{imported_video_rows} snapshot video rows into {snapshot_key}."
+    )
+    if unmatched_files:
+        print(f"Used filename-derived IDs for {len(unmatched_files)} playlist files.")
+
+
+def recover_snapshot_missing(args: argparse.Namespace) -> None:
+    db_path = Path(args.db)
+    thumb_dir = Path(args.thumbs)
+    conn = connect(db_path)
+    archivarix_opener = load_cookie_opener(Path(args.archivarix_cookies))
+    rows = conn.execute(
+        """
+        SELECT DISTINCT sv.snapshot_key, sv.video_id
+        FROM snapshot_videos sv
+        JOIN playlists p ON p.playlist_id = sv.playlist_id
+        LEFT JOIN playlist_videos pv
+          ON pv.playlist_id = sv.playlist_id
+         AND pv.video_id = sv.video_id
+         AND pv.is_playable = 1
+        WHERE sv.snapshot_key = ?
+          AND pv.video_id IS NULL
+        ORDER BY sv.video_id
+        """,
+        (args.snapshot_key,),
+    ).fetchall()
+    if args.video_id:
+        rows = [row for row in rows if row["video_id"] == args.video_id]
+    if args.only_missing:
+        rows = [
+            row
+            for row in rows
+            if conn.execute(
+                """
+                SELECT 1
+                FROM snapshot_video_recovery
+                WHERE snapshot_key = ? AND video_id = ? AND thumbnail_path <> ''
+                """,
+                (row["snapshot_key"], row["video_id"]),
+            ).fetchone()
+            is None
+        ]
+    if args.limit:
+        rows = rows[: args.limit]
+    print(f"Recovering Archivarix thumbnails for {len(rows)} missing snapshot video IDs...")
+    found = 0
+    cached = 0
+    for index, row in enumerate(rows, start=1):
+        snapshot_key = row["snapshot_key"]
+        video_id = row["video_id"]
+        status = "not_found"
+        error = ""
+        video: dict[str, Any] | None = None
+        thumbnail_path = ""
+        thumbnail_url = ""
+        thumbnail_path = cache_archivarix_thumbnail(
+            video_id,
+            "",
+            thumb_dir,
+            archivarix_opener,
+        )
+        if thumbnail_path and not args.refresh_metadata:
+            status = "thumbnail_only"
+            cached += 1
+        elif not args.no_api:
+            try:
+                if args.delay:
+                    time.sleep(args.delay)
+                video = archivarix_lookup_video(video_id, archivarix_opener)
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+                status = "error"
+                error = str(exc)
+        if video:
+            found += 1
+            status = "found"
+            thumbnail_url = video.get("thumbnailArchiveUrl") or video.get("thumbnailUrl") or ""
+            thumbnail_path = thumbnail_path or cache_archivarix_thumbnail(
+                video_id,
+                thumbnail_url,
+                thumb_dir,
+                archivarix_opener,
+            )
+            if thumbnail_path:
+                cached += 1
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO snapshot_video_recovery(
+                  snapshot_key, video_id, title, description, channel, status, duration_text,
+                  upload_date, view_count, thumbnail_url, thumbnail_path,
+                  archive_url, video_file_url, searched_at, search_status, search_error
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_key, video_id) DO UPDATE SET
+                  title=excluded.title,
+                  description=excluded.description,
+                  channel=excluded.channel,
+                  status=excluded.status,
+                  duration_text=excluded.duration_text,
+                  upload_date=excluded.upload_date,
+                  view_count=excluded.view_count,
+                  thumbnail_url=excluded.thumbnail_url,
+                  thumbnail_path=excluded.thumbnail_path,
+                  archive_url=excluded.archive_url,
+                  video_file_url=excluded.video_file_url,
+                  searched_at=excluded.searched_at,
+                  search_status=excluded.search_status,
+                  search_error=excluded.search_error
+                """,
+                (
+                    snapshot_key,
+                    video_id,
+                    (video or {}).get("title") or "",
+                    (video or {}).get("description") or "",
+                    (video or {}).get("channelTitle") or "",
+                    (video or {}).get("status") or "",
+                    format_duration((video or {}).get("duration")),
+                    (video or {}).get("uploadDate") or "",
+                    str((video or {}).get("viewCount") or ""),
+                    thumbnail_url,
+                    thumbnail_path,
+                    (video or {}).get("archiveUrl") or "",
+                    (video or {}).get("videoFileUrl") or "",
+                    int(time.time()),
+                    status,
+                    error,
+                ),
+            )
+        label = (video or {}).get("title") or video_id
+        suffix = "thumbnail" if thumbnail_path else status
+        print(f"[{index:03d}/{len(rows):03d}] {suffix} - {label}")
+    print(f"Found {found} Archivarix records and cached {cached} thumbnails.")
+
+
+def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
+    groups = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM groups ORDER BY COALESCE(parent_key, ''), position, name"
+        )
+    ]
+    playlists = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT p.*,
+                   COALESCE(s.video_count, 0) AS scanned_video_count,
+                   COALESCE(s.hidden_count, 0) AS hidden_count,
+                   COALESCE(s.scanned_at, 0) AS scanned_at,
+                   COALESCE(s.scan_status, '') AS scan_status
+            FROM playlists p
+            LEFT JOIN playlist_scans s ON s.playlist_id = p.playlist_id
+            ORDER BY p.title COLLATE NOCASE
+            """
+        )
+    ]
+    memberships = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT gp.group_key, gp.playlist_id, gp.position
+            FROM group_playlists gp
+            JOIN playlists p ON p.playlist_id = gp.playlist_id
+            ORDER BY gp.group_key, gp.position, p.title COLLATE NOCASE
+            """
+        )
+    ]
+    hidden_videos = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT v.*, p.title AS playlist_title, p.url AS playlist_url
+            FROM playlist_videos v
+            JOIN playlists p ON p.playlist_id = v.playlist_id
+            WHERE v.is_playable = 0
+            ORDER BY p.title COLLATE NOCASE, v.position
+            """
+        )
+    ]
+    archivarix_candidates = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT a.*, p.title AS playlist_title, p.url AS playlist_url
+            FROM archivarix_candidates a
+            JOIN playlists p ON p.playlist_id = a.playlist_id
+            ORDER BY p.title COLLATE NOCASE, a.upload_date DESC, a.title COLLATE NOCASE
+            """
+        )
+    ]
+    snapshots = [dict(row) for row in conn.execute("SELECT * FROM snapshots ORDER BY imported_at DESC")]
+    snapshot_playlists = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT sp.*,
+                   COUNT(sv.video_id) AS video_count,
+                   p.title AS current_title,
+                   COALESCE(ps.video_count, 0) AS current_video_count,
+                   COALESCE(ps.hidden_count, 0) AS current_hidden_count
+            FROM snapshot_playlists sp
+            LEFT JOIN snapshot_videos sv
+              ON sv.snapshot_key = sp.snapshot_key AND sv.playlist_id = sp.playlist_id
+            LEFT JOIN playlists p ON p.playlist_id = sp.playlist_id
+            LEFT JOIN playlist_scans ps ON ps.playlist_id = sp.playlist_id
+            GROUP BY sp.snapshot_key, sp.playlist_id
+            ORDER BY sp.title COLLATE NOCASE
+            """
+        )
+    ]
+    snapshot_missing = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT sv.snapshot_key,
+                   sv.playlist_id,
+                   sv.playlist_title,
+                   sv.position,
+                   sv.video_id,
+                   sv.added_at,
+                   p.title AS current_title,
+                   p.url AS playlist_url,
+                   COALESCE(r.title, '') AS recovered_title,
+                   COALESCE(r.description, '') AS recovered_description,
+                   COALESCE(r.channel, '') AS recovered_channel,
+                   COALESCE(r.status, '') AS recovered_status,
+                   COALESCE(r.duration_text, '') AS recovered_duration,
+                   COALESCE(r.upload_date, '') AS recovered_upload_date,
+                   COALESCE(r.thumbnail_path, '') AS recovered_thumbnail_path,
+                   COALESCE(r.search_status, '') AS recovery_search_status
+            FROM snapshot_videos sv
+            JOIN playlists p ON p.playlist_id = sv.playlist_id
+            LEFT JOIN playlist_videos pv
+              ON pv.playlist_id = sv.playlist_id
+             AND pv.video_id = sv.video_id
+             AND pv.is_playable = 1
+            LEFT JOIN snapshot_video_recovery r
+              ON r.snapshot_key = sv.snapshot_key
+             AND r.video_id = sv.video_id
+            WHERE pv.video_id IS NULL
+            ORDER BY sv.playlist_title COLLATE NOCASE, sv.position
+            """
+        )
+    ]
+    snapshot_likely_hidden = [
+        row
+        for row in snapshot_missing
+        if conn.execute(
+            "SELECT hidden_count FROM playlist_scans WHERE playlist_id = ? AND hidden_count > 0",
+            (row["playlist_id"],),
+        ).fetchone()
+    ]
+    return {
+        "groups": groups,
+        "playlists": playlists,
+        "memberships": memberships,
+        "hiddenVideos": hidden_videos,
+        "archivarixCandidates": archivarix_candidates,
+        "snapshots": snapshots,
+        "snapshotPlaylists": snapshot_playlists,
+        "snapshotMissing": snapshot_missing,
+        "snapshotLikelyHidden": snapshot_likely_hidden,
+    }
+
+
+INDEX_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YT Playlists</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f4ef;
+      --panel: #fffdf8;
+      --ink: #25231f;
+      --muted: #6b655c;
+      --line: #ded6cb;
+      --accent: #0b7285;
+      --accent-soft: #d7f2f4;
+      --warn: #9a3412;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161513;
+        --panel: #211f1b;
+        --ink: #f4efe7;
+        --muted: #b8afa3;
+        --line: #39342d;
+        --accent: #67d8e6;
+        --accent-soft: #173b40;
+        --warn: #f4a261;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); }
+    .app { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+    aside { border-right: 1px solid var(--line); background: var(--panel); padding: 18px 14px; position: sticky; top: 0; height: 100vh; overflow: auto; }
+    main { padding: 24px; }
+    h1 { font-size: 20px; margin: 0 0 14px; }
+    .search { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 10px 12px; font: inherit; margin-bottom: 16px; }
+    .group { width: 100%; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin: 2px 0; border-radius: 6px; cursor: pointer; text-align: left; font: inherit; }
+    .group:hover, .group.active { background: var(--accent-soft); }
+    .group.child { padding-left: 28px; color: var(--muted); }
+    .count { color: var(--muted); font-size: 12px; margin-left: 8px; }
+    .toolbar { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .title { font-size: 28px; line-height: 1.1; margin: 0; }
+    .meta { color: var(--muted); font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
+    .thumb { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: linear-gradient(135deg, #24424a, #d98948); }
+    .body { padding: 11px 12px 13px; }
+    .playlist-title { display: block; color: var(--ink); font-weight: 650; line-height: 1.25; text-decoration: none; overflow-wrap: anywhere; }
+    .playlist-title:hover { color: var(--accent); }
+    .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
+    .badge { color: var(--warn); font-weight: 650; }
+    .refresh { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
+    .refresh:hover { background: var(--accent-soft); }
+    .video-title { color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
+    .playlist-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
+    .playlist-link:hover { text-decoration: underline; }
+    .position { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+    .status { color: var(--warn); }
+    .empty { color: var(--muted); padding: 36px 0; }
+    @media (max-width: 760px) {
+      .app { grid-template-columns: 1fr; }
+      aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      main { padding: 18px 14px; }
+      .toolbar { display: block; }
+      .title { font-size: 24px; margin-bottom: 6px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <h1>YT Playlists</h1>
+      <input id="search" class="search" type="search" placeholder="Search playlists" autocomplete="off">
+      <nav id="groups"></nav>
+    </aside>
+    <main>
+      <div class="toolbar">
+        <h2 id="view-title" class="title">All playlists</h2>
+        <div class="details">
+          <button id="refresh" class="refresh" type="button">Refresh</button>
+          <div id="view-meta" class="meta"></div>
+        </div>
+      </div>
+      <section id="grid" class="grid"></section>
+      <div id="empty" class="empty" hidden>No playlists match.</div>
+    </main>
+  </div>
+  <script>
+    let data = null;
+    let playlists = new Map();
+    let memberships = new Map();
+    let children = new Map();
+
+    let selected = '';
+    const search = document.getElementById('search');
+    const refresh = document.getElementById('refresh');
+    const groupsEl = document.getElementById('groups');
+    const grid = document.getElementById('grid');
+    const empty = document.getElementById('empty');
+    const title = document.getElementById('view-title');
+    const meta = document.getElementById('view-meta');
+
+    async function loadData() {
+      refresh.disabled = true;
+      refresh.textContent = 'Refreshing';
+      const response = await fetch('/api/data', { cache: 'no-store' });
+      if (!response.ok) throw new Error(`Data refresh failed: ${response.status}`);
+      data = await response.json();
+      playlists = new Map(data.playlists.map(p => [p.playlist_id, p]));
+      memberships = new Map();
+      for (const item of data.memberships) {
+        if (!memberships.has(item.group_key)) memberships.set(item.group_key, []);
+        memberships.get(item.group_key).push(item.playlist_id);
+      }
+      children = new Map();
+      for (const group of data.groups) {
+        const parent = group.parent_key || '';
+        if (!children.has(parent)) children.set(parent, []);
+        children.get(parent).push(group);
+      }
+      renderGroups();
+      render();
+      refresh.disabled = false;
+      refresh.textContent = 'Refresh';
+    }
+
+    function groupCount(groupKey) {
+      const own = memberships.get(groupKey) || [];
+      const nested = (children.get(groupKey) || []).flatMap(child => memberships.get(child.group_key) || []);
+      return new Set([...own, ...nested]).size;
+    }
+
+    function groupPlaylistIds(groupKey) {
+      if (!groupKey) {
+        const ids = [];
+        for (const group of children.get('') || []) {
+          for (const id of groupPlaylistIds(group.group_key)) ids.push(id);
+        }
+        return [...new Set(ids)];
+      }
+      const ids = [];
+      for (const id of memberships.get(groupKey) || []) ids.push(id);
+      for (const child of children.get(groupKey) || []) {
+        for (const id of memberships.get(child.group_key) || []) ids.push(id);
+      }
+      return [...new Set(ids)];
+    }
+
+    function buttonFor(group, child=false) {
+      const button = document.createElement('button');
+      button.className = `group ${child ? 'child' : ''}`;
+      button.dataset.key = group.group_key;
+      button.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="count">${groupCount(group.group_key)}</span>`;
+      button.addEventListener('click', () => {
+        selected = group.group_key;
+        render();
+      });
+      return button;
+    }
+
+    function renderGroups() {
+      if (!data) return;
+      groupsEl.replaceChildren();
+      const all = document.createElement('button');
+      all.className = 'group';
+      all.dataset.key = '';
+      all.innerHTML = `<span>All playlists</span><span class="count">${data.playlists.length}</span>`;
+      all.addEventListener('click', () => { selected = ''; render(); });
+      groupsEl.appendChild(all);
+      const hidden = document.createElement('button');
+      hidden.className = 'group';
+      hidden.dataset.key = '__hidden__';
+      hidden.innerHTML = `<span>Hidden videos</span><span class="count">${data.hiddenVideos.length}</span>`;
+      hidden.addEventListener('click', () => { selected = '__hidden__'; render(); });
+      groupsEl.appendChild(hidden);
+      const candidates = document.createElement('button');
+      candidates.className = 'group';
+      candidates.dataset.key = '__archivarix__';
+      candidates.innerHTML = `<span>Video thumbnails</span><span class="count">${data.archivarixCandidates.length}</span>`;
+      candidates.addEventListener('click', () => { selected = '__archivarix__'; render(); });
+      groupsEl.appendChild(candidates);
+      const snapshot = document.createElement('button');
+      snapshot.className = 'group';
+      snapshot.dataset.key = '__snapshot__';
+      snapshot.innerHTML = `<span>Takeout snapshot</span><span class="count">${data.snapshotPlaylists.length}</span>`;
+      snapshot.addEventListener('click', () => { selected = '__snapshot__'; render(); });
+      groupsEl.appendChild(snapshot);
+      const missing = document.createElement('button');
+      missing.className = 'group';
+      missing.dataset.key = '__snapshot_missing__';
+      missing.innerHTML = `<span>Snapshot missing</span><span class="count">${data.snapshotMissing.length}</span>`;
+      missing.addEventListener('click', () => { selected = '__snapshot_missing__'; render(); });
+      groupsEl.appendChild(missing);
+      const likelyHidden = document.createElement('button');
+      likelyHidden.className = 'group';
+      likelyHidden.dataset.key = '__snapshot_likely_hidden__';
+      likelyHidden.innerHTML = `<span>Likely hidden IDs</span><span class="count">${data.snapshotLikelyHidden.length}</span>`;
+      likelyHidden.addEventListener('click', () => { selected = '__snapshot_likely_hidden__'; render(); });
+      groupsEl.appendChild(likelyHidden);
+      for (const group of children.get('') || []) {
+        groupsEl.appendChild(buttonFor(group));
+        for (const child of children.get(group.group_key) || []) {
+          groupsEl.appendChild(buttonFor(child, true));
+        }
+      }
+    }
+
+    function render() {
+      if (!data) {
+        title.textContent = 'Loading';
+        meta.textContent = '';
+        return;
+      }
+      const query = search.value.trim().toLowerCase();
+      for (const button of groupsEl.querySelectorAll('.group')) {
+        button.classList.toggle('active', button.dataset.key === selected);
+      }
+      if (selected === '__hidden__') {
+        title.textContent = 'Hidden videos';
+        const rows = data.hiddenVideos.filter(video => {
+          const haystack = `${video.title} ${video.channel} ${video.availability} ${video.playlist_title} ${video.video_id}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        meta.textContent = `${rows.length} shown`;
+        grid.replaceChildren(...rows.map(hiddenVideoCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__archivarix__') {
+        title.textContent = 'Video thumbnails';
+        const rows = data.archivarixCandidates.filter(video => {
+          const haystack = `${video.title} ${video.channel} ${video.playlist_title} ${video.video_id} ${video.status}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        meta.textContent = `${rows.length} candidates`;
+        grid.replaceChildren(...rows.map(candidateCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__snapshot__') {
+        const label = data.snapshots[0]?.label || 'Takeout snapshot';
+        title.textContent = label;
+        const rows = data.snapshotPlaylists.filter(playlist => {
+          const haystack = `${playlist.title} ${playlist.playlist_id} ${playlist.visibility}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        meta.textContent = `${rows.length} playlists`;
+        grid.replaceChildren(...rows.map(snapshotPlaylistCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__snapshot_missing__') {
+        title.textContent = 'Snapshot missing';
+        const rows = data.snapshotMissing.filter(video => {
+          const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.added_at}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        meta.textContent = `${rows.length} video IDs`;
+        grid.replaceChildren(...rows.map(snapshotMissingCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__snapshot_likely_hidden__') {
+        title.textContent = 'Likely hidden IDs';
+        const rows = data.snapshotLikelyHidden.filter(video => {
+          const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.added_at} ${video.recovered_title}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        meta.textContent = `${rows.length} video IDs`;
+        grid.replaceChildren(...rows.map(snapshotMissingCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      const group = data.groups.find(g => g.group_key === selected);
+      title.textContent = group ? group.name : 'All playlists';
+      const ids = groupPlaylistIds(selected);
+      const rows = ids.map(id => playlists.get(id)).filter(Boolean).filter(p => {
+        const haystack = `${p.title} ${p.owner} ${p.description} ${p.playlist_id}`.toLowerCase();
+        return !query || haystack.includes(query);
+      });
+      meta.textContent = `${rows.length} shown`;
+      grid.replaceChildren(...rows.map(cardFor));
+      empty.hidden = rows.length !== 0;
+    }
+
+    function cardFor(playlist) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      const img = document.createElement('img');
+      img.className = 'thumb';
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = playlist.thumbnail_path ? `/${playlist.thumbnail_path}` : '';
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.innerHTML = `
+        <a class="playlist-title" href="${playlist.url}" target="_blank" rel="noreferrer">${escapeHtml(playlist.title)}</a>
+        <div class="details">
+          ${playlist.video_count_text ? `<span>${escapeHtml(playlist.video_count_text)}</span>` : ''}
+          ${playlist.scanned_video_count ? `<span>${playlist.scanned_video_count} scanned</span>` : ''}
+          ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} hidden</span>` : ''}
+          ${candidateCountFor(playlist.playlist_id) ? `<span>${candidateCountFor(playlist.playlist_id)} thumb candidates</span>` : ''}
+          ${playlist.owner ? `<span>${escapeHtml(playlist.owner)}</span>` : ''}
+          ${playlist.fetch_status === 'error' ? '<span class="status">Fetch failed</span>' : ''}
+        </div>
+      `;
+      article.append(img, body);
+      return article;
+    }
+
+    function candidateCountFor(playlistId) {
+      return data.archivarixCandidates.filter(video => video.playlist_id === playlistId).length;
+    }
+
+    function hiddenVideoCardFor(video) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.innerHTML = `
+        <div class="position">#${video.position}</div>
+        <div class="video-title">${escapeHtml(video.title)}</div>
+        <div class="details">
+          ${video.availability ? `<span class="badge">${escapeHtml(video.availability)}</span>` : '<span class="badge">Hidden</span>'}
+          ${video.channel ? `<span>${escapeHtml(video.channel)}</span>` : ''}
+          ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
+        </div>
+        <div class="details">
+          <a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>
+        </div>
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function candidateCardFor(video) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      const img = document.createElement('img');
+      img.className = 'thumb';
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = video.thumbnail_path ? `/${video.thumbnail_path}` : '';
+      const body = document.createElement('div');
+      body.className = 'body';
+      const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`;
+      body.innerHTML = `
+        <a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(video.title)}</a>
+        <div class="details">
+          <span class="badge">${escapeHtml(video.status)}</span>
+          ${video.duration_text ? `<span>${escapeHtml(video.duration_text)}</span>` : ''}
+          ${video.upload_date ? `<span>${escapeHtml(video.upload_date)}</span>` : ''}
+          ${video.channel ? `<span>${escapeHtml(video.channel)}</span>` : ''}
+          <span>${escapeHtml(video.video_id)}</span>
+        </div>
+        <div class="details">
+          <a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>
+        </div>
+      `;
+      article.append(img, body);
+      return article;
+    }
+
+    function snapshotPlaylistCardFor(playlist) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      const body = document.createElement('div');
+      body.className = 'body';
+      const currentName = playlist.current_title || '';
+      body.innerHTML = `
+        <div class="playlist-title">${escapeHtml(playlist.title)}</div>
+        <div class="details">
+          <span>${playlist.video_count} videos</span>
+          ${playlist.current_video_count ? `<span>${playlist.current_video_count} current</span>` : ''}
+          ${playlist.current_hidden_count ? `<span class="badge">${playlist.current_hidden_count} hidden now</span>` : ''}
+          ${playlist.visibility ? `<span>${escapeHtml(playlist.visibility)}</span>` : ''}
+        </div>
+        <div class="details">
+          <span>${escapeHtml(playlist.playlist_id)}</span>
+          ${currentName && currentName !== playlist.title ? `<span>Current: ${escapeHtml(currentName)}</span>` : ''}
+        </div>
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function snapshotMissingCardFor(video) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      if (video.recovered_thumbnail_path) {
+        const img = document.createElement('img');
+        img.className = 'thumb';
+        img.loading = 'lazy';
+        img.alt = '';
+        img.src = `/${video.recovered_thumbnail_path}`;
+        article.append(img);
+      }
+      const body = document.createElement('div');
+      body.className = 'body';
+      const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`;
+      const archivarixUrl = `https://tube.archivarix.net/?q=${encodeURIComponent(video.video_id)}`;
+      const displayTitle = video.recovered_title || video.video_id;
+      body.innerHTML = `
+        <div class="position">#${video.position}</div>
+        <a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayTitle)}</a>
+        <div class="details">
+          ${video.recovered_status ? `<span class="badge">${escapeHtml(video.recovered_status)}</span>` : ''}
+          ${video.recovered_duration ? `<span>${escapeHtml(video.recovered_duration)}</span>` : ''}
+          ${video.recovered_upload_date ? `<span>${escapeHtml(video.recovered_upload_date)}</span>` : ''}
+          ${video.recovered_channel ? `<span>${escapeHtml(video.recovered_channel)}</span>` : ''}
+          ${video.added_at ? `<span>Added ${escapeHtml(video.added_at.slice(0, 10))}</span>` : ''}
+          <span>${escapeHtml(video.video_id)}</span>
+          <a class="playlist-link" href="${archivarixUrl}" target="_blank" rel="noreferrer">Archivarix</a>
+        </div>
+        ${video.recovered_description ? `<div class="description">${escapeHtml(video.recovered_description)}</div>` : ''}
+        <div class="details">
+          <a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.current_title || video.playlist_title)}</a>
+        </div>
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function escapeHtml(value) {
+      return String(value || '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
+    search.addEventListener('input', render);
+    refresh.addEventListener('click', () => loadData().catch(error => {
+      meta.textContent = error.message;
+      refresh.disabled = false;
+      refresh.textContent = 'Refresh';
+    }));
+    loadData().catch(error => {
+      title.textContent = 'Unable to load data';
+      meta.textContent = error.message;
+      refresh.disabled = false;
+      refresh.textContent = 'Refresh';
+    });
+  </script>
+</body>
+</html>
+"""
+
+
+class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, db_path: Path, directory: str | None = None, **kwargs):
+        self.db_path = db_path
+        super().__init__(*args, directory=directory, **kwargs)
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in {"/", "/index.html"}:
+            body = INDEX_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/api/data":
+            conn = connect(self.db_path)
+            try:
+                data = fetch_app_data(conn)
+            finally:
+                conn.close()
+            body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        return super().do_GET()
+
+    def translate_path(self, path: str) -> str:
+        path = urllib.parse.urlparse(path).path
+        path = posixpath.normpath(urllib.parse.unquote(path))
+        parts = [part for part in path.split("/") if part and part not in {".", ".."}]
+        result = ROOT
+        for part in parts:
+            result /= part
+        return str(result)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        sys.stderr.write("%s - %s\n" % (self.log_date_time_string(), format % args))
+
+
+def serve(args: argparse.Namespace) -> None:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}. Run import first.")
+
+    def handler(*handler_args, **handler_kwargs):
+        return PlaylistHandler(*handler_args, db_path=db_path, directory=str(ROOT), **handler_kwargs)
+
+    server = http.server.ThreadingHTTPServer((args.host, args.port), handler)
+    print(f"Serving http://{args.host}:{args.port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopped")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    import_parser = subparsers.add_parser("import", help="Import playlists and cache thumbnails")
+    import_parser.add_argument("--db", default=str(DEFAULT_DB))
+    import_parser.add_argument("--thumbs", default=str(DEFAULT_THUMB_DIR))
+    import_parser.add_argument("--cookies", default=str(COOKIE_FILE))
+    import_parser.add_argument("--pockettube", default=str(POCKETTUBE_EXPORT))
+    import_parser.set_defaults(func=import_playlists)
+
+    discover_parser = subparsers.add_parser(
+        "discover-current",
+        help="Discover current signed-in YouTube playlists and add ungrouped ones",
+    )
+    discover_parser.add_argument("--db", default=str(DEFAULT_DB))
+    discover_parser.add_argument("--thumbs", default=str(DEFAULT_THUMB_DIR))
+    discover_parser.add_argument("--cookies", default=str(COOKIE_FILE))
+    discover_parser.add_argument("--browse-id", default="FEplaylist_aggregation")
+    discover_parser.add_argument("--group-key", default="youtube-ungrouped")
+    discover_parser.add_argument("--group-name", default="Ungrouped / YouTube")
+    discover_parser.add_argument("--include-system", action="store_true")
+    discover_parser.set_defaults(func=discover_current_playlists)
+
+    scan_parser = subparsers.add_parser("scan-hidden", help="Scan playlists for hidden videos")
+    scan_parser.add_argument("--db", default=str(DEFAULT_DB))
+    scan_parser.add_argument("--cookies", default=str(COOKIE_FILE))
+    scan_parser.add_argument("--limit", type=int, default=0, help="Scan only the first N playlists")
+    scan_parser.set_defaults(func=scan_hidden)
+
+    archivarix_parser = subparsers.add_parser(
+        "archivarix-thumbnails",
+        help="Search Archivarix for deleted video thumbnail candidates",
+    )
+    archivarix_parser.add_argument("--db", default=str(DEFAULT_DB))
+    archivarix_parser.add_argument("--thumbs", default=str(DEFAULT_ARCHIVARIX_THUMB_DIR))
+    archivarix_parser.add_argument("--limit", type=int, default=0, help="Search only the first N affected playlists")
+    archivarix_parser.add_argument("--page-size", type=int, default=50)
+    archivarix_parser.set_defaults(func=recover_archivarix_thumbnails)
+
+    takeout_parser = subparsers.add_parser("import-takeout", help="Import a Google Takeout YouTube snapshot")
+    takeout_parser.add_argument("--db", default=str(DEFAULT_DB))
+    takeout_parser.add_argument("--takeout", default=str(TAKEOUT_DIR))
+    takeout_parser.add_argument("--snapshot-key", default="takeout-2025-11-09")
+    takeout_parser.add_argument("--label", default="Takeout 2025-11-09")
+    takeout_parser.set_defaults(func=import_takeout_snapshot)
+
+    recover_missing_parser = subparsers.add_parser(
+        "recover-missing-thumbnails",
+        help="Recover Archivarix thumbnails for exact missing snapshot video IDs",
+    )
+    recover_missing_parser.add_argument("--db", default=str(DEFAULT_DB))
+    recover_missing_parser.add_argument("--thumbs", default=str(DEFAULT_ARCHIVARIX_THUMB_DIR))
+    recover_missing_parser.add_argument("--snapshot-key", default="takeout-2025-11-09")
+    recover_missing_parser.add_argument("--archivarix-cookies", default=str(ARCHIVARIX_COOKIE_FILE))
+    recover_missing_parser.add_argument("--video-id", default="")
+    recover_missing_parser.add_argument("--limit", type=int, default=0)
+    recover_missing_parser.add_argument("--only-missing", action="store_true")
+    recover_missing_parser.add_argument("--no-api", action="store_true", help="Only try direct Archivarix thumbnail URLs")
+    recover_missing_parser.add_argument("--delay", type=float, default=3.0, help="Seconds to wait before each Archivarix API search")
+    recover_missing_parser.add_argument("--refresh-metadata", action="store_true", help="Use Archivarix API even when a thumbnail is already cached")
+    recover_missing_parser.set_defaults(func=recover_snapshot_missing)
+
+    serve_parser = subparsers.add_parser("serve", help="Serve the playlist browser")
+    serve_parser.add_argument("--db", default=str(DEFAULT_DB))
+    serve_parser.add_argument("--host", default="0.0.0.0")
+    serve_parser.add_argument("--port", type=int, default=8765)
+    serve_parser.set_defaults(func=serve)
+
+    args = parser.parse_args(argv)
+    args.func(args)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
