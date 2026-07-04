@@ -241,9 +241,7 @@ CREATE TABLE IF NOT EXISTS takeout_history_occurrences (
   url TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
   channel_url TEXT NOT NULL DEFAULT '',
-  watched_at TEXT NOT NULL DEFAULT '',
   watched_at_iso TEXT NOT NULL DEFAULT '',
-  watch_date TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (history_key, row_hash)
 );
 
@@ -361,7 +359,7 @@ CREATE INDEX IF NOT EXISTS idx_youtube_history_occurrences_video ON youtube_hist
 CREATE INDEX IF NOT EXISTS idx_youtube_history_occurrences_search ON youtube_history_occurrences(title, channel, ordinal);
 CREATE INDEX IF NOT EXISTS idx_youtube_history_occurrences_date ON youtube_history_occurrences(watch_date, video_id);
 CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_video ON takeout_history_occurrences(video_id);
-CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_date ON takeout_history_occurrences(watch_date, video_id);
+CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_time ON takeout_history_occurrences(watched_at_iso, video_id);
 CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id);
 CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, source_quality);
 CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_run ON metadata_worker_log(run_id, created_at);
@@ -420,9 +418,7 @@ def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
         "url",
         "channel",
         "channel_url",
-        "watched_at",
         "watched_at_iso",
-        "watch_date",
     }
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(takeout_history_occurrences)")}
     if existing == expected:
@@ -430,7 +426,7 @@ def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_video ON takeout_history_occurrences(video_id)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_date ON takeout_history_occurrences(watch_date, video_id)"
+            "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_time ON takeout_history_occurrences(watched_at_iso, video_id)"
         )
         return
     conn.execute("ALTER TABLE takeout_history_occurrences RENAME TO takeout_history_occurrences_old")
@@ -444,58 +440,17 @@ def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
           url TEXT NOT NULL DEFAULT '',
           channel TEXT NOT NULL DEFAULT '',
           channel_url TEXT NOT NULL DEFAULT '',
-          watched_at TEXT NOT NULL DEFAULT '',
           watched_at_iso TEXT NOT NULL DEFAULT '',
-          watch_date TEXT NOT NULL DEFAULT '',
           PRIMARY KEY (history_key, row_hash)
         )
         """
     )
-    old_cols = {row["name"] for row in conn.execute("PRAGMA table_info(takeout_history_occurrences_old)")}
-    if old_cols:
-        rows = conn.execute("SELECT * FROM takeout_history_occurrences_old").fetchall()
-        for row in rows:
-            raw = row["watched_at"] if "watched_at" in old_cols else ""
-            iso_value = takeout_watch_datetime(raw)
-            row_hash = row["row_hash"] if "row_hash" in old_cols and row["row_hash"] else ""
-            if not row_hash:
-                row_hash = history_row_hash(
-                    {
-                        "video_id": row["video_id"] if "video_id" in old_cols else "",
-                        "title": row["title"] if "title" in old_cols else "",
-                        "url": row["url"] if "url" in old_cols else "",
-                        "channel": row["channel"] if "channel" in old_cols else "",
-                        "channel_url": row["channel_url"] if "channel_url" in old_cols else "",
-                        "watched_at": raw,
-                    }
-                )
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO takeout_history_occurrences(
-                  history_key, row_hash, video_id, title, url, channel, channel_url,
-                  watched_at, watched_at_iso, watch_date
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row["history_key"] if "history_key" in old_cols else "",
-                    row_hash,
-                    row["video_id"] if "video_id" in old_cols else "",
-                    row["title"] if "title" in old_cols else "",
-                    row["url"] if "url" in old_cols else "",
-                    row["channel"] if "channel" in old_cols else "",
-                    row["channel_url"] if "channel_url" in old_cols else "",
-                    raw,
-                    iso_value,
-                    iso_value[:10] if iso_value else (row["watch_date"] if "watch_date" in old_cols else ""),
-                ),
-            )
     conn.execute("DROP TABLE takeout_history_occurrences_old")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_video ON takeout_history_occurrences(video_id)"
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_date ON takeout_history_occurrences(watch_date, video_id)"
+        "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_time ON takeout_history_occurrences(watched_at_iso, video_id)"
     )
 
 
@@ -2443,7 +2398,7 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
 
     takeout_by_video_date: dict[tuple[str, str], list[sqlite3.Row]] = {}
     for row in takeout_rows:
-        match_date = pacific_date_for_iso_instant(row["watched_at_iso"]) or row["watch_date"]
+        match_date = pacific_date_for_iso_instant(row["watched_at_iso"])
         takeout_by_video_date.setdefault((row["video_id"], match_date), []).append(row)
 
     matched_youtube: dict[tuple[str, int], sqlite3.Row] = {}
@@ -2490,8 +2445,8 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 takeout["url"],
                 takeout["channel"],
                 takeout["channel_url"],
-                takeout["watched_at_iso"] or takeout["watched_at"],
-                takeout["watch_date"],
+                takeout["watched_at_iso"],
+                takeout["watched_at_iso"][:10],
                 source_quality,
                 youtube_match[0] if youtube_match else "",
                 youtube_match[1] if youtube_match else 0,
@@ -3919,17 +3874,17 @@ def takeout_key_from_path(path: Path) -> str:
     return ""
 
 
-def find_takeout_zip(path: Path) -> Path | None:
+def find_takeout_zips(path: Path) -> list[Path]:
     if path.is_file() and path.suffix.lower() == ".zip":
-        return path
+        return [path]
     if path.is_dir():
-        zips = sorted(
-            path.glob("takeout-*.zip"),
-            key=lambda item: item.stat().st_mtime,
-            reverse=True,
-        )
-        return zips[0] if zips else None
-    return None
+        return sorted(path.glob("takeout-*.zip"), key=lambda item: takeout_key_from_path(item) or item.name)
+    return []
+
+
+def find_takeout_zip(path: Path) -> Path | None:
+    zips = find_takeout_zips(path)
+    return zips[-1] if zips else None
 
 
 def read_zip_member_text(zf: zipfile.ZipFile, suffix: str) -> str:
@@ -3972,87 +3927,100 @@ def import_history(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     takeout_path = Path(args.takeout)
     requested_key = getattr(args, "history_key", "") or ""
-    history_key, watch_text, search_text = load_takeout_history_source(takeout_path, requested_key)
+    if requested_key:
+        sources = [load_takeout_history_source(takeout_path, requested_key)]
+    else:
+        zips = find_takeout_zips(takeout_path)
+        if zips:
+            sources = [load_takeout_history_source(zip_path, "") for zip_path in zips]
+        else:
+            sources = [load_takeout_history_source(takeout_path, "")]
 
     conn = connect(db_path)
     imported_at = int(time.time())
-    watch_rows = parse_takeout_watch_history_text(watch_text) if watch_text else []
-    search_rows = parse_takeout_search_history_text(search_text) if search_text else []
+    total_watch_rows = 0
+    total_search_rows = 0
+    distinct_video_ids: set[str] = set()
+    imported_keys: list[str] = []
     with conn:
-        conn.execute("DELETE FROM watch_history WHERE history_key = ?", (history_key,))
-        conn.execute("DELETE FROM takeout_history_occurrences WHERE history_key = ?", (history_key,))
-        conn.execute("DELETE FROM search_history WHERE history_key = ?", (history_key,))
-        for position, row in enumerate(watch_rows, start=1):
-            watched_at_iso = takeout_watch_datetime(row["watched_at"])
-            watch_date = watched_at_iso[:10] if watched_at_iso else takeout_watch_date(row["watched_at"])
-            row_hash = history_row_hash(row)
-            conn.execute(
-                """
-                INSERT INTO watch_history(
-                  history_key, position, action, video_id, title, url, channel,
-                  channel_url, watched_at, source_file, imported_at
+        conn.execute("DELETE FROM takeout_history_occurrences")
+        conn.execute("DELETE FROM watch_history WHERE history_key <> 'live-youtube'")
+        conn.execute("DELETE FROM search_history")
+        for history_key, watch_text, search_text in sources:
+            imported_keys.append(history_key)
+            watch_rows = parse_takeout_watch_history_text(watch_text) if watch_text else []
+            search_rows = parse_takeout_search_history_text(search_text) if search_text else []
+            total_watch_rows += len(watch_rows)
+            total_search_rows += len(search_rows)
+            for position, row in enumerate(watch_rows, start=1):
+                watched_at_iso = takeout_watch_datetime(row["watched_at"])
+                row_hash = history_row_hash(row)
+                if row["video_id"]:
+                    distinct_video_ids.add(row["video_id"])
+                conn.execute(
+                    """
+                    INSERT INTO watch_history(
+                      history_key, position, action, video_id, title, url, channel,
+                      channel_url, watched_at, source_file, imported_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        history_key,
+                        position,
+                        "Watched",
+                        row["video_id"],
+                        row["title"],
+                        row["url"],
+                        row["channel"],
+                        row["channel_url"],
+                        watched_at_iso,
+                        "",
+                        imported_at,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    history_key,
-                    position,
-                    "Watched",
-                    row["video_id"],
-                    row["title"],
-                    row["url"],
-                    row["channel"],
-                    row["channel_url"],
-                    row["watched_at"],
-                    "",
-                    imported_at,
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO takeout_history_occurrences(
-                  history_key, row_hash, video_id, title, url, channel,
-                  channel_url, watched_at, watched_at_iso, watch_date
+                conn.execute(
+                    """
+                    INSERT INTO takeout_history_occurrences(
+                      history_key, row_hash, video_id, title, url, channel,
+                      channel_url, watched_at_iso
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        history_key,
+                        row_hash,
+                        row["video_id"],
+                        row["title"],
+                        row["url"],
+                        row["channel"],
+                        row["channel_url"],
+                        watched_at_iso,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    history_key,
-                    row_hash,
-                    row["video_id"],
-                    row["title"],
-                    row["url"],
-                    row["channel"],
-                    row["channel_url"],
-                    row["watched_at"],
-                    watched_at_iso,
-                    watch_date,
-                ),
-            )
-        for position, row in enumerate(search_rows, start=1):
-            conn.execute(
-                """
-                INSERT INTO search_history(
-                  history_key, position, query, url, searched_at, source_file, imported_at
+            for position, row in enumerate(search_rows, start=1):
+                conn.execute(
+                    """
+                    INSERT INTO search_history(
+                      history_key, position, query, url, searched_at, source_file, imported_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        history_key,
+                        position,
+                        row["query"],
+                        row["url"],
+                        row["searched_at"],
+                        "",
+                        imported_at,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    history_key,
-                    position,
-                    row["query"],
-                    row["url"],
-                    row["searched_at"],
-                    "",
-                    imported_at,
-                ),
-            )
         stats = rebuild_history_reconciliation(conn)
     conn.close()
-    distinct_videos = len({row["video_id"] for row in watch_rows if row["video_id"]})
     print(
-        f"Imported {len(watch_rows)} watch history rows for {history_key} "
-        f"({distinct_videos} distinct videos) and {len(search_rows)} searches. "
+        f"Imported {total_watch_rows} watch history rows from {', '.join(imported_keys)} "
+        f"({len(distinct_video_ids)} distinct videos) and {total_search_rows} searches. "
         f"Reconciled {stats['rows']} rows ({stats['matched']} matched)."
     )
 
