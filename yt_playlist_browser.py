@@ -177,11 +177,14 @@ CREATE TABLE IF NOT EXISTS video_metadata (
   title TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
+  channel_url TEXT NOT NULL DEFAULT '',
   duration_text TEXT NOT NULL DEFAULT '',
   view_count TEXT NOT NULL DEFAULT '',
   upload_date TEXT NOT NULL DEFAULT '',
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
+  channel_thumbnail_url TEXT NOT NULL DEFAULT '',
+  channel_thumbnail_path TEXT NOT NULL DEFAULT '',
   watch_url TEXT NOT NULL DEFAULT '',
   yt_status TEXT NOT NULL DEFAULT '',
   fetch_status TEXT NOT NULL DEFAULT '',
@@ -353,6 +356,15 @@ def connect(db_path: Path) -> sqlite3.Connection:
         conn,
         "snapshot_video_recovery",
         {"description": "TEXT NOT NULL DEFAULT ''"},
+    )
+    ensure_columns(
+        conn,
+        "video_metadata",
+        {
+            "channel_thumbnail_url": "TEXT NOT NULL DEFAULT ''",
+            "channel_thumbnail_path": "TEXT NOT NULL DEFAULT ''",
+            "channel_url": "TEXT NOT NULL DEFAULT ''",
+        },
     )
     ensure_youtube_history_schema(conn)
     ensure_takeout_history_schema(conn)
@@ -1034,6 +1046,10 @@ def thumbnail_extension(content_type: str, url: str) -> str:
     return suffix if suffix in {".jpg", ".jpeg", ".png", ".webp"} else ".jpg"
 
 
+def local_asset_path(path: Path) -> str:
+    return str(path.resolve().relative_to(ROOT)).replace("\\", "/")
+
+
 def cache_thumbnail(
     opener: urllib.request.OpenerDirector,
     playlist_id: str,
@@ -1055,7 +1071,7 @@ def cache_thumbnail(
     ext = thumbnail_extension(content_type, thumbnail_url)
     target = thumb_dir / f"{safe_name(playlist_id)}{ext}"
     target.write_bytes(body)
-    return str(target.relative_to(ROOT)).replace("\\", "/")
+    return local_asset_path(target)
 
 
 def cache_video_thumbnail(
@@ -1079,7 +1095,31 @@ def cache_video_thumbnail(
     ext = thumbnail_extension(content_type, thumbnail_url)
     target = thumb_dir / f"{safe_name(video_id)}{ext}"
     target.write_bytes(body)
-    return str(target.relative_to(ROOT)).replace("\\", "/")
+    return local_asset_path(target)
+
+
+def cache_channel_thumbnail(
+    opener: urllib.request.OpenerDirector,
+    video_id: str,
+    thumbnail_url: str,
+    thumb_dir: Path,
+) -> str:
+    if not video_id or not thumbnail_url:
+        return ""
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        body, content_type = request_bytes(
+            opener,
+            thumbnail_url,
+            timeout=30,
+            referer=f"https://www.youtube.com/watch?v={video_id}",
+        )
+    except Exception:
+        return ""
+    ext = thumbnail_extension(content_type, thumbnail_url)
+    target = thumb_dir / f"{safe_name(video_id)}_channel{ext}"
+    target.write_bytes(body)
+    return local_asset_path(target)
 
 
 def safe_name(value: str) -> str:
@@ -1215,7 +1255,7 @@ def cache_archivarix_thumbnail(
     ext = thumbnail_extension(content_type, thumbnail_url)
     target = thumb_dir / f"{safe_name(video_id)}{ext}"
     target.write_bytes(body)
-    return str(target.relative_to(ROOT)).replace("\\", "/")
+    return local_asset_path(target)
 
 
 def continuation_token(data: dict[str, Any]) -> str:
@@ -1687,8 +1727,70 @@ def expected_video_count(text: str) -> int:
     return int(found.group(1).replace(",", ""))
 
 
+def extract_channel_thumbnail_url(initial_data: dict[str, Any]) -> str:
+    for node in walk(initial_data):
+        if not isinstance(node, dict):
+            continue
+        for key in ("videoOwnerRenderer", "channelThumbnailWithLinkRenderer"):
+            renderer = node.get(key)
+            if not isinstance(renderer, dict):
+                continue
+            thumbnail = renderer.get("thumbnail")
+            if isinstance(thumbnail, dict):
+                url = pick_thumbnail(thumbnail.get("thumbnails", []))
+                if url:
+                    return url
+    return ""
+
+
+def youtube_path_url(value: str) -> str:
+    if not value:
+        return ""
+    if value.startswith("http://") or value.startswith("https://"):
+        if value.startswith("http://www.youtube.com/") or value.startswith("http://youtube.com/"):
+            return "https://" + value[len("http://") :]
+        return value
+    if value.startswith("/"):
+        return f"https://www.youtube.com{value}"
+    return ""
+
+
+def endpoint_channel_url(endpoint: dict[str, Any]) -> str:
+    metadata = endpoint.get("commandMetadata", {}).get("webCommandMetadata", {})
+    if isinstance(metadata, dict):
+        url = youtube_path_url(str(metadata.get("url") or ""))
+        if url:
+            return url
+    browse = endpoint.get("browseEndpoint")
+    if isinstance(browse, dict):
+        canonical = youtube_path_url(str(browse.get("canonicalBaseUrl") or ""))
+        if canonical:
+            return canonical
+        browse_id = str(browse.get("browseId") or "")
+        if browse_id:
+            return f"https://www.youtube.com/channel/{urllib.parse.quote(browse_id)}"
+    return ""
+
+
+def extract_channel_url(initial_data: dict[str, Any]) -> str:
+    for node in walk(initial_data):
+        if not isinstance(node, dict):
+            continue
+        for key in ("videoOwnerRenderer", "channelThumbnailWithLinkRenderer"):
+            renderer = node.get(key)
+            if not isinstance(renderer, dict):
+                continue
+            endpoint = renderer.get("navigationEndpoint")
+            if isinstance(endpoint, dict):
+                url = endpoint_channel_url(endpoint)
+                if url:
+                    return url
+    return ""
+
+
 def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     player = extract_json_assignment(html_text, "ytInitialPlayerResponse")
+    initial_data = extract_json_assignment(html_text, "ytInitialData")
     details = player.get("videoDetails", {}) if isinstance(player, dict) else {}
     playability = player.get("playabilityStatus", {}) if isinstance(player, dict) else {}
     microformat = (
@@ -1708,6 +1810,8 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     thumbnail_url = pick_thumbnail(thumbnails)
     if not thumbnail_url:
         thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    channel_thumbnail_url = extract_channel_thumbnail_url(initial_data)
+    channel_url = youtube_path_url(str(microformat.get("ownerProfileUrl") or "")) or extract_channel_url(initial_data)
     status = str(playability.get("status") or "").strip()
     reason = text_from_runs(playability.get("reason")).strip()
     if reason and status and reason not in status:
@@ -1717,10 +1821,12 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         "title": title,
         "description": str(details.get("shortDescription") or "").strip(),
         "channel": str(details.get("author") or "").strip(),
+        "channel_url": channel_url,
         "duration_text": format_duration(details.get("lengthSeconds")),
         "view_count": str(details.get("viewCount") or ""),
         "upload_date": str(microformat.get("uploadDate") or microformat.get("publishDate") or ""),
         "thumbnail_url": thumbnail_url,
+        "channel_thumbnail_url": channel_thumbnail_url,
         "watch_url": f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}",
         "yt_status": status or ("OK" if title else ""),
     }
@@ -1738,6 +1844,12 @@ def fetch_watch_metadata(
         opener,
         video_id,
         metadata["thumbnail_url"],
+        thumb_dir,
+    )
+    metadata["channel_thumbnail_path"] = cache_channel_thumbnail(
+        opener,
+        video_id,
+        metadata.get("channel_thumbnail_url", ""),
         thumb_dir,
     )
     return metadata
@@ -2591,6 +2703,10 @@ def playlist_scan_queue_rows(
             (
               ps.playlist_id IS NULL
               OR ps.scan_status <> 'ok'
+              OR (
+                CAST(REPLACE(p.video_count_text, ',', '') AS INTEGER) > 0
+                AND CAST(REPLACE(p.video_count_text, ',', '') AS INTEGER) <> COALESCE(ps.video_count, -1)
+              )
               OR (ps.scanned_at > 0 AND ps.scanned_at < ?)
             )
             """
@@ -2633,6 +2749,7 @@ def metadata_queue_rows(
             (
               vm.video_id IS NULL
               OR vm.fetch_status = 'error'
+              OR (vm.channel <> '' AND vm.channel_url = '')
               OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
             )
             """
@@ -2643,24 +2760,32 @@ def metadata_queue_rows(
           SELECT pv.video_id,
                  0 AS source_priority,
                  COUNT(DISTINCT pv.playlist_id) AS playlist_count,
-                 MIN(pv.title) AS current_title
+                 MIN(pv.title) AS current_title,
+                 MAX(MAX(COALESCE(ps.scanned_at, 0), COALESCE(p.updated_at, 0), COALESCE(pv.updated_at, 0))) AS playlist_sort,
+                 '' AS history_sort
           FROM playlist_videos pv
+          JOIN playlists p ON p.playlist_id = pv.playlist_id
+          LEFT JOIN playlist_scans ps ON ps.playlist_id = pv.playlist_id
           WHERE pv.video_id <> ''
           GROUP BY pv.video_id
           UNION ALL
-          SELECT yo.video_id,
+          SELECT hr.video_id,
                  1 AS source_priority,
                  0 AS playlist_count,
-                 MIN(yo.title) AS current_title
-          FROM youtube_history_occurrences yo
-          WHERE yo.video_id <> ''
-          GROUP BY yo.video_id
+                 MIN(hr.title) AS current_title,
+                 0 AS playlist_sort,
+                 MAX(hr.best_watch_time) AS history_sort
+          FROM history_reconciled hr
+          WHERE hr.video_id <> ''
+          GROUP BY hr.video_id
         ),
         q AS (
           SELECT video_id,
                  MIN(source_priority) AS source_priority,
                  SUM(playlist_count) AS playlist_count,
-                 MIN(current_title) AS current_title
+                 MIN(current_title) AS current_title,
+                 MAX(playlist_sort) AS playlist_sort,
+                 MAX(history_sort) AS history_sort
           FROM queue_sources
           GROUP BY video_id
         )
@@ -2671,12 +2796,57 @@ def metadata_queue_rows(
         FROM q
         LEFT JOIN video_metadata vm ON vm.video_id = q.video_id
         WHERE {" AND ".join(where)}
-        ORDER BY q.source_priority, COALESCE(vm.fetched_at, 0), q.video_id
+        ORDER BY q.source_priority,
+                 CASE WHEN q.source_priority = 0 THEN q.playlist_sort ELSE 0 END DESC,
+                 CASE WHEN q.source_priority = 1 THEN q.history_sort ELSE '' END DESC,
+                 COALESCE(vm.fetched_at, 0),
+                 q.video_id
     """
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
     return conn.execute(sql, params).fetchall()
+
+
+def metadata_queue_count(
+    conn: sqlite3.Connection,
+    force: bool = False,
+    stale_days: int = 30,
+) -> int:
+    stale_before = int(time.time()) - max(stale_days, 0) * 86400
+    where = ["q.video_id <> ''"]
+    params: list[Any] = []
+    if not force:
+        where.append(
+            """
+            (
+              vm.video_id IS NULL
+              OR vm.fetch_status = 'error'
+              OR (vm.channel <> '' AND vm.channel_url = '')
+              OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
+            )
+            """
+        )
+        params.append(stale_before)
+    row = conn.execute(
+        f"""
+        WITH q AS (
+          SELECT video_id
+          FROM playlist_videos
+          WHERE video_id <> ''
+          UNION
+          SELECT video_id
+          FROM history_reconciled
+          WHERE video_id <> ''
+        )
+        SELECT COUNT(*) AS count
+        FROM q
+        LEFT JOIN video_metadata vm ON vm.video_id = q.video_id
+        WHERE {" AND ".join(where)}
+        """,
+        params,
+    ).fetchone()
+    return int(row["count"] or 0)
 
 
 def admin_status(
@@ -2736,7 +2906,7 @@ def admin_status(
                 """
             )
         ]
-        metadata_queue_count = len(metadata_queue_rows(conn, force=False, stale_days=30))
+        metadata_queue_count_value = metadata_queue_count(conn, force=False, stale_days=30)
         playlist_queue_count = len(playlist_scan_queue_rows(conn, force=False, stale_days=7))
         latest_metadata_run = conn.execute(
             """
@@ -2806,8 +2976,8 @@ def admin_status(
         "liveHistoryCounts": live_history_counts,
         "playlistCounts": playlist_counts,
         "metadataCounts": metadata_counts,
-        "queueCount": metadata_queue_count,
-        "metadataQueueCount": metadata_queue_count,
+            "queueCount": metadata_queue_count_value,
+            "metadataQueueCount": metadata_queue_count_value,
         "playlistScanQueueCount": playlist_queue_count,
         "latestRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestMetadataRun": dict(latest_metadata_run) if latest_metadata_run else None,
@@ -2981,6 +3151,7 @@ class MetadataWorker:
                         log_worker_event(conn, run_id, "warn", "Worker stopped by request")
                     return
                 video_id = row["video_id"]
+                metadata_source = row["metadata_source"] if "metadata_source" in row.keys() else "history"
                 status = "ok"
                 error = ""
                 metadata: dict[str, str] = {
@@ -2988,11 +3159,14 @@ class MetadataWorker:
                     "title": "",
                     "description": "",
                     "channel": "",
+                    "channel_url": "",
                     "duration_text": "",
                     "view_count": "",
                     "upload_date": "",
                     "thumbnail_url": "",
                     "thumbnail_path": "",
+                    "channel_thumbnail_url": "",
+                    "channel_thumbnail_path": "",
                     "watch_url": f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}",
                     "yt_status": "",
                 }
@@ -3008,20 +3182,24 @@ class MetadataWorker:
                     conn.execute(
                         """
                         INSERT INTO video_metadata(
-                          video_id, title, description, channel, duration_text, view_count,
-                          upload_date, thumbnail_url, thumbnail_path, watch_url,
+                          video_id, title, description, channel, channel_url, duration_text, view_count,
+                          upload_date, thumbnail_url, thumbnail_path,
+                          channel_thumbnail_url, channel_thumbnail_path, watch_url,
                           yt_status, fetch_status, fetch_error, fetched_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(video_id) DO UPDATE SET
                           title=excluded.title,
                           description=excluded.description,
                           channel=excluded.channel,
+                          channel_url=excluded.channel_url,
                           duration_text=excluded.duration_text,
                           view_count=excluded.view_count,
                           upload_date=excluded.upload_date,
                           thumbnail_url=excluded.thumbnail_url,
                           thumbnail_path=excluded.thumbnail_path,
+                          channel_thumbnail_url=excluded.channel_thumbnail_url,
+                          channel_thumbnail_path=excluded.channel_thumbnail_path,
                           watch_url=excluded.watch_url,
                           yt_status=excluded.yt_status,
                           fetch_status=excluded.fetch_status,
@@ -3034,11 +3212,14 @@ class MetadataWorker:
                             metadata.get("title", ""),
                             metadata.get("description", ""),
                             metadata.get("channel", ""),
+                            metadata.get("channel_url", ""),
                             metadata.get("duration_text", ""),
                             metadata.get("view_count", ""),
                             metadata.get("upload_date", ""),
                             metadata.get("thumbnail_url", ""),
                             metadata.get("thumbnail_path", ""),
+                            metadata.get("channel_thumbnail_url", ""),
+                            metadata.get("channel_thumbnail_path", ""),
                             metadata.get("watch_url", ""),
                             metadata.get("yt_status", ""),
                             status,
@@ -3050,11 +3231,11 @@ class MetadataWorker:
                     processed += 1
                     if status == "error":
                         failed += 1
-                        log_worker_event(conn, run_id, "error", error, video_id)
+                        log_worker_event(conn, run_id, f"{metadata_source} error", error, video_id)
                     else:
                         found += 1
                         title = metadata.get("title") or video_id
-                        log_worker_event(conn, run_id, "info", f"{status}: {title}", video_id)
+                        log_worker_event(conn, run_id, metadata_source, f"{status}: {title}", video_id)
                     conn.execute(
                         """
                         UPDATE metadata_worker_runs
@@ -4149,9 +4330,11 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                    COALESCE(vm.title, '') AS metadata_title,
                    COALESCE(vm.description, '') AS metadata_description,
                    COALESCE(vm.channel, '') AS metadata_channel,
+                   COALESCE(vm.channel_url, '') AS metadata_channel_url,
                    COALESCE(vm.duration_text, '') AS metadata_duration,
                    COALESCE(vm.upload_date, '') AS metadata_upload_date,
                    COALESCE(vm.thumbnail_path, '') AS metadata_thumbnail_path,
+                   COALESCE(vm.channel_thumbnail_path, '') AS metadata_channel_thumbnail_path,
                    COALESCE(vm.fetch_status, '') AS metadata_fetch_status
             FROM playlist_videos v
             JOIN playlists p ON p.playlist_id = v.playlist_id
@@ -4263,7 +4446,15 @@ def history_search_data(conn: sqlite3.Connection, query: str, limit: int = 200) 
     like = f"%{query.lower()}%"
     if query:
         watch_where = """
-            WHERE lower(hr.title || ' ' || hr.channel || ' ' || hr.video_id || ' ' || COALESCE(vm.description, '')) LIKE ?
+            WHERE lower(
+              hr.title || ' ' ||
+              hr.channel || ' ' ||
+              hr.video_id || ' ' ||
+              COALESCE(vm.title, '') || ' ' ||
+              COALESCE(vm.channel, '') || ' ' ||
+              COALESCE(vm.upload_date, '') || ' ' ||
+              COALESCE(vm.description, '')
+            ) LIKE ?
         """
         watch_params: list[Any] = [like]
     else:
@@ -4295,15 +4486,16 @@ def history_search_data(conn: sqlite3.Connection, query: str, limit: int = 200) 
                    COALESCE(vm.title, '') AS metadata_title,
                    COALESCE(vm.description, '') AS metadata_description,
                    COALESCE(vm.channel, '') AS metadata_channel,
+                   COALESCE(vm.channel_url, '') AS metadata_channel_url,
                    COALESCE(vm.duration_text, '') AS metadata_duration,
                    COALESCE(vm.thumbnail_path, '') AS metadata_thumbnail_path,
+                   COALESCE(vm.channel_thumbnail_path, '') AS metadata_channel_thumbnail_path,
                    COALESCE(vm.fetch_status, '') AS metadata_fetch_status
             FROM history_reconciled hr
             LEFT JOIN video_metadata vm ON vm.video_id = hr.video_id
             {watch_where}
-            ORDER BY CASE WHEN hr.watch_date = '' THEN 1 ELSE 0 END,
+            ORDER BY CASE WHEN hr.best_watch_time = '' THEN 1 ELSE 0 END,
                      hr.best_watch_time DESC,
-                     hr.watch_date DESC,
                      hr.imported_at DESC,
                      position
             LIMIT ?
@@ -4364,6 +4556,8 @@ INDEX_HTML = """<!doctype html>
     aside { border-right: 1px solid var(--line); background: var(--panel); padding: 18px 14px; position: sticky; top: 0; height: 100vh; overflow: auto; }
     main { padding: 24px; }
     h1 { font-size: 20px; margin: 0 0 14px; }
+    .home-title { color: var(--ink); text-decoration: none; display: inline-block; }
+    .home-title:hover { color: var(--ink); text-decoration: none; }
     .search { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 10px 12px; font: inherit; margin-bottom: 16px; }
     .filters { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 10px 0; margin-bottom: 14px; display: grid; gap: 7px; }
     .filter-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
@@ -4389,6 +4583,9 @@ INDEX_HTML = """<!doctype html>
     .external-link:hover { background: var(--accent-soft); }
     .external-link svg { width: 15px; height: 15px; }
     .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .channel-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; vertical-align: middle; }
+    .creator-link { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; }
+    .creator-link:hover { color: var(--accent); text-decoration: underline; }
     .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
     .badge { color: var(--warn); font-weight: 650; }
     .refresh { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
@@ -4414,7 +4611,7 @@ INDEX_HTML = """<!doctype html>
 <body>
   <div class="app">
     <aside>
-      <h1>YT Library</h1>
+      <h1><a class="home-title" href="/">YT Library</a></h1>
       <a class="top-link" href="/history">History search</a>
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
       <div class="filters" aria-label="Search filters">
@@ -4505,6 +4702,7 @@ INDEX_HTML = """<!doctype html>
     function setSelected(value) {
       selected = value;
       if (value.startsWith('__playlist__:')) {
+        search.value = '';
         const playlistId = value.slice('__playlist__:'.length);
         if (window.location.hash !== localPlaylistHref(playlistId)) {
           window.location.hash = localPlaylistHref(playlistId);
@@ -4555,8 +4753,25 @@ INDEX_HTML = """<!doctype html>
       return video.metadata_channel || video.channel || '';
     }
 
+    function displayVideoChannelUrl(video) {
+      return video.metadata_channel_url || '';
+    }
+
     function displayVideoDuration(video) {
       return video.metadata_duration || video.duration_text || '';
+    }
+
+    function creatorAvatarHtml(path, url) {
+      if (!path) return '';
+      const img = `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">`;
+      return url ? `<a class="creator-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${img}</a>` : img;
+    }
+
+    function creatorNameHtml(name, url) {
+      if (!name) return '';
+      return url
+        ? `<a class="creator-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(name)}</a>`
+        : `<span>${escapeHtml(name)}</span>`;
     }
 
     function buildOmniResults(query) {
@@ -4796,6 +5011,8 @@ INDEX_HTML = """<!doctype html>
       const body = document.createElement('div');
       body.className = 'body';
       const watchUrl = video.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}&list=${encodeURIComponent(video.playlist_id)}` : '';
+      const channelName = displayVideoChannel(video);
+      const channelUrl = displayVideoChannelUrl(video);
       body.innerHTML = `
         <div class="position">#${video.position}</div>
         ${watchUrl
@@ -4804,7 +5021,8 @@ INDEX_HTML = """<!doctype html>
         <div class="details">
           ${video.is_playable ? '' : `<span class="badge">${escapeHtml(video.availability || 'Hidden')}</span>`}
           ${displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : ''}
-          ${displayVideoChannel(video) ? `<span>${escapeHtml(displayVideoChannel(video))}</span>` : ''}
+          ${creatorAvatarHtml(video.metadata_channel_thumbnail_path, channelUrl)}
+          ${creatorNameHtml(channelName, channelUrl)}
           ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
         </div>
         ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : ''}
@@ -4959,6 +5177,7 @@ INDEX_HTML = """<!doctype html>
     for (const input of searchFilters) input.addEventListener('change', render);
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
+      if (selected.startsWith('__playlist__:')) search.value = '';
       renderGroups();
       render();
     });
@@ -5026,13 +5245,16 @@ HISTORY_HTML = """<!doctype html>
     .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
     .tab { padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); cursor: pointer; }
     .tab.active { background: var(--accent-soft); color: var(--ink); }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
-    .list { display: grid; gap: 10px; }
-    .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
-    .thumb { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: linear-gradient(135deg, #24424a, #d98948); }
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+    .card.no-thumb .body { grid-column: 1 / -1; }
+    .thumb { display: block; width: 100%; height: 100%; min-height: 124px; aspect-ratio: 16 / 9; object-fit: cover; background: linear-gradient(135deg, #24424a, #d98948); }
     .body { padding: 11px 12px 13px; }
     .title { display: block; color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
     .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .channel-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; vertical-align: middle; }
+    .creator-link { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; }
+    .creator-link:hover { color: var(--accent); text-decoration: underline; }
     .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
     .badge { color: var(--warn); font-weight: 650; }
     .empty { color: var(--muted); padding: 36px 0; }
@@ -5041,6 +5263,8 @@ HISTORY_HTML = """<!doctype html>
       header, .searchbar { display: block; }
       nav { margin-top: 10px; }
       button { margin-top: 8px; height: 40px; }
+      .card { grid-template-columns: 1fr; }
+      .thumb { height: auto; min-height: 0; }
     }
   </style>
 </head>
@@ -5081,9 +5305,22 @@ HISTORY_HTML = """<!doctype html>
       return row.metadata_title || row.title || row.video_id;
     }
 
+    function creatorAvatarHtml(path, url) {
+      if (!path) return '';
+      const img = `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">`;
+      return url ? `<a class="creator-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${img}</a>` : img;
+    }
+
+    function creatorNameHtml(name, url) {
+      if (!name) return '';
+      return url
+        ? `<a class="creator-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(name)}</a>`
+        : `<span>${escapeHtml(name)}</span>`;
+    }
+
     function watchCard(row) {
       const article = document.createElement('article');
-      article.className = 'card';
+      article.className = row.metadata_thumbnail_path ? 'card' : 'card no-thumb';
       if (row.metadata_thumbnail_path) {
         const img = document.createElement('img');
         img.className = 'thumb';
@@ -5095,12 +5332,15 @@ HISTORY_HTML = """<!doctype html>
       const body = document.createElement('div');
       body.className = 'body';
       const watchUrl = row.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(row.video_id)}` : row.url;
+      const channelName = row.metadata_channel || row.channel || '';
+      const channelUrl = row.metadata_channel_url || row.channel_url || '';
       body.innerHTML = `
         <a class="title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayTitle(row))}</a>
         <div class="details">
           ${row.watched_at ? `<span>${escapeHtml(row.watched_at)}</span>` : ''}
           ${row.source_quality ? `<span class="badge">${escapeHtml(row.source_quality)}</span>` : ''}
-          ${(row.metadata_channel || row.channel) ? `<span>${escapeHtml(row.metadata_channel || row.channel)}</span>` : ''}
+          ${creatorAvatarHtml(row.metadata_channel_thumbnail_path, channelUrl)}
+          ${creatorNameHtml(channelName, channelUrl)}
           ${row.video_id ? `<span>${escapeHtml(row.video_id)}</span>` : ''}
           ${row.metadata_fetch_status === 'error' ? '<span class="badge">metadata error</span>' : ''}
         </div>
@@ -5219,6 +5459,10 @@ ADMIN_HTML = """<!doctype html>
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }
     th { color: var(--muted); font-weight: 600; }
+    .time-col { width: 150px; }
+    .level-col { width: 110px; }
+    .video-col { width: 150px; }
+    .time-cell { white-space: nowrap; }
     .logs { max-height: 430px; overflow: auto; }
     .message { overflow-wrap: anywhere; }
     @media (max-width: 700px) {
@@ -5275,6 +5519,12 @@ ADMIN_HTML = """<!doctype html>
 
     <section class="panel logs">
       <table>
+        <colgroup>
+          <col class="time-col">
+          <col class="level-col">
+          <col class="video-col">
+          <col>
+        </colgroup>
         <thead><tr><th>Time</th><th>Level</th><th>Video</th><th>Message</th></tr></thead>
         <tbody id="logs"></tbody>
       </table>
@@ -5364,7 +5614,7 @@ ADMIN_HTML = """<!doctype html>
       ].sort((a, b) => (b.created_at - a.created_at) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
       fields.logs.innerHTML = logs.map(log => `
         <tr>
-          <td>${fmtTime(log.created_at)}</td>
+          <td class="time-cell">${fmtTime(log.created_at)}</td>
           <td>${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
           <td>${escapeHtml(log.subject_id || '')}</td>
           <td class="message">${escapeHtml(log.message)}</td>
