@@ -2761,7 +2761,7 @@ class LiveHistoryWorker:
                         last_video_id = batch_last_video_id
                     final_message = (
                         f"{label}: entries {start}-{end}; {seen} fetched, "
-                        f"{inserted} new, {skipped} duplicates"
+                        f"{inserted} new, {skipped} existing"
                     )
                     conn.execute(
                         """
@@ -2788,12 +2788,12 @@ class LiveHistoryWorker:
             elif status == "complete":
                 final_message = (
                     f"{label} complete: {processed} fetched, "
-                    f"{inserted_total} new, {skipped_total} duplicates"
+                    f"{inserted_total} new, {skipped_total} existing"
                 )
             else:
                 final_message = (
                     f"{label} stopped: {processed} fetched, "
-                    f"{inserted_total} new, {skipped_total} duplicates"
+                    f"{inserted_total} new, {skipped_total} existing"
                 )
             with conn:
                 conn.execute(
