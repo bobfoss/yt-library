@@ -1352,7 +1352,7 @@ def scan_playlist_videos_ytdlp(
     return videos
 
 
-def fetch_youtube_history_ytdlp(cookie_file: Path, limit: int = 100) -> list[dict[str, Any]]:
+def fetch_youtube_history_ytdlp(cookie_file: Path, limit: int = 100, start: int = 1) -> list[dict[str, Any]]:
     try:
         import yt_dlp  # type: ignore
     except ImportError as exc:
@@ -1376,7 +1376,8 @@ def fetch_youtube_history_ytdlp(cookie_file: Path, limit: int = 100) -> list[dic
         "no_warnings": True,
         "skip_download": True,
         "extract_flat": "in_playlist",
-        "playlistend": max(1, limit),
+        "playliststart": max(1, start),
+        "playlistend": max(1, start) + max(1, limit) - 1,
         "cookiefile": str(cookie_file) if cookie_file.exists() else None,
         "logger": YtdlpLogger(),
     }
@@ -2673,6 +2674,7 @@ class LiveHistoryWorker:
         db_path: Path,
         cookie_file: Path,
         limit: int,
+        start: int,
     ) -> dict[str, Any]:
         with self._lock:
             if self._thread and self._thread.is_alive():
@@ -2681,7 +2683,7 @@ class LiveHistoryWorker:
             self._run_id = uuid.uuid4().hex
             self._thread = threading.Thread(
                 target=self._run,
-                args=(self._run_id, db_path, cookie_file, limit),
+                args=(self._run_id, db_path, cookie_file, limit, start),
                 daemon=True,
             )
             self._thread.start()
@@ -2700,6 +2702,7 @@ class LiveHistoryWorker:
         db_path: Path,
         cookie_file: Path,
         limit: int,
+        start: int,
     ) -> None:
         conn = connect(db_path)
         try:
@@ -2720,7 +2723,8 @@ class LiveHistoryWorker:
                         "YouTube history fetch started",
                     ),
                 )
-                log_live_history_event(conn, run_id, "info", f"Fetching {limit} YouTube history entries")
+                end = start + limit - 1
+                log_live_history_event(conn, run_id, "info", f"Fetching YouTube history entries {start}-{end}")
 
             if self._stop.is_set():
                 with conn:
@@ -2735,12 +2739,12 @@ class LiveHistoryWorker:
                     log_live_history_event(conn, run_id, "warn", "YouTube history fetch stopped before fetch")
                 return
 
-            rows = fetch_youtube_history_ytdlp(cookie_file, limit=limit)
+            rows = fetch_youtube_history_ytdlp(cookie_file, limit=limit, start=start)
             with conn:
                 inserted, seen, last_video_id = save_live_youtube_history(conn, rows)
                 skipped = max(seen - inserted, 0)
                 status = "stopped" if self._stop.is_set() else "complete"
-                message = f"Fetched {seen}; {inserted} new, {skipped} duplicates"
+                message = f"Fetched entries {start}-{start + limit - 1}: {seen}; {inserted} new, {skipped} duplicates"
                 conn.execute(
                     """
                     UPDATE live_history_worker_runs
@@ -4523,6 +4527,7 @@ ADMIN_HTML = """<!doctype html>
         <label>Limit<input id="limit" type="number" min="0" step="1" value="10"></label>
         <label>Playlist delay<input id="playlistDelay" type="number" min="1" step="1" value="3"></label>
         <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
+        <label>History start<input id="liveHistoryStart" type="number" min="1" step="1" value="1"></label>
         <label>Playlist stale days<input id="playlistStaleDays" type="number" min="0" step="1" value="7"></label>
         <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
         <label class="checkbox"><input id="force" type="checkbox">Refresh already fetched</label>
@@ -4563,6 +4568,7 @@ ADMIN_HTML = """<!doctype html>
       limit: document.getElementById('limit'),
       playlistDelay: document.getElementById('playlistDelay'),
       metadataDelay: document.getElementById('metadataDelay'),
+      liveHistoryStart: document.getElementById('liveHistoryStart'),
       playlistStaleDays: document.getElementById('playlistStaleDays'),
       metadataStaleDays: document.getElementById('metadataStaleDays'),
       force: document.getElementById('force'),
@@ -4666,6 +4672,7 @@ ADMIN_HTML = """<!doctype html>
     }).catch(error => alert(error.message)));
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start', {
       limit: fields.limit.value,
+      start: fields.liveHistoryStart.value,
     }).catch(error => alert(error.message)));
     document.getElementById('stopPlaylists').addEventListener('click', () => post('/api/admin/playlists/stop').catch(error => alert(error.message)));
     document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
@@ -4789,10 +4796,12 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/admin/live-history/start":
             limit = max(1, int((params.get("limit") or ["100"])[0] or 100))
+            start = max(1, int((params.get("start") or ["1"])[0] or 1))
             result = LIVE_HISTORY_WORKER.start(
                 self.db_path,
                 self.cookie_file,
                 limit=limit,
+                start=start,
             )
             self.send_json(result)
             return
