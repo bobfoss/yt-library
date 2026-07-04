@@ -43,6 +43,8 @@ COOKIE_FILE = ROOT / "YT cookies.txt"
 ARCHIVARIX_COOKIE_FILE = ROOT / "archivarix.net cookies.txt"
 POCKETTUBE_EXPORT = ROOT / "youtube_playlist_manager_2026-07-02-17_13.json"
 TAKEOUT_DIR = ROOT / "YouTube and YouTube Music"
+HISTORY_BATCH_SIZE = 1000
+HISTORY_BATCH_DELAY_SECONDS = 10.0
 
 
 SCHEMA = """
@@ -2673,38 +2675,40 @@ class LiveHistoryWorker:
         self,
         db_path: Path,
         cookie_file: Path,
-        limit: int,
-        start: int,
+        mode: str,
     ) -> dict[str, Any]:
         with self._lock:
             if self._thread and self._thread.is_alive():
-                return {"started": False, "run_id": self._run_id, "message": "YouTube history fetch already running"}
+                return {"started": False, "run_id": self._run_id, "message": "History fetch already running"}
             self._stop.clear()
             self._run_id = uuid.uuid4().hex
             self._thread = threading.Thread(
                 target=self._run,
-                args=(self._run_id, db_path, cookie_file, limit, start),
+                args=(self._run_id, db_path, cookie_file, mode),
                 daemon=True,
             )
             self._thread.start()
-            return {"started": True, "run_id": self._run_id, "message": "YouTube history fetch started"}
+            label = "History rebuild" if mode == "rebuild" else "History fetch"
+            return {"started": True, "run_id": self._run_id, "message": f"{label} started"}
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
             if not self._thread or not self._thread.is_alive():
-                return {"stopping": False, "message": "YouTube history fetch is not running"}
+                return {"stopping": False, "message": "History fetch is not running"}
             self._stop.set()
-            return {"stopping": True, "run_id": self._run_id, "message": "YouTube history fetch stop requested"}
+            return {"stopping": True, "run_id": self._run_id, "message": "History fetch stop requested"}
 
     def _run(
         self,
         run_id: str,
         db_path: Path,
         cookie_file: Path,
-        limit: int,
-        start: int,
+        mode: str,
     ) -> None:
         conn = connect(db_path)
+        mode = "rebuild" if mode == "rebuild" else "recent"
+        label = "History rebuild" if mode == "rebuild" else "History fetch"
+        batch_size = HISTORY_BATCH_SIZE
         try:
             with conn:
                 conn.execute(
@@ -2718,13 +2722,15 @@ class LiveHistoryWorker:
                     (
                         run_id,
                         int(time.time()),
-                        0,
-                        limit,
-                        "YouTube history fetch started",
+                        HISTORY_BATCH_DELAY_SECONDS,
+                        batch_size,
+                        f"{label} started",
                     ),
                 )
-                end = start + limit - 1
-                log_live_history_event(conn, run_id, "info", f"Fetching YouTube history entries {start}-{end}")
+                if mode == "rebuild":
+                    conn.execute("DELETE FROM watch_history WHERE history_key = 'live-youtube'")
+                    log_live_history_event(conn, run_id, "warn", "Cleared live-youtube history before rebuild")
+                log_live_history_event(conn, run_id, "info", f"{label} started with {batch_size} per batch")
 
             if self._stop.is_set():
                 with conn:
@@ -2736,15 +2742,63 @@ class LiveHistoryWorker:
                         """,
                         (int(time.time()), "Stopped before fetch", run_id),
                     )
-                    log_live_history_event(conn, run_id, "warn", "YouTube history fetch stopped before fetch")
+                    log_live_history_event(conn, run_id, "warn", "History fetch stopped before fetch")
                 return
 
-            rows = fetch_youtube_history_ytdlp(cookie_file, limit=limit, start=start)
+            start = 1
+            processed = 0
+            inserted_total = 0
+            skipped_total = 0
+            last_video_id = ""
+            final_message = ""
+            while not self._stop.is_set():
+                end = start + batch_size - 1
+                rows = fetch_youtube_history_ytdlp(cookie_file, limit=batch_size, start=start)
+                with conn:
+                    inserted, seen, batch_last_video_id = save_live_youtube_history(conn, rows)
+                    skipped = max(seen - inserted, 0)
+                    processed += seen
+                    inserted_total += inserted
+                    skipped_total += skipped
+                    if batch_last_video_id:
+                        last_video_id = batch_last_video_id
+                    final_message = (
+                        f"{label}: entries {start}-{end}; {seen} fetched, "
+                        f"{inserted} new, {skipped} duplicates"
+                    )
+                    conn.execute(
+                        """
+                        UPDATE live_history_worker_runs
+                        SET total = ?, processed = ?, found = ?, skipped = ?,
+                            last_video_id = ?, message = ?
+                        WHERE run_id = ?
+                        """,
+                        (processed, processed, inserted_total, skipped_total, last_video_id, final_message, run_id),
+                    )
+                    log_live_history_event(conn, run_id, "info", final_message, last_video_id)
+                if seen < batch_size:
+                    break
+                if mode == "recent" and inserted < seen:
+                    final_message = f"{label} reached already-known history after {processed} entries"
+                    break
+                if self._stop.wait(HISTORY_BATCH_DELAY_SECONDS):
+                    break
+                start += batch_size
+
+            status = "stopped" if self._stop.is_set() else "complete"
+            if not final_message:
+                final_message = f"{label}: no history rows fetched"
+            elif status == "complete":
+                final_message = (
+                    f"{label} complete: {processed} fetched, "
+                    f"{inserted_total} new, {skipped_total} duplicates"
+                )
+            else:
+                final_message = (
+                    f"{label} stopped: {processed} fetched, "
+                    f"{inserted_total} new, {skipped_total} duplicates"
+                )
             with conn:
-                inserted, seen, last_video_id = save_live_youtube_history(conn, rows)
-                skipped = max(seen - inserted, 0)
-                status = "stopped" if self._stop.is_set() else "complete"
-                message = f"Fetched entries {start}-{start + limit - 1}: {seen}; {inserted} new, {skipped} duplicates"
                 conn.execute(
                     """
                     UPDATE live_history_worker_runs
@@ -2752,9 +2806,19 @@ class LiveHistoryWorker:
                         found = ?, skipped = ?, last_video_id = ?, message = ?
                     WHERE run_id = ?
                     """,
-                    (status, int(time.time()), seen, seen, inserted, skipped, last_video_id, message, run_id),
+                    (
+                        status,
+                        int(time.time()),
+                        processed,
+                        processed,
+                        inserted_total,
+                        skipped_total,
+                        last_video_id,
+                        final_message,
+                        run_id,
+                    ),
                 )
-                log_live_history_event(conn, run_id, "info", message, last_video_id)
+                log_live_history_event(conn, run_id, "info" if status == "complete" else "warn", final_message, last_video_id)
         except Exception as exc:
             with conn:
                 conn.execute(
@@ -2765,7 +2829,7 @@ class LiveHistoryWorker:
                     """,
                     (int(time.time()), str(exc), run_id),
                 )
-                log_live_history_event(conn, run_id, "error", f"YouTube history fetch crashed: {exc}")
+                log_live_history_event(conn, run_id, "error", f"History fetch crashed: {exc}")
         finally:
             conn.close()
 
@@ -4514,12 +4578,12 @@ ADMIN_HTML = """<!doctype html>
       <div class="panel"><div class="metric">Distinct video IDs</div><div id="distinctVideos" class="value">0</div></div>
       <div class="panel"><div class="metric">History rows</div><div id="historyRows" class="value">0</div></div>
       <div class="panel"><div class="metric">History video IDs</div><div id="historyVideos" class="value">0</div></div>
-      <div class="panel"><div class="metric">YT history rows</div><div id="liveHistoryRows" class="value">0</div></div>
+      <div class="panel"><div class="metric">Fetched history rows</div><div id="liveHistoryRows" class="value">0</div></div>
       <div class="panel"><div class="metric">Playlist scan queue</div><div id="playlistQueueCount" class="value">0</div></div>
       <div class="panel"><div class="metric">Metadata queue</div><div id="metadataQueueCount" class="value">0</div></div>
       <div class="panel"><div class="metric">Playlist scanner</div><div id="playlistWorkerState" class="value">idle</div></div>
       <div class="panel"><div class="metric">Metadata worker</div><div id="metadataWorkerState" class="value">idle</div></div>
-      <div class="panel"><div class="metric">YT history fetch</div><div id="liveHistoryWorkerState" class="value">idle</div></div>
+      <div class="panel"><div class="metric">History fetch</div><div id="liveHistoryWorkerState" class="value">idle</div></div>
     </section>
 
     <section class="panel">
@@ -4527,13 +4591,13 @@ ADMIN_HTML = """<!doctype html>
         <label>Limit<input id="limit" type="number" min="0" step="1" value="10"></label>
         <label>Playlist delay<input id="playlistDelay" type="number" min="1" step="1" value="3"></label>
         <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
-        <label>History start<input id="liveHistoryStart" type="number" min="1" step="1" value="1"></label>
         <label>Playlist stale days<input id="playlistStaleDays" type="number" min="0" step="1" value="7"></label>
         <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
         <label class="checkbox"><input id="force" type="checkbox">Refresh already fetched</label>
         <button id="scanPlaylists" class="primary" type="button">Scan playlists</button>
         <button id="fetchMetadata" class="primary" type="button">Fetch video metadata</button>
-        <button id="startLiveHistory" class="primary" type="button">Fetch YT history</button>
+        <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
+        <button id="rebuildLiveHistory" class="primary" type="button">Rebuild history</button>
         <button id="stopPlaylists" type="button">Stop playlist scan</button>
         <button id="stopMetadata" type="button">Stop metadata</button>
         <button id="stopLiveHistory" type="button">Stop history fetch</button>
@@ -4568,7 +4632,6 @@ ADMIN_HTML = """<!doctype html>
       limit: document.getElementById('limit'),
       playlistDelay: document.getElementById('playlistDelay'),
       metadataDelay: document.getElementById('metadataDelay'),
-      liveHistoryStart: document.getElementById('liveHistoryStart'),
       playlistStaleDays: document.getElementById('playlistStaleDays'),
       metadataStaleDays: document.getElementById('metadataStaleDays'),
       force: document.getElementById('force'),
@@ -4622,7 +4685,7 @@ ADMIN_HTML = """<!doctype html>
 
       fields.playlistRunStatus.innerHTML = runHtml(data.latestPlaylistScanRun, 'Playlist scan');
       fields.metadataRunStatus.innerHTML = runHtml(data.latestMetadataRun, 'Metadata');
-      fields.liveHistoryRunStatus.innerHTML = runHtml(data.latestLiveHistoryRun, 'YT history');
+      fields.liveHistoryRunStatus.innerHTML = runHtml(data.latestLiveHistoryRun, 'History');
 
       fields.metadataCounts.replaceChildren(...(data.metadataCounts || []).map(row => {
         const div = document.createElement('div');
@@ -4671,9 +4734,11 @@ ADMIN_HTML = """<!doctype html>
       force: fields.force.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start', {
-      limit: fields.limit.value,
-      start: fields.liveHistoryStart.value,
     }).catch(error => alert(error.message)));
+    document.getElementById('rebuildLiveHistory').addEventListener('click', () => {
+      if (!confirm('Rebuild fetched YouTube history from scratch? This clears the fetched history stream and may run for a long time.')) return;
+      post('/api/admin/live-history/rebuild').catch(error => alert(error.message));
+    });
     document.getElementById('stopPlaylists').addEventListener('click', () => post('/api/admin/playlists/stop').catch(error => alert(error.message)));
     document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
     document.getElementById('stopLiveHistory').addEventListener('click', () => post('/api/admin/live-history/stop').catch(error => alert(error.message)));
@@ -4795,13 +4860,18 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(PLAYLIST_SCAN_WORKER.stop())
             return
         if parsed.path == "/api/admin/live-history/start":
-            limit = max(1, int((params.get("limit") or ["100"])[0] or 100))
-            start = max(1, int((params.get("start") or ["1"])[0] or 1))
             result = LIVE_HISTORY_WORKER.start(
                 self.db_path,
                 self.cookie_file,
-                limit=limit,
-                start=start,
+                mode="recent",
+            )
+            self.send_json(result)
+            return
+        if parsed.path == "/api/admin/live-history/rebuild":
+            result = LIVE_HISTORY_WORKER.start(
+                self.db_path,
+                self.cookie_file,
+                mode="rebuild",
             )
             self.send_json(result)
             return
