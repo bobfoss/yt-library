@@ -223,7 +223,6 @@ CREATE TABLE IF NOT EXISTS youtube_history_occurrences (
   url TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
   channel_url TEXT NOT NULL DEFAULT '',
-  watch_date_label TEXT NOT NULL DEFAULT '',
   watch_date TEXT NOT NULL DEFAULT '',
   observed_at TEXT NOT NULL DEFAULT '',
   source_file TEXT NOT NULL DEFAULT 'youtube-live',
@@ -259,7 +258,6 @@ CREATE TABLE IF NOT EXISTS history_reconciled (
   channel_url TEXT NOT NULL DEFAULT '',
   best_watch_time TEXT NOT NULL DEFAULT '',
   watch_date TEXT NOT NULL DEFAULT '',
-  watch_date_label TEXT NOT NULL DEFAULT '',
   source_quality TEXT NOT NULL DEFAULT '',
   youtube_history_key TEXT NOT NULL DEFAULT '',
   youtube_ordinal INTEGER NOT NULL DEFAULT 0,
@@ -396,7 +394,6 @@ def connect(db_path: Path) -> sqlite3.Connection:
         conn,
         "youtube_history_occurrences",
         {
-            "watch_date_label": "TEXT NOT NULL DEFAULT ''",
             "watch_date": "TEXT NOT NULL DEFAULT ''",
         },
     )
@@ -1328,7 +1325,7 @@ def takeout_watch_date(watched_at: str) -> str:
     return ""
 
 
-def parse_history_lockup(lockup: dict[str, Any], date_label: str, normalized_date: str) -> dict[str, Any] | None:
+def parse_history_lockup(lockup: dict[str, Any], normalized_date: str) -> dict[str, Any] | None:
     video_id = lockup.get("contentId") if isinstance(lockup.get("contentId"), str) else ""
     if not video_id:
         for node in walk(lockup):
@@ -1369,7 +1366,6 @@ def parse_history_lockup(lockup: dict[str, Any], date_label: str, normalized_dat
         "url": url,
         "channel": channel,
         "channel_url": channel_url,
-        "watch_date_label": date_label,
         "watch_date": normalized_date,
     }
 
@@ -1397,7 +1393,7 @@ def history_sections(data: dict[str, Any], today: date | None = None) -> list[tu
                 continue
             lockup = content.get("lockupViewModel")
             if isinstance(lockup, dict):
-                row = parse_history_lockup(lockup, label, normalized)
+                row = parse_history_lockup(lockup, normalized)
                 if row:
                     rows.append(row)
         if rows:
@@ -2120,9 +2116,9 @@ def migrate_live_youtube_history_to_occurrences(conn: sqlite3.Connection) -> Non
             """
             INSERT OR IGNORE INTO youtube_history_occurrences(
               history_key, ordinal, video_id, title, url, channel, channel_url,
-              watch_date_label, watch_date, observed_at, source_file, run_id, imported_at, updated_at
+              watch_date, observed_at, source_file, run_id, imported_at, updated_at
             )
-            VALUES ('youtube', ?, ?, ?, ?, ?, ?, '', '', ?, ?, 'migrated-live-youtube', ?, ?)
+            VALUES ('youtube', ?, ?, ?, ?, ?, ?, '', ?, ?, 'migrated-live-youtube', ?, ?)
             """,
             (
                 row["position"],
@@ -2204,16 +2200,15 @@ def save_youtube_history_occurrences(
             """
             INSERT INTO youtube_history_occurrences(
               history_key, ordinal, video_id, title, url, channel, channel_url,
-              watch_date_label, watch_date, observed_at, source_file, run_id, imported_at, updated_at
+              watch_date, observed_at, source_file, run_id, imported_at, updated_at
             )
-            VALUES ('youtube', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'youtube-live', ?, ?, ?)
+            VALUES ('youtube', ?, ?, ?, ?, ?, ?, ?, ?, 'youtube-live', ?, ?, ?)
             ON CONFLICT(history_key, ordinal) DO UPDATE SET
               video_id=excluded.video_id,
               title=excluded.title,
               url=excluded.url,
               channel=excluded.channel,
               channel_url=excluded.channel_url,
-              watch_date_label=excluded.watch_date_label,
               watch_date=excluded.watch_date,
               observed_at=excluded.observed_at,
               source_file=excluded.source_file,
@@ -2227,7 +2222,6 @@ def save_youtube_history_occurrences(
                 row.get("url") or f"https://www.youtube.com/watch?v={video_id}",
                 row.get("channel") or "",
                 row.get("channel_url") or "",
-                row.get("watch_date_label") or "",
                 row.get("watch_date") or "",
                 observed_at,
                 run_id,
@@ -2300,11 +2294,11 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
             """
             INSERT INTO history_reconciled(
               reconciled_id, video_id, title, url, channel, channel_url,
-              best_watch_time, watch_date, watch_date_label, source_quality,
+              best_watch_time, watch_date, source_quality,
               youtube_history_key, youtube_ordinal, takeout_history_key, takeout_position,
               match_confidence, match_notes, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"takeout:{takeout['history_key']}:{takeout['position']}",
@@ -2315,7 +2309,6 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 takeout["channel_url"],
                 takeout["watched_at"],
                 takeout["watch_date"],
-                "",
                 source_quality,
                 youtube_match[0] if youtube_match else "",
                 youtube_match[1] if youtube_match else 0,
@@ -2337,11 +2330,11 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
             """
             INSERT INTO history_reconciled(
               reconciled_id, video_id, title, url, channel, channel_url,
-              best_watch_time, watch_date, watch_date_label, source_quality,
+              best_watch_time, watch_date, source_quality,
               youtube_history_key, youtube_ordinal, takeout_history_key, takeout_position,
               match_confidence, match_notes, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'youtube_date_only', ?, ?, '', 0, 'youtube_only', '', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'youtube_date_only', ?, ?, '', 0, 'youtube_only', '', ?, ?)
             """,
             (
                 f"youtube:{youtube['history_key']}:{youtube['ordinal']}",
@@ -2350,9 +2343,8 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 youtube["url"],
                 youtube["channel"],
                 youtube["channel_url"],
-                youtube["watch_date"] or youtube["watch_date_label"] or youtube["observed_at"],
+                youtube["watch_date"] or youtube["observed_at"],
                 youtube["watch_date"],
-                youtube["watch_date_label"],
                 youtube["history_key"],
                 youtube["ordinal"],
                 youtube["imported_at"],
@@ -4117,7 +4109,6 @@ def search_history_data(conn: sqlite3.Connection, query: str, limit: int = 200) 
                    hr.channel_url,
                    hr.best_watch_time AS watched_at,
                    hr.watch_date,
-                   hr.watch_date_label,
                    hr.source_quality,
                    hr.match_confidence,
                    hr.match_notes,
