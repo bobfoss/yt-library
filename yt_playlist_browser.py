@@ -2890,9 +2890,17 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
         dict(row)
         for row in conn.execute(
             """
-            SELECT v.*, p.title AS playlist_title, p.url AS playlist_url
+            SELECT v.*, p.title AS playlist_title, p.url AS playlist_url,
+                   COALESCE(vm.title, '') AS metadata_title,
+                   COALESCE(vm.description, '') AS metadata_description,
+                   COALESCE(vm.channel, '') AS metadata_channel,
+                   COALESCE(vm.duration_text, '') AS metadata_duration,
+                   COALESCE(vm.upload_date, '') AS metadata_upload_date,
+                   COALESCE(vm.thumbnail_path, '') AS metadata_thumbnail_path,
+                   COALESCE(vm.fetch_status, '') AS metadata_fetch_status
             FROM playlist_videos v
             JOIN playlists p ON p.playlist_id = v.playlist_id
+            LEFT JOIN video_metadata vm ON vm.video_id = v.video_id
             ORDER BY p.title COLLATE NOCASE, v.position
             """
         )
@@ -3022,6 +3030,10 @@ INDEX_HTML = """<!doctype html>
     main { padding: 24px; }
     h1 { font-size: 20px; margin: 0 0 14px; }
     .search { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 10px 12px; font: inherit; margin-bottom: 16px; }
+    .filters { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 10px 0; margin-bottom: 14px; display: grid; gap: 7px; }
+    .filter-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .filter { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    .filter input { accent-color: var(--accent); }
     .group { width: 100%; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin: 2px 0; border-radius: 6px; cursor: pointer; text-align: left; font: inherit; }
     .group:hover, .group.active { background: var(--accent-soft); }
     .group.child { padding-left: 28px; color: var(--muted); }
@@ -3049,6 +3061,7 @@ INDEX_HTML = """<!doctype html>
     .video-title { color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
     .playlist-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
     .playlist-link:hover { text-decoration: underline; }
+    .result-kind { color: var(--muted); font-size: 12px; text-transform: uppercase; margin-bottom: 5px; }
     .position { color: var(--muted); font-size: 12px; text-transform: uppercase; }
     .status { color: var(--warn); }
     .empty { color: var(--muted); padding: 36px 0; }
@@ -3065,7 +3078,14 @@ INDEX_HTML = """<!doctype html>
   <div class="app">
     <aside>
       <h1>YT Playlists</h1>
-      <input id="search" class="search" type="search" placeholder="Search playlists" autocomplete="off">
+      <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
+      <div class="filters" aria-label="Search filters">
+        <div class="filter-title">Search In</div>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="playlists" checked> Playlists</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="videos" checked> Video titles</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="descriptions" checked> Descriptions</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="hidden" checked> Hidden/missing</label>
+      </div>
       <nav id="groups"></nav>
     </aside>
     <main>
@@ -3091,6 +3111,7 @@ INDEX_HTML = """<!doctype html>
     const search = document.getElementById('search');
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
+    const searchFilters = [...document.querySelectorAll('.search-filter')];
     const grid = document.getElementById('grid');
     const empty = document.getElementById('empty');
     const title = document.getElementById('view-title');
@@ -3180,6 +3201,63 @@ INDEX_HTML = """<!doctype html>
       return [...new Set(ids)];
     }
 
+    function activeSearchFilters() {
+      return new Set(searchFilters.filter(input => input.checked).map(input => input.dataset.filter));
+    }
+
+    function includesQuery(value, query) {
+      return String(value || '').toLowerCase().includes(query);
+    }
+
+    function displayVideoTitle(video) {
+      return video.metadata_title || video.title || video.video_id;
+    }
+
+    function displayVideoChannel(video) {
+      return video.metadata_channel || video.channel || '';
+    }
+
+    function displayVideoDuration(video) {
+      return video.metadata_duration || video.duration_text || '';
+    }
+
+    function buildOmniResults(query) {
+      const filters = activeSearchFilters();
+      const results = [];
+      const seenVideoKeys = new Set();
+      if (filters.has('playlists')) {
+        for (const playlist of data.playlists) {
+          const haystack = `${playlist.title} ${playlist.owner} ${playlist.description} ${playlist.playlist_id}`;
+          if (includesQuery(haystack, query)) {
+            results.push({ kind: 'playlist', score: includesQuery(playlist.title, query) ? 0 : 2, item: playlist });
+          }
+        }
+      }
+      if (filters.has('videos') || filters.has('descriptions') || filters.has('hidden')) {
+        for (const video of data.playlistVideos || []) {
+          const titleHit = filters.has('videos') && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${video.video_id} ${video.playlist_title}`, query);
+          const descriptionHit = filters.has('descriptions') && includesQuery(video.metadata_description, query);
+          const hiddenHit = filters.has('hidden') && !video.is_playable && includesQuery(`${displayVideoTitle(video)} ${video.availability} ${video.video_id} ${video.playlist_title}`, query);
+          if (titleHit || descriptionHit || hiddenHit) {
+            const key = `${video.playlist_id}:${video.position}:${video.video_id}`;
+            if (!seenVideoKeys.has(key)) {
+              seenVideoKeys.add(key);
+              results.push({ kind: 'video', score: titleHit ? 1 : 3, item: video, matchedDescription: descriptionHit && !titleHit });
+            }
+          }
+        }
+      }
+      if (filters.has('hidden')) {
+        for (const video of data.snapshotMissing || []) {
+          const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.recovered_title} ${video.recovered_description} ${video.recovered_channel} ${video.recovered_status}`;
+          if (includesQuery(haystack, query)) {
+            results.push({ kind: 'missing', score: 4, item: video });
+          }
+        }
+      }
+      return results.sort((a, b) => a.score - b.score).slice(0, 500);
+    }
+
     function buttonFor(group, child=false) {
       const button = document.createElement('button');
       button.className = `group ${child ? 'child' : ''}`;
@@ -3240,6 +3318,15 @@ INDEX_HTML = """<!doctype html>
       empty.textContent = 'No playlists match.';
       for (const button of groupsEl.querySelectorAll('.group')) {
         button.classList.toggle('active', button.dataset.key === selected);
+      }
+      if (query) {
+        const rows = buildOmniResults(query);
+        title.textContent = 'Search results';
+        meta.textContent = `${rows.length} shown`;
+        grid.replaceChildren(...rows.map(searchResultCardFor));
+        empty.textContent = 'No results match.';
+        empty.hidden = rows.length !== 0;
+        return;
       }
       if (selected.startsWith('__playlist__:')) {
         const playlistId = selected.slice('__playlist__:'.length);
@@ -3349,7 +3436,6 @@ INDEX_HTML = """<!doctype html>
           ${playlist.video_count_text ? `<span>${escapeHtml(playlist.video_count_text)}</span>` : ''}
           ${playlist.scanned_video_count ? `<span>${playlist.scanned_video_count} scanned</span>` : ''}
           ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} hidden</span>` : ''}
-          ${candidateCountFor(playlist.playlist_id) ? `<span>${candidateCountFor(playlist.playlist_id)} thumb candidates</span>` : ''}
           ${playlist.owner ? `<span>${escapeHtml(playlist.owner)}</span>` : ''}
           ${playlist.fetch_status === 'error' ? '<span class="status">Fetch failed</span>' : ''}
         </div>
@@ -3361,31 +3447,59 @@ INDEX_HTML = """<!doctype html>
     function playlistVideoCardFor(video) {
       const article = document.createElement('article');
       article.className = 'card';
+      if (video.metadata_thumbnail_path) {
+        const img = document.createElement('img');
+        img.className = 'thumb';
+        img.loading = 'lazy';
+        img.alt = '';
+        img.src = `/${video.metadata_thumbnail_path}`;
+        article.append(img);
+      }
       const body = document.createElement('div');
       body.className = 'body';
       const watchUrl = video.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}&list=${encodeURIComponent(video.playlist_id)}` : '';
       body.innerHTML = `
         <div class="position">#${video.position}</div>
         ${watchUrl
-          ? `<a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(video.title)}</a>`
-          : `<div class="video-title">${escapeHtml(video.title)}</div>`}
+          ? `<a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayVideoTitle(video))}</a>`
+          : `<div class="video-title">${escapeHtml(displayVideoTitle(video))}</div>`}
         <div class="details">
           ${video.is_playable ? '' : `<span class="badge">${escapeHtml(video.availability || 'Hidden')}</span>`}
-          ${video.duration_text ? `<span>${escapeHtml(video.duration_text)}</span>` : ''}
-          ${video.channel ? `<span>${escapeHtml(video.channel)}</span>` : ''}
+          ${displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : ''}
+          ${displayVideoChannel(video) ? `<span>${escapeHtml(displayVideoChannel(video))}</span>` : ''}
           ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
         </div>
+        ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : ''}
       `;
       article.append(body);
       return article;
     }
 
-    function externalLinkSvg() {
-      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"></path><path d="M8 7h9v9"></path><path d="M7 7H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"></path></svg>';
+    function searchResultCardFor(result) {
+      if (result.kind === 'playlist') {
+        return cardFor(result.item);
+      }
+      if (result.kind === 'missing') {
+        return snapshotMissingCardFor(result.item);
+      }
+      const video = result.item;
+      const article = playlistVideoCardFor(video);
+      const body = article.querySelector('.body');
+      if (body) {
+        const kind = document.createElement('div');
+        kind.className = 'result-kind';
+        kind.textContent = result.matchedDescription ? 'Description match' : 'Video';
+        body.prepend(kind);
+        const source = document.createElement('div');
+        source.className = 'details';
+        source.innerHTML = `<a class="playlist-link" href="${localPlaylistHref(video.playlist_id)}">${escapeHtml(video.playlist_title)}</a>`;
+        body.append(source);
+      }
+      return article;
     }
 
-    function candidateCountFor(playlistId) {
-      return data.archivarixCandidates.filter(video => video.playlist_id === playlistId).length;
+    function externalLinkSvg() {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"></path><path d="M8 7h9v9"></path><path d="M7 7H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"></path></svg>';
     }
 
     function hiddenVideoCardFor(video) {
@@ -3504,6 +3618,7 @@ INDEX_HTML = """<!doctype html>
     }
 
     search.addEventListener('input', render);
+    for (const input of searchFilters) input.addEventListener('change', render);
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
       renderGroups();
