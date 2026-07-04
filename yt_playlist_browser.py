@@ -213,6 +213,33 @@ CREATE TABLE IF NOT EXISTS metadata_worker_log (
   message TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS playlist_scan_worker_runs (
+  run_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT '',
+  started_at INTEGER NOT NULL DEFAULT 0,
+  finished_at INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  processed INTEGER NOT NULL DEFAULT 0,
+  found INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  delay_seconds REAL NOT NULL DEFAULT 0,
+  requested_limit INTEGER NOT NULL DEFAULT 0,
+  force INTEGER NOT NULL DEFAULT 0,
+  stale_days INTEGER NOT NULL DEFAULT 0,
+  last_playlist_id TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS playlist_scan_worker_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  level TEXT NOT NULL DEFAULT '',
+  playlist_id TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_groups_parent_position ON groups(parent_key, position);
 CREATE INDEX IF NOT EXISTS idx_group_playlists_position ON group_playlists(group_key, position);
 CREATE INDEX IF NOT EXISTS idx_playlist_videos_hidden ON playlist_videos(is_playable, playlist_id, position);
@@ -222,6 +249,7 @@ CREATE INDEX IF NOT EXISTS idx_snapshot_videos_playlist ON snapshot_videos(snaps
 CREATE INDEX IF NOT EXISTS idx_snapshot_video_recovery_status ON snapshot_video_recovery(snapshot_key, search_status);
 CREATE INDEX IF NOT EXISTS idx_video_metadata_status ON video_metadata(fetch_status, fetched_at);
 CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_run ON metadata_worker_log(run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_run ON playlist_scan_worker_log(run_id, created_at);
 """
 
 
@@ -936,6 +964,25 @@ def playlist_video_renderers(data: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def playlist_panel_video_renderers(data: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        node["playlistPanelVideoRenderer"]
+        for node in walk(data)
+        if isinstance(node, dict) and isinstance(node.get("playlistPanelVideoRenderer"), dict)
+    ]
+
+
+def video_lockup_renderers(data: dict[str, Any]) -> list[dict[str, Any]]:
+    lockups = []
+    for node in walk(data):
+        if not isinstance(node, dict) or not isinstance(node.get("lockupViewModel"), dict):
+            continue
+        lockup = node["lockupViewModel"]
+        if lockup.get("contentType") == "LOCKUP_CONTENT_TYPE_VIDEO":
+            lockups.append(lockup)
+    return lockups
+
+
 def hidden_alert_count(data: dict[str, Any]) -> int:
     total = 0
     for node in walk(data):
@@ -1007,6 +1054,79 @@ def parse_video_renderer(
         "is_playable": 0 if hidden else 1,
         "availability": reason,
         "url": f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}" if video_id else "",
+    }
+
+
+def parse_panel_video_renderer(
+    playlist_id: str,
+    renderer: dict[str, Any],
+    fallback_position: int,
+) -> dict[str, Any]:
+    index_text = text_from_runs(renderer.get("indexText") or renderer.get("index"))
+    found_index = re.search(r"\d+", index_text)
+    position = int(found_index.group(0)) if found_index else fallback_position
+    video_id = renderer.get("videoId") if isinstance(renderer.get("videoId"), str) else ""
+    title = text_from_runs(renderer.get("title")).strip() or "(untitled)"
+    channel = text_from_runs(renderer.get("shortBylineText") or renderer.get("longBylineText")).strip()
+    duration = text_from_runs(renderer.get("lengthText")).strip()
+    reason = unavailable_reason(renderer, title)
+    hidden = is_hidden_video(renderer, title, reason)
+    return {
+        "playlist_id": playlist_id,
+        "position": position,
+        "video_id": video_id,
+        "title": title,
+        "channel": channel,
+        "duration_text": duration,
+        "is_playable": 0 if hidden else 1,
+        "availability": reason,
+        "url": f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}" if video_id else "",
+    }
+
+
+def parse_video_lockup(
+    playlist_id: str,
+    lockup: dict[str, Any],
+    fallback_position: int,
+) -> dict[str, Any]:
+    video_id = lockup.get("contentId") if isinstance(lockup.get("contentId"), str) else ""
+    title = content_text(
+        lockup.get("metadata", {}).get("lockupMetadataViewModel", {}).get("title")
+    ).strip() or "(untitled)"
+    channel = ""
+    duration = ""
+    rows = lockup_metadata_rows(lockup)
+    if rows and rows[0]:
+        channel = rows[0][0]
+    for node in walk(lockup):
+        if not isinstance(node, dict):
+            continue
+        badge = node.get("thumbnailBadgeViewModel")
+        if isinstance(badge, dict):
+            text = badge.get("text")
+            if isinstance(text, str) and re.search(r"\d+:\d+", text):
+                duration = text
+                break
+    watch_url = ""
+    for node in walk(lockup):
+        if not isinstance(node, dict):
+            continue
+        endpoint = node.get("watchEndpoint")
+        if isinstance(endpoint, dict) and isinstance(endpoint.get("index"), int):
+            fallback_position = int(endpoint["index"]) + 1
+            break
+    if video_id:
+        watch_url = f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}"
+    return {
+        "playlist_id": playlist_id,
+        "position": fallback_position,
+        "video_id": video_id,
+        "title": title,
+        "channel": channel,
+        "duration_text": duration,
+        "is_playable": 1,
+        "availability": "",
+        "url": watch_url,
     }
 
 
@@ -1105,16 +1225,66 @@ def scan_playlist_videos(
 
     videos: list[dict[str, Any]] = []
     seen_positions: set[int] = set()
+    seen_video_ids: set[str] = set()
+
+    def add_video(video: dict[str, Any]) -> None:
+        video_id = video.get("video_id") or ""
+        if video_id and video_id in seen_video_ids:
+            return
+        while video["position"] in seen_positions:
+            video["position"] += 1
+        seen_positions.add(video["position"])
+        if video_id:
+            seen_video_ids.add(video_id)
+        videos.append(video)
+
     hidden_alerts = 0
     for page_data in pages:
         hidden_alerts += hidden_alert_count(page_data)
         for renderer in playlist_video_renderers(page_data):
             fallback = len(videos) + 1
             video = parse_video_renderer(playlist_id, renderer, fallback)
-            while video["position"] in seen_positions:
-                video["position"] += 1
-            seen_positions.add(video["position"])
-            videos.append(video)
+            add_video(video)
+
+    if not videos:
+        for lockup in video_lockup_renderers(initial_data):
+            fallback = len(videos) + 1
+            add_video(parse_video_lockup(playlist_id, lockup, fallback))
+
+    first_video_id = next((video["video_id"] for video in videos if video.get("video_id")), "")
+    if first_video_id:
+        try:
+            watch_url = (
+                f"https://www.youtube.com/watch?v={urllib.parse.quote(first_video_id)}"
+                f"&list={urllib.parse.quote(playlist_id)}"
+            )
+            watch_page = request_text(opener, watch_url)
+            watch_data = extract_json_assignment(watch_page, "ytInitialData")
+            panel_videos: list[dict[str, Any]] = []
+            panel_positions: set[int] = set()
+            panel_ids: set[str] = set()
+            for renderer in playlist_panel_video_renderers(watch_data):
+                video = parse_panel_video_renderer(
+                    playlist_id,
+                    renderer,
+                    len(panel_videos) + 1,
+                )
+                video_id = video.get("video_id") or ""
+                if video_id and video_id in panel_ids:
+                    continue
+                while video["position"] in panel_positions:
+                    video["position"] += 1
+                panel_positions.add(video["position"])
+                if video_id:
+                    panel_ids.add(video_id)
+                panel_videos.append(video)
+            if len(panel_videos) > len(videos):
+                videos = panel_videos
+                seen_positions = panel_positions
+                seen_video_ids = panel_ids
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            pass
+
     explicit_hidden = sum(1 for video in videos if not video["is_playable"])
     for offset in range(max(0, hidden_alerts - explicit_hidden)):
         position = max(seen_positions, default=0) + 1
@@ -1421,6 +1591,113 @@ def log_worker_event(
     )
 
 
+def log_playlist_scan_event(
+    conn: sqlite3.Connection,
+    run_id: str,
+    level: str,
+    message: str,
+    playlist_id: str = "",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO playlist_scan_worker_log(run_id, created_at, level, playlist_id, message)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (run_id, int(time.time()), level, playlist_id, message),
+    )
+
+
+def save_playlist_scan(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    videos: list[dict[str, Any]],
+    status: str,
+    error: str,
+) -> tuple[int, int]:
+    hidden_count = sum(1 for video in videos if not video["is_playable"])
+    now = int(time.time())
+    conn.execute("DELETE FROM playlist_videos WHERE playlist_id = ?", (playlist_id,))
+    for video in videos:
+        conn.execute(
+            """
+            INSERT INTO playlist_videos(
+              playlist_id, position, video_id, title, channel, duration_text,
+              is_playable, availability, url, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                video["playlist_id"],
+                video["position"],
+                video["video_id"],
+                video["title"],
+                video["channel"],
+                video["duration_text"],
+                video["is_playable"],
+                video["availability"],
+                video["url"],
+                now,
+            ),
+        )
+    conn.execute(
+        """
+        INSERT INTO playlist_scans(
+          playlist_id, scanned_at, video_count, hidden_count, scan_status, scan_error
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(playlist_id) DO UPDATE SET
+          scanned_at=excluded.scanned_at,
+          video_count=excluded.video_count,
+          hidden_count=excluded.hidden_count,
+          scan_status=excluded.scan_status,
+          scan_error=excluded.scan_error
+        """,
+        (playlist_id, now, len(videos), hidden_count, status, error),
+    )
+    return len(videos), hidden_count
+
+
+def playlist_scan_queue_rows(
+    conn: sqlite3.Connection,
+    limit: int = 0,
+    force: bool = False,
+    stale_days: int = 7,
+) -> list[sqlite3.Row]:
+    stale_before = int(time.time()) - max(stale_days, 0) * 86400
+    where = ["p.playlist_id <> ''"]
+    params: list[Any] = []
+    if not force:
+        where.append(
+            """
+            (
+              ps.playlist_id IS NULL
+              OR ps.scan_status <> 'ok'
+              OR (ps.scanned_at > 0 AND ps.scanned_at < ?)
+            )
+            """
+        )
+        params.append(stale_before)
+    sql = f"""
+        SELECT p.playlist_id,
+               p.title,
+               COALESCE(ps.scanned_at, 0) AS scanned_at,
+               COALESCE(ps.scan_status, '') AS scan_status,
+               COALESCE(ps.video_count, 0) AS video_count,
+               COALESCE(ps.hidden_count, 0) AS hidden_count
+        FROM playlists p
+        LEFT JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
+        WHERE {" AND ".join(where)}
+        ORDER BY
+          CASE WHEN ps.playlist_id IS NULL THEN 0 ELSE 1 END,
+          COALESCE(ps.scanned_at, 0),
+          p.title COLLATE NOCASE
+    """
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    return conn.execute(sql, params).fetchall()
+
+
 def metadata_queue_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
@@ -1457,9 +1734,10 @@ def metadata_queue_rows(
     return conn.execute(sql, params).fetchall()
 
 
-def metadata_admin_status(
+def admin_status(
     db_path: Path,
-    worker: "MetadataWorker | None" = None,
+    metadata_worker: "MetadataWorker | None" = None,
+    playlist_worker: "PlaylistScanWorker | None" = None,
 ) -> dict[str, Any]:
     conn = connect(db_path)
     try:
@@ -1474,6 +1752,19 @@ def metadata_admin_status(
                 """
             ).fetchone()
         )
+        playlist_counts = dict(
+            conn.execute(
+                """
+                SELECT
+                  COUNT(*) AS total_playlists,
+                  SUM(CASE WHEN ps.playlist_id IS NULL THEN 1 ELSE 0 END) AS unscanned_playlists,
+                  SUM(CASE WHEN ps.scan_status = 'ok' THEN 1 ELSE 0 END) AS scanned_ok,
+                  SUM(CASE WHEN ps.scan_status <> '' AND ps.scan_status <> 'ok' THEN 1 ELSE 0 END) AS scan_errors
+                FROM playlists p
+                LEFT JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
+                """
+            ).fetchone()
+        )
         metadata_counts = [
             dict(row)
             for row in conn.execute(
@@ -1485,8 +1776,9 @@ def metadata_admin_status(
                 """
             )
         ]
-        queue_count = len(metadata_queue_rows(conn, force=False, stale_days=30))
-        latest_run = conn.execute(
+        metadata_queue_count = len(metadata_queue_rows(conn, force=False, stale_days=30))
+        playlist_queue_count = len(playlist_scan_queue_rows(conn, force=False, stale_days=7))
+        latest_metadata_run = conn.execute(
             """
             SELECT *
             FROM metadata_worker_runs
@@ -1494,7 +1786,15 @@ def metadata_admin_status(
             LIMIT 1
             """
         ).fetchone()
-        logs = [
+        latest_playlist_run = conn.execute(
+            """
+            SELECT *
+            FROM playlist_scan_worker_runs
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        metadata_logs = [
             dict(row)
             for row in conn.execute(
                 """
@@ -1505,16 +1805,43 @@ def metadata_admin_status(
                 """
             )
         ]
+        playlist_logs = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM playlist_scan_worker_log
+                ORDER BY id DESC
+                LIMIT 80
+                """
+            )
+        ]
     finally:
         conn.close()
     return {
-        "running": worker.is_running() if worker else False,
+        "running": metadata_worker.is_running() if metadata_worker else False,
+        "metadataRunning": metadata_worker.is_running() if metadata_worker else False,
+        "playlistScanRunning": playlist_worker.is_running() if playlist_worker else False,
         "counts": counts,
+        "playlistCounts": playlist_counts,
         "metadataCounts": metadata_counts,
-        "queueCount": queue_count,
-        "latestRun": dict(latest_run) if latest_run else None,
-        "logs": logs,
+        "queueCount": metadata_queue_count,
+        "metadataQueueCount": metadata_queue_count,
+        "playlistScanQueueCount": playlist_queue_count,
+        "latestRun": dict(latest_metadata_run) if latest_metadata_run else None,
+        "latestMetadataRun": dict(latest_metadata_run) if latest_metadata_run else None,
+        "latestPlaylistScanRun": dict(latest_playlist_run) if latest_playlist_run else None,
+        "logs": metadata_logs,
+        "metadataLogs": metadata_logs,
+        "playlistScanLogs": playlist_logs,
     }
+
+
+def metadata_admin_status(
+    db_path: Path,
+    worker: "MetadataWorker | None" = None,
+) -> dict[str, Any]:
+    return admin_status(db_path, metadata_worker=worker)
 
 
 class MetadataWorker:
@@ -1729,6 +2056,175 @@ class MetadataWorker:
 
 
 METADATA_WORKER = MetadataWorker()
+
+
+class PlaylistScanWorker:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._run_id = ""
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return bool(self._thread and self._thread.is_alive())
+
+    def start(
+        self,
+        db_path: Path,
+        cookie_file: Path,
+        delay: float,
+        limit: int,
+        force: bool,
+        stale_days: int,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return {"started": False, "run_id": self._run_id, "message": "Playlist scan already running"}
+            self._stop.clear()
+            self._run_id = uuid.uuid4().hex
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(self._run_id, db_path, cookie_file, delay, limit, force, stale_days),
+                daemon=True,
+            )
+            self._thread.start()
+            return {"started": True, "run_id": self._run_id, "message": "Playlist scan started"}
+
+    def stop(self) -> dict[str, Any]:
+        with self._lock:
+            if not self._thread or not self._thread.is_alive():
+                return {"stopping": False, "message": "Playlist scan is not running"}
+            self._stop.set()
+            return {"stopping": True, "run_id": self._run_id, "message": "Playlist scan stop requested"}
+
+    def _run(
+        self,
+        run_id: str,
+        db_path: Path,
+        cookie_file: Path,
+        delay: float,
+        limit: int,
+        force: bool,
+        stale_days: int,
+    ) -> None:
+        conn = connect(db_path)
+        opener = load_cookie_opener(cookie_file)
+        try:
+            rows = playlist_scan_queue_rows(conn, limit=limit, force=force, stale_days=stale_days)
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO playlist_scan_worker_runs(
+                      run_id, status, started_at, total, delay_seconds,
+                      requested_limit, force, stale_days, message
+                    )
+                    VALUES (?, 'running', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        int(time.time()),
+                        len(rows),
+                        delay,
+                        limit,
+                        1 if force else 0,
+                        stale_days,
+                        "Playlist scan worker started",
+                    ),
+                )
+                log_playlist_scan_event(conn, run_id, "info", f"Queued {len(rows)} playlists")
+
+            processed = 0
+            found = 0
+            failed = 0
+            for row in rows:
+                if self._stop.is_set():
+                    with conn:
+                        conn.execute(
+                            """
+                            UPDATE playlist_scan_worker_runs
+                            SET status = 'stopped', finished_at = ?, message = ?
+                            WHERE run_id = ?
+                            """,
+                            (int(time.time()), "Stop requested", run_id),
+                        )
+                        log_playlist_scan_event(conn, run_id, "warn", "Playlist scan stopped by request")
+                    return
+
+                playlist_id = row["playlist_id"]
+                title = row["title"] or playlist_id
+                status = "ok"
+                error = ""
+                videos: list[dict[str, Any]] = []
+                try:
+                    videos = scan_playlist_videos(opener, playlist_id)
+                except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                    status = "error"
+                    error = str(exc)
+                with conn:
+                    video_count, hidden_count = save_playlist_scan(
+                        conn,
+                        playlist_id,
+                        videos,
+                        status,
+                        error,
+                    )
+                    processed += 1
+                    if status == "error":
+                        failed += 1
+                        log_playlist_scan_event(conn, run_id, "error", f"{title}: {error}", playlist_id)
+                    else:
+                        found += 1
+                        log_playlist_scan_event(
+                            conn,
+                            run_id,
+                            "info",
+                            f"{title}: {video_count} videos, {hidden_count} hidden",
+                            playlist_id,
+                        )
+                    conn.execute(
+                        """
+                        UPDATE playlist_scan_worker_runs
+                        SET processed = ?, found = ?, failed = ?, last_playlist_id = ?, message = ?
+                        WHERE run_id = ?
+                        """,
+                        (
+                            processed,
+                            found,
+                            failed,
+                            playlist_id,
+                            f"Processed {processed} of {len(rows)}",
+                            run_id,
+                        ),
+                    )
+                if delay and processed < len(rows):
+                    time.sleep(delay)
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE playlist_scan_worker_runs
+                    SET status = 'complete', finished_at = ?, message = ?
+                    WHERE run_id = ?
+                    """,
+                    (int(time.time()), f"Completed {processed} playlists", run_id),
+                )
+                log_playlist_scan_event(conn, run_id, "info", f"Playlist scan complete: {processed} processed")
+        except Exception as exc:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE playlist_scan_worker_runs
+                    SET status = 'error', finished_at = ?, message = ?
+                    WHERE run_id = ?
+                    """,
+                    (int(time.time()), str(exc), run_id),
+                )
+                log_playlist_scan_event(conn, run_id, "error", f"Playlist scan crashed: {exc}")
+        finally:
+            conn.close()
+
+
+PLAYLIST_SCAN_WORKER = PlaylistScanWorker()
 
 
 def scan_hidden(args: argparse.Namespace) -> None:
@@ -2949,21 +3445,28 @@ ADMIN_HTML = """<!doctype html>
     <section class="grid">
       <div class="panel"><div class="metric">Playlist video rows</div><div id="playlistRows" class="value">0</div></div>
       <div class="panel"><div class="metric">Distinct video IDs</div><div id="distinctVideos" class="value">0</div></div>
-      <div class="panel"><div class="metric">Metadata queue</div><div id="queueCount" class="value">0</div></div>
-      <div class="panel"><div class="metric">Worker</div><div id="workerState" class="value">idle</div></div>
+      <div class="panel"><div class="metric">Playlist scan queue</div><div id="playlistQueueCount" class="value">0</div></div>
+      <div class="panel"><div class="metric">Metadata queue</div><div id="metadataQueueCount" class="value">0</div></div>
+      <div class="panel"><div class="metric">Playlist scanner</div><div id="playlistWorkerState" class="value">idle</div></div>
+      <div class="panel"><div class="metric">Metadata worker</div><div id="metadataWorkerState" class="value">idle</div></div>
     </section>
 
     <section class="panel">
       <div class="controls">
         <label>Limit<input id="limit" type="number" min="0" step="1" value="10"></label>
-        <label>Delay seconds<input id="delay" type="number" min="1" step="1" value="12"></label>
-        <label>Stale days<input id="staleDays" type="number" min="0" step="1" value="30"></label>
+        <label>Playlist delay<input id="playlistDelay" type="number" min="1" step="1" value="3"></label>
+        <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
+        <label>Playlist stale days<input id="playlistStaleDays" type="number" min="0" step="1" value="7"></label>
+        <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
         <label class="checkbox"><input id="force" type="checkbox">Refresh already fetched</label>
-        <button id="start" class="primary" type="button">Check for updates</button>
-        <button id="stop" type="button">Stop</button>
+        <button id="scanPlaylists" class="primary" type="button">Scan playlists</button>
+        <button id="fetchMetadata" class="primary" type="button">Fetch video metadata</button>
+        <button id="stopPlaylists" type="button">Stop playlist scan</button>
+        <button id="stopMetadata" type="button">Stop metadata</button>
         <button id="refresh" type="button">Refresh status</button>
       </div>
-      <div id="runStatus" class="status"></div>
+      <div id="playlistRunStatus" class="status"></div>
+      <div id="metadataRunStatus" class="status" style="margin-top:8px"></div>
     </section>
 
     <section class="grid" id="metadataCounts"></section>
@@ -2985,9 +3488,17 @@ ADMIN_HTML = """<!doctype html>
       metadataCounts: document.getElementById('metadataCounts'),
       logs: document.getElementById('logs'),
       limit: document.getElementById('limit'),
-      delay: document.getElementById('delay'),
-      staleDays: document.getElementById('staleDays'),
+      playlistDelay: document.getElementById('playlistDelay'),
+      metadataDelay: document.getElementById('metadataDelay'),
+      playlistStaleDays: document.getElementById('playlistStaleDays'),
+      metadataStaleDays: document.getElementById('metadataStaleDays'),
       force: document.getElementById('force'),
+      playlistQueueCount: document.getElementById('playlistQueueCount'),
+      metadataQueueCount: document.getElementById('metadataQueueCount'),
+      playlistWorkerState: document.getElementById('playlistWorkerState'),
+      metadataWorkerState: document.getElementById('metadataWorkerState'),
+      playlistRunStatus: document.getElementById('playlistRunStatus'),
+      metadataRunStatus: document.getElementById('metadataRunStatus'),
     };
 
     function escapeHtml(value) {
@@ -3004,19 +3515,27 @@ ADMIN_HTML = """<!doctype html>
     function render(data) {
       fields.playlistRows.textContent = data.counts.playlist_video_rows || 0;
       fields.distinctVideos.textContent = data.counts.distinct_playlist_videos || 0;
-      fields.queueCount.textContent = data.queueCount || 0;
-      fields.workerState.textContent = data.running ? 'running' : 'idle';
-      fields.workerState.className = `value ${data.running ? 'running' : ''}`;
+      fields.playlistQueueCount.textContent = data.playlistScanQueueCount || 0;
+      fields.metadataQueueCount.textContent = data.metadataQueueCount || 0;
+      fields.playlistWorkerState.textContent = data.playlistScanRunning ? 'running' : 'idle';
+      fields.playlistWorkerState.className = `value ${data.playlistScanRunning ? 'running' : ''}`;
+      fields.metadataWorkerState.textContent = data.metadataRunning ? 'running' : 'idle';
+      fields.metadataWorkerState.className = `value ${data.metadataRunning ? 'running' : ''}`;
 
-      const run = data.latestRun;
-      fields.runStatus.innerHTML = run ? `
-        <span class="badge">${escapeHtml(run.status)}</span>
-        <span class="badge">${run.processed}/${run.total} processed</span>
-        <span class="badge">${run.found} ok</span>
-        <span class="badge ${run.failed ? 'warn' : ''}">${run.failed} failed</span>
-        <span class="badge">${escapeHtml(run.message)}</span>
-        <span class="badge">Started ${fmtTime(run.started_at)}</span>
-      ` : '<span class="badge">No runs yet</span>';
+      function runHtml(run, label) {
+        return run ? `
+          <span class="badge">${escapeHtml(label)}</span>
+          <span class="badge">${escapeHtml(run.status)}</span>
+          <span class="badge">${run.processed}/${run.total} processed</span>
+          <span class="badge">${run.found} ok</span>
+          <span class="badge ${run.failed ? 'warn' : ''}">${run.failed} failed</span>
+          <span class="badge">${escapeHtml(run.message)}</span>
+          <span class="badge">Started ${fmtTime(run.started_at)}</span>
+        ` : `<span class="badge">${escapeHtml(label)}: no runs yet</span>`;
+      }
+
+      fields.playlistRunStatus.innerHTML = runHtml(data.latestPlaylistScanRun, 'Playlist scan');
+      fields.metadataRunStatus.innerHTML = runHtml(data.latestMetadataRun, 'Metadata');
 
       fields.metadataCounts.replaceChildren(...(data.metadataCounts || []).map(row => {
         const div = document.createElement('div');
@@ -3025,11 +3544,15 @@ ADMIN_HTML = """<!doctype html>
         return div;
       }));
 
-      fields.logs.innerHTML = (data.logs || []).map(log => `
+      const logs = [
+        ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
+        ...(data.metadataLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'metadata' })),
+      ].sort((a, b) => (b.created_at - a.created_at) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
+      fields.logs.innerHTML = logs.map(log => `
         <tr>
           <td>${fmtTime(log.created_at)}</td>
-          <td>${escapeHtml(log.level)}</td>
-          <td>${escapeHtml(log.video_id)}</td>
+          <td>${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
+          <td>${escapeHtml(log.subject_id || '')}</td>
           <td class="message">${escapeHtml(log.message)}</td>
         </tr>
       `).join('');
@@ -3047,15 +3570,22 @@ ADMIN_HTML = """<!doctype html>
       await loadStatus();
     }
 
-    document.getElementById('start').addEventListener('click', () => post('/api/admin/worker/start', {
+    document.getElementById('scanPlaylists').addEventListener('click', () => post('/api/admin/playlists/start', {
       limit: fields.limit.value,
-      delay: fields.delay.value,
-      stale_days: fields.staleDays.value,
+      delay: fields.playlistDelay.value,
+      stale_days: fields.playlistStaleDays.value,
       force: fields.force.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
-    document.getElementById('stop').addEventListener('click', () => post('/api/admin/worker/stop').catch(error => alert(error.message)));
+    document.getElementById('fetchMetadata').addEventListener('click', () => post('/api/admin/metadata/start', {
+      limit: fields.limit.value,
+      delay: fields.metadataDelay.value,
+      stale_days: fields.metadataStaleDays.value,
+      force: fields.force.checked ? '1' : '0',
+    }).catch(error => alert(error.message)));
+    document.getElementById('stopPlaylists').addEventListener('click', () => post('/api/admin/playlists/stop').catch(error => alert(error.message)));
+    document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus().catch(error => alert(error.message)));
-    loadStatus().catch(error => { fields.runStatus.textContent = error.message; });
+    loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
     setInterval(loadStatus, 5000);
   </script>
 </body>
@@ -3107,14 +3637,14 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(data)
             return
         if parsed.path == "/api/admin/status":
-            self.send_json(metadata_admin_status(self.db_path, METADATA_WORKER))
+            self.send_json(admin_status(self.db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER))
             return
         return super().do_GET()
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
-        if parsed.path == "/api/admin/worker/start":
+        if parsed.path in {"/api/admin/worker/start", "/api/admin/metadata/start"}:
             limit = max(0, int((params.get("limit") or ["25"])[0] or 0))
             delay = max(1.0, float((params.get("delay") or ["12"])[0] or 12))
             stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
@@ -3130,8 +3660,26 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
             )
             self.send_json(result)
             return
-        if parsed.path == "/api/admin/worker/stop":
+        if parsed.path in {"/api/admin/worker/stop", "/api/admin/metadata/stop"}:
             self.send_json(METADATA_WORKER.stop())
+            return
+        if parsed.path == "/api/admin/playlists/start":
+            limit = max(0, int((params.get("limit") or ["25"])[0] or 0))
+            delay = max(1.0, float((params.get("delay") or ["3"])[0] or 3))
+            stale_days = max(0, int((params.get("stale_days") or ["7"])[0] or 7))
+            force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
+            result = PLAYLIST_SCAN_WORKER.start(
+                self.db_path,
+                self.cookie_file,
+                delay=delay,
+                limit=limit,
+                force=force,
+                stale_days=stale_days,
+            )
+            self.send_json(result)
+            return
+        if parsed.path == "/api/admin/playlists/stop":
+            self.send_json(PLAYLIST_SCAN_WORKER.stop())
             return
         self.send_error(404, "Not found")
 
