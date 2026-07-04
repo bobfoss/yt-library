@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import YouTube playlists from PocketTube export and browse them locally."""
+"""Import YouTube library data and browse it locally."""
 
 from __future__ import annotations
 
@@ -186,6 +186,32 @@ CREATE TABLE IF NOT EXISTS video_metadata (
   updated_at INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS watch_history (
+  history_key TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  action TEXT NOT NULL DEFAULT '',
+  video_id TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  channel TEXT NOT NULL DEFAULT '',
+  channel_url TEXT NOT NULL DEFAULT '',
+  watched_at TEXT NOT NULL DEFAULT '',
+  source_file TEXT NOT NULL DEFAULT '',
+  imported_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (history_key, position)
+);
+
+CREATE TABLE IF NOT EXISTS search_history (
+  history_key TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  query TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  searched_at TEXT NOT NULL DEFAULT '',
+  source_file TEXT NOT NULL DEFAULT '',
+  imported_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (history_key, position)
+);
+
 CREATE TABLE IF NOT EXISTS metadata_worker_runs (
   run_id TEXT PRIMARY KEY,
   status TEXT NOT NULL DEFAULT '',
@@ -248,6 +274,9 @@ CREATE INDEX IF NOT EXISTS idx_snapshot_videos_video ON snapshot_videos(snapshot
 CREATE INDEX IF NOT EXISTS idx_snapshot_videos_playlist ON snapshot_videos(snapshot_key, playlist_id, position);
 CREATE INDEX IF NOT EXISTS idx_snapshot_video_recovery_status ON snapshot_video_recovery(snapshot_key, search_status);
 CREATE INDEX IF NOT EXISTS idx_video_metadata_status ON video_metadata(fetch_status, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_watch_history_video ON watch_history(video_id);
+CREATE INDEX IF NOT EXISTS idx_watch_history_search ON watch_history(title, channel, watched_at);
+CREATE INDEX IF NOT EXISTS idx_search_history_search ON search_history(query, searched_at);
 CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_run ON metadata_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_run ON playlist_scan_worker_log(run_id, created_at);
 """
@@ -1822,7 +1851,7 @@ def metadata_queue_rows(
     stale_days: int = 30,
 ) -> list[sqlite3.Row]:
     stale_before = int(time.time()) - max(stale_days, 0) * 86400
-    where = ["pv.video_id <> ''"]
+    where = ["q.video_id <> ''"]
     params: list[Any] = []
     if not force:
         where.append(
@@ -1836,14 +1865,39 @@ def metadata_queue_rows(
         )
         params.append(stale_before)
     sql = f"""
-        SELECT pv.video_id,
-               COUNT(DISTINCT pv.playlist_id) AS playlist_count,
-               MIN(pv.title) AS current_title
-        FROM playlist_videos pv
-        LEFT JOIN video_metadata vm ON vm.video_id = pv.video_id
+        WITH queue_sources AS (
+          SELECT pv.video_id,
+                 0 AS source_priority,
+                 COUNT(DISTINCT pv.playlist_id) AS playlist_count,
+                 MIN(pv.title) AS current_title
+          FROM playlist_videos pv
+          WHERE pv.video_id <> ''
+          GROUP BY pv.video_id
+          UNION ALL
+          SELECT wh.video_id,
+                 1 AS source_priority,
+                 0 AS playlist_count,
+                 MIN(wh.title) AS current_title
+          FROM watch_history wh
+          WHERE wh.video_id <> ''
+          GROUP BY wh.video_id
+        ),
+        q AS (
+          SELECT video_id,
+                 MIN(source_priority) AS source_priority,
+                 SUM(playlist_count) AS playlist_count,
+                 MIN(current_title) AS current_title
+          FROM queue_sources
+          GROUP BY video_id
+        )
+        SELECT q.video_id,
+               q.playlist_count,
+               q.current_title,
+               CASE WHEN q.source_priority = 0 THEN 'playlist' ELSE 'history' END AS metadata_source
+        FROM q
+        LEFT JOIN video_metadata vm ON vm.video_id = q.video_id
         WHERE {" AND ".join(where)}
-        GROUP BY pv.video_id
-        ORDER BY COALESCE(vm.fetched_at, 0), pv.video_id
+        ORDER BY q.source_priority, COALESCE(vm.fetched_at, 0), q.video_id
     """
     if limit:
         sql += " LIMIT ?"
@@ -1864,7 +1918,10 @@ def admin_status(
                 """
                 SELECT
                   COUNT(DISTINCT video_id) AS distinct_playlist_videos,
-                  COUNT(*) AS playlist_video_rows
+                  COUNT(*) AS playlist_video_rows,
+                  (SELECT COUNT(*) FROM watch_history) AS watch_history_rows,
+                  (SELECT COUNT(DISTINCT video_id) FROM watch_history WHERE video_id <> '') AS distinct_history_videos,
+                  (SELECT COUNT(*) FROM search_history) AS search_history_rows
                 FROM playlist_videos
                 WHERE video_id <> ''
                 """
@@ -2694,6 +2751,133 @@ def import_takeout_snapshot(args: argparse.Namespace) -> None:
         print(f"Used filename-derived IDs for {len(unmatched_files)} playlist files.")
 
 
+def strip_html_fragment(value: str) -> str:
+    value = re.sub(r"<[^>]+>", "", value)
+    value = html.unescape(value)
+    return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
+
+
+def extract_video_id(value: str) -> str:
+    parsed = urllib.parse.urlparse(html.unescape(value))
+    if parsed.netloc.endswith("youtube.com") and parsed.path == "/watch":
+        return (urllib.parse.parse_qs(parsed.query).get("v") or [""])[0]
+    if parsed.netloc == "youtu.be":
+        return parsed.path.strip("/")
+    return ""
+
+
+def parse_takeout_watch_history(path: Path) -> list[dict[str, str]]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    action = r"(Watched|Viewed)"
+    sep = r"(?:\s|&nbsp;|\xa0)*"
+    anchor = r'<a href="([^"]+)">(.*?)</a>'
+    pattern = re.compile(
+        action + sep + anchor + r"<br>(?:" + anchor + r"<br>)?([^<]+)<br>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    rows: list[dict[str, str]] = []
+    for match in pattern.finditer(text):
+        url = html.unescape(match.group(2))
+        video_id = extract_video_id(url)
+        if not video_id:
+            continue
+        rows.append(
+            {
+                "action": strip_html_fragment(match.group(1)),
+                "url": url,
+                "video_id": video_id,
+                "title": strip_html_fragment(match.group(3)),
+                "channel_url": html.unescape(match.group(4) or ""),
+                "channel": strip_html_fragment(match.group(5) or ""),
+                "watched_at": strip_html_fragment(match.group(6)),
+            }
+        )
+    return rows
+
+
+def parse_takeout_search_history(path: Path) -> list[dict[str, str]]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    pattern = re.compile(
+        r"Searched for(?:\s|&nbsp;|\xa0)*<a href=\"([^\"]+)\">(.*?)</a><br>([^<]+)<br>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    rows: list[dict[str, str]] = []
+    for match in pattern.finditer(text):
+        rows.append(
+            {
+                "url": html.unescape(match.group(1)),
+                "query": strip_html_fragment(match.group(2)),
+                "searched_at": strip_html_fragment(match.group(3)),
+            }
+        )
+    return rows
+
+
+def import_history(args: argparse.Namespace) -> None:
+    db_path = Path(args.db)
+    takeout_dir = Path(args.takeout)
+    history_dir = takeout_dir / "history"
+    watch_file = history_dir / "watch-history.html"
+    search_file = history_dir / "search-history.html"
+    if not watch_file.exists() and not search_file.exists():
+        raise SystemExit(f"Takeout history files not found in {history_dir}")
+
+    conn = connect(db_path)
+    imported_at = int(time.time())
+    watch_rows = parse_takeout_watch_history(watch_file) if watch_file.exists() else []
+    search_rows = parse_takeout_search_history(search_file) if search_file.exists() else []
+    with conn:
+        conn.execute("DELETE FROM watch_history WHERE history_key = ?", (args.history_key,))
+        conn.execute("DELETE FROM search_history WHERE history_key = ?", (args.history_key,))
+        for position, row in enumerate(watch_rows, start=1):
+            conn.execute(
+                """
+                INSERT INTO watch_history(
+                  history_key, position, action, video_id, title, url, channel,
+                  channel_url, watched_at, source_file, imported_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    args.history_key,
+                    position,
+                    row["action"],
+                    row["video_id"],
+                    row["title"],
+                    row["url"],
+                    row["channel"],
+                    row["channel_url"],
+                    row["watched_at"],
+                    str(watch_file.relative_to(ROOT)).replace("\\", "/"),
+                    imported_at,
+                ),
+            )
+        for position, row in enumerate(search_rows, start=1):
+            conn.execute(
+                """
+                INSERT INTO search_history(
+                  history_key, position, query, url, searched_at, source_file, imported_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    args.history_key,
+                    position,
+                    row["query"],
+                    row["url"],
+                    row["searched_at"],
+                    str(search_file.relative_to(ROOT)).replace("\\", "/"),
+                    imported_at,
+                ),
+            )
+    conn.close()
+    distinct_videos = len({row["video_id"] for row in watch_rows if row["video_id"]})
+    print(
+        f"Imported {len(watch_rows)} watch history rows "
+        f"({distinct_videos} distinct videos) and {len(search_rows)} searches."
+    )
+
+
 def recover_snapshot_missing(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     thumb_dir = Path(args.thumbs)
@@ -2978,6 +3162,24 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             (row["playlist_id"],),
         ).fetchone()
     ]
+    history_summary = dict(
+        conn.execute(
+            """
+            SELECT
+              COUNT(*) AS watch_rows,
+              COUNT(DISTINCT video_id) AS distinct_watch_videos
+            FROM watch_history
+            WHERE video_id <> ''
+            """
+        ).fetchone()
+    )
+    history_summary.update(
+        dict(
+            conn.execute(
+                "SELECT COUNT(*) AS search_rows FROM search_history"
+            ).fetchone()
+        )
+    )
     return {
         "groups": groups,
         "playlists": playlists,
@@ -2989,6 +3191,74 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
         "snapshotPlaylists": snapshot_playlists,
         "snapshotMissing": snapshot_missing,
         "snapshotLikelyHidden": snapshot_likely_hidden,
+        "historySummary": history_summary,
+    }
+
+
+def search_history_data(conn: sqlite3.Connection, query: str, limit: int = 200) -> dict[str, Any]:
+    query = query.strip()
+    limit = max(1, min(limit, 1000))
+    like = f"%{query.lower()}%"
+    if query:
+        watch_where = """
+            WHERE lower(wh.title || ' ' || wh.channel || ' ' || wh.video_id || ' ' || COALESCE(vm.description, '')) LIKE ?
+        """
+        search_where = "WHERE lower(sh.query) LIKE ?"
+        watch_params: list[Any] = [like]
+        search_params: list[Any] = [like]
+    else:
+        watch_where = ""
+        search_where = ""
+        watch_params = []
+        search_params = []
+    watch_rows = [
+        dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT wh.*,
+                   COALESCE(vm.title, '') AS metadata_title,
+                   COALESCE(vm.description, '') AS metadata_description,
+                   COALESCE(vm.channel, '') AS metadata_channel,
+                   COALESCE(vm.duration_text, '') AS metadata_duration,
+                   COALESCE(vm.thumbnail_path, '') AS metadata_thumbnail_path,
+                   COALESCE(vm.fetch_status, '') AS metadata_fetch_status
+            FROM watch_history wh
+            LEFT JOIN video_metadata vm ON vm.video_id = wh.video_id
+            {watch_where}
+            ORDER BY wh.position
+            LIMIT ?
+            """,
+            [*watch_params, limit],
+        )
+    ]
+    search_rows = [
+        dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT *
+            FROM search_history sh
+            {search_where}
+            ORDER BY sh.position
+            LIMIT ?
+            """,
+            [*search_params, limit],
+        )
+    ]
+    total = dict(
+        conn.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM watch_history) AS watch_rows,
+              (SELECT COUNT(DISTINCT video_id) FROM watch_history WHERE video_id <> '') AS distinct_watch_videos,
+              (SELECT COUNT(*) FROM search_history) AS search_rows
+            """
+        ).fetchone()
+    )
+    return {
+        "query": query,
+        "watch": watch_rows,
+        "searches": search_rows,
+        "totals": total,
     }
 
 
@@ -2997,7 +3267,7 @@ INDEX_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>YT Playlists</title>
+  <title>YT Library</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -3058,6 +3328,8 @@ INDEX_HTML = """<!doctype html>
     .badge { color: var(--warn); font-weight: 650; }
     .refresh { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
     .refresh:hover { background: var(--accent-soft); }
+    .top-link { display: inline-block; color: var(--accent); text-decoration: none; margin: -4px 0 14px; font-size: 13px; }
+    .top-link:hover { text-decoration: underline; }
     .video-title { color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
     .playlist-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
     .playlist-link:hover { text-decoration: underline; }
@@ -3077,7 +3349,8 @@ INDEX_HTML = """<!doctype html>
 <body>
   <div class="app">
     <aside>
-      <h1>YT Playlists</h1>
+      <h1>YT Library</h1>
+      <a class="top-link" href="/history">History search</a>
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
       <div class="filters" aria-label="Search filters">
         <div class="filter-title">Search In</div>
@@ -3641,12 +3914,219 @@ INDEX_HTML = """<!doctype html>
 """
 
 
+HISTORY_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YT Library History</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f4ef;
+      --panel: #fffdf8;
+      --ink: #25231f;
+      --muted: #6b655c;
+      --line: #ded6cb;
+      --accent: #0b7285;
+      --accent-soft: #d7f2f4;
+      --warn: #9a3412;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161513;
+        --panel: #211f1b;
+        --ink: #f4efe7;
+        --muted: #b8afa3;
+        --line: #39342d;
+        --accent: #67d8e6;
+        --accent-soft: #173b40;
+        --warn: #f4a261;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); }
+    .page { max-width: 1240px; margin: 0 auto; padding: 24px; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    h1 { font-size: 30px; line-height: 1.1; margin: 0; }
+    nav { display: flex; gap: 12px; flex-wrap: wrap; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .searchbar { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-bottom: 12px; }
+    input[type="search"] { width: 100%; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 11px 12px; font: inherit; }
+    button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 0 14px; font: inherit; cursor: pointer; }
+    button:hover { background: var(--accent-soft); }
+    .meta { color: var(--muted); font-size: 14px; margin-bottom: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+    .tab { padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); cursor: pointer; }
+    .tab.active { background: var(--accent-soft); color: var(--ink); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+    .list { display: grid; gap: 10px; }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
+    .thumb { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: linear-gradient(135deg, #24424a, #d98948); }
+    .body { padding: 11px 12px 13px; }
+    .title { display: block; color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
+    .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
+    .badge { color: var(--warn); font-weight: 650; }
+    .empty { color: var(--muted); padding: 36px 0; }
+    @media (max-width: 720px) {
+      .page { padding: 18px 14px; }
+      header, .searchbar { display: block; }
+      nav { margin-top: 10px; }
+      button { margin-top: 8px; height: 40px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>YT Library History</h1>
+      <nav>
+        <a href="/">Playlists</a>
+        <a href="/admin">Admin</a>
+      </nav>
+    </header>
+    <div class="searchbar">
+      <input id="search" type="search" placeholder="Search watch history, metadata descriptions, and searches" autocomplete="off" autofocus>
+      <button id="refresh" type="button">Search</button>
+    </div>
+    <div id="meta" class="meta"></div>
+    <div class="tabs">
+      <div id="watchTab" class="tab active">Watch history</div>
+      <div id="searchTab" class="tab">Search history</div>
+    </div>
+    <section id="results" class="grid"></section>
+    <div id="empty" class="empty" hidden>No history matches.</div>
+  </div>
+  <script>
+    const input = document.getElementById('search');
+    const refresh = document.getElementById('refresh');
+    const meta = document.getElementById('meta');
+    const results = document.getElementById('results');
+    const empty = document.getElementById('empty');
+    const watchTab = document.getElementById('watchTab');
+    const searchTab = document.getElementById('searchTab');
+    let activeTab = 'watch';
+    let latest = { watch: [], searches: [], totals: {} };
+    let timer = null;
+    let requestId = 0;
+
+    function escapeHtml(value) {
+      return String(value || '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
+    function displayTitle(row) {
+      return row.metadata_title || row.title || row.video_id;
+    }
+
+    function watchCard(row) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      if (row.metadata_thumbnail_path) {
+        const img = document.createElement('img');
+        img.className = 'thumb';
+        img.loading = 'lazy';
+        img.alt = '';
+        img.src = `/${row.metadata_thumbnail_path}`;
+        article.append(img);
+      }
+      const body = document.createElement('div');
+      body.className = 'body';
+      const watchUrl = row.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(row.video_id)}` : row.url;
+      body.innerHTML = `
+        <a class="title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayTitle(row))}</a>
+        <div class="details">
+          ${row.watched_at ? `<span>${escapeHtml(row.watched_at)}</span>` : ''}
+          ${(row.metadata_channel || row.channel) ? `<span>${escapeHtml(row.metadata_channel || row.channel)}</span>` : ''}
+          ${row.video_id ? `<span>${escapeHtml(row.video_id)}</span>` : ''}
+          ${row.metadata_fetch_status === 'error' ? '<span class="badge">metadata error</span>' : ''}
+        </div>
+        ${row.metadata_description ? `<div class="description">${escapeHtml(row.metadata_description)}</div>` : ''}
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function searchRow(row) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.innerHTML = `
+        <a class="title" href="${row.url}" target="_blank" rel="noreferrer">${escapeHtml(row.query)}</a>
+        <div class="details">${row.searched_at ? `<span>${escapeHtml(row.searched_at)}</span>` : ''}</div>
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function render() {
+      watchTab.classList.toggle('active', activeTab === 'watch');
+      searchTab.classList.toggle('active', activeTab === 'search');
+      const rows = activeTab === 'watch' ? latest.watch : latest.searches;
+      results.className = activeTab === 'watch' ? 'grid' : 'list';
+      results.replaceChildren(...rows.map(activeTab === 'watch' ? watchCard : searchRow));
+      empty.hidden = rows.length !== 0;
+      const totals = latest.totals || {};
+      meta.innerHTML = `
+        <span>${latest.watch.length} watch results shown</span>
+        <span>${latest.searches.length} search results shown</span>
+        <span>${totals.watch_rows || 0} watch rows</span>
+        <span>${totals.distinct_watch_videos || 0} distinct videos</span>
+        <span>${totals.search_rows || 0} searches</span>
+      `;
+    }
+
+    async function load() {
+      const myRequest = ++requestId;
+      refresh.disabled = true;
+      refresh.textContent = 'Searching';
+      const params = new URLSearchParams({ q: input.value.trim(), limit: '250' });
+      const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`History search failed: ${response.status}`);
+      const payload = await response.json();
+      if (myRequest === requestId) {
+        latest = payload;
+        render();
+      }
+      refresh.disabled = false;
+      refresh.textContent = 'Search';
+    }
+
+    function schedule() {
+      clearTimeout(timer);
+      timer = setTimeout(() => load().catch(error => {
+        meta.textContent = error.message;
+        refresh.disabled = false;
+        refresh.textContent = 'Search';
+      }), 250);
+    }
+
+    input.addEventListener('input', schedule);
+    refresh.addEventListener('click', () => load().catch(error => meta.textContent = error.message));
+    watchTab.addEventListener('click', () => { activeTab = 'watch'; render(); });
+    searchTab.addEventListener('click', () => { activeTab = 'search'; render(); });
+    load().catch(error => {
+      meta.textContent = error.message;
+      refresh.disabled = false;
+      refresh.textContent = 'Search';
+    });
+  </script>
+</body>
+</html>
+"""
+
+
 ADMIN_HTML = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>YT Project Admin</title>
+  <title>YT Library Admin</title>
   <style>
     :root {
       --bg: #f7f4ef;
@@ -3710,13 +4190,15 @@ ADMIN_HTML = """<!doctype html>
 <body>
   <main>
     <header>
-      <h1>YT Project Admin</h1>
-      <nav><a href="/">Playlist browser</a></nav>
+      <h1>YT Library Admin</h1>
+      <nav><a href="/">Playlists</a> <a href="/history">History search</a></nav>
     </header>
 
     <section class="grid">
       <div class="panel"><div class="metric">Playlist video rows</div><div id="playlistRows" class="value">0</div></div>
       <div class="panel"><div class="metric">Distinct video IDs</div><div id="distinctVideos" class="value">0</div></div>
+      <div class="panel"><div class="metric">History rows</div><div id="historyRows" class="value">0</div></div>
+      <div class="panel"><div class="metric">History video IDs</div><div id="historyVideos" class="value">0</div></div>
       <div class="panel"><div class="metric">Playlist scan queue</div><div id="playlistQueueCount" class="value">0</div></div>
       <div class="panel"><div class="metric">Metadata queue</div><div id="metadataQueueCount" class="value">0</div></div>
       <div class="panel"><div class="metric">Playlist scanner</div><div id="playlistWorkerState" class="value">idle</div></div>
@@ -3754,6 +4236,8 @@ ADMIN_HTML = """<!doctype html>
     const fields = {
       playlistRows: document.getElementById('playlistRows'),
       distinctVideos: document.getElementById('distinctVideos'),
+      historyRows: document.getElementById('historyRows'),
+      historyVideos: document.getElementById('historyVideos'),
       queueCount: document.getElementById('queueCount'),
       workerState: document.getElementById('workerState'),
       runStatus: document.getElementById('runStatus'),
@@ -3787,6 +4271,8 @@ ADMIN_HTML = """<!doctype html>
     function render(data) {
       fields.playlistRows.textContent = data.counts.playlist_video_rows || 0;
       fields.distinctVideos.textContent = data.counts.distinct_playlist_videos || 0;
+      fields.historyRows.textContent = data.counts.watch_history_rows || 0;
+      fields.historyVideos.textContent = data.counts.distinct_history_videos || 0;
       fields.playlistQueueCount.textContent = data.playlistScanQueueCount || 0;
       fields.metadataQueueCount.textContent = data.metadataQueueCount || 0;
       fields.playlistWorkerState.textContent = data.playlistScanRunning ? 'running' : 'idle';
@@ -3900,10 +4386,30 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if parsed.path == "/history":
+            body = HISTORY_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path == "/api/data":
             conn = connect(self.db_path)
             try:
                 data = fetch_app_data(conn)
+            finally:
+                conn.close()
+            self.send_json(data)
+            return
+        if parsed.path == "/api/history/search":
+            params = urllib.parse.parse_qs(parsed.query)
+            query = (params.get("q") or [""])[0]
+            limit = max(1, int((params.get("limit") or ["200"])[0] or 200))
+            conn = connect(self.db_path)
+            try:
+                data = search_history_data(conn, query, limit=limit)
             finally:
                 conn.close()
             self.send_json(data)
@@ -4047,6 +4553,12 @@ def main(argv: list[str] | None = None) -> int:
     takeout_parser.add_argument("--snapshot-key", default="takeout-2025-11-09")
     takeout_parser.add_argument("--label", default="Takeout 2025-11-09")
     takeout_parser.set_defaults(func=import_takeout_snapshot)
+
+    history_parser = subparsers.add_parser("import-history", help="Import YouTube Takeout watch/search history")
+    history_parser.add_argument("--db", default=str(DEFAULT_DB))
+    history_parser.add_argument("--takeout", default=str(TAKEOUT_DIR))
+    history_parser.add_argument("--history-key", default="takeout-2025-11-09")
+    history_parser.set_defaults(func=import_history)
 
     recover_missing_parser = subparsers.add_parser(
         "recover-missing-thumbnails",
