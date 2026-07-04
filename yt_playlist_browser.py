@@ -266,6 +266,31 @@ CREATE TABLE IF NOT EXISTS playlist_scan_worker_log (
   message TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS live_history_worker_runs (
+  run_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT '',
+  started_at INTEGER NOT NULL DEFAULT 0,
+  finished_at INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  processed INTEGER NOT NULL DEFAULT 0,
+  found INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  delay_seconds REAL NOT NULL DEFAULT 0,
+  requested_limit INTEGER NOT NULL DEFAULT 0,
+  last_video_id TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS live_history_worker_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  level TEXT NOT NULL DEFAULT '',
+  video_id TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_groups_parent_position ON groups(parent_key, position);
 CREATE INDEX IF NOT EXISTS idx_group_playlists_position ON group_playlists(group_key, position);
 CREATE INDEX IF NOT EXISTS idx_playlist_videos_hidden ON playlist_videos(is_playable, playlist_id, position);
@@ -279,6 +304,7 @@ CREATE INDEX IF NOT EXISTS idx_watch_history_search ON watch_history(title, chan
 CREATE INDEX IF NOT EXISTS idx_search_history_search ON search_history(query, searched_at);
 CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_run ON metadata_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_run ON playlist_scan_worker_log(run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_live_history_worker_log_run ON live_history_worker_log(run_id, created_at);
 """
 
 
@@ -1326,6 +1352,61 @@ def scan_playlist_videos_ytdlp(
     return videos
 
 
+def fetch_youtube_history_ytdlp(cookie_file: Path, limit: int = 100) -> list[dict[str, Any]]:
+    try:
+        import yt_dlp  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("yt-dlp is not installed. Run: pip install -r requirements.txt") from exc
+
+    class YtdlpLogger:
+        def debug(self, msg: str) -> None:
+            pass
+
+        def info(self, msg: str) -> None:
+            pass
+
+        def warning(self, msg: str) -> None:
+            pass
+
+        def error(self, msg: str) -> None:
+            pass
+
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": "in_playlist",
+        "playlistend": max(1, limit),
+        "cookiefile": str(cookie_file) if cookie_file.exists() else None,
+        "logger": YtdlpLogger(),
+    }
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(":ythistory", download=False)
+    entries = (info or {}).get("entries") or []
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        video_id = entry.get("id") or extract_video_id(entry.get("url") or "")
+        if not video_id:
+            continue
+        url = entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
+        if url.startswith("http"):
+            watch_url = url
+        else:
+            watch_url = f"https://www.youtube.com/watch?v={video_id}"
+        rows.append(
+            {
+                "video_id": video_id,
+                "title": entry.get("title") or video_id,
+                "url": watch_url,
+                "channel": entry.get("channel") or entry.get("uploader") or "",
+                "channel_url": entry.get("channel_url") or entry.get("uploader_url") or "",
+            }
+        )
+    return rows
+
+
 def scan_playlist_videos(
     opener: urllib.request.OpenerDirector,
     playlist_id: str,
@@ -1752,6 +1833,72 @@ def log_playlist_scan_event(
     )
 
 
+def log_live_history_event(
+    conn: sqlite3.Connection,
+    run_id: str,
+    level: str,
+    message: str,
+    video_id: str = "",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO live_history_worker_log(run_id, created_at, level, video_id, message)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (run_id, int(time.time()), level, video_id, message),
+    )
+
+
+def save_live_youtube_history(
+    conn: sqlite3.Connection,
+    rows: list[dict[str, Any]],
+    history_key: str = "live-youtube",
+) -> tuple[int, int, str]:
+    existing = {
+        row["video_id"]
+        for row in conn.execute(
+            "SELECT video_id FROM watch_history WHERE history_key = ? AND video_id <> ''",
+            (history_key,),
+        )
+    }
+    max_position = conn.execute(
+        "SELECT COALESCE(MAX(position), 0) AS max_position FROM watch_history WHERE history_key = ?",
+        (history_key,),
+    ).fetchone()["max_position"]
+    now = int(time.time())
+    inserted = 0
+    last_video_id = ""
+    for row in rows:
+        video_id = row.get("video_id") or ""
+        if not video_id or video_id in existing:
+            continue
+        inserted += 1
+        max_position += 1
+        last_video_id = video_id
+        conn.execute(
+            """
+            INSERT INTO watch_history(
+              history_key, position, action, video_id, title, url, channel,
+              channel_url, watched_at, source_file, imported_at
+            )
+            VALUES (?, ?, 'Watched', ?, ?, ?, ?, ?, ?, 'youtube-live', ?)
+            """,
+            (
+                history_key,
+                max_position,
+                video_id,
+                row.get("title") or video_id,
+                row.get("url") or f"https://www.youtube.com/watch?v={video_id}",
+                row.get("channel") or "",
+                row.get("channel_url") or "",
+                time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(now)),
+                now,
+            ),
+        )
+        existing.add(video_id)
+    return inserted, len(rows), last_video_id
+
+
 def save_playlist_scan(
     conn: sqlite3.Connection,
     playlist_id: str,
@@ -1909,8 +2056,9 @@ def admin_status(
     db_path: Path,
     metadata_worker: "MetadataWorker | None" = None,
     playlist_worker: "PlaylistScanWorker | None" = None,
+    live_history_worker: "LiveHistoryWorker | None" = None,
 ) -> dict[str, Any]:
-    reconcile_worker_runs(db_path, metadata_worker, playlist_worker)
+    reconcile_worker_runs(db_path, metadata_worker, playlist_worker, live_history_worker)
     conn = connect(db_path)
     try:
         counts = dict(
@@ -1924,6 +2072,18 @@ def admin_status(
                   (SELECT COUNT(*) FROM search_history) AS search_history_rows
                 FROM playlist_videos
                 WHERE video_id <> ''
+                """
+            ).fetchone()
+        )
+        live_history_counts = dict(
+            conn.execute(
+                """
+                SELECT
+                  COUNT(*) AS live_rows,
+                  COUNT(DISTINCT video_id) AS live_video_ids,
+                  COALESCE(MAX(imported_at), 0) AS last_imported_at
+                FROM watch_history
+                WHERE history_key = 'live-youtube'
                 """
             ).fetchone()
         )
@@ -1969,6 +2129,14 @@ def admin_status(
             LIMIT 1
             """
         ).fetchone()
+        latest_live_history_run = conn.execute(
+            """
+            SELECT *
+            FROM live_history_worker_runs
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
         metadata_logs = [
             dict(row)
             for row in conn.execute(
@@ -1991,13 +2159,26 @@ def admin_status(
                 """
             )
         ]
+        live_history_logs = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM live_history_worker_log
+                ORDER BY id DESC
+                LIMIT 80
+                """
+            )
+        ]
     finally:
         conn.close()
     return {
         "running": metadata_worker.is_running() if metadata_worker else False,
         "metadataRunning": metadata_worker.is_running() if metadata_worker else False,
         "playlistScanRunning": playlist_worker.is_running() if playlist_worker else False,
+        "liveHistoryRunning": live_history_worker.is_running() if live_history_worker else False,
         "counts": counts,
+        "liveHistoryCounts": live_history_counts,
         "playlistCounts": playlist_counts,
         "metadataCounts": metadata_counts,
         "queueCount": metadata_queue_count,
@@ -2006,9 +2187,11 @@ def admin_status(
         "latestRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestMetadataRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestPlaylistScanRun": dict(latest_playlist_run) if latest_playlist_run else None,
+        "latestLiveHistoryRun": dict(latest_live_history_run) if latest_live_history_run else None,
         "logs": metadata_logs,
         "metadataLogs": metadata_logs,
         "playlistScanLogs": playlist_logs,
+        "liveHistoryLogs": live_history_logs,
     }
 
 
@@ -2023,9 +2206,11 @@ def reconcile_worker_runs(
     db_path: Path,
     metadata_worker: "MetadataWorker | None" = None,
     playlist_worker: "PlaylistScanWorker | None" = None,
+    live_history_worker: "LiveHistoryWorker | None" = None,
 ) -> None:
     metadata_running = metadata_worker.is_running() if metadata_worker else False
     playlist_running = playlist_worker.is_running() if playlist_worker else False
+    live_history_running = live_history_worker.is_running() if live_history_worker else False
     now = int(time.time())
     conn = connect(db_path)
     try:
@@ -2048,6 +2233,20 @@ def reconcile_worker_runs(
                 conn.execute(
                     """
                     UPDATE playlist_scan_worker_runs
+                    SET status = 'interrupted',
+                        finished_at = ?,
+                        message = CASE
+                          WHEN message = '' THEN 'Interrupted by server restart'
+                          ELSE message || ' (interrupted by server restart)'
+                        END
+                    WHERE status = 'running'
+                    """,
+                    (now,),
+                )
+            if not live_history_running:
+                conn.execute(
+                    """
+                    UPDATE live_history_worker_runs
                     SET status = 'interrupted',
                         finished_at = ?,
                         message = CASE
@@ -2456,6 +2655,138 @@ class PlaylistScanWorker:
 
 
 PLAYLIST_SCAN_WORKER = PlaylistScanWorker()
+
+
+class LiveHistoryWorker:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._run_id = ""
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return bool(self._thread and self._thread.is_alive())
+
+    def start(
+        self,
+        db_path: Path,
+        cookie_file: Path,
+        interval_seconds: float,
+        limit: int,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return {"started": False, "run_id": self._run_id, "message": "Live history watcher already running"}
+            self._stop.clear()
+            self._run_id = uuid.uuid4().hex
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(self._run_id, db_path, cookie_file, interval_seconds, limit),
+                daemon=True,
+            )
+            self._thread.start()
+            return {"started": True, "run_id": self._run_id, "message": "Live history watcher started"}
+
+    def stop(self) -> dict[str, Any]:
+        with self._lock:
+            if not self._thread or not self._thread.is_alive():
+                return {"stopping": False, "message": "Live history watcher is not running"}
+            self._stop.set()
+            return {"stopping": True, "run_id": self._run_id, "message": "Live history watcher stop requested"}
+
+    def _run(
+        self,
+        run_id: str,
+        db_path: Path,
+        cookie_file: Path,
+        interval_seconds: float,
+        limit: int,
+    ) -> None:
+        conn = connect(db_path)
+        polls = 0
+        inserted_total = 0
+        failed = 0
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO live_history_worker_runs(
+                      run_id, status, started_at, delay_seconds,
+                      requested_limit, message
+                    )
+                    VALUES (?, 'running', ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        int(time.time()),
+                        interval_seconds,
+                        limit,
+                        "Live history watcher started",
+                    ),
+                )
+                log_live_history_event(conn, run_id, "info", "Live history watcher started")
+
+            while not self._stop.is_set():
+                last_video_id = ""
+                try:
+                    rows = fetch_youtube_history_ytdlp(cookie_file, limit=limit)
+                    with conn:
+                        inserted, seen, last_video_id = save_live_youtube_history(conn, rows)
+                        polls += 1
+                        inserted_total += inserted
+                        message = f"Poll {polls}: {inserted} new of {seen} fetched"
+                        conn.execute(
+                            """
+                            UPDATE live_history_worker_runs
+                            SET processed = ?, found = ?, failed = ?, last_video_id = ?, message = ?
+                            WHERE run_id = ?
+                            """,
+                            (polls, inserted_total, failed, last_video_id, message, run_id),
+                        )
+                        log_live_history_event(conn, run_id, "info", message, last_video_id)
+                except Exception as exc:
+                    failed += 1
+                    with conn:
+                        conn.execute(
+                            """
+                            UPDATE live_history_worker_runs
+                            SET processed = ?, found = ?, failed = ?, message = ?
+                            WHERE run_id = ?
+                            """,
+                            (polls, inserted_total, failed, f"Poll error: {exc}", run_id),
+                        )
+                        log_live_history_event(conn, run_id, "error", f"Poll error: {exc}")
+
+                if self._stop.wait(interval_seconds):
+                    break
+
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE live_history_worker_runs
+                    SET status = 'stopped', finished_at = ?, message = ?
+                    WHERE run_id = ?
+                    """,
+                    (int(time.time()), f"Stopped after {polls} polls; {inserted_total} new videos", run_id),
+                )
+                log_live_history_event(conn, run_id, "warn", "Live history watcher stopped")
+        except Exception as exc:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE live_history_worker_runs
+                    SET status = 'error', finished_at = ?, message = ?
+                    WHERE run_id = ?
+                    """,
+                    (int(time.time()), str(exc), run_id),
+                )
+                log_live_history_event(conn, run_id, "error", f"Live history watcher crashed: {exc}")
+        finally:
+            conn.close()
+
+
+LIVE_HISTORY_WORKER = LiveHistoryWorker()
 
 
 def scan_hidden(args: argparse.Namespace) -> None:
@@ -3225,7 +3556,7 @@ def search_history_data(conn: sqlite3.Connection, query: str, limit: int = 200) 
             FROM watch_history wh
             LEFT JOIN video_metadata vm ON vm.video_id = wh.video_id
             {watch_where}
-            ORDER BY wh.position
+            ORDER BY wh.imported_at DESC, wh.position
             LIMIT ?
             """,
             [*watch_params, limit],
@@ -4199,10 +4530,12 @@ ADMIN_HTML = """<!doctype html>
       <div class="panel"><div class="metric">Distinct video IDs</div><div id="distinctVideos" class="value">0</div></div>
       <div class="panel"><div class="metric">History rows</div><div id="historyRows" class="value">0</div></div>
       <div class="panel"><div class="metric">History video IDs</div><div id="historyVideos" class="value">0</div></div>
+      <div class="panel"><div class="metric">Live history rows</div><div id="liveHistoryRows" class="value">0</div></div>
       <div class="panel"><div class="metric">Playlist scan queue</div><div id="playlistQueueCount" class="value">0</div></div>
       <div class="panel"><div class="metric">Metadata queue</div><div id="metadataQueueCount" class="value">0</div></div>
       <div class="panel"><div class="metric">Playlist scanner</div><div id="playlistWorkerState" class="value">idle</div></div>
       <div class="panel"><div class="metric">Metadata worker</div><div id="metadataWorkerState" class="value">idle</div></div>
+      <div class="panel"><div class="metric">History watcher</div><div id="liveHistoryWorkerState" class="value">idle</div></div>
     </section>
 
     <section class="panel">
@@ -4210,17 +4543,22 @@ ADMIN_HTML = """<!doctype html>
         <label>Limit<input id="limit" type="number" min="0" step="1" value="10"></label>
         <label>Playlist delay<input id="playlistDelay" type="number" min="1" step="1" value="3"></label>
         <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
+        <label>History poll seconds<input id="liveHistoryInterval" type="number" min="30" step="30" value="300"></label>
+        <label>History fetch limit<input id="liveHistoryLimit" type="number" min="1" step="1" value="100"></label>
         <label>Playlist stale days<input id="playlistStaleDays" type="number" min="0" step="1" value="7"></label>
         <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
         <label class="checkbox"><input id="force" type="checkbox">Refresh already fetched</label>
         <button id="scanPlaylists" class="primary" type="button">Scan playlists</button>
         <button id="fetchMetadata" class="primary" type="button">Fetch video metadata</button>
+        <button id="startLiveHistory" class="primary" type="button">Watch YT history</button>
         <button id="stopPlaylists" type="button">Stop playlist scan</button>
         <button id="stopMetadata" type="button">Stop metadata</button>
+        <button id="stopLiveHistory" type="button">Stop history watcher</button>
         <button id="refresh" type="button">Refresh status</button>
       </div>
       <div id="playlistRunStatus" class="status"></div>
       <div id="metadataRunStatus" class="status" style="margin-top:8px"></div>
+      <div id="liveHistoryRunStatus" class="status" style="margin-top:8px"></div>
     </section>
 
     <section class="grid" id="metadataCounts"></section>
@@ -4238,6 +4576,7 @@ ADMIN_HTML = """<!doctype html>
       distinctVideos: document.getElementById('distinctVideos'),
       historyRows: document.getElementById('historyRows'),
       historyVideos: document.getElementById('historyVideos'),
+      liveHistoryRows: document.getElementById('liveHistoryRows'),
       queueCount: document.getElementById('queueCount'),
       workerState: document.getElementById('workerState'),
       runStatus: document.getElementById('runStatus'),
@@ -4246,6 +4585,8 @@ ADMIN_HTML = """<!doctype html>
       limit: document.getElementById('limit'),
       playlistDelay: document.getElementById('playlistDelay'),
       metadataDelay: document.getElementById('metadataDelay'),
+      liveHistoryInterval: document.getElementById('liveHistoryInterval'),
+      liveHistoryLimit: document.getElementById('liveHistoryLimit'),
       playlistStaleDays: document.getElementById('playlistStaleDays'),
       metadataStaleDays: document.getElementById('metadataStaleDays'),
       force: document.getElementById('force'),
@@ -4253,8 +4594,10 @@ ADMIN_HTML = """<!doctype html>
       metadataQueueCount: document.getElementById('metadataQueueCount'),
       playlistWorkerState: document.getElementById('playlistWorkerState'),
       metadataWorkerState: document.getElementById('metadataWorkerState'),
+      liveHistoryWorkerState: document.getElementById('liveHistoryWorkerState'),
       playlistRunStatus: document.getElementById('playlistRunStatus'),
       metadataRunStatus: document.getElementById('metadataRunStatus'),
+      liveHistoryRunStatus: document.getElementById('liveHistoryRunStatus'),
     };
 
     function escapeHtml(value) {
@@ -4273,12 +4616,15 @@ ADMIN_HTML = """<!doctype html>
       fields.distinctVideos.textContent = data.counts.distinct_playlist_videos || 0;
       fields.historyRows.textContent = data.counts.watch_history_rows || 0;
       fields.historyVideos.textContent = data.counts.distinct_history_videos || 0;
+      fields.liveHistoryRows.textContent = data.liveHistoryCounts?.live_rows || 0;
       fields.playlistQueueCount.textContent = data.playlistScanQueueCount || 0;
       fields.metadataQueueCount.textContent = data.metadataQueueCount || 0;
       fields.playlistWorkerState.textContent = data.playlistScanRunning ? 'running' : 'idle';
       fields.playlistWorkerState.className = `value ${data.playlistScanRunning ? 'running' : ''}`;
       fields.metadataWorkerState.textContent = data.metadataRunning ? 'running' : 'idle';
       fields.metadataWorkerState.className = `value ${data.metadataRunning ? 'running' : ''}`;
+      fields.liveHistoryWorkerState.textContent = data.liveHistoryRunning ? 'running' : 'idle';
+      fields.liveHistoryWorkerState.className = `value ${data.liveHistoryRunning ? 'running' : ''}`;
 
       function runHtml(run, label) {
         return run ? `
@@ -4294,6 +4640,7 @@ ADMIN_HTML = """<!doctype html>
 
       fields.playlistRunStatus.innerHTML = runHtml(data.latestPlaylistScanRun, 'Playlist scan');
       fields.metadataRunStatus.innerHTML = runHtml(data.latestMetadataRun, 'Metadata');
+      fields.liveHistoryRunStatus.innerHTML = runHtml(data.latestLiveHistoryRun, 'Live history');
 
       fields.metadataCounts.replaceChildren(...(data.metadataCounts || []).map(row => {
         const div = document.createElement('div');
@@ -4305,6 +4652,7 @@ ADMIN_HTML = """<!doctype html>
       const logs = [
         ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
         ...(data.metadataLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'metadata' })),
+        ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
       ].sort((a, b) => (b.created_at - a.created_at) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
       fields.logs.innerHTML = logs.map(log => `
         <tr>
@@ -4340,8 +4688,13 @@ ADMIN_HTML = """<!doctype html>
       stale_days: fields.metadataStaleDays.value,
       force: fields.force.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
+    document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start', {
+      limit: fields.liveHistoryLimit.value,
+      interval: fields.liveHistoryInterval.value,
+    }).catch(error => alert(error.message)));
     document.getElementById('stopPlaylists').addEventListener('click', () => post('/api/admin/playlists/stop').catch(error => alert(error.message)));
     document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
+    document.getElementById('stopLiveHistory').addEventListener('click', () => post('/api/admin/live-history/stop').catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus().catch(error => alert(error.message)));
     loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
     setInterval(loadStatus, 5000);
@@ -4415,7 +4768,7 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(data)
             return
         if parsed.path == "/api/admin/status":
-            self.send_json(admin_status(self.db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER))
+            self.send_json(admin_status(self.db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER))
             return
         return super().do_GET()
 
@@ -4459,6 +4812,20 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/admin/playlists/stop":
             self.send_json(PLAYLIST_SCAN_WORKER.stop())
             return
+        if parsed.path == "/api/admin/live-history/start":
+            limit = max(1, int((params.get("limit") or ["100"])[0] or 100))
+            interval = max(30.0, float((params.get("interval") or ["300"])[0] or 300))
+            result = LIVE_HISTORY_WORKER.start(
+                self.db_path,
+                self.cookie_file,
+                interval_seconds=interval,
+                limit=limit,
+            )
+            self.send_json(result)
+            return
+        if parsed.path == "/api/admin/live-history/stop":
+            self.send_json(LIVE_HISTORY_WORKER.stop())
+            return
         self.send_error(404, "Not found")
 
     def send_json(self, data: Any, status: int = 200) -> None:
@@ -4487,7 +4854,7 @@ def serve(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}. Run import first.")
-    reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER)
+    reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER)
 
     def handler(*handler_args, **handler_kwargs):
         return PlaylistHandler(
