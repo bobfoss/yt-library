@@ -1231,6 +1231,72 @@ def fetch_watch_metadata(
     return metadata
 
 
+def scan_playlist_videos_ytdlp(
+    playlist_id: str,
+    cookie_file: Path,
+) -> list[dict[str, Any]]:
+    try:
+        import yt_dlp  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("yt-dlp is not installed") from exc
+
+    url = f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}"
+    messages: list[str] = []
+
+    class YtdlpLogger:
+        def debug(self, message: str) -> None:
+            return
+
+        def warning(self, message: str) -> None:
+            messages.append(message)
+
+        def error(self, message: str) -> None:
+            messages.append(message)
+
+    options = {
+        "cookiefile": str(cookie_file) if cookie_file.exists() else None,
+        "extract_flat": "in_playlist",
+        "ignoreerrors": True,
+        "logger": YtdlpLogger(),
+        "no_warnings": True,
+        "quiet": True,
+        "skip_download": True,
+    }
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(url, download=False)
+    if not info:
+        text = "\n".join(messages).strip()
+        raise RuntimeError(text or "yt-dlp returned no playlist data")
+    entries = [entry for entry in info.get("entries") or [] if isinstance(entry, dict)]
+    videos: list[dict[str, Any]] = []
+    for position, entry in enumerate(entries, start=1):
+        video_id = str(entry.get("id") or entry.get("url") or "")
+        if not video_id:
+            continue
+        title = str(entry.get("title") or video_id).strip()
+        channel = str(entry.get("channel") or entry.get("uploader") or "").strip()
+        duration = format_duration(entry.get("duration"))
+        webpage_url = str(entry.get("webpage_url") or "")
+        if not webpage_url:
+            webpage_url = f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}"
+        availability = str(entry.get("availability") or "").strip()
+        hidden = availability.lower() in {"private", "needs_auth", "premium_only", "subscriber_only"}
+        videos.append(
+            {
+                "playlist_id": playlist_id,
+                "position": position,
+                "video_id": video_id,
+                "title": title,
+                "channel": channel,
+                "duration_text": duration,
+                "is_playable": 0 if hidden else 1,
+                "availability": availability,
+                "url": webpage_url,
+            }
+        )
+    return videos
+
+
 def scan_playlist_videos(
     opener: urllib.request.OpenerDirector,
     playlist_id: str,
@@ -2206,16 +2272,25 @@ class PlaylistScanWorker:
                 title = row["title"] or playlist_id
                 status = "ok"
                 error = ""
+                backend = "web"
+                ytdlp_error = ""
                 videos: list[dict[str, Any]] = []
                 try:
-                    videos = scan_playlist_videos(opener, playlist_id)
-                except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-                    status = "error"
-                    error = str(exc)
+                    videos = scan_playlist_videos_ytdlp(playlist_id, cookie_file)
+                    backend = "yt-dlp"
+                except Exception as exc:
+                    ytdlp_error = str(exc)
+                    try:
+                        videos = scan_playlist_videos(opener, playlist_id)
+                    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as web_exc:
+                        status = "error"
+                        error = str(web_exc)
                 expected_count = expected_video_count(row["video_count_text"] if "video_count_text" in row.keys() else "")
                 if status == "ok" and not videos and expected_count > 0:
                     status = "error"
                     error = f"Parsed 0 videos, but playlist metadata says {expected_count} videos"
+                    if ytdlp_error:
+                        error += f"; yt-dlp failed: {ytdlp_error[:500]}"
                 with conn:
                     video_count, hidden_count = save_playlist_scan(
                         conn,
@@ -2234,7 +2309,7 @@ class PlaylistScanWorker:
                             conn,
                             run_id,
                             "info",
-                            f"{title}: {video_count} videos, {hidden_count} hidden",
+                            f"{title}: {video_count} videos, {hidden_count} hidden ({backend})",
                             playlist_id,
                         )
                     conn.execute(
