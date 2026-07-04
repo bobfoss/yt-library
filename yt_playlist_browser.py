@@ -24,7 +24,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import date, datetime, timedelta
+import zipfile
+from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -234,19 +235,16 @@ CREATE TABLE IF NOT EXISTS youtube_history_occurrences (
 
 CREATE TABLE IF NOT EXISTS takeout_history_occurrences (
   history_key TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  action TEXT NOT NULL DEFAULT '',
+  row_hash TEXT NOT NULL DEFAULT '',
   video_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
   url TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
   channel_url TEXT NOT NULL DEFAULT '',
   watched_at TEXT NOT NULL DEFAULT '',
+  watched_at_iso TEXT NOT NULL DEFAULT '',
   watch_date TEXT NOT NULL DEFAULT '',
-  source_file TEXT NOT NULL DEFAULT '',
-  imported_at INTEGER NOT NULL DEFAULT 0,
-  row_hash TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (history_key, position)
+  PRIMARY KEY (history_key, row_hash)
 );
 
 CREATE TABLE IF NOT EXISTS history_reconciled (
@@ -262,7 +260,7 @@ CREATE TABLE IF NOT EXISTS history_reconciled (
   youtube_history_key TEXT NOT NULL DEFAULT '',
   youtube_ordinal INTEGER NOT NULL DEFAULT 0,
   takeout_history_key TEXT NOT NULL DEFAULT '',
-  takeout_position INTEGER NOT NULL DEFAULT 0,
+  takeout_row_hash TEXT NOT NULL DEFAULT '',
   match_confidence TEXT NOT NULL DEFAULT '',
   match_notes TEXT NOT NULL DEFAULT '',
   imported_at INTEGER NOT NULL DEFAULT 0,
@@ -397,14 +395,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
             "watch_date": "TEXT NOT NULL DEFAULT ''",
         },
     )
-    ensure_columns(
-        conn,
-        "takeout_history_occurrences",
-        {
-            "watch_date": "TEXT NOT NULL DEFAULT ''",
-            "row_hash": "TEXT NOT NULL DEFAULT ''",
-        },
-    )
+    ensure_takeout_history_schema(conn)
+    ensure_history_reconciled_schema(conn)
     return conn
 
 
@@ -417,6 +409,129 @@ def ensure_columns(
     for name, definition in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
+    expected = {
+        "history_key",
+        "row_hash",
+        "video_id",
+        "title",
+        "url",
+        "channel",
+        "channel_url",
+        "watched_at",
+        "watched_at_iso",
+        "watch_date",
+    }
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(takeout_history_occurrences)")}
+    if existing == expected:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_video ON takeout_history_occurrences(video_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_date ON takeout_history_occurrences(watch_date, video_id)"
+        )
+        return
+    conn.execute("ALTER TABLE takeout_history_occurrences RENAME TO takeout_history_occurrences_old")
+    conn.execute(
+        """
+        CREATE TABLE takeout_history_occurrences (
+          history_key TEXT NOT NULL,
+          row_hash TEXT NOT NULL DEFAULT '',
+          video_id TEXT NOT NULL DEFAULT '',
+          title TEXT NOT NULL DEFAULT '',
+          url TEXT NOT NULL DEFAULT '',
+          channel TEXT NOT NULL DEFAULT '',
+          channel_url TEXT NOT NULL DEFAULT '',
+          watched_at TEXT NOT NULL DEFAULT '',
+          watched_at_iso TEXT NOT NULL DEFAULT '',
+          watch_date TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (history_key, row_hash)
+        )
+        """
+    )
+    old_cols = {row["name"] for row in conn.execute("PRAGMA table_info(takeout_history_occurrences_old)")}
+    if old_cols:
+        rows = conn.execute("SELECT * FROM takeout_history_occurrences_old").fetchall()
+        for row in rows:
+            raw = row["watched_at"] if "watched_at" in old_cols else ""
+            iso_value = takeout_watch_datetime(raw)
+            row_hash = row["row_hash"] if "row_hash" in old_cols and row["row_hash"] else ""
+            if not row_hash:
+                row_hash = history_row_hash(
+                    {
+                        "video_id": row["video_id"] if "video_id" in old_cols else "",
+                        "title": row["title"] if "title" in old_cols else "",
+                        "url": row["url"] if "url" in old_cols else "",
+                        "channel": row["channel"] if "channel" in old_cols else "",
+                        "channel_url": row["channel_url"] if "channel_url" in old_cols else "",
+                        "watched_at": raw,
+                    }
+                )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO takeout_history_occurrences(
+                  history_key, row_hash, video_id, title, url, channel, channel_url,
+                  watched_at, watched_at_iso, watch_date
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["history_key"] if "history_key" in old_cols else "",
+                    row_hash,
+                    row["video_id"] if "video_id" in old_cols else "",
+                    row["title"] if "title" in old_cols else "",
+                    row["url"] if "url" in old_cols else "",
+                    row["channel"] if "channel" in old_cols else "",
+                    row["channel_url"] if "channel_url" in old_cols else "",
+                    raw,
+                    iso_value,
+                    iso_value[:10] if iso_value else (row["watch_date"] if "watch_date" in old_cols else ""),
+                ),
+            )
+    conn.execute("DROP TABLE takeout_history_occurrences_old")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_video ON takeout_history_occurrences(video_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_date ON takeout_history_occurrences(watch_date, video_id)"
+    )
+
+
+def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(history_reconciled)")}
+    if "takeout_position" not in existing and "takeout_row_hash" in existing:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, source_quality)")
+        return
+    conn.execute("ALTER TABLE history_reconciled RENAME TO history_reconciled_old")
+    conn.execute(
+        """
+        CREATE TABLE history_reconciled (
+          reconciled_id TEXT PRIMARY KEY,
+          video_id TEXT NOT NULL DEFAULT '',
+          title TEXT NOT NULL DEFAULT '',
+          url TEXT NOT NULL DEFAULT '',
+          channel TEXT NOT NULL DEFAULT '',
+          channel_url TEXT NOT NULL DEFAULT '',
+          best_watch_time TEXT NOT NULL DEFAULT '',
+          watch_date TEXT NOT NULL DEFAULT '',
+          source_quality TEXT NOT NULL DEFAULT '',
+          youtube_history_key TEXT NOT NULL DEFAULT '',
+          youtube_ordinal INTEGER NOT NULL DEFAULT 0,
+          takeout_history_key TEXT NOT NULL DEFAULT '',
+          takeout_row_hash TEXT NOT NULL DEFAULT '',
+          match_confidence TEXT NOT NULL DEFAULT '',
+          match_notes TEXT NOT NULL DEFAULT '',
+          imported_at INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute("DROP TABLE history_reconciled_old")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, source_quality)")
 
 
 def load_cookie_jar(cookie_file: Path) -> http.cookiejar.MozillaCookieJar:
@@ -1309,14 +1424,81 @@ def history_date_from_label(label: str, today: date | None = None) -> str:
     return ""
 
 
-def takeout_watch_date(watched_at: str) -> str:
+TZ_OFFSETS = {
+    "UTC": "+00:00",
+    "GMT": "+00:00",
+    "PST": "-08:00",
+    "PDT": "-07:00",
+    "MST": "-07:00",
+    "MDT": "-06:00",
+    "CST": "-06:00",
+    "CDT": "-05:00",
+    "EST": "-05:00",
+    "EDT": "-04:00",
+}
+
+
+def pacific_offset_for_date(value: date) -> str:
+    march = date(value.year, 3, 1)
+    second_sunday_march = march + timedelta(days=(6 - march.weekday()) % 7 + 7)
+    november = date(value.year, 11, 1)
+    first_sunday_november = november + timedelta(days=(6 - november.weekday()) % 7)
+    return "-07:00" if second_sunday_march <= value < first_sunday_november else "-08:00"
+
+
+def youtube_watch_datetime(watch_date: str) -> str:
+    try:
+        parsed = date.fromisoformat(watch_date)
+    except ValueError:
+        return watch_date
+    return f"{watch_date}T00:00:00{pacific_offset_for_date(parsed)}"
+
+
+def pacific_date_for_iso_instant(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return value[:10]
+    if parsed.tzinfo is None:
+        return parsed.date().isoformat()
+    utc_value = parsed.astimezone(timezone.utc)
+    fallback_local_date = (utc_value + timedelta(hours=-8)).date()
+    offset = pacific_offset_for_date(fallback_local_date)
+    sign = -1 if offset.startswith("-") else 1
+    hours, minutes = (int(part) for part in offset[1:].split(":", 1))
+    local_value = utc_value + sign * timedelta(hours=hours, minutes=minutes)
+    return local_value.date().isoformat()
+
+
+def takeout_watch_datetime(watched_at: str) -> str:
     cleaned = re.sub(r"\s+", " ", watched_at).strip()
-    without_tz = re.sub(r"\s+[A-Z]{2,5}$", "", cleaned)
+    iso_match = re.match(r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$", cleaned)
+    if iso_match:
+        offset = "+00:00" if iso_match.group(3) == "Z" else iso_match.group(3)
+        return f"{iso_match.group(1)}T{iso_match.group(2)}{offset}"
+    match = re.match(r"^(.*)\s+([A-Z]{2,5})$", cleaned)
+    if not match:
+        return ""
+    datetime_text, tz_name = match.groups()
+    offset = TZ_OFFSETS.get(tz_name)
+    if not offset:
+        return ""
     for fmt in ("%b %d, %Y, %I:%M:%S %p", "%B %d, %Y, %I:%M:%S %p"):
         try:
-            return datetime.strptime(without_tz, fmt).date().isoformat()
+            parsed = datetime.strptime(datetime_text, fmt)
+            return parsed.strftime("%Y-%m-%dT%H:%M:%S") + offset
         except ValueError:
             continue
+    return ""
+
+
+def takeout_watch_date(watched_at: str) -> str:
+    iso_value = takeout_watch_datetime(watched_at)
+    if iso_value:
+        return iso_value[:10]
+    cleaned = re.sub(r"\s+", " ", watched_at).strip()
     for fmt in ("%b %d, %Y", "%B %d, %Y"):
         try:
             return datetime.strptime(cleaned, fmt).date().isoformat()
@@ -2235,7 +2417,7 @@ def save_youtube_history_occurrences(
 def history_row_hash(row: dict[str, str]) -> str:
     payload = "\x1f".join(
         row.get(key, "")
-        for key in ("action", "video_id", "title", "url", "channel", "channel_url", "watched_at")
+        for key in ("video_id", "title", "url", "channel", "channel_url", "watched_at")
     )
     return hashlib.sha1(payload.encode("utf-8", "replace")).hexdigest()
 
@@ -2255,24 +2437,25 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
         SELECT *
         FROM takeout_history_occurrences
         WHERE video_id <> ''
-        ORDER BY history_key, position
+        ORDER BY history_key, watched_at_iso DESC, row_hash
         """
     ).fetchall()
 
     takeout_by_video_date: dict[tuple[str, str], list[sqlite3.Row]] = {}
     for row in takeout_rows:
-        takeout_by_video_date.setdefault((row["video_id"], row["watch_date"]), []).append(row)
+        match_date = pacific_date_for_iso_instant(row["watched_at_iso"]) or row["watch_date"]
+        takeout_by_video_date.setdefault((row["video_id"], match_date), []).append(row)
 
     matched_youtube: dict[tuple[str, int], sqlite3.Row] = {}
-    takeout_to_youtube: dict[tuple[str, int], tuple[str, int]] = {}
-    matched_takeout: set[tuple[str, int]] = set()
+    takeout_to_youtube: dict[tuple[str, str], tuple[str, int]] = {}
+    matched_takeout: set[tuple[str, str]] = set()
     for youtube in youtube_rows:
         key = (youtube["video_id"], youtube["watch_date"])
         if not key[0] or not key[1]:
             continue
         candidates = takeout_by_video_date.get(key, [])
         for takeout in candidates:
-            takeout_key = (takeout["history_key"], takeout["position"])
+            takeout_key = (takeout["history_key"], takeout["row_hash"])
             if takeout_key in matched_takeout:
                 continue
             matched_takeout.add(takeout_key)
@@ -2285,7 +2468,7 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
     inserted = 0
     matched = 0
     for takeout in takeout_rows:
-        takeout_key = (takeout["history_key"], takeout["position"])
+        takeout_key = (takeout["history_key"], takeout["row_hash"])
         youtube_match = takeout_to_youtube.get(takeout_key)
         source_quality = "matched" if youtube_match else "takeout_exact"
         if youtube_match:
@@ -2295,28 +2478,28 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
             INSERT INTO history_reconciled(
               reconciled_id, video_id, title, url, channel, channel_url,
               best_watch_time, watch_date, source_quality,
-              youtube_history_key, youtube_ordinal, takeout_history_key, takeout_position,
+              youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
               match_confidence, match_notes, imported_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                f"takeout:{takeout['history_key']}:{takeout['position']}",
+                f"takeout:{takeout['history_key']}:{takeout['row_hash']}",
                 takeout["video_id"],
                 takeout["title"],
                 takeout["url"],
                 takeout["channel"],
                 takeout["channel_url"],
-                takeout["watched_at"],
+                takeout["watched_at_iso"] or takeout["watched_at"],
                 takeout["watch_date"],
                 source_quality,
                 youtube_match[0] if youtube_match else "",
                 youtube_match[1] if youtube_match else 0,
                 takeout["history_key"],
-                takeout["position"],
+                takeout["row_hash"],
                 "video_id_date" if youtube_match else "takeout_only",
                 "same video_id and watch_date" if youtube_match else "",
-                takeout["imported_at"],
+                now,
                 now,
             ),
         )
@@ -2331,10 +2514,10 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
             INSERT INTO history_reconciled(
               reconciled_id, video_id, title, url, channel, channel_url,
               best_watch_time, watch_date, source_quality,
-              youtube_history_key, youtube_ordinal, takeout_history_key, takeout_position,
+              youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
               match_confidence, match_notes, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'youtube_date_only', ?, ?, '', 0, 'youtube_only', '', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'youtube_date_only', ?, ?, '', '', 'youtube_only', '', ?, ?)
             """,
             (
                 f"youtube:{youtube['history_key']}:{youtube['ordinal']}",
@@ -2343,7 +2526,7 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 youtube["url"],
                 youtube["channel"],
                 youtube["channel_url"],
-                youtube["watch_date"] or youtube["observed_at"],
+                youtube_watch_datetime(youtube["watch_date"]) if youtube["watch_date"] else youtube["observed_at"],
                 youtube["watch_date"],
                 youtube["history_key"],
                 youtube["ordinal"],
@@ -3622,8 +3805,41 @@ def extract_video_id(value: str) -> str:
     return ""
 
 
-def parse_takeout_watch_history(path: Path) -> list[dict[str, str]]:
-    text = path.read_text(encoding="utf-8", errors="replace")
+def parse_takeout_watch_history_text(text: str) -> list[dict[str, str]]:
+    stripped = text.lstrip()
+    if stripped.startswith("["):
+        rows: list[dict[str, str]] = []
+        try:
+            records = json.loads(text)
+        except json.JSONDecodeError:
+            records = []
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict):
+                continue
+            url = str(record.get("titleUrl") or "")
+            video_id = extract_video_id(url)
+            if not video_id:
+                continue
+            title = str(record.get("title") or "").strip()
+            title = re.sub(r"^Watched\s+", "", title, flags=re.I).strip()
+            subtitles = record.get("subtitles") if isinstance(record.get("subtitles"), list) else []
+            channel = ""
+            channel_url = ""
+            if subtitles and isinstance(subtitles[0], dict):
+                channel = str(subtitles[0].get("name") or "")
+                channel_url = str(subtitles[0].get("url") or "")
+            rows.append(
+                {
+                    "url": url,
+                    "video_id": video_id,
+                    "title": title or video_id,
+                    "channel_url": channel_url,
+                    "channel": channel,
+                    "watched_at": str(record.get("time") or ""),
+                }
+            )
+        return rows
+
     action = r"(Watched|Viewed)"
     sep = r"(?:\s|&nbsp;|\xa0)*"
     anchor = r'<a href="([^"]+)">(.*?)</a>'
@@ -3639,7 +3855,6 @@ def parse_takeout_watch_history(path: Path) -> list[dict[str, str]]:
             continue
         rows.append(
             {
-                "action": strip_html_fragment(match.group(1)),
                 "url": url,
                 "video_id": video_id,
                 "title": strip_html_fragment(match.group(3)),
@@ -3651,8 +3866,32 @@ def parse_takeout_watch_history(path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def parse_takeout_search_history(path: Path) -> list[dict[str, str]]:
-    text = path.read_text(encoding="utf-8", errors="replace")
+def parse_takeout_watch_history(path: Path) -> list[dict[str, str]]:
+    return parse_takeout_watch_history_text(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def parse_takeout_search_history_text(text: str) -> list[dict[str, str]]:
+    stripped = text.lstrip()
+    if stripped.startswith("["):
+        rows: list[dict[str, str]] = []
+        try:
+            records = json.loads(text)
+        except json.JSONDecodeError:
+            records = []
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict):
+                continue
+            title = str(record.get("title") or "").strip()
+            title = re.sub(r"^Searched for\s+", "", title, flags=re.I).strip()
+            rows.append(
+                {
+                    "url": str(record.get("titleUrl") or ""),
+                    "query": title,
+                    "searched_at": str(record.get("time") or ""),
+                }
+            )
+        return rows
+
     pattern = re.compile(
         r"Searched for(?:\s|&nbsp;|\xa0)*<a href=\"([^\"]+)\">(.*?)</a><br>([^<]+)<br>",
         re.IGNORECASE | re.DOTALL,
@@ -3669,26 +3908,84 @@ def parse_takeout_search_history(path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def import_history(args: argparse.Namespace) -> None:
-    db_path = Path(args.db)
-    takeout_dir = Path(args.takeout)
-    history_dir = takeout_dir / "history"
+def parse_takeout_search_history(path: Path) -> list[dict[str, str]]:
+    return parse_takeout_search_history_text(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def takeout_key_from_path(path: Path) -> str:
+    found = re.search(r"takeout-([0-9]{8}T[0-9]{6}Z)", path.name, re.I)
+    if found:
+        return found.group(1)
+    return ""
+
+
+def find_takeout_zip(path: Path) -> Path | None:
+    if path.is_file() and path.suffix.lower() == ".zip":
+        return path
+    if path.is_dir():
+        zips = sorted(
+            path.glob("takeout-*.zip"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        return zips[0] if zips else None
+    return None
+
+
+def read_zip_member_text(zf: zipfile.ZipFile, suffix: str) -> str:
+    normalized_suffix = suffix.replace("\\", "/").lower()
+    for name in zf.namelist():
+        if name.replace("\\", "/").lower().endswith(normalized_suffix):
+            return zf.read(name).decode("utf-8", "replace")
+    return ""
+
+
+def load_takeout_history_source(takeout_path: Path, requested_key: str = "") -> tuple[str, str, str]:
+    zip_path = find_takeout_zip(takeout_path)
+    if zip_path:
+        history_key = requested_key or takeout_key_from_path(zip_path)
+        with zipfile.ZipFile(zip_path) as zf:
+            watch_text = read_zip_member_text(zf, "history/watch-history.json")
+            if not watch_text:
+                watch_text = read_zip_member_text(zf, "history/watch-history.html")
+            search_text = read_zip_member_text(zf, "history/search-history.json")
+            if not search_text:
+                search_text = read_zip_member_text(zf, "history/search-history.html")
+        if not watch_text and not search_text:
+            raise SystemExit(f"Takeout history files not found in {zip_path}")
+        if not history_key:
+            raise SystemExit(f"Could not derive Takeout history key from {zip_path.name}")
+        return history_key, watch_text, search_text
+
+    history_dir = takeout_path / "history"
     watch_file = history_dir / "watch-history.html"
     search_file = history_dir / "search-history.html"
     if not watch_file.exists() and not search_file.exists():
         raise SystemExit(f"Takeout history files not found in {history_dir}")
+    history_key = requested_key or takeout_key_from_path(takeout_path) or takeout_path.name
+    watch_text = watch_file.read_text(encoding="utf-8", errors="replace") if watch_file.exists() else ""
+    search_text = search_file.read_text(encoding="utf-8", errors="replace") if search_file.exists() else ""
+    return history_key, watch_text, search_text
+
+
+def import_history(args: argparse.Namespace) -> None:
+    db_path = Path(args.db)
+    takeout_path = Path(args.takeout)
+    requested_key = getattr(args, "history_key", "") or ""
+    history_key, watch_text, search_text = load_takeout_history_source(takeout_path, requested_key)
 
     conn = connect(db_path)
     imported_at = int(time.time())
-    watch_rows = parse_takeout_watch_history(watch_file) if watch_file.exists() else []
-    search_rows = parse_takeout_search_history(search_file) if search_file.exists() else []
+    watch_rows = parse_takeout_watch_history_text(watch_text) if watch_text else []
+    search_rows = parse_takeout_search_history_text(search_text) if search_text else []
     with conn:
-        conn.execute("DELETE FROM watch_history WHERE history_key = ?", (args.history_key,))
-        conn.execute("DELETE FROM takeout_history_occurrences WHERE history_key = ?", (args.history_key,))
-        conn.execute("DELETE FROM search_history WHERE history_key = ?", (args.history_key,))
+        conn.execute("DELETE FROM watch_history WHERE history_key = ?", (history_key,))
+        conn.execute("DELETE FROM takeout_history_occurrences WHERE history_key = ?", (history_key,))
+        conn.execute("DELETE FROM search_history WHERE history_key = ?", (history_key,))
         for position, row in enumerate(watch_rows, start=1):
-            watch_date = takeout_watch_date(row["watched_at"])
-            source_file = display_source_path(watch_file)
+            watched_at_iso = takeout_watch_datetime(row["watched_at"])
+            watch_date = watched_at_iso[:10] if watched_at_iso else takeout_watch_date(row["watched_at"])
+            row_hash = history_row_hash(row)
             conn.execute(
                 """
                 INSERT INTO watch_history(
@@ -3698,41 +3995,38 @@ def import_history(args: argparse.Namespace) -> None:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    args.history_key,
+                    history_key,
                     position,
-                    row["action"],
+                    "Watched",
                     row["video_id"],
                     row["title"],
                     row["url"],
                     row["channel"],
                     row["channel_url"],
                     row["watched_at"],
-                    source_file,
+                    "",
                     imported_at,
                 ),
             )
             conn.execute(
                 """
                 INSERT INTO takeout_history_occurrences(
-                  history_key, position, action, video_id, title, url, channel,
-                  channel_url, watched_at, watch_date, source_file, imported_at, row_hash
+                  history_key, row_hash, video_id, title, url, channel,
+                  channel_url, watched_at, watched_at_iso, watch_date
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    args.history_key,
-                    position,
-                    row["action"],
+                    history_key,
+                    row_hash,
                     row["video_id"],
                     row["title"],
                     row["url"],
                     row["channel"],
                     row["channel_url"],
                     row["watched_at"],
+                    watched_at_iso,
                     watch_date,
-                    source_file,
-                    imported_at,
-                    history_row_hash(row),
                 ),
             )
         for position, row in enumerate(search_rows, start=1):
@@ -3744,12 +4038,12 @@ def import_history(args: argparse.Namespace) -> None:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    args.history_key,
+                    history_key,
                     position,
                     row["query"],
                     row["url"],
                     row["searched_at"],
-                    display_source_path(search_file),
+                    "",
                     imported_at,
                 ),
             )
@@ -3757,7 +4051,7 @@ def import_history(args: argparse.Namespace) -> None:
     conn.close()
     distinct_videos = len({row["video_id"] for row in watch_rows if row["video_id"]})
     print(
-        f"Imported {len(watch_rows)} watch history rows "
+        f"Imported {len(watch_rows)} watch history rows for {history_key} "
         f"({distinct_videos} distinct videos) and {len(search_rows)} searches. "
         f"Reconciled {stats['rows']} rows ({stats['matched']} matched)."
     )
@@ -4100,7 +4394,7 @@ def search_history_data(conn: sqlite3.Connection, query: str, limit: int = 200) 
             f"""
             SELECT hr.reconciled_id,
                    COALESCE(NULLIF(hr.takeout_history_key, ''), hr.youtube_history_key) AS history_key,
-                   CASE WHEN hr.takeout_position > 0 THEN hr.takeout_position ELSE hr.youtube_ordinal END AS position,
+                   hr.youtube_ordinal AS position,
                    'Watched' AS action,
                    hr.video_id,
                    hr.title,
@@ -4115,7 +4409,7 @@ def search_history_data(conn: sqlite3.Connection, query: str, limit: int = 200) 
                    hr.youtube_history_key,
                    hr.youtube_ordinal,
                    hr.takeout_history_key,
-                   hr.takeout_position,
+                   hr.takeout_row_hash,
                    hr.imported_at,
                    COALESCE(vm.title, '') AS metadata_title,
                    COALESCE(vm.description, '') AS metadata_description,
@@ -4126,7 +4420,11 @@ def search_history_data(conn: sqlite3.Connection, query: str, limit: int = 200) 
             FROM history_reconciled hr
             LEFT JOIN video_metadata vm ON vm.video_id = hr.video_id
             {watch_where}
-            ORDER BY hr.watch_date DESC, hr.imported_at DESC, position
+            ORDER BY CASE WHEN hr.watch_date = '' THEN 1 ELSE 0 END,
+                     hr.best_watch_time DESC,
+                     hr.watch_date DESC,
+                     hr.imported_at DESC,
+                     position
             LIMIT ?
             """,
             [*watch_params, limit],
@@ -5417,7 +5715,7 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
                 argparse.Namespace(
                     db=str(self.db_path),
                     takeout=str(self.takeout_dir),
-                    history_key="takeout-2025-11-09",
+                    history_key="",
                 )
             )
             self.send_json({"ok": True, "message": "Takeout history imported and reconciled"})
@@ -5529,8 +5827,8 @@ def main(argv: list[str] | None = None) -> int:
 
     history_parser = subparsers.add_parser("import-history", help="Import YouTube Takeout watch/search history")
     history_parser.add_argument("--db", default=str(DEFAULT_DB))
-    history_parser.add_argument("--takeout", default=str(TAKEOUT_DIR))
-    history_parser.add_argument("--history-key", default="takeout-2025-11-09")
+    history_parser.add_argument("--takeout", default=str(ROOT))
+    history_parser.add_argument("--history-key", default="")
     history_parser.set_defaults(func=import_history)
 
     recover_missing_parser = subparsers.add_parser(
@@ -5554,7 +5852,7 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--db", default=str(DEFAULT_DB))
     serve_parser.add_argument("--cookies", default=str(COOKIE_FILE))
     serve_parser.add_argument("--video-thumbs", default=str(DEFAULT_VIDEO_THUMB_DIR))
-    serve_parser.add_argument("--takeout", default=str(TAKEOUT_DIR))
+    serve_parser.add_argument("--takeout", default=str(ROOT))
     serve_parser.add_argument("--host", default="0.0.0.0")
     serve_parser.add_argument("--port", type=int, default=8765)
     serve_parser.set_defaults(func=serve)
