@@ -2688,7 +2688,7 @@ class LiveHistoryWorker:
                 daemon=True,
             )
             self._thread.start()
-            label = "History rebuild" if mode == "rebuild" else "History fetch"
+            label = "Verify history" if mode == "verify" else "History fetch"
             return {"started": True, "run_id": self._run_id, "message": f"{label} started"}
 
     def stop(self) -> dict[str, Any]:
@@ -2706,8 +2706,8 @@ class LiveHistoryWorker:
         mode: str,
     ) -> None:
         conn = connect(db_path)
-        mode = "rebuild" if mode == "rebuild" else "recent"
-        label = "History rebuild" if mode == "rebuild" else "History fetch"
+        mode = "verify" if mode == "verify" else "recent"
+        label = "Verify history" if mode == "verify" else "History fetch"
         batch_size = HISTORY_BATCH_SIZE
         try:
             with conn:
@@ -2727,9 +2727,6 @@ class LiveHistoryWorker:
                         f"{label} started",
                     ),
                 )
-                if mode == "rebuild":
-                    conn.execute("DELETE FROM watch_history WHERE history_key = 'live-youtube'")
-                    log_live_history_event(conn, run_id, "warn", "Cleared live-youtube history before rebuild")
                 log_live_history_event(conn, run_id, "info", f"{label} started with {batch_size} per batch")
 
             if self._stop.is_set():
@@ -4597,7 +4594,7 @@ ADMIN_HTML = """<!doctype html>
         <button id="scanPlaylists" class="primary" type="button">Scan playlists</button>
         <button id="fetchMetadata" class="primary" type="button">Fetch video metadata</button>
         <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
-        <button id="rebuildLiveHistory" class="primary" type="button">Rebuild history</button>
+        <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
         <button id="stopPlaylists" type="button">Stop playlist scan</button>
         <button id="stopMetadata" type="button">Stop metadata</button>
         <button id="stopLiveHistory" type="button">Stop history fetch</button>
@@ -4735,9 +4732,9 @@ ADMIN_HTML = """<!doctype html>
     }).catch(error => alert(error.message)));
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start', {
     }).catch(error => alert(error.message)));
-    document.getElementById('rebuildLiveHistory').addEventListener('click', () => {
-      if (!confirm('Rebuild fetched YouTube history from scratch? This clears the fetched history stream and may run for a long time.')) return;
-      post('/api/admin/live-history/rebuild').catch(error => alert(error.message));
+    document.getElementById('verifyLiveHistory').addEventListener('click', () => {
+      if (!confirm('Verify the full YouTube history? This may run for a long time, but existing fetched history will be kept.')) return;
+      post('/api/admin/live-history/verify').catch(error => alert(error.message));
     });
     document.getElementById('stopPlaylists').addEventListener('click', () => post('/api/admin/playlists/stop').catch(error => alert(error.message)));
     document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
@@ -4867,11 +4864,11 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
             )
             self.send_json(result)
             return
-        if parsed.path == "/api/admin/live-history/rebuild":
+        if parsed.path in {"/api/admin/live-history/verify", "/api/admin/live-history/rebuild"}:
             result = LIVE_HISTORY_WORKER.start(
                 self.db_path,
                 self.cookie_file,
-                mode="rebuild",
+                mode="verify",
             )
             self.send_json(result)
             return
