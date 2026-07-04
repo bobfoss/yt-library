@@ -983,6 +983,14 @@ def video_lockup_renderers(data: dict[str, Any]) -> list[dict[str, Any]]:
     return lockups
 
 
+def shorts_lockup_renderers(data: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        node["shortsLockupViewModel"]
+        for node in walk(data)
+        if isinstance(node, dict) and isinstance(node.get("shortsLockupViewModel"), dict)
+    ]
+
+
 def hidden_alert_count(data: dict[str, Any]) -> int:
     total = 0
     for node in walk(data):
@@ -1130,6 +1138,43 @@ def parse_video_lockup(
     }
 
 
+def parse_shorts_lockup(
+    playlist_id: str,
+    renderer: dict[str, Any],
+    fallback_position: int,
+) -> dict[str, Any]:
+    endpoint = (
+        renderer.get("onTap", {})
+        .get("innertubeCommand", {})
+        .get("reelWatchEndpoint", {})
+    )
+    video_id = endpoint.get("videoId") if isinstance(endpoint.get("videoId"), str) else ""
+    text = str(renderer.get("accessibilityText") or "").strip()
+    title = text
+    if "," in title:
+        title = title.rsplit(",", 1)[0].strip()
+    if not title:
+        title = video_id or "(untitled)"
+    return {
+        "playlist_id": playlist_id,
+        "position": fallback_position,
+        "video_id": video_id,
+        "title": title,
+        "channel": "",
+        "duration_text": "Short",
+        "is_playable": 1,
+        "availability": "",
+        "url": f"https://www.youtube.com/shorts/{video_id}" if video_id else "",
+    }
+
+
+def expected_video_count(text: str) -> int:
+    found = re.search(r"([\d,]+)\s+videos?", text or "", re.I)
+    if not found:
+        return 0
+    return int(found.group(1).replace(",", ""))
+
+
 def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     player = extract_json_assignment(html_text, "ytInitialPlayerResponse")
     details = player.get("videoDetails", {}) if isinstance(player, dict) else {}
@@ -1250,6 +1295,11 @@ def scan_playlist_videos(
         for lockup in video_lockup_renderers(initial_data):
             fallback = len(videos) + 1
             add_video(parse_video_lockup(playlist_id, lockup, fallback))
+
+    if not videos:
+        for renderer in shorts_lockup_renderers(initial_data):
+            fallback = len(videos) + 1
+            add_video(parse_shorts_lockup(playlist_id, renderer, fallback))
 
     first_video_id = next((video["video_id"] for video in videos if video.get("video_id")), "")
     if first_video_id:
@@ -1680,6 +1730,7 @@ def playlist_scan_queue_rows(
     sql = f"""
         SELECT p.playlist_id,
                p.title,
+               p.video_count_text,
                COALESCE(ps.scanned_at, 0) AS scanned_at,
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
@@ -2161,6 +2212,10 @@ class PlaylistScanWorker:
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                     status = "error"
                     error = str(exc)
+                expected_count = expected_video_count(row["video_count_text"] if "video_count_text" in row.keys() else "")
+                if status == "ok" and not videos and expected_count > 0:
+                    status = "error"
+                    error = f"Parsed 0 videos, but playlist metadata says {expected_count} videos"
                 with conn:
                     video_count, hidden_count = save_playlist_scan(
                         conn,
