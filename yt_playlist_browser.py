@@ -2672,41 +2672,36 @@ class LiveHistoryWorker:
         self,
         db_path: Path,
         cookie_file: Path,
-        interval_seconds: float,
         limit: int,
     ) -> dict[str, Any]:
         with self._lock:
             if self._thread and self._thread.is_alive():
-                return {"started": False, "run_id": self._run_id, "message": "Live history watcher already running"}
+                return {"started": False, "run_id": self._run_id, "message": "YouTube history fetch already running"}
             self._stop.clear()
             self._run_id = uuid.uuid4().hex
             self._thread = threading.Thread(
                 target=self._run,
-                args=(self._run_id, db_path, cookie_file, interval_seconds, limit),
+                args=(self._run_id, db_path, cookie_file, limit),
                 daemon=True,
             )
             self._thread.start()
-            return {"started": True, "run_id": self._run_id, "message": "Live history watcher started"}
+            return {"started": True, "run_id": self._run_id, "message": "YouTube history fetch started"}
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
             if not self._thread or not self._thread.is_alive():
-                return {"stopping": False, "message": "Live history watcher is not running"}
+                return {"stopping": False, "message": "YouTube history fetch is not running"}
             self._stop.set()
-            return {"stopping": True, "run_id": self._run_id, "message": "Live history watcher stop requested"}
+            return {"stopping": True, "run_id": self._run_id, "message": "YouTube history fetch stop requested"}
 
     def _run(
         self,
         run_id: str,
         db_path: Path,
         cookie_file: Path,
-        interval_seconds: float,
         limit: int,
     ) -> None:
         conn = connect(db_path)
-        polls = 0
-        inserted_total = 0
-        failed = 0
         try:
             with conn:
                 conn.execute(
@@ -2720,57 +2715,42 @@ class LiveHistoryWorker:
                     (
                         run_id,
                         int(time.time()),
-                        interval_seconds,
+                        0,
                         limit,
-                        "Live history watcher started",
+                        "YouTube history fetch started",
                     ),
                 )
-                log_live_history_event(conn, run_id, "info", "Live history watcher started")
+                log_live_history_event(conn, run_id, "info", f"Fetching {limit} YouTube history entries")
 
-            while not self._stop.is_set():
-                last_video_id = ""
-                try:
-                    rows = fetch_youtube_history_ytdlp(cookie_file, limit=limit)
-                    with conn:
-                        inserted, seen, last_video_id = save_live_youtube_history(conn, rows)
-                        polls += 1
-                        inserted_total += inserted
-                        message = f"Poll {polls}: {inserted} new of {seen} fetched"
-                        conn.execute(
-                            """
-                            UPDATE live_history_worker_runs
-                            SET processed = ?, found = ?, failed = ?, last_video_id = ?, message = ?
-                            WHERE run_id = ?
-                            """,
-                            (polls, inserted_total, failed, last_video_id, message, run_id),
-                        )
-                        log_live_history_event(conn, run_id, "info", message, last_video_id)
-                except Exception as exc:
-                    failed += 1
-                    with conn:
-                        conn.execute(
-                            """
-                            UPDATE live_history_worker_runs
-                            SET processed = ?, found = ?, failed = ?, message = ?
-                            WHERE run_id = ?
-                            """,
-                            (polls, inserted_total, failed, f"Poll error: {exc}", run_id),
-                        )
-                        log_live_history_event(conn, run_id, "error", f"Poll error: {exc}")
+            if self._stop.is_set():
+                with conn:
+                    conn.execute(
+                        """
+                        UPDATE live_history_worker_runs
+                        SET status = 'stopped', finished_at = ?, message = ?
+                        WHERE run_id = ?
+                        """,
+                        (int(time.time()), "Stopped before fetch", run_id),
+                    )
+                    log_live_history_event(conn, run_id, "warn", "YouTube history fetch stopped before fetch")
+                return
 
-                if self._stop.wait(interval_seconds):
-                    break
-
+            rows = fetch_youtube_history_ytdlp(cookie_file, limit=limit)
             with conn:
+                inserted, seen, last_video_id = save_live_youtube_history(conn, rows)
+                skipped = max(seen - inserted, 0)
+                status = "stopped" if self._stop.is_set() else "complete"
+                message = f"Fetched {seen}; {inserted} new, {skipped} duplicates"
                 conn.execute(
                     """
                     UPDATE live_history_worker_runs
-                    SET status = 'stopped', finished_at = ?, message = ?
+                    SET status = ?, finished_at = ?, total = ?, processed = ?,
+                        found = ?, skipped = ?, last_video_id = ?, message = ?
                     WHERE run_id = ?
                     """,
-                    (int(time.time()), f"Stopped after {polls} polls; {inserted_total} new videos", run_id),
+                    (status, int(time.time()), seen, seen, inserted, skipped, last_video_id, message, run_id),
                 )
-                log_live_history_event(conn, run_id, "warn", "Live history watcher stopped")
+                log_live_history_event(conn, run_id, "info", message, last_video_id)
         except Exception as exc:
             with conn:
                 conn.execute(
@@ -2781,7 +2761,7 @@ class LiveHistoryWorker:
                     """,
                     (int(time.time()), str(exc), run_id),
                 )
-                log_live_history_event(conn, run_id, "error", f"Live history watcher crashed: {exc}")
+                log_live_history_event(conn, run_id, "error", f"YouTube history fetch crashed: {exc}")
         finally:
             conn.close()
 
@@ -4530,12 +4510,12 @@ ADMIN_HTML = """<!doctype html>
       <div class="panel"><div class="metric">Distinct video IDs</div><div id="distinctVideos" class="value">0</div></div>
       <div class="panel"><div class="metric">History rows</div><div id="historyRows" class="value">0</div></div>
       <div class="panel"><div class="metric">History video IDs</div><div id="historyVideos" class="value">0</div></div>
-      <div class="panel"><div class="metric">Live history rows</div><div id="liveHistoryRows" class="value">0</div></div>
+      <div class="panel"><div class="metric">YT history rows</div><div id="liveHistoryRows" class="value">0</div></div>
       <div class="panel"><div class="metric">Playlist scan queue</div><div id="playlistQueueCount" class="value">0</div></div>
       <div class="panel"><div class="metric">Metadata queue</div><div id="metadataQueueCount" class="value">0</div></div>
       <div class="panel"><div class="metric">Playlist scanner</div><div id="playlistWorkerState" class="value">idle</div></div>
       <div class="panel"><div class="metric">Metadata worker</div><div id="metadataWorkerState" class="value">idle</div></div>
-      <div class="panel"><div class="metric">History watcher</div><div id="liveHistoryWorkerState" class="value">idle</div></div>
+      <div class="panel"><div class="metric">YT history fetch</div><div id="liveHistoryWorkerState" class="value">idle</div></div>
     </section>
 
     <section class="panel">
@@ -4543,17 +4523,15 @@ ADMIN_HTML = """<!doctype html>
         <label>Limit<input id="limit" type="number" min="0" step="1" value="10"></label>
         <label>Playlist delay<input id="playlistDelay" type="number" min="1" step="1" value="3"></label>
         <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
-        <label>History poll seconds<input id="liveHistoryInterval" type="number" min="30" step="30" value="300"></label>
-        <label>History fetch limit<input id="liveHistoryLimit" type="number" min="1" step="1" value="100"></label>
         <label>Playlist stale days<input id="playlistStaleDays" type="number" min="0" step="1" value="7"></label>
         <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
         <label class="checkbox"><input id="force" type="checkbox">Refresh already fetched</label>
         <button id="scanPlaylists" class="primary" type="button">Scan playlists</button>
         <button id="fetchMetadata" class="primary" type="button">Fetch video metadata</button>
-        <button id="startLiveHistory" class="primary" type="button">Watch YT history</button>
+        <button id="startLiveHistory" class="primary" type="button">Fetch YT history</button>
         <button id="stopPlaylists" type="button">Stop playlist scan</button>
         <button id="stopMetadata" type="button">Stop metadata</button>
-        <button id="stopLiveHistory" type="button">Stop history watcher</button>
+        <button id="stopLiveHistory" type="button">Stop history fetch</button>
         <button id="refresh" type="button">Refresh status</button>
       </div>
       <div id="playlistRunStatus" class="status"></div>
@@ -4585,8 +4563,6 @@ ADMIN_HTML = """<!doctype html>
       limit: document.getElementById('limit'),
       playlistDelay: document.getElementById('playlistDelay'),
       metadataDelay: document.getElementById('metadataDelay'),
-      liveHistoryInterval: document.getElementById('liveHistoryInterval'),
-      liveHistoryLimit: document.getElementById('liveHistoryLimit'),
       playlistStaleDays: document.getElementById('playlistStaleDays'),
       metadataStaleDays: document.getElementById('metadataStaleDays'),
       force: document.getElementById('force'),
@@ -4640,7 +4616,7 @@ ADMIN_HTML = """<!doctype html>
 
       fields.playlistRunStatus.innerHTML = runHtml(data.latestPlaylistScanRun, 'Playlist scan');
       fields.metadataRunStatus.innerHTML = runHtml(data.latestMetadataRun, 'Metadata');
-      fields.liveHistoryRunStatus.innerHTML = runHtml(data.latestLiveHistoryRun, 'Live history');
+      fields.liveHistoryRunStatus.innerHTML = runHtml(data.latestLiveHistoryRun, 'YT history');
 
       fields.metadataCounts.replaceChildren(...(data.metadataCounts || []).map(row => {
         const div = document.createElement('div');
@@ -4689,8 +4665,7 @@ ADMIN_HTML = """<!doctype html>
       force: fields.force.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start', {
-      limit: fields.liveHistoryLimit.value,
-      interval: fields.liveHistoryInterval.value,
+      limit: fields.limit.value,
     }).catch(error => alert(error.message)));
     document.getElementById('stopPlaylists').addEventListener('click', () => post('/api/admin/playlists/stop').catch(error => alert(error.message)));
     document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
@@ -4814,11 +4789,9 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/admin/live-history/start":
             limit = max(1, int((params.get("limit") or ["100"])[0] or 100))
-            interval = max(30.0, float((params.get("interval") or ["300"])[0] or 300))
             result = LIVE_HISTORY_WORKER.start(
                 self.db_path,
                 self.cookie_file,
-                interval_seconds=interval,
                 limit=limit,
             )
             self.send_json(result)
