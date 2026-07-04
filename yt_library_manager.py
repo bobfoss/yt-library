@@ -5737,7 +5737,7 @@ ADMIN_HTML = """<!doctype html>
 """
 
 
-class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
+class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(
         self,
         *args,
@@ -5923,7 +5923,7 @@ def serve(args: argparse.Namespace) -> None:
     reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER)
 
     def handler(*handler_args, **handler_kwargs):
-        return PlaylistHandler(
+        return LibraryHandler(
             *handler_args,
             db_path=db_path,
             cookie_file=Path(args.cookies),
@@ -6011,7 +6011,7 @@ def main(argv: list[str] | None = None) -> int:
     recover_missing_parser.add_argument("--refresh-metadata", action="store_true", help="Use Archivarix API even when a thumbnail is already cached")
     recover_missing_parser.set_defaults(func=recover_snapshot_missing)
 
-    serve_parser = subparsers.add_parser("serve", help="Serve the playlist browser")
+    serve_parser = subparsers.add_parser("serve", help="Serve the library manager")
     serve_parser.add_argument("--db", default=str(DEFAULT_DB))
     serve_parser.add_argument("--cookies", default=str(COOKIE_FILE))
     serve_parser.add_argument("--video-thumbs", default=str(DEFAULT_VIDEO_THUMB_DIR))

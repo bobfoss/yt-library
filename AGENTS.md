@@ -4,7 +4,7 @@
 
 This repository is a small Python web app for browsing and enriching a personal YouTube library.
 
-- `yt_playlist_browser.py` contains the HTTP server, SQLite schema/migrations, workers, importers, and HTML templates.
+- `yt_library_manager.py` contains the HTTP server, SQLite schema/migrations, workers, importers, and HTML templates.
 - `requirements.txt` lists Python dependencies, including `yt-dlp`.
 - `yt_playlists.sqlite3`, cookie files, thumbnail folders, and Takeout zip exports are local runtime data and should not be committed.
 - Common generated asset folders include `thumbs/`, `video_thumbs/`, and `archivarix_thumbs/`.
@@ -15,9 +15,9 @@ Use the repository root as the working directory.
 
 ```powershell
 python -m pip install -r requirements.txt
-python -m py_compile yt_playlist_browser.py
-python yt_playlist_browser.py serve --host 0.0.0.0 --port 8765 --db yt_playlists.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout .
-python yt_playlist_browser.py import-history --db yt_playlists.sqlite3 --takeout .
+python -m py_compile yt_library_manager.py
+python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_playlists.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout .
+python yt_library_manager.py import-history --db yt_playlists.sqlite3 --takeout .
 ```
 
 - `py_compile` catches syntax errors without running workers.
@@ -26,14 +26,14 @@ python yt_playlist_browser.py import-history --db yt_playlists.sqlite3 --takeout
 
 ## Coding Style & Naming Conventions
 
-Prefer Python implementations and keep changes inside `yt_playlist_browser.py` unless a real module split is justified. Use 4-space indentation, type hints for new helper functions, and descriptive snake_case names. Keep comments rare and useful. Follow existing patterns for SQLite helpers, worker classes, and API route handling.
+Prefer Python implementations and keep changes inside `yt_library_manager.py` unless a real module split is justified. Use 4-space indentation, type hints for new helper functions, and descriptive snake_case names. Keep comments rare and useful. Follow existing patterns for SQLite helpers, worker classes, and API route handling.
 
 ## Testing Guidelines
 
 There is no formal test suite yet. For each change, at minimum run:
 
 ```powershell
-python -m py_compile yt_playlist_browser.py
+python -m py_compile yt_library_manager.py
 git diff --check
 ```
 
