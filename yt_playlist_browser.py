@@ -2603,6 +2603,10 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
         youtube_key = youtube["ordinal"]
         if youtube_key in matched_youtube:
             continue
+        youtube_watch_time = youtube_watch_datetime(youtube["watch_date"]) if youtube["watch_date"] else ""
+        youtube_source_quality = "youtube_date_only" if youtube["watch_date"] else "youtube_observed_only"
+        youtube_match_confidence = "youtube_only" if youtube["watch_date"] else "observed_only"
+        youtube_match_notes = "" if youtube["watch_date"] else "YouTube history entry had no watch date; observed_at is fetch time"
         conn.execute(
             """
             INSERT INTO history_reconciled(
@@ -2611,7 +2615,7 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
                 match_confidence, match_notes, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'youtube_date_only', ?, ?, '', '', 'youtube_only', '', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)
             """,
             (
                 f"youtube:{youtube['ordinal']}",
@@ -2620,10 +2624,13 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 youtube["url"],
                 youtube["channel"],
                 youtube["channel_url"],
-                youtube_watch_datetime(youtube["watch_date"]) if youtube["watch_date"] else youtube["observed_at"],
+                youtube_watch_time,
                 youtube["watch_date"],
+                youtube_source_quality,
                 "youtube",
                 youtube["ordinal"],
+                youtube_match_confidence,
+                youtube_match_notes,
                 youtube["imported_at"],
                 now,
             ),
@@ -4440,9 +4447,15 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
-def history_search_data(conn: sqlite3.Connection, query: str, limit: int = 200) -> dict[str, Any]:
+def history_search_data(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, Any]:
     query = query.strip()
     limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
     like = f"%{query.lower()}%"
     if query:
         watch_where = """
@@ -4460,6 +4473,17 @@ def history_search_data(conn: sqlite3.Connection, query: str, limit: int = 200) 
     else:
         watch_where = ""
         watch_params = []
+    filtered_watch_rows = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM history_reconciled hr
+            LEFT JOIN video_metadata vm ON vm.video_id = hr.video_id
+            {watch_where}
+            """,
+            watch_params,
+        ).fetchone()["count"]
+    )
     watch_rows = [
         dict(row)
         for row in conn.execute(
@@ -4498,9 +4522,9 @@ def history_search_data(conn: sqlite3.Connection, query: str, limit: int = 200) 
                      hr.best_watch_time DESC,
                      hr.imported_at DESC,
                      position
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            [*watch_params, limit],
+            [*watch_params, limit, offset],
         )
     ]
     total = dict(
@@ -4514,8 +4538,10 @@ def history_search_data(conn: sqlite3.Connection, query: str, limit: int = 200) 
     )
     return {
         "query": query,
+        "limit": limit,
+        "offset": offset,
         "watch": watch_rows,
-        "totals": total,
+        "totals": {**total, "filtered_watch_rows": filtered_watch_rows},
     }
 
 
@@ -5242,6 +5268,10 @@ HISTORY_HTML = """<!doctype html>
     button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 0 14px; font: inherit; cursor: pointer; }
     button:hover { background: var(--accent-soft); }
     .meta { color: var(--muted); font-size: 14px; margin-bottom: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+    .pager-controls { display: flex; gap: 8px; }
+    .pager button { min-height: 36px; }
+    .pager button:disabled { cursor: default; opacity: .5; background: var(--panel); }
     .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
     .tab { padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); cursor: pointer; }
     .tab.active { background: var(--accent-soft); color: var(--ink); }
@@ -5263,6 +5293,7 @@ HISTORY_HTML = """<!doctype html>
       header, .searchbar { display: block; }
       nav { margin-top: 10px; }
       button { margin-top: 8px; height: 40px; }
+      .pager { align-items: flex-start; flex-direction: column; }
       .card { grid-template-columns: 1fr; }
       .thumb { height: auto; min-height: 0; }
     }
@@ -5282,6 +5313,13 @@ HISTORY_HTML = """<!doctype html>
       <button id="refresh" type="button">Search</button>
     </div>
     <div id="meta" class="meta"></div>
+    <div class="pager">
+      <div id="pageInfo"></div>
+      <div class="pager-controls">
+        <button id="prevPage" type="button">Previous</button>
+        <button id="nextPage" type="button">Next</button>
+      </div>
+    </div>
     <section id="results" class="grid"></section>
     <div id="empty" class="empty" hidden>No history matches.</div>
   </div>
@@ -5289,9 +5327,14 @@ HISTORY_HTML = """<!doctype html>
     const input = document.getElementById('search');
     const refresh = document.getElementById('refresh');
     const meta = document.getElementById('meta');
+    const pageInfo = document.getElementById('pageInfo');
+    const prevPage = document.getElementById('prevPage');
+    const nextPage = document.getElementById('nextPage');
     const results = document.getElementById('results');
     const empty = document.getElementById('empty');
     let latest = { watch: [], totals: {} };
+    const pageSize = 250;
+    let offset = 0;
     let timer = null;
     let requestId = 0;
 
@@ -5356,18 +5399,29 @@ HISTORY_HTML = """<!doctype html>
       results.replaceChildren(...rows.map(watchCard));
       empty.hidden = rows.length !== 0;
       const totals = latest.totals || {};
+      const filtered = totals.filtered_watch_rows || 0;
+      const start = filtered && rows.length ? (latest.offset || 0) + 1 : 0;
+      const end = filtered && rows.length ? (latest.offset || 0) + rows.length : 0;
       meta.innerHTML = `
         <span>${latest.watch.length} watch results shown</span>
+        <span>${filtered} matching watch rows</span>
         <span>${totals.watch_rows || 0} watch rows</span>
         <span>${totals.distinct_watch_videos || 0} distinct videos</span>
       `;
+      pageInfo.textContent = filtered ? `${start}-${end} of ${filtered}` : '0 results';
+      prevPage.disabled = (latest.offset || 0) <= 0;
+      nextPage.disabled = ((latest.offset || 0) + rows.length) >= filtered;
     }
 
     async function load() {
       const myRequest = ++requestId;
       refresh.disabled = true;
       refresh.textContent = 'Searching';
-      const params = new URLSearchParams({ q: input.value.trim(), limit: '250' });
+      const params = new URLSearchParams({
+        q: input.value.trim(),
+        limit: String(pageSize),
+        offset: String(offset)
+      });
       const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
       if (!response.ok) throw new Error(`History search failed: ${response.status}`);
       const payload = await response.json();
@@ -5381,6 +5435,7 @@ HISTORY_HTML = """<!doctype html>
 
     function schedule() {
       clearTimeout(timer);
+      offset = 0;
       timer = setTimeout(() => load().catch(error => {
         meta.textContent = error.message;
         refresh.disabled = false;
@@ -5389,7 +5444,18 @@ HISTORY_HTML = """<!doctype html>
     }
 
     input.addEventListener('input', schedule);
-    refresh.addEventListener('click', () => load().catch(error => meta.textContent = error.message));
+    refresh.addEventListener('click', () => {
+      offset = 0;
+      load().catch(error => meta.textContent = error.message);
+    });
+    prevPage.addEventListener('click', () => {
+      offset = Math.max(0, offset - pageSize);
+      load().catch(error => meta.textContent = error.message);
+    });
+    nextPage.addEventListener('click', () => {
+      offset += pageSize;
+      load().catch(error => meta.textContent = error.message);
+    });
     load().catch(error => {
       meta.textContent = error.message;
       refresh.disabled = false;
@@ -5728,10 +5794,17 @@ class PlaylistHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/history/search":
             params = urllib.parse.parse_qs(parsed.query)
             query = (params.get("q") or [""])[0]
-            limit = max(1, int((params.get("limit") or ["200"])[0] or 200))
+            try:
+                limit = max(1, int((params.get("limit") or ["200"])[0] or 200))
+            except ValueError:
+                limit = 200
+            try:
+                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+            except ValueError:
+                offset = 0
             conn = connect(self.db_path)
             try:
-                data = history_search_data(conn, query, limit=limit)
+                data = history_search_data(conn, query, limit=limit, offset=offset)
             finally:
                 conn.close()
             self.send_json(data)
