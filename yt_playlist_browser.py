@@ -1856,6 +1856,7 @@ def admin_status(
     metadata_worker: "MetadataWorker | None" = None,
     playlist_worker: "PlaylistScanWorker | None" = None,
 ) -> dict[str, Any]:
+    reconcile_worker_runs(db_path, metadata_worker, playlist_worker)
     conn = connect(db_path)
     try:
         counts = dict(
@@ -1959,6 +1960,49 @@ def metadata_admin_status(
     worker: "MetadataWorker | None" = None,
 ) -> dict[str, Any]:
     return admin_status(db_path, metadata_worker=worker)
+
+
+def reconcile_worker_runs(
+    db_path: Path,
+    metadata_worker: "MetadataWorker | None" = None,
+    playlist_worker: "PlaylistScanWorker | None" = None,
+) -> None:
+    metadata_running = metadata_worker.is_running() if metadata_worker else False
+    playlist_running = playlist_worker.is_running() if playlist_worker else False
+    now = int(time.time())
+    conn = connect(db_path)
+    try:
+        with conn:
+            if not metadata_running:
+                conn.execute(
+                    """
+                    UPDATE metadata_worker_runs
+                    SET status = 'interrupted',
+                        finished_at = ?,
+                        message = CASE
+                          WHEN message = '' THEN 'Interrupted by server restart'
+                          ELSE message || ' (interrupted by server restart)'
+                        END
+                    WHERE status = 'running'
+                    """,
+                    (now,),
+                )
+            if not playlist_running:
+                conn.execute(
+                    """
+                    UPDATE playlist_scan_worker_runs
+                    SET status = 'interrupted',
+                        finished_at = ?,
+                        message = CASE
+                          WHEN message = '' THEN 'Interrupted by server restart'
+                          ELSE message || ' (interrupted by server restart)'
+                        END
+                    WHERE status = 'running'
+                    """,
+                    (now,),
+                )
+    finally:
+        conn.close()
 
 
 class MetadataWorker:
@@ -3822,6 +3866,7 @@ def serve(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}. Run import first.")
+    reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER)
 
     def handler(*handler_args, **handler_kwargs):
         return PlaylistHandler(
