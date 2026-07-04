@@ -3160,12 +3160,6 @@ INDEX_HTML = """<!doctype html>
       hidden.innerHTML = `<span>Hidden videos</span><span class="count">${data.hiddenVideos.length}</span>`;
       hidden.addEventListener('click', () => setSelected('__hidden__'));
       groupsEl.appendChild(hidden);
-      const candidates = document.createElement('button');
-      candidates.className = 'group';
-      candidates.dataset.key = '__archivarix__';
-      candidates.innerHTML = `<span>Video thumbnails</span><span class="count">${data.archivarixCandidates.length}</span>`;
-      candidates.addEventListener('click', () => setSelected('__archivarix__'));
-      groupsEl.appendChild(candidates);
       const snapshot = document.createElement('button');
       snapshot.className = 'group';
       snapshot.dataset.key = '__snapshot__';
@@ -3236,17 +3230,6 @@ INDEX_HTML = """<!doctype html>
         });
         meta.textContent = `${rows.length} shown`;
         grid.replaceChildren(...rows.map(hiddenVideoCardFor));
-        empty.hidden = rows.length !== 0;
-        return;
-      }
-      if (selected === '__archivarix__') {
-        title.textContent = 'Video thumbnails';
-        const rows = data.archivarixCandidates.filter(video => {
-          const haystack = `${video.title} ${video.channel} ${video.playlist_title} ${video.video_id} ${video.status}`.toLowerCase();
-          return !query || haystack.includes(query);
-        });
-        meta.textContent = `${rows.length} candidates`;
-        grid.replaceChildren(...rows.map(candidateCardFor));
         empty.hidden = rows.length !== 0;
         return;
       }
