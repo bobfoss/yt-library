@@ -1357,7 +1357,8 @@ def unavailable_reason(renderer: dict[str, Any], title: str) -> str:
     if reason:
         return reason
     lower_title = title.strip().lower()
-    if lower_title in {"deleted video", "private video"}:
+    normalized_title = lower_title.strip("[]() ")
+    if normalized_title in {"deleted video", "private video"}:
         return title
     if "unavailable" in lower_title:
         return title
@@ -1374,7 +1375,8 @@ def is_hidden_video(renderer: dict[str, Any], title: str, reason: str) -> bool:
     if renderer.get("isPlayable") is False:
         return True
     lower_title = title.strip().lower()
-    if lower_title in {"deleted video", "private video"}:
+    normalized_title = lower_title.strip("[]() ")
+    if normalized_title in {"deleted video", "private video"}:
         return True
     if "unavailable" in lower_title or "deleted" in lower_title or "private" in lower_title:
         return True
@@ -4597,15 +4599,15 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             """
             SELECT v.*, p.title AS playlist_title, p.url AS playlist_url,
                    v.display_position AS position,
-                   COALESCE(vm.title, r.title, '') AS metadata_title,
-                   COALESCE(vm.description, r.description, '') AS metadata_description,
-                   COALESCE(vm.channel, r.channel, '') AS metadata_channel,
+                   COALESCE(NULLIF(NULLIF(vm.title, '- YouTube'), 'YouTube'), r.title, '') AS metadata_title,
+                   COALESCE(NULLIF(vm.description, ''), r.description, '') AS metadata_description,
+                   COALESCE(NULLIF(vm.channel, ''), r.channel, '') AS metadata_channel,
                    COALESCE(vm.channel_url, '') AS metadata_channel_url,
-                   COALESCE(vm.duration_text, r.duration_text, '') AS metadata_duration,
-                   COALESCE(vm.upload_date, r.upload_date, '') AS metadata_upload_date,
-                   COALESCE(vm.thumbnail_path, r.thumbnail_path, '') AS metadata_thumbnail_path,
+                   COALESCE(NULLIF(vm.duration_text, ''), r.duration_text, '') AS metadata_duration,
+                   COALESCE(NULLIF(vm.upload_date, ''), r.upload_date, '') AS metadata_upload_date,
+                   COALESCE(NULLIF(vm.thumbnail_path, ''), r.thumbnail_path, '') AS metadata_thumbnail_path,
                    COALESCE(vm.channel_thumbnail_path, '') AS metadata_channel_thumbnail_path,
-                   COALESCE(vm.fetch_status, r.search_status, '') AS metadata_fetch_status,
+                   COALESCE(NULLIF(vm.fetch_status, ''), r.search_status, '') AS metadata_fetch_status,
                    COALESCE(r.status, '') AS recovered_status
             FROM playlist_video_reconciled v
             JOIN playlists p ON p.playlist_id = v.playlist_id
@@ -5033,8 +5035,14 @@ INDEX_HTML = """<!doctype html>
       return String(value || '').toLowerCase().includes(query);
     }
 
+    function usefulMetadataTitle(video) {
+      const title = String(video.metadata_title || '').trim();
+      if (!title || title === '- YouTube' || title === 'YouTube') return '';
+      return title;
+    }
+
     function displayVideoTitle(video) {
-      return video.metadata_title || video.title || video.video_id;
+      return usefulMetadataTitle(video) || video.title || video.video_id;
     }
 
     function displayVideoChannel(video) {
@@ -5063,6 +5071,8 @@ INDEX_HTML = """<!doctype html>
       if (!video.is_playable) return video.availability || 'Hidden';
       const status = String(video.recovered_status || '');
       if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return 'Unavailable';
+      const title = String(video.title || '').trim().toLowerCase().replace(/^[\\[\\(]+|[\\]\\)]+$/g, '');
+      if (title === 'private video' || title === 'deleted video') return video.title || 'Unavailable';
       return '';
     }
 
@@ -5070,6 +5080,20 @@ INDEX_HTML = """<!doctype html>
       const status = String(video.recovered_status || '');
       if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return `Archivarix: ${status}`;
       return '';
+    }
+
+    function archivarixVideoUrl(video) {
+      return video.video_id ? `https://tube.archivarix.net/?q=${encodeURIComponent(video.video_id)}` : '';
+    }
+
+    function shouldShowArchivarixLink(video) {
+      return Boolean(video.video_id && (unavailableLabel(video) || archivarixStatusLabel(video)));
+    }
+
+    function archivarixLinkHtml(video) {
+      const url = archivarixVideoUrl(video);
+      if (!url || !shouldShowArchivarixLink(video)) return '';
+      return `<a class="playlist-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Archivarix</a>`;
     }
 
     function creatorAvatarHtml(path, url) {
@@ -5146,6 +5170,13 @@ INDEX_HTML = """<!doctype html>
       hidden.innerHTML = `<span>Hidden videos</span><span class="count">${data.hiddenVideos.length}</span>`;
       hidden.addEventListener('click', () => setSelected('__hidden__'));
       groupsEl.appendChild(hidden);
+      const hiddenPlaylists = data.playlists.filter(playlist => (playlist.hidden_count || 0) > 0);
+      const hiddenPlaylistButton = document.createElement('button');
+      hiddenPlaylistButton.className = 'group';
+      hiddenPlaylistButton.dataset.key = '__hidden_playlists__';
+      hiddenPlaylistButton.innerHTML = `<span>Playlists with hidden</span><span class="count">${hiddenPlaylists.length}</span>`;
+      hiddenPlaylistButton.addEventListener('click', () => setSelected('__hidden_playlists__'));
+      groupsEl.appendChild(hiddenPlaylistButton);
       const snapshot = document.createElement('button');
       snapshot.className = 'group';
       snapshot.dataset.key = '__snapshot__';
@@ -5225,6 +5256,23 @@ INDEX_HTML = """<!doctype html>
         });
         meta.textContent = `${rows.length} shown`;
         grid.replaceChildren(...rows.map(hiddenVideoCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__hidden_playlists__') {
+        title.textContent = 'Playlists with hidden videos';
+        const rows = data.playlists
+          .filter(playlist => (playlist.hidden_count || 0) > 0)
+          .filter(playlist => {
+            const haystack = `${playlist.title} ${playlist.owner} ${playlist.description} ${playlist.playlist_id}`.toLowerCase();
+            return !query || haystack.includes(query);
+          })
+          .sort((a, b) =>
+            (b.hidden_count || 0) - (a.hidden_count || 0)
+            || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
+          );
+        meta.textContent = `${rows.length} playlists`;
+        grid.replaceChildren(...rows.map(cardFor));
         empty.hidden = rows.length !== 0;
         return;
       }
@@ -5337,6 +5385,7 @@ INDEX_HTML = """<!doctype html>
           ${creatorAvatarHtml(video.metadata_channel_thumbnail_path, channelUrl)}
           ${creatorNameHtml(channelName, channelUrl)}
           ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
+          ${archivarixLinkHtml(video)}
         </div>
         ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : ''}
       `;

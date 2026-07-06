@@ -24,6 +24,8 @@ python yt_library_manager.py import-history --db yt_playlists.sqlite3 --takeout 
 - `serve` starts the local browser/admin UI.
 - `import-history` imports Takeout watch history zips from the selected path and rebuilds reconciliation.
 
+This repo is normally operated from PowerShell. Avoid Bash-only syntax such as `python - <<'PY'` here-docs. Prefer PowerShell-safe forms like `python -c "..."`, checked-in or temporary helper scripts when warranted, or explicit PowerShell here-strings piped intentionally.
+
 ## Coding Style & Naming Conventions
 
 Prefer Python implementations and keep changes inside `yt_library_manager.py` unless a real module split is justified. Use 4-space indentation, type hints for new helper functions, and descriptive snake_case names. Keep comments rare and useful. Follow existing patterns for SQLite helpers, worker classes, and API route handling.
