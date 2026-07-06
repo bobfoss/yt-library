@@ -179,6 +179,10 @@ CREATE TABLE IF NOT EXISTS snapshot_video_recovery (
   title TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL DEFAULT '',
+  channel_url TEXT NOT NULL DEFAULT '',
+  channel_thumbnail_url TEXT NOT NULL DEFAULT '',
+  channel_thumbnail_path TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT '',
   duration_text TEXT NOT NULL DEFAULT '',
   upload_date TEXT NOT NULL DEFAULT '',
@@ -405,7 +409,13 @@ def connect(db_path: Path) -> sqlite3.Connection:
     ensure_columns(
         conn,
         "snapshot_video_recovery",
-        {"description": "TEXT NOT NULL DEFAULT ''"},
+        {
+            "description": "TEXT NOT NULL DEFAULT ''",
+            "channel_id": "TEXT NOT NULL DEFAULT ''",
+            "channel_url": "TEXT NOT NULL DEFAULT ''",
+            "channel_thumbnail_url": "TEXT NOT NULL DEFAULT ''",
+            "channel_thumbnail_path": "TEXT NOT NULL DEFAULT ''",
+        },
     )
     ensure_columns(
         conn,
@@ -1218,8 +1228,10 @@ def archivarix_search_deleted(query: str, page_size: int = 50) -> list[dict[str,
 def archivarix_lookup_video(
     video_id: str,
     opener: urllib.request.OpenerDirector | None = None,
+    channel_cache: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     opener = opener or urllib.request.build_opener()
+    channel_cache = channel_cache if channel_cache is not None else {}
     youtube_url = f"https://www.youtube.com/watch?v={video_id}"
     request = urllib.request.Request(
         "https://tube.archivarix.net/api/search",
@@ -1253,6 +1265,7 @@ def archivarix_lookup_video(
         },
     )
     event = ""
+    resolved_channel: dict[str, Any] = {}
     with opener.open(stream_request, timeout=25) as response:
         for raw_line in response:
             line = raw_line.decode("utf-8", "replace").strip()
@@ -1265,13 +1278,65 @@ def archivarix_lookup_video(
             if not line.startswith("data:"):
                 continue
             payload_text = line.partition(":")[2].strip()
+            if event == "search:channel_resolved":
+                payload = json.loads(payload_text)
+                resolved_channel = archivarix_channel_recovery_fields(payload)
+                continue
+            if event == "search:channel_update":
+                payload = json.loads(payload_text)
+                resolved_channel.update(archivarix_channel_recovery_fields(payload))
+                continue
             if event == "search:video":
                 payload = json.loads(payload_text)
+                internal_channel_id = str(payload.get("channelId") or "")
+                cached_channel = channel_cache.get(internal_channel_id, {}) if internal_channel_id else {}
+                channel_fields = dict(cached_channel)
+                channel_fields.update({k: v for k, v in resolved_channel.items() if v})
+                if internal_channel_id and channel_fields:
+                    channel_cache[internal_channel_id] = channel_fields
+                apply_archivarix_channel_fields(payload, channel_fields)
                 if payload.get("videoId") == video_id:
                     return payload
             if event in {"search:complete", "search:error"}:
                 return None
     return None
+
+
+def archivarix_channel_recovery_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    channel_id = str(payload.get("channelId") or "")
+    if channel_id and not channel_id.startswith("UC"):
+        channel_id = ""
+    channel_url = str(payload.get("channelUrl") or "")
+    if not channel_url and channel_id:
+        channel_url = f"https://www.youtube.com/channel/{channel_id}"
+    thumbnail_url = str(
+        payload.get("thumbnailUrl")
+        or payload.get("avatarLocalUrl")
+        or payload.get("channelThumbnailUrl")
+        or payload.get("channelAvatarLocalUrl")
+        or ""
+    )
+    if thumbnail_url.startswith("/"):
+        thumbnail_url = urllib.parse.urljoin("https://tube.archivarix.net", thumbnail_url)
+    return {
+        "channelTitle": str(payload.get("channelTitle") or payload.get("channel") or ""),
+        "channelExternalId": channel_id,
+        "channelUrl": channel_url,
+        "channelThumbnailUrl": thumbnail_url,
+    }
+
+
+def apply_archivarix_channel_fields(video: dict[str, Any], channel_fields: dict[str, Any]) -> None:
+    if not channel_fields:
+        return
+    if not video.get("channelTitle") and channel_fields.get("channelTitle"):
+        video["channelTitle"] = channel_fields["channelTitle"]
+    if not video.get("channelExternalId") and channel_fields.get("channelExternalId"):
+        video["channelExternalId"] = channel_fields["channelExternalId"]
+    if not video.get("channelUrl") and channel_fields.get("channelUrl"):
+        video["channelUrl"] = channel_fields["channelUrl"]
+    if not video.get("channelThumbnailUrl") and channel_fields.get("channelThumbnailUrl"):
+        video["channelThumbnailUrl"] = channel_fields["channelThumbnailUrl"]
 
 
 def cache_archivarix_thumbnail(
@@ -2553,15 +2618,20 @@ def save_snapshot_video_recovery(
     conn.execute(
         """
         INSERT INTO snapshot_video_recovery(
-          snapshot_key, video_id, title, description, channel, status, duration_text,
+          snapshot_key, video_id, title, description, channel, channel_id, channel_url,
+          channel_thumbnail_url, channel_thumbnail_path, status, duration_text,
           upload_date, view_count, thumbnail_url, thumbnail_path,
           archive_url, video_file_url, searched_at, search_status, search_error
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(snapshot_key, video_id) DO UPDATE SET
           title=excluded.title,
           description=excluded.description,
           channel=excluded.channel,
+          channel_id=excluded.channel_id,
+          channel_url=excluded.channel_url,
+          channel_thumbnail_url=excluded.channel_thumbnail_url,
+          channel_thumbnail_path=excluded.channel_thumbnail_path,
           status=excluded.status,
           duration_text=excluded.duration_text,
           upload_date=excluded.upload_date,
@@ -2580,6 +2650,10 @@ def save_snapshot_video_recovery(
             (video or {}).get("title") or "",
             (video or {}).get("description") or "",
             (video or {}).get("channelTitle") or "",
+            (video or {}).get("channelExternalId") or "",
+            (video or {}).get("channelUrl") or "",
+            (video or {}).get("channelThumbnailUrl") or "",
+            (video or {}).get("channelThumbnailPath") or "",
             recovered_status,
             format_duration((video or {}).get("duration")),
             (video or {}).get("uploadDate") or "",
@@ -2602,6 +2676,7 @@ def recover_archivarix_video(
     refresh_metadata: bool = False,
     no_api: bool = False,
     delay: float = 0,
+    channel_cache: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, str, str, str, str]:
     status = "not_found"
     error = ""
@@ -2619,7 +2694,7 @@ def recover_archivarix_video(
         try:
             if delay:
                 time.sleep(delay)
-            video = archivarix_lookup_video(video_id, archivarix_opener)
+            video = archivarix_lookup_video(video_id, archivarix_opener, channel_cache=channel_cache)
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             status = "error"
             error = str(exc)
@@ -2632,6 +2707,14 @@ def recover_archivarix_video(
             thumb_dir,
             archivarix_opener,
         )
+        channel_thumbnail_url = video.get("channelThumbnailUrl") or ""
+        if channel_thumbnail_url:
+            video["channelThumbnailPath"] = cache_channel_thumbnail(
+                archivarix_opener,
+                video_id,
+                channel_thumbnail_url,
+                thumb_dir,
+            )
     return video, thumbnail_url, thumbnail_path, status, error
 
 
@@ -4188,6 +4271,7 @@ class PlaceholderRecoveryWorker:
         archivarix_opener = load_cookie_opener(archivarix_cookie_file)
         try:
             rows = playlist_placeholder_recovery_rows(conn, limit=limit, force=force)
+            channel_cache: dict[str, dict[str, Any]] = {}
             with conn:
                 conn.execute(
                     """
@@ -4240,6 +4324,7 @@ class PlaceholderRecoveryWorker:
                         refresh_metadata=True,
                         no_api=False,
                         delay=delay,
+                        channel_cache=channel_cache,
                     )
                     with conn:
                         save_snapshot_video_recovery(
@@ -4888,6 +4973,7 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
     print(f"Recovering Archivarix thumbnails for {len(rows)} {scope} video IDs...")
     found = 0
     cached = 0
+    channel_cache: dict[str, dict[str, Any]] = {}
     for index, row in enumerate(rows, start=1):
         snapshot_key = row["snapshot_key"]
         video_id = row["video_id"]
@@ -4898,6 +4984,7 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
             refresh_metadata=args.refresh_metadata,
             no_api=args.no_api,
             delay=args.delay,
+            channel_cache=channel_cache,
         )
         if status == "thumbnail_only":
             cached += 1
@@ -4982,11 +5069,11 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                    COALESCE(NULLIF(NULLIF(vm.title, '- YouTube'), 'YouTube'), r.title, '') AS metadata_title,
                    COALESCE(NULLIF(vm.description, ''), r.description, '') AS metadata_description,
                    COALESCE(NULLIF(vm.channel, ''), r.channel, '') AS metadata_channel,
-                   COALESCE(vm.channel_url, '') AS metadata_channel_url,
+                   COALESCE(NULLIF(vm.channel_url, ''), r.channel_url, CASE WHEN r.channel_id <> '' THEN 'https://www.youtube.com/channel/' || r.channel_id ELSE '' END, '') AS metadata_channel_url,
                    COALESCE(NULLIF(vm.duration_text, ''), r.duration_text, '') AS metadata_duration,
                    COALESCE(NULLIF(vm.upload_date, ''), r.upload_date, '') AS metadata_upload_date,
                    COALESCE(NULLIF(vm.thumbnail_path, ''), r.thumbnail_path, '') AS metadata_thumbnail_path,
-                   COALESCE(vm.channel_thumbnail_path, '') AS metadata_channel_thumbnail_path,
+                   COALESCE(NULLIF(vm.channel_thumbnail_path, ''), r.channel_thumbnail_path, '') AS metadata_channel_thumbnail_path,
                    COALESCE(NULLIF(vm.fetch_status, ''), r.search_status, '') AS metadata_fetch_status,
                    COALESCE(r.status, '') AS recovered_status
             FROM playlist_video_reconciled v
