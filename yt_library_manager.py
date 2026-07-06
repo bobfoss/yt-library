@@ -207,7 +207,6 @@ CREATE TABLE IF NOT EXISTS video_metadata (
   upload_date TEXT NOT NULL DEFAULT '',
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
-  watch_url TEXT NOT NULL DEFAULT '',
   yt_status TEXT NOT NULL DEFAULT '',
   fetch_status TEXT NOT NULL DEFAULT '',
   fetch_error TEXT NOT NULL DEFAULT '',
@@ -659,7 +658,7 @@ def drop_deprecated_channel_columns(conn: sqlite3.Connection) -> None:
 
 
 def cleanup_video_metadata_columns(conn: sqlite3.Connection) -> None:
-    deprecated = {"channel", "channel_url", "channel_thumbnail_url", "channel_thumbnail_path"}
+    deprecated = {"channel", "channel_url", "channel_thumbnail_url", "channel_thumbnail_path", "watch_url"}
     cols = table_columns(conn, "video_metadata")
     if not deprecated.intersection(cols):
         return
@@ -676,7 +675,6 @@ def cleanup_video_metadata_columns(conn: sqlite3.Connection) -> None:
           upload_date TEXT NOT NULL DEFAULT '',
           thumbnail_url TEXT NOT NULL DEFAULT '',
           thumbnail_path TEXT NOT NULL DEFAULT '',
-          watch_url TEXT NOT NULL DEFAULT '',
           yt_status TEXT NOT NULL DEFAULT '',
           fetch_status TEXT NOT NULL DEFAULT '',
           fetch_error TEXT NOT NULL DEFAULT '',
@@ -691,11 +689,11 @@ def cleanup_video_metadata_columns(conn: sqlite3.Connection) -> None:
         f"""
         INSERT INTO video_metadata(
           video_id, title, description, channel_id, duration_text, view_count,
-          upload_date, thumbnail_url, thumbnail_path, watch_url, yt_status,
+          upload_date, thumbnail_url, thumbnail_path, yt_status,
           fetch_status, fetch_error, fetched_at, updated_at
         )
         SELECT video_id, title, description, {select_channel_id}, duration_text, view_count,
-               upload_date, thumbnail_url, thumbnail_path, watch_url, yt_status,
+               upload_date, thumbnail_url, thumbnail_path, yt_status,
                fetch_status, fetch_error, fetched_at, updated_at
         FROM video_metadata_old
         """
@@ -2281,7 +2279,6 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         "upload_date": str(microformat.get("uploadDate") or microformat.get("publishDate") or ""),
         "thumbnail_url": thumbnail_url,
         "channel_thumbnail_url": channel_thumbnail_url,
-        "watch_url": f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}",
         "yt_status": status or ("OK" if title else ""),
     }
 
@@ -4108,7 +4105,6 @@ class MetadataWorker:
                     "thumbnail_path": "",
                     "channel_thumbnail_url": "",
                     "channel_thumbnail_path": "",
-                    "watch_url": f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}",
                     "yt_status": "",
                 }
                 try:
@@ -4135,9 +4131,9 @@ class MetadataWorker:
                         INSERT INTO video_metadata(
                           video_id, title, description, channel_id, duration_text, view_count,
                           upload_date, thumbnail_url, thumbnail_path,
-                          watch_url, yt_status, fetch_status, fetch_error, fetched_at, updated_at
+                          yt_status, fetch_status, fetch_error, fetched_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(video_id) DO UPDATE SET
                           title=excluded.title,
                           description=excluded.description,
@@ -4147,7 +4143,6 @@ class MetadataWorker:
                           upload_date=excluded.upload_date,
                           thumbnail_url=excluded.thumbnail_url,
                           thumbnail_path=excluded.thumbnail_path,
-                          watch_url=excluded.watch_url,
                           yt_status=excluded.yt_status,
                           fetch_status=excluded.fetch_status,
                           fetch_error=excluded.fetch_error,
@@ -4164,7 +4159,6 @@ class MetadataWorker:
                             metadata.get("upload_date", ""),
                             metadata.get("thumbnail_url", ""),
                             metadata.get("thumbnail_path", ""),
-                            metadata.get("watch_url", ""),
                             metadata.get("yt_status", ""),
                             status,
                             error,
