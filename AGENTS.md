@@ -24,7 +24,27 @@ python yt_library_manager.py import-history --db yt_playlists.sqlite3 --takeout 
 - `serve` starts the local browser/admin UI.
 - `import-history` imports Takeout watch history zips from the selected path and rebuilds reconciliation.
 
-This repo is normally operated from PowerShell. Avoid Bash-only syntax such as `python - <<'PY'` here-docs. Prefer PowerShell-safe forms like `python -c "..."`, checked-in or temporary helper scripts when warranted, or explicit PowerShell here-strings piped intentionally.
+This repo is normally operated from PowerShell. Avoid Bash-only syntax such as `python - <<'PY'` here-docs. Prefer PowerShell-safe forms like `python -c "..."`, checked-in or temporary helper scripts when warranted, or explicit PowerShell here-strings piped intentionally. This project does not use `ENVIRONMENT.md`.
+
+## Operational Notes
+
+Treat video IDs, titles, and URLs as shell-hostile strings. YouTube IDs can start with `-`, and titles or copied values can contain leading spaces. When passing a dash-leading value to argparse, use the equals form so it cannot be parsed as an option:
+
+```powershell
+python yt_library_manager.py recover-missing-thumbnails --video-id=-R3PbSzyD9I
+```
+
+For ad hoc Python probes in PowerShell, avoid Bash here-doc syntax and prefer piping a PowerShell here-string into the bundled Python. When printing web/API payloads, force UTF-8 output to avoid Windows console encoding failures:
+
+```powershell
+$code = @'
+import sys
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+'@
+$code | & "C:\Users\michael.keenan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -B -
+```
+
+When using `Start-Process`, pass a single quoted argument string or otherwise verify paths with spaces remain intact; cookie files such as `"YT cookies.txt"` must not be split into separate arguments.
 
 ## Coding Style & Naming Conventions
 
