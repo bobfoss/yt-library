@@ -339,6 +339,32 @@ CREATE TABLE IF NOT EXISTS live_history_worker_log (
   message TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS placeholder_recovery_worker_runs (
+  run_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT '',
+  started_at INTEGER NOT NULL DEFAULT 0,
+  finished_at INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  processed INTEGER NOT NULL DEFAULT 0,
+  found INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  delay_seconds REAL NOT NULL DEFAULT 0,
+  requested_limit INTEGER NOT NULL DEFAULT 0,
+  force INTEGER NOT NULL DEFAULT 0,
+  last_video_id TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS placeholder_recovery_worker_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  level TEXT NOT NULL DEFAULT '',
+  video_id TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_groups_parent_position ON groups(parent_key, position);
 CREATE INDEX IF NOT EXISTS idx_group_playlists_position ON group_playlists(group_key, position);
 CREATE INDEX IF NOT EXISTS idx_playlist_videos_hidden ON playlist_videos(is_playable, playlist_id, position);
@@ -359,6 +385,7 @@ CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(wat
 CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_run ON metadata_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_run ON playlist_scan_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_live_history_worker_log_run ON live_history_worker_log(run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_placeholder_recovery_worker_log_run ON placeholder_recovery_worker_log(run_id, created_at);
 """
 
 
@@ -2448,6 +2475,166 @@ def log_live_history_event(
     )
 
 
+def log_placeholder_recovery_event(
+    conn: sqlite3.Connection,
+    run_id: str,
+    level: str,
+    message: str,
+    video_id: str = "",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO placeholder_recovery_worker_log(run_id, created_at, level, video_id, message)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (run_id, int(time.time()), level, video_id, message),
+    )
+
+
+def playlist_placeholder_recovery_rows(
+    conn: sqlite3.Connection,
+    limit: int = 0,
+    force: bool = False,
+) -> list[sqlite3.Row]:
+    where = [
+        "v.video_id <> ''",
+        """
+        (
+          v.is_playable = 0
+          OR lower(trim(COALESCE(v.title, ''), '[]() ')) IN ('deleted video', 'private video')
+          OR lower(COALESCE(v.title, '')) LIKE '%unavailable%'
+          OR lower(COALESCE(v.availability, '')) LIKE '%unavailable%'
+          OR lower(COALESCE(v.availability, '')) LIKE '%deleted%'
+          OR lower(COALESCE(v.availability, '')) LIKE '%private%'
+        )
+        """,
+    ]
+    if not force:
+        where.append("(r.video_id IS NULL OR r.search_status = 'error')")
+    sql = f"""
+        SELECT v.snapshot_key,
+               v.video_id,
+               MIN(v.display_position) AS display_position,
+               MIN(p.title) AS playlist_title,
+               COUNT(DISTINCT v.playlist_id) AS playlist_count,
+               COALESCE(r.search_status, '') AS previous_status
+        FROM playlist_video_reconciled v
+        JOIN playlists p ON p.playlist_id = v.playlist_id
+        LEFT JOIN snapshot_video_recovery r
+          ON r.snapshot_key = v.snapshot_key
+         AND r.video_id = v.video_id
+        WHERE {" AND ".join(where)}
+        GROUP BY v.snapshot_key, v.video_id, COALESCE(r.search_status, '')
+        ORDER BY MIN(p.title) COLLATE NOCASE, MIN(v.display_position), v.video_id
+    """
+    if limit:
+        sql += " LIMIT ?"
+        return conn.execute(sql, (limit,)).fetchall()
+    return conn.execute(sql).fetchall()
+
+
+def playlist_placeholder_recovery_count(conn: sqlite3.Connection, force: bool = False) -> int:
+    return len(playlist_placeholder_recovery_rows(conn, limit=0, force=force))
+
+
+def save_snapshot_video_recovery(
+    conn: sqlite3.Connection,
+    snapshot_key: str,
+    video_id: str,
+    video: dict[str, Any] | None,
+    thumbnail_url: str,
+    thumbnail_path: str,
+    search_status: str,
+    search_error: str,
+) -> None:
+    recovered_status = (video or {}).get("status") or ""
+    if search_status == "not_found":
+        recovered_status = "NOT_FOUND"
+    conn.execute(
+        """
+        INSERT INTO snapshot_video_recovery(
+          snapshot_key, video_id, title, description, channel, status, duration_text,
+          upload_date, view_count, thumbnail_url, thumbnail_path,
+          archive_url, video_file_url, searched_at, search_status, search_error
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(snapshot_key, video_id) DO UPDATE SET
+          title=excluded.title,
+          description=excluded.description,
+          channel=excluded.channel,
+          status=excluded.status,
+          duration_text=excluded.duration_text,
+          upload_date=excluded.upload_date,
+          view_count=excluded.view_count,
+          thumbnail_url=excluded.thumbnail_url,
+          thumbnail_path=excluded.thumbnail_path,
+          archive_url=excluded.archive_url,
+          video_file_url=excluded.video_file_url,
+          searched_at=excluded.searched_at,
+          search_status=excluded.search_status,
+          search_error=excluded.search_error
+        """,
+        (
+            snapshot_key,
+            video_id,
+            (video or {}).get("title") or "",
+            (video or {}).get("description") or "",
+            (video or {}).get("channelTitle") or "",
+            recovered_status,
+            format_duration((video or {}).get("duration")),
+            (video or {}).get("uploadDate") or "",
+            str((video or {}).get("viewCount") or ""),
+            thumbnail_url,
+            thumbnail_path,
+            (video or {}).get("archiveUrl") or "",
+            (video or {}).get("videoFileUrl") or "",
+            int(time.time()),
+            search_status,
+            search_error,
+        ),
+    )
+
+
+def recover_archivarix_video(
+    video_id: str,
+    thumb_dir: Path,
+    archivarix_opener: urllib.request.OpenerDirector,
+    refresh_metadata: bool = False,
+    no_api: bool = False,
+    delay: float = 0,
+) -> tuple[dict[str, Any] | None, str, str, str, str]:
+    status = "not_found"
+    error = ""
+    video: dict[str, Any] | None = None
+    thumbnail_url = ""
+    thumbnail_path = cache_archivarix_thumbnail(
+        video_id,
+        "",
+        thumb_dir,
+        archivarix_opener,
+    )
+    if thumbnail_path and not refresh_metadata:
+        status = "thumbnail_only"
+    elif not no_api:
+        try:
+            if delay:
+                time.sleep(delay)
+            video = archivarix_lookup_video(video_id, archivarix_opener)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            status = "error"
+            error = str(exc)
+    if video:
+        status = "found"
+        thumbnail_url = video.get("thumbnailArchiveUrl") or video.get("thumbnailUrl") or ""
+        thumbnail_path = thumbnail_path or cache_archivarix_thumbnail(
+            video_id,
+            thumbnail_url,
+            thumb_dir,
+            archivarix_opener,
+        )
+    return video, thumbnail_url, thumbnail_path, status, error
+
+
 def youtube_occurrence_sequence(
     conn: sqlite3.Connection,
     start: int,
@@ -3114,8 +3301,9 @@ def admin_status(
     metadata_worker: "MetadataWorker | None" = None,
     playlist_worker: "PlaylistScanWorker | None" = None,
     live_history_worker: "LiveHistoryWorker | None" = None,
+    placeholder_recovery_worker: "PlaceholderRecoveryWorker | None" = None,
 ) -> dict[str, Any]:
-    reconcile_worker_runs(db_path, metadata_worker, playlist_worker, live_history_worker)
+    reconcile_worker_runs(db_path, metadata_worker, playlist_worker, live_history_worker, placeholder_recovery_worker)
     conn = connect(db_path)
     try:
         counts = dict(
@@ -3168,6 +3356,7 @@ def admin_status(
         ]
         metadata_queue_count_value = metadata_queue_count(conn, force=False, stale_days=30)
         playlist_queue_count = len(playlist_scan_queue_rows(conn, force=False, stale_days=7))
+        placeholder_recovery_queue_count = playlist_placeholder_recovery_count(conn, force=False)
         latest_metadata_run = conn.execute(
             """
             SELECT *
@@ -3188,6 +3377,14 @@ def admin_status(
             """
             SELECT *
             FROM live_history_worker_runs
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        latest_placeholder_recovery_run = conn.execute(
+            """
+            SELECT *
+            FROM placeholder_recovery_worker_runs
             ORDER BY started_at DESC
             LIMIT 1
             """
@@ -3225,6 +3422,17 @@ def admin_status(
                 """
             )
         ]
+        placeholder_recovery_logs = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM placeholder_recovery_worker_log
+                ORDER BY id DESC
+                LIMIT 80
+                """
+            )
+        ]
     finally:
         conn.close()
     return {
@@ -3232,6 +3440,7 @@ def admin_status(
         "metadataRunning": metadata_worker.is_running() if metadata_worker else False,
         "playlistScanRunning": playlist_worker.is_running() if playlist_worker else False,
         "liveHistoryRunning": live_history_worker.is_running() if live_history_worker else False,
+        "placeholderRecoveryRunning": placeholder_recovery_worker.is_running() if placeholder_recovery_worker else False,
         "counts": counts,
         "liveHistoryCounts": live_history_counts,
         "playlistCounts": playlist_counts,
@@ -3239,14 +3448,17 @@ def admin_status(
             "queueCount": metadata_queue_count_value,
             "metadataQueueCount": metadata_queue_count_value,
         "playlistScanQueueCount": playlist_queue_count,
+        "placeholderRecoveryQueueCount": placeholder_recovery_queue_count,
         "latestRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestMetadataRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestPlaylistScanRun": dict(latest_playlist_run) if latest_playlist_run else None,
         "latestLiveHistoryRun": dict(latest_live_history_run) if latest_live_history_run else None,
+        "latestPlaceholderRecoveryRun": dict(latest_placeholder_recovery_run) if latest_placeholder_recovery_run else None,
         "logs": metadata_logs,
         "metadataLogs": metadata_logs,
         "playlistScanLogs": playlist_logs,
         "liveHistoryLogs": live_history_logs,
+        "placeholderRecoveryLogs": placeholder_recovery_logs,
     }
 
 
@@ -3262,10 +3474,12 @@ def reconcile_worker_runs(
     metadata_worker: "MetadataWorker | None" = None,
     playlist_worker: "PlaylistScanWorker | None" = None,
     live_history_worker: "LiveHistoryWorker | None" = None,
+    placeholder_recovery_worker: "PlaceholderRecoveryWorker | None" = None,
 ) -> None:
     metadata_running = metadata_worker.is_running() if metadata_worker else False
     playlist_running = playlist_worker.is_running() if playlist_worker else False
     live_history_running = live_history_worker.is_running() if live_history_worker else False
+    placeholder_recovery_running = placeholder_recovery_worker.is_running() if placeholder_recovery_worker else False
     now = int(time.time())
     conn = connect(db_path)
     try:
@@ -3302,6 +3516,20 @@ def reconcile_worker_runs(
                 conn.execute(
                     """
                     UPDATE live_history_worker_runs
+                    SET status = 'interrupted',
+                        finished_at = ?,
+                        message = CASE
+                          WHEN message = '' THEN 'Interrupted by server restart'
+                          ELSE message || ' (interrupted by server restart)'
+                        END
+                    WHERE status = 'running'
+                    """,
+                    (now,),
+                )
+            if not placeholder_recovery_running:
+                conn.execute(
+                    """
+                    UPDATE placeholder_recovery_worker_runs
                     SET status = 'interrupted',
                         finished_at = ?,
                         message = CASE
@@ -3902,6 +4130,205 @@ class LiveHistoryWorker:
 LIVE_HISTORY_WORKER = LiveHistoryWorker()
 
 
+class PlaceholderRecoveryWorker:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._run_id = ""
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return bool(self._thread and self._thread.is_alive())
+
+    def start(
+        self,
+        db_path: Path,
+        archivarix_cookie_file: Path,
+        thumb_dir: Path,
+        delay: float,
+        limit: int,
+        force: bool,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return {
+                    "started": False,
+                    "run_id": self._run_id,
+                    "message": "Placeholder recovery already running",
+                }
+            self._stop.clear()
+            self._run_id = uuid.uuid4().hex
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(self._run_id, db_path, archivarix_cookie_file, thumb_dir, delay, limit, force),
+                daemon=True,
+            )
+            self._thread.start()
+            return {"started": True, "run_id": self._run_id, "message": "Placeholder recovery started"}
+
+    def stop(self) -> dict[str, Any]:
+        with self._lock:
+            if not self._thread or not self._thread.is_alive():
+                return {"stopping": False, "message": "Placeholder recovery is not running"}
+            self._stop.set()
+            return {"stopping": True, "run_id": self._run_id, "message": "Placeholder recovery stop requested"}
+
+    def _run(
+        self,
+        run_id: str,
+        db_path: Path,
+        archivarix_cookie_file: Path,
+        thumb_dir: Path,
+        delay: float,
+        limit: int,
+        force: bool,
+    ) -> None:
+        conn = connect(db_path)
+        archivarix_opener = load_cookie_opener(archivarix_cookie_file)
+        try:
+            rows = playlist_placeholder_recovery_rows(conn, limit=limit, force=force)
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO placeholder_recovery_worker_runs(
+                      run_id, status, started_at, total, delay_seconds,
+                      requested_limit, force, message
+                    )
+                    VALUES (?, 'running', ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        int(time.time()),
+                        len(rows),
+                        delay,
+                        limit,
+                        1 if force else 0,
+                        "Placeholder recovery started",
+                    ),
+                )
+                log_placeholder_recovery_event(conn, run_id, "info", f"Queued {len(rows)} placeholder videos")
+
+            processed = 0
+            found = 0
+            failed = 0
+            skipped = 0
+            for row in rows:
+                if self._stop.is_set():
+                    with conn:
+                        conn.execute(
+                            """
+                            UPDATE placeholder_recovery_worker_runs
+                            SET status = 'stopped', finished_at = ?, message = ?
+                            WHERE run_id = ?
+                            """,
+                            (int(time.time()), "Stop requested", run_id),
+                        )
+                        log_placeholder_recovery_event(conn, run_id, "warn", "Placeholder recovery stopped by request")
+                    return
+
+                snapshot_key = row["snapshot_key"] or ""
+                video_id = row["video_id"]
+                title = ""
+                status = "not_found"
+                error = ""
+                try:
+                    video, thumbnail_url, thumbnail_path, status, error = recover_archivarix_video(
+                        video_id,
+                        thumb_dir,
+                        archivarix_opener,
+                        refresh_metadata=True,
+                        no_api=False,
+                        delay=delay,
+                    )
+                    with conn:
+                        save_snapshot_video_recovery(
+                            conn,
+                            snapshot_key,
+                            video_id,
+                            video,
+                            thumbnail_url,
+                            thumbnail_path,
+                            status,
+                            error,
+                        )
+                    title = (video or {}).get("title") or video_id
+                except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+                    status = "error"
+                    error = str(exc)
+                    title = video_id
+
+                with conn:
+                    processed += 1
+                    if status == "found":
+                        found += 1
+                        level = "found"
+                        message = f"found: {title}"
+                    elif status == "thumbnail_only":
+                        found += 1
+                        level = "thumbnail"
+                        message = f"thumbnail only: {title}"
+                    elif status == "not_found":
+                        skipped += 1
+                        level = "not found"
+                        message = "not found"
+                    else:
+                        failed += 1
+                        level = "error"
+                        message = error or status
+                    conn.execute(
+                        """
+                        UPDATE placeholder_recovery_worker_runs
+                        SET processed = ?, found = ?, failed = ?, skipped = ?,
+                            last_video_id = ?, message = ?
+                        WHERE run_id = ?
+                        """,
+                        (
+                            processed,
+                            found,
+                            failed,
+                            skipped,
+                            video_id,
+                            f"Processed {processed} of {len(rows)}",
+                            run_id,
+                        ),
+                    )
+                    log_placeholder_recovery_event(conn, run_id, level, message, video_id)
+
+            with conn:
+                stats = rebuild_playlist_reconciliation(conn)
+                final_message = (
+                    f"Placeholder recovery complete: {processed} checked, "
+                    f"{found} found, {skipped} not found, {failed} failed; "
+                    f"reconciled {stats['rows']} rows"
+                )
+                conn.execute(
+                    """
+                    UPDATE placeholder_recovery_worker_runs
+                    SET status = 'complete', finished_at = ?, message = ?
+                    WHERE run_id = ?
+                    """,
+                    (int(time.time()), final_message, run_id),
+                )
+                log_placeholder_recovery_event(conn, run_id, "info", final_message)
+        except Exception as exc:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE placeholder_recovery_worker_runs
+                    SET status = 'error', finished_at = ?, message = ?
+                    WHERE run_id = ?
+                    """,
+                    (int(time.time()), str(exc), run_id),
+                )
+                log_placeholder_recovery_event(conn, run_id, "error", f"Placeholder recovery crashed: {exc}")
+        finally:
+            conn.close()
+
+
+PLACEHOLDER_RECOVERY_WORKER = PlaceholderRecoveryWorker()
+
+
 def scan_hidden(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     conn = connect(db_path)
@@ -4464,86 +4891,30 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
     for index, row in enumerate(rows, start=1):
         snapshot_key = row["snapshot_key"]
         video_id = row["video_id"]
-        status = "not_found"
-        error = ""
-        video: dict[str, Any] | None = None
-        thumbnail_path = ""
-        thumbnail_url = ""
-        thumbnail_path = cache_archivarix_thumbnail(
+        video, thumbnail_url, thumbnail_path, status, error = recover_archivarix_video(
             video_id,
-            "",
             thumb_dir,
             archivarix_opener,
+            refresh_metadata=args.refresh_metadata,
+            no_api=args.no_api,
+            delay=args.delay,
         )
-        if thumbnail_path and not args.refresh_metadata:
-            status = "thumbnail_only"
+        if status == "thumbnail_only":
             cached += 1
-        elif not args.no_api:
-            try:
-                if args.delay:
-                    time.sleep(args.delay)
-                video = archivarix_lookup_video(video_id, archivarix_opener)
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-                status = "error"
-                error = str(exc)
         if video:
             found += 1
-            status = "found"
-            thumbnail_url = video.get("thumbnailArchiveUrl") or video.get("thumbnailUrl") or ""
-            thumbnail_path = thumbnail_path or cache_archivarix_thumbnail(
-                video_id,
-                thumbnail_url,
-                thumb_dir,
-                archivarix_opener,
-            )
             if thumbnail_path:
                 cached += 1
-        recovered_status = (video or {}).get("status") or ""
-        if status == "not_found":
-            recovered_status = "NOT_FOUND"
         with conn:
-            conn.execute(
-                """
-                INSERT INTO snapshot_video_recovery(
-                  snapshot_key, video_id, title, description, channel, status, duration_text,
-                  upload_date, view_count, thumbnail_url, thumbnail_path,
-                  archive_url, video_file_url, searched_at, search_status, search_error
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(snapshot_key, video_id) DO UPDATE SET
-                  title=excluded.title,
-                  description=excluded.description,
-                  channel=excluded.channel,
-                  status=excluded.status,
-                  duration_text=excluded.duration_text,
-                  upload_date=excluded.upload_date,
-                  view_count=excluded.view_count,
-                  thumbnail_url=excluded.thumbnail_url,
-                  thumbnail_path=excluded.thumbnail_path,
-                  archive_url=excluded.archive_url,
-                  video_file_url=excluded.video_file_url,
-                  searched_at=excluded.searched_at,
-                  search_status=excluded.search_status,
-                  search_error=excluded.search_error
-                """,
-                (
-                    snapshot_key,
-                    video_id,
-                    (video or {}).get("title") or "",
-                    (video or {}).get("description") or "",
-                    (video or {}).get("channelTitle") or "",
-                    recovered_status,
-                    format_duration((video or {}).get("duration")),
-                    (video or {}).get("uploadDate") or "",
-                    str((video or {}).get("viewCount") or ""),
-                    thumbnail_url,
-                    thumbnail_path,
-                    (video or {}).get("archiveUrl") or "",
-                    (video or {}).get("videoFileUrl") or "",
-                    int(time.time()),
-                    status,
-                    error,
-                ),
+            save_snapshot_video_recovery(
+                conn,
+                snapshot_key,
+                video_id,
+                video,
+                thumbnail_url,
+                thumbnail_path,
+                status,
+                error,
             )
         label = (video or {}).get("title") or video_id
         suffix = "thumbnail" if thumbnail_path else status
@@ -5897,9 +6268,11 @@ ADMIN_HTML = """<!doctype html>
       <div class="panel"><div class="metric">Fetched history rows</div><div id="liveHistoryRows" class="value">0</div></div>
       <div class="panel"><div class="metric">Playlist scan queue</div><div id="playlistQueueCount" class="value">0</div></div>
       <div class="panel"><div class="metric">Metadata queue</div><div id="metadataQueueCount" class="value">0</div></div>
+      <div class="panel"><div class="metric">Placeholder recovery queue</div><div id="placeholderQueueCount" class="value">0</div></div>
       <div class="panel"><div class="metric">Playlist scanner</div><div id="playlistWorkerState" class="value">idle</div></div>
       <div class="panel"><div class="metric">Metadata worker</div><div id="metadataWorkerState" class="value">idle</div></div>
       <div class="panel"><div class="metric">History fetch</div><div id="liveHistoryWorkerState" class="value">idle</div></div>
+      <div class="panel"><div class="metric">Placeholder recovery</div><div id="placeholderWorkerState" class="value">idle</div></div>
     </section>
 
     <section class="panel">
@@ -5917,14 +6290,17 @@ ADMIN_HTML = """<!doctype html>
         <button id="importTakeoutHistory" type="button">Import Takeout history</button>
         <button id="reconcileHistory" type="button">Reconcile history</button>
         <button id="reconcilePlaylists" type="button">Reconcile playlists</button>
+        <button id="recoverPlaceholders" type="button">Recover deleted playlist videos</button>
         <button id="stopPlaylists" type="button">Stop playlist scan</button>
         <button id="stopMetadata" type="button">Stop metadata</button>
         <button id="stopLiveHistory" type="button">Stop history fetch</button>
+        <button id="stopPlaceholders" type="button">Stop placeholder recovery</button>
         <button id="refresh" type="button">Refresh status</button>
       </div>
       <div id="playlistRunStatus" class="status"></div>
       <div id="metadataRunStatus" class="status" style="margin-top:8px"></div>
       <div id="liveHistoryRunStatus" class="status" style="margin-top:8px"></div>
+      <div id="placeholderRunStatus" class="status" style="margin-top:8px"></div>
     </section>
 
     <section class="grid" id="metadataCounts"></section>
@@ -5962,12 +6338,15 @@ ADMIN_HTML = """<!doctype html>
       force: document.getElementById('force'),
       playlistQueueCount: document.getElementById('playlistQueueCount'),
       metadataQueueCount: document.getElementById('metadataQueueCount'),
+      placeholderQueueCount: document.getElementById('placeholderQueueCount'),
       playlistWorkerState: document.getElementById('playlistWorkerState'),
       metadataWorkerState: document.getElementById('metadataWorkerState'),
       liveHistoryWorkerState: document.getElementById('liveHistoryWorkerState'),
+      placeholderWorkerState: document.getElementById('placeholderWorkerState'),
       playlistRunStatus: document.getElementById('playlistRunStatus'),
       metadataRunStatus: document.getElementById('metadataRunStatus'),
       liveHistoryRunStatus: document.getElementById('liveHistoryRunStatus'),
+      placeholderRunStatus: document.getElementById('placeholderRunStatus'),
     };
 
     function escapeHtml(value) {
@@ -5989,12 +6368,15 @@ ADMIN_HTML = """<!doctype html>
       fields.liveHistoryRows.textContent = data.liveHistoryCounts?.live_rows || 0;
       fields.playlistQueueCount.textContent = data.playlistScanQueueCount || 0;
       fields.metadataQueueCount.textContent = data.metadataQueueCount || 0;
+      fields.placeholderQueueCount.textContent = data.placeholderRecoveryQueueCount || 0;
       fields.playlistWorkerState.textContent = data.playlistScanRunning ? 'running' : 'idle';
       fields.playlistWorkerState.className = `value ${data.playlistScanRunning ? 'running' : ''}`;
       fields.metadataWorkerState.textContent = data.metadataRunning ? 'running' : 'idle';
       fields.metadataWorkerState.className = `value ${data.metadataRunning ? 'running' : ''}`;
       fields.liveHistoryWorkerState.textContent = data.liveHistoryRunning ? 'running' : 'idle';
       fields.liveHistoryWorkerState.className = `value ${data.liveHistoryRunning ? 'running' : ''}`;
+      fields.placeholderWorkerState.textContent = data.placeholderRecoveryRunning ? 'running' : 'idle';
+      fields.placeholderWorkerState.className = `value ${data.placeholderRecoveryRunning ? 'running' : ''}`;
 
       function runHtml(run, label) {
         return run ? `
@@ -6011,6 +6393,7 @@ ADMIN_HTML = """<!doctype html>
       fields.playlistRunStatus.innerHTML = runHtml(data.latestPlaylistScanRun, 'Playlist scan');
       fields.metadataRunStatus.innerHTML = runHtml(data.latestMetadataRun, 'Metadata');
       fields.liveHistoryRunStatus.innerHTML = runHtml(data.latestLiveHistoryRun, 'History');
+      fields.placeholderRunStatus.innerHTML = runHtml(data.latestPlaceholderRecoveryRun, 'Placeholder recovery');
 
       fields.metadataCounts.replaceChildren(...(data.metadataCounts || []).map(row => {
         const div = document.createElement('div');
@@ -6023,6 +6406,7 @@ ADMIN_HTML = """<!doctype html>
         ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
         ...(data.metadataLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'metadata' })),
         ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
+        ...(data.placeholderRecoveryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'placeholder' })),
       ].sort((a, b) => (b.created_at - a.created_at) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
       fields.logs.innerHTML = logs.map(log => `
         <tr>
@@ -6074,9 +6458,15 @@ ADMIN_HTML = """<!doctype html>
     document.getElementById('reconcilePlaylists').addEventListener('click', () => {
       post('/api/admin/playlists/reconcile').catch(error => alert(error.message));
     });
+    document.getElementById('recoverPlaceholders').addEventListener('click', () => post('/api/admin/placeholders/start', {
+      limit: fields.limit.value,
+      delay: fields.playlistDelay.value,
+      force: fields.force.checked ? '1' : '0',
+    }).catch(error => alert(error.message)));
     document.getElementById('stopPlaylists').addEventListener('click', () => post('/api/admin/playlists/stop').catch(error => alert(error.message)));
     document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
     document.getElementById('stopLiveHistory').addEventListener('click', () => post('/api/admin/live-history/stop').catch(error => alert(error.message)));
+    document.getElementById('stopPlaceholders').addEventListener('click', () => post('/api/admin/placeholders/stop').catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus().catch(error => alert(error.message)));
     loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
     setInterval(loadStatus, 5000);
@@ -6159,7 +6549,15 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(data)
             return
         if parsed.path == "/api/admin/status":
-            self.send_json(admin_status(self.db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER))
+            self.send_json(
+                admin_status(
+                    self.db_path,
+                    METADATA_WORKER,
+                    PLAYLIST_SCAN_WORKER,
+                    LIVE_HISTORY_WORKER,
+                    PLACEHOLDER_RECOVERY_WORKER,
+                )
+            )
             return
         return super().do_GET()
 
@@ -6202,6 +6600,23 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/admin/playlists/stop":
             self.send_json(PLAYLIST_SCAN_WORKER.stop())
+            return
+        if parsed.path == "/api/admin/placeholders/start":
+            limit = max(0, int((params.get("limit") or ["25"])[0] or 0))
+            delay = max(1.0, float((params.get("delay") or ["3"])[0] or 3))
+            force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
+            result = PLACEHOLDER_RECOVERY_WORKER.start(
+                self.db_path,
+                ARCHIVARIX_COOKIE_FILE,
+                DEFAULT_ARCHIVARIX_THUMB_DIR,
+                delay=delay,
+                limit=limit,
+                force=force,
+            )
+            self.send_json(result)
+            return
+        if parsed.path == "/api/admin/placeholders/stop":
+            self.send_json(PLACEHOLDER_RECOVERY_WORKER.stop())
             return
         if parsed.path == "/api/admin/playlists/reconcile":
             conn = connect(self.db_path)
@@ -6316,7 +6731,7 @@ def serve(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}. Run import first.")
-    reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER)
+    reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER, PLACEHOLDER_RECOVERY_WORKER)
 
     def handler(*handler_args, **handler_kwargs):
         return LibraryHandler(
