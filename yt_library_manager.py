@@ -104,6 +104,27 @@ CREATE TABLE IF NOT EXISTS playlist_videos (
   PRIMARY KEY (playlist_id, position)
 );
 
+CREATE TABLE IF NOT EXISTS playlist_video_reconciled (
+  playlist_id TEXT NOT NULL REFERENCES playlists(playlist_id) ON DELETE CASCADE,
+  display_position INTEGER NOT NULL,
+  current_position INTEGER NOT NULL DEFAULT 0,
+  snapshot_position INTEGER NOT NULL DEFAULT 0,
+  video_id TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  channel TEXT NOT NULL DEFAULT '',
+  duration_text TEXT NOT NULL DEFAULT '',
+  is_playable INTEGER NOT NULL DEFAULT 1,
+  availability TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  source_quality TEXT NOT NULL DEFAULT '',
+  match_confidence TEXT NOT NULL DEFAULT '',
+  match_notes TEXT NOT NULL DEFAULT '',
+  snapshot_key TEXT NOT NULL DEFAULT '',
+  added_at TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (playlist_id, display_position)
+);
+
 CREATE TABLE IF NOT EXISTS archivarix_candidates (
   playlist_id TEXT NOT NULL REFERENCES playlists(playlist_id) ON DELETE CASCADE,
   video_id TEXT NOT NULL,
@@ -321,6 +342,8 @@ CREATE TABLE IF NOT EXISTS live_history_worker_log (
 CREATE INDEX IF NOT EXISTS idx_groups_parent_position ON groups(parent_key, position);
 CREATE INDEX IF NOT EXISTS idx_group_playlists_position ON group_playlists(group_key, position);
 CREATE INDEX IF NOT EXISTS idx_playlist_videos_hidden ON playlist_videos(is_playable, playlist_id, position);
+CREATE INDEX IF NOT EXISTS idx_playlist_video_reconciled_playlist ON playlist_video_reconciled(playlist_id, display_position);
+CREATE INDEX IF NOT EXISTS idx_playlist_video_reconciled_video ON playlist_video_reconciled(video_id);
 CREATE INDEX IF NOT EXISTS idx_archivarix_candidates_playlist ON archivarix_candidates(playlist_id, title);
 CREATE INDEX IF NOT EXISTS idx_snapshot_videos_video ON snapshot_videos(snapshot_key, video_id);
 CREATE INDEX IF NOT EXISTS idx_snapshot_videos_playlist ON snapshot_videos(snapshot_key, playlist_id, position);
@@ -370,6 +393,10 @@ def connect(db_path: Path) -> sqlite3.Connection:
     ensure_takeout_history_schema(conn)
     ensure_history_reconciled_schema(conn)
     drop_legacy_history_tables(conn)
+    reconciled_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_video_reconciled").fetchone()["count"]
+    raw_playlist_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_videos").fetchone()["count"]
+    if reconciled_count == 0 and raw_playlist_count:
+        rebuild_playlist_reconciliation(conn)
     conn.commit()
     return conn
 
@@ -2692,7 +2719,211 @@ def save_playlist_scan(
         """,
         (playlist_id, now, len(videos), hidden_count, status, error),
     )
+    rebuild_playlist_reconciliation(conn, playlist_id)
     return len(videos), hidden_count
+
+
+def latest_snapshot_key_for_playlist(conn: sqlite3.Connection, playlist_id: str) -> str:
+    row = conn.execute(
+        """
+        SELECT sv.snapshot_key
+        FROM snapshot_videos sv
+        JOIN snapshots s ON s.snapshot_key = sv.snapshot_key
+        WHERE sv.playlist_id = ?
+        GROUP BY sv.snapshot_key
+        ORDER BY s.imported_at DESC, sv.snapshot_key DESC
+        LIMIT 1
+        """,
+        (playlist_id,),
+    ).fetchone()
+    return row["snapshot_key"] if row else ""
+
+
+def rebuild_playlist_reconciliation(
+    conn: sqlite3.Connection,
+    playlist_id: str | None = None,
+) -> dict[str, int]:
+    now = int(time.time())
+    if playlist_id:
+        playlist_ids = [playlist_id]
+    else:
+        playlist_ids = [
+            row["playlist_id"]
+            for row in conn.execute(
+                """
+                SELECT playlist_id
+                FROM playlists
+                ORDER BY playlist_id
+                """
+            )
+        ]
+
+    total_rows = 0
+    inferred = 0
+    ambiguous = 0
+    for pid in playlist_ids:
+        conn.execute("DELETE FROM playlist_video_reconciled WHERE playlist_id = ?", (pid,))
+        current_rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM playlist_videos
+                WHERE playlist_id = ?
+                ORDER BY position
+                """,
+                (pid,),
+            )
+        ]
+        snapshot_key = latest_snapshot_key_for_playlist(conn, pid)
+        snapshot_rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM snapshot_videos
+                WHERE playlist_id = ? AND snapshot_key = ?
+                ORDER BY position
+                """,
+                (pid, snapshot_key),
+            )
+        ] if snapshot_key else []
+
+        current_ids = {row["video_id"] for row in current_rows if row.get("video_id")}
+        hidden_rows = [row for row in current_rows if not row.get("video_id") or not row.get("is_playable")]
+        missing_snapshot_rows = [
+            row for row in snapshot_rows if row.get("video_id") and row["video_id"] not in current_ids
+        ]
+        assign_hidden = bool(hidden_rows and len(hidden_rows) == len(missing_snapshot_rows))
+        hidden_assignments = {
+            hidden["position"]: snap
+            for hidden, snap in zip(hidden_rows, missing_snapshot_rows)
+        } if assign_hidden else {}
+
+        for current in current_rows:
+            assigned = hidden_assignments.get(current["position"])
+            if assigned:
+                recovery = conn.execute(
+                    """
+                    SELECT *
+                    FROM snapshot_video_recovery
+                    WHERE snapshot_key = ? AND video_id = ?
+                    """,
+                    (assigned["snapshot_key"], assigned["video_id"]),
+                ).fetchone()
+                title = (recovery["title"] if recovery else "") or assigned["video_id"]
+                channel = recovery["channel"] if recovery else ""
+                duration = recovery["duration_text"] if recovery else ""
+                source_quality = "inferred_hidden_slot"
+                match_confidence = "count_equal_ordered"
+                match_notes = "matched hidden current slot to missing Takeout video by ordered equal counts"
+                inferred += 1
+                video_id = assigned["video_id"]
+                snapshot_position = assigned["position"]
+                snapshot_key_value = assigned["snapshot_key"]
+                added_at = assigned["added_at"]
+            else:
+                title = current["title"]
+                channel = current["channel"]
+                duration = current["duration_text"]
+                video_id = current["video_id"]
+                snapshot_position = 0
+                snapshot_key_value = ""
+                added_at = ""
+                if current.get("video_id"):
+                    source_quality = "current_exact"
+                    match_confidence = "video_id"
+                    match_notes = ""
+                elif current.get("is_playable"):
+                    source_quality = "current_unknown"
+                    match_confidence = "current_only"
+                    match_notes = ""
+                else:
+                    source_quality = "ambiguous_hidden_slot"
+                    match_confidence = "hidden_slot_only"
+                    match_notes = "current hidden slot has no exposed video ID"
+                    ambiguous += 1
+            conn.execute(
+                """
+                INSERT INTO playlist_video_reconciled(
+                  playlist_id, display_position, current_position, snapshot_position,
+                  video_id, title, channel, duration_text, is_playable, availability, url,
+                  source_quality, match_confidence, match_notes, snapshot_key, added_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pid,
+                    current["position"],
+                    current["position"],
+                    snapshot_position,
+                    video_id,
+                    title,
+                    channel,
+                    duration,
+                    current["is_playable"],
+                    current["availability"],
+                    current["url"] or (f"https://www.youtube.com/watch?v={video_id}&list={pid}" if video_id else ""),
+                    source_quality,
+                    match_confidence,
+                    match_notes,
+                    snapshot_key_value,
+                    added_at,
+                    now,
+                ),
+            )
+            total_rows += 1
+
+        if not assign_hidden:
+            used_missing_ids: set[str] = set()
+            next_position = (max((row["position"] for row in current_rows), default=0) + 1) * 1000
+            for snap in missing_snapshot_rows:
+                if snap["video_id"] in used_missing_ids:
+                    continue
+                used_missing_ids.add(snap["video_id"])
+                recovery = conn.execute(
+                    """
+                    SELECT *
+                    FROM snapshot_video_recovery
+                    WHERE snapshot_key = ? AND video_id = ?
+                    """,
+                    (snap["snapshot_key"], snap["video_id"]),
+                ).fetchone()
+                title = (recovery["title"] if recovery else "") or snap["video_id"]
+                channel = recovery["channel"] if recovery else ""
+                duration = recovery["duration_text"] if recovery else ""
+                conn.execute(
+                    """
+                    INSERT INTO playlist_video_reconciled(
+                      playlist_id, display_position, current_position, snapshot_position,
+                      video_id, title, channel, duration_text, is_playable, availability, url,
+                      source_quality, match_confidence, match_notes, snapshot_key, added_at, updated_at
+                    )
+                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        pid,
+                        next_position,
+                        snap["position"],
+                        snap["video_id"],
+                        title,
+                        channel,
+                        duration,
+                        "Takeout candidate; current hidden slot match is ambiguous",
+                        f"https://www.youtube.com/watch?v={snap['video_id']}&list={pid}",
+                        "ambiguous_hidden_candidate",
+                        "snapshot_missing",
+                        "missing from current playable scan; hidden slot mapping is ambiguous",
+                        snap["snapshot_key"],
+                        snap["added_at"],
+                        now,
+                    ),
+                )
+                ambiguous += 1
+                total_rows += 1
+                next_position += 1
+
+    return {"playlists": len(playlist_ids), "rows": total_rows, "inferred": inferred, "ambiguous": ambiguous}
 
 
 def playlist_scan_queue_rows(
@@ -3933,10 +4164,15 @@ def import_takeout_snapshot(args: argparse.Namespace) -> None:
                         ),
                     )
                     imported_video_rows += 1
+        reconcile_stats = rebuild_playlist_reconciliation(conn)
 
     print(
         f"Imported {len(playlist_rows)} snapshot playlists and "
         f"{imported_video_rows} snapshot video rows into {snapshot_key}."
+    )
+    print(
+        f"Reconciled {reconcile_stats['rows']} playlist rows across "
+        f"{reconcile_stats['playlists']} playlists."
     )
     if unmatched_files:
         print(f"Used filename-derived IDs for {len(unmatched_files)} playlist files.")
@@ -4281,7 +4517,13 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
         label = (video or {}).get("title") or video_id
         suffix = "thumbnail" if thumbnail_path else status
         print(f"[{index:03d}/{len(rows):03d}] {suffix} - {label}")
+    with conn:
+        reconcile_stats = rebuild_playlist_reconciliation(conn)
     print(f"Found {found} Archivarix records and cached {cached} thumbnails.")
+    print(
+        f"Reconciled {reconcile_stats['rows']} playlist rows across "
+        f"{reconcile_stats['playlists']} playlists."
+    )
 
 
 def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -4334,19 +4576,23 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
         for row in conn.execute(
             """
             SELECT v.*, p.title AS playlist_title, p.url AS playlist_url,
-                   COALESCE(vm.title, '') AS metadata_title,
-                   COALESCE(vm.description, '') AS metadata_description,
-                   COALESCE(vm.channel, '') AS metadata_channel,
+                   v.display_position AS position,
+                   COALESCE(vm.title, r.title, '') AS metadata_title,
+                   COALESCE(vm.description, r.description, '') AS metadata_description,
+                   COALESCE(vm.channel, r.channel, '') AS metadata_channel,
                    COALESCE(vm.channel_url, '') AS metadata_channel_url,
-                   COALESCE(vm.duration_text, '') AS metadata_duration,
-                   COALESCE(vm.upload_date, '') AS metadata_upload_date,
-                   COALESCE(vm.thumbnail_path, '') AS metadata_thumbnail_path,
+                   COALESCE(vm.duration_text, r.duration_text, '') AS metadata_duration,
+                   COALESCE(vm.upload_date, r.upload_date, '') AS metadata_upload_date,
+                   COALESCE(vm.thumbnail_path, r.thumbnail_path, '') AS metadata_thumbnail_path,
                    COALESCE(vm.channel_thumbnail_path, '') AS metadata_channel_thumbnail_path,
-                   COALESCE(vm.fetch_status, '') AS metadata_fetch_status
-            FROM playlist_videos v
+                   COALESCE(vm.fetch_status, r.search_status, '') AS metadata_fetch_status,
+                   COALESCE(r.status, '') AS recovered_status
+            FROM playlist_video_reconciled v
             JOIN playlists p ON p.playlist_id = v.playlist_id
             LEFT JOIN video_metadata vm ON vm.video_id = v.video_id
-            ORDER BY p.title COLLATE NOCASE, v.position
+            LEFT JOIN snapshot_video_recovery r
+              ON r.snapshot_key = v.snapshot_key AND r.video_id = v.video_id
+            ORDER BY p.title COLLATE NOCASE, v.display_position
             """
         )
     ]
@@ -4783,6 +5029,16 @@ INDEX_HTML = """<!doctype html>
       return video.metadata_duration || video.duration_text || '';
     }
 
+    function sourceQualityLabel(video) {
+      const labels = {
+        inferred_hidden_slot: 'restored from Takeout',
+        ambiguous_hidden_slot: 'hidden slot',
+        ambiguous_hidden_candidate: 'Takeout candidate',
+        current_unknown: 'current'
+      };
+      return labels[video.source_quality] || '';
+    }
+
     function creatorAvatarHtml(path, url) {
       if (!path) return '';
       const img = `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">`;
@@ -5042,6 +5298,7 @@ INDEX_HTML = """<!doctype html>
           : `<div class="video-title">${escapeHtml(displayVideoTitle(video))}</div>`}
         <div class="details">
           ${video.is_playable ? '' : `<span class="badge">${escapeHtml(video.availability || 'Hidden')}</span>`}
+          ${sourceQualityLabel(video) ? `<span class="badge">${escapeHtml(sourceQualityLabel(video))}</span>` : ''}
           ${displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : ''}
           ${creatorAvatarHtml(video.metadata_channel_thumbnail_path, channelUrl)}
           ${creatorNameHtml(channelName, channelUrl)}
@@ -5567,6 +5824,7 @@ ADMIN_HTML = """<!doctype html>
         <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
         <button id="importTakeoutHistory" type="button">Import Takeout history</button>
         <button id="reconcileHistory" type="button">Reconcile history</button>
+        <button id="reconcilePlaylists" type="button">Reconcile playlists</button>
         <button id="stopPlaylists" type="button">Stop playlist scan</button>
         <button id="stopMetadata" type="button">Stop metadata</button>
         <button id="stopLiveHistory" type="button">Stop history fetch</button>
@@ -5721,6 +5979,9 @@ ADMIN_HTML = """<!doctype html>
     document.getElementById('reconcileHistory').addEventListener('click', () => {
       post('/api/admin/history/reconcile').catch(error => alert(error.message));
     });
+    document.getElementById('reconcilePlaylists').addEventListener('click', () => {
+      post('/api/admin/playlists/reconcile').catch(error => alert(error.message));
+    });
     document.getElementById('stopPlaylists').addEventListener('click', () => post('/api/admin/playlists/stop').catch(error => alert(error.message)));
     document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
     document.getElementById('stopLiveHistory').addEventListener('click', () => post('/api/admin/live-history/stop').catch(error => alert(error.message)));
@@ -5849,6 +6110,53 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/admin/playlists/stop":
             self.send_json(PLAYLIST_SCAN_WORKER.stop())
+            return
+        if parsed.path == "/api/admin/playlists/reconcile":
+            conn = connect(self.db_path)
+            run_id = uuid.uuid4().hex
+            started_at = int(time.time())
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scan_worker_runs(
+                          run_id, status, started_at, requested_limit, message
+                        )
+                        VALUES (?, 'running', ?, 0, ?)
+                        """,
+                        (run_id, started_at, "Playlist reconciliation started"),
+                    )
+                    log_playlist_scan_event(conn, run_id, "info", "Playlist reconciliation started")
+                    stats = rebuild_playlist_reconciliation(conn)
+                    message = (
+                        f"Playlist reconciliation complete: {stats['rows']} rows, "
+                        f"{stats['inferred']} inferred, {stats['ambiguous']} ambiguous"
+                    )
+                    conn.execute(
+                        """
+                        UPDATE playlist_scan_worker_runs
+                        SET status = 'complete',
+                            finished_at = ?,
+                            total = ?,
+                            processed = ?,
+                            found = ?,
+                            failed = 0,
+                            message = ?
+                        WHERE run_id = ?
+                        """,
+                        (
+                            int(time.time()),
+                            stats["playlists"],
+                            stats["playlists"],
+                            stats["inferred"],
+                            message,
+                            run_id,
+                        ),
+                    )
+                    log_playlist_scan_event(conn, run_id, "info", message)
+            finally:
+                conn.close()
+            self.send_json({"ok": True, "run_id": run_id, **stats})
             return
         if parsed.path == "/api/admin/live-history/start":
             result = LIVE_HISTORY_WORKER.start(
