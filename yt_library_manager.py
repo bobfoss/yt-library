@@ -2679,6 +2679,20 @@ def save_playlist_scan(
     status: str,
     error: str,
 ) -> tuple[int, int]:
+    deduped_videos: list[dict[str, Any]] = []
+    seen_video_ids: set[str] = set()
+    next_position = 1
+    for video in videos:
+        video_id = video.get("video_id") or ""
+        if video_id:
+            if video_id in seen_video_ids:
+                continue
+            seen_video_ids.add(video_id)
+        cleaned = dict(video)
+        cleaned["position"] = next_position
+        deduped_videos.append(cleaned)
+        next_position += 1
+    videos = deduped_videos
     hidden_count = sum(1 for video in videos if not video["is_playable"])
     now = int(time.time())
     conn.execute("DELETE FROM playlist_videos WHERE playlist_id = ?", (playlist_id,))
