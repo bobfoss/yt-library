@@ -16,7 +16,7 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 - `yt_library_manager.py` is the main application, including the HTTP server, SQLite schema, workers, importers, and HTML templates.
 - `requirements.txt` lists Python dependencies.
 - `AGENTS.md` contains contributor guidance.
-- Runtime data such as `yt_playlists.sqlite3`, cookie files, Takeout zip exports, thumbnail folders, and logs should stay local and uncommitted.
+- Runtime data such as `yt_library.sqlite3`, cookie files, Takeout zip exports, thumbnail folders, and logs should stay local and uncommitted.
 
 ## Setup
 
@@ -29,7 +29,7 @@ Keep a Netscape-format YouTube cookie file in the project directory or pass its 
 ## Run Locally
 
 ```powershell
-python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_playlists.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout .
+python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout .
 ```
 
 Open:
@@ -42,7 +42,7 @@ Open:
 
 ```powershell
 python -m py_compile yt_library_manager.py
-python yt_library_manager.py import-history --db yt_playlists.sqlite3 --takeout .
+python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout .
 git diff --check
 ```
 

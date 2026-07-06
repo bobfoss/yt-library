@@ -37,7 +37,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_DB = ROOT / "yt_playlists.sqlite3"
+DEFAULT_DB = ROOT / "yt_library.sqlite3"
 DEFAULT_THUMB_DIR = ROOT / "thumbs"
 DEFAULT_ARCHIVARIX_THUMB_DIR = ROOT / "archivarix_thumbs"
 DEFAULT_VIDEO_THUMB_DIR = ROOT / "video_thumbs"
