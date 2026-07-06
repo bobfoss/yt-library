@@ -4402,7 +4402,17 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
     archivarix_opener = load_cookie_opener(Path(args.archivarix_cookies))
     where_clauses = [
         "sv.snapshot_key = ?",
-        "pv.video_id IS NULL",
+        """
+        (
+          pv.video_id IS NULL
+          OR pv.is_playable = 0
+          OR lower(trim(COALESCE(pv.title, ''), '[]() ')) IN ('deleted video', 'private video')
+          OR lower(COALESCE(pv.title, '')) LIKE '%unavailable%'
+          OR lower(COALESCE(pv.availability, '')) LIKE '%unavailable%'
+          OR lower(COALESCE(pv.availability, '')) LIKE '%deleted%'
+          OR lower(COALESCE(pv.availability, '')) LIKE '%private%'
+        )
+        """,
     ]
     params: list[Any] = [args.snapshot_key]
     if args.likely_hidden_only:
@@ -4424,7 +4434,6 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
         LEFT JOIN playlist_videos pv
           ON pv.playlist_id = sv.playlist_id
          AND pv.video_id = sv.video_id
-         AND pv.is_playable = 1
         WHERE {" AND ".join(where_clauses)}
         ORDER BY sv.video_id
         """,
