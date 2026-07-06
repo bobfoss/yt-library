@@ -4749,11 +4749,7 @@ INDEX_HTML = """<!doctype html>
 
     function groupPlaylistIds(groupKey) {
       if (!groupKey) {
-        const ids = [];
-        for (const group of children.get('') || []) {
-          for (const id of groupPlaylistIds(group.group_key)) ids.push(id);
-        }
-        return [...new Set(ids)];
+        return data.playlists.map(playlist => playlist.playlist_id);
       }
       const ids = [];
       for (const id of memberships.get(groupKey) || []) ids.push(id);
