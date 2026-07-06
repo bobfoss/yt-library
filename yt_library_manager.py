@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS playlist_videos (
   position INTEGER NOT NULL,
   video_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
   duration_text TEXT NOT NULL DEFAULT '',
   is_playable INTEGER NOT NULL DEFAULT 1,
@@ -111,6 +112,7 @@ CREATE TABLE IF NOT EXISTS playlist_video_reconciled (
   snapshot_position INTEGER NOT NULL DEFAULT 0,
   video_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
   duration_text TEXT NOT NULL DEFAULT '',
   is_playable INTEGER NOT NULL DEFAULT 1,
@@ -129,6 +131,7 @@ CREATE TABLE IF NOT EXISTS archivarix_candidates (
   playlist_id TEXT NOT NULL REFERENCES playlists(playlist_id) ON DELETE CASCADE,
   video_id TEXT NOT NULL,
   title TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT '',
   duration_text TEXT NOT NULL DEFAULT '',
@@ -178,11 +181,8 @@ CREATE TABLE IF NOT EXISTS snapshot_video_recovery (
   video_id TEXT NOT NULL,
   title TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
-  channel TEXT NOT NULL DEFAULT '',
   channel_id TEXT NOT NULL DEFAULT '',
-  channel_url TEXT NOT NULL DEFAULT '',
-  channel_thumbnail_url TEXT NOT NULL DEFAULT '',
-  channel_thumbnail_path TEXT NOT NULL DEFAULT '',
+  archivarix_channel_id TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT '',
   duration_text TEXT NOT NULL DEFAULT '',
   upload_date TEXT NOT NULL DEFAULT '',
@@ -201,15 +201,12 @@ CREATE TABLE IF NOT EXISTS video_metadata (
   video_id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
-  channel TEXT NOT NULL DEFAULT '',
-  channel_url TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL DEFAULT '',
   duration_text TEXT NOT NULL DEFAULT '',
   view_count TEXT NOT NULL DEFAULT '',
   upload_date TEXT NOT NULL DEFAULT '',
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
-  channel_thumbnail_url TEXT NOT NULL DEFAULT '',
-  channel_thumbnail_path TEXT NOT NULL DEFAULT '',
   watch_url TEXT NOT NULL DEFAULT '',
   yt_status TEXT NOT NULL DEFAULT '',
   fetch_status TEXT NOT NULL DEFAULT '',
@@ -218,11 +215,23 @@ CREATE TABLE IF NOT EXISTS video_metadata (
   updated_at INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS channels (
+  channel_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  thumbnail_url TEXT NOT NULL DEFAULT '',
+  thumbnail_path TEXT NOT NULL DEFAULT '',
+  archivarix_channel_id TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS youtube_history_occurrences (
   ordinal INTEGER NOT NULL,
   video_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
   url TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
   channel_url TEXT NOT NULL DEFAULT '',
   watch_date TEXT NOT NULL DEFAULT '',
@@ -238,6 +247,7 @@ CREATE TABLE IF NOT EXISTS takeout_history_occurrences (
   video_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
   url TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
   channel_url TEXT NOT NULL DEFAULT '',
   watched_at_iso TEXT NOT NULL DEFAULT '',
@@ -249,6 +259,7 @@ CREATE TABLE IF NOT EXISTS history_reconciled (
   video_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
   url TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
   channel_url TEXT NOT NULL DEFAULT '',
   best_watch_time TEXT NOT NULL DEFAULT '',
@@ -408,28 +419,58 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     ensure_columns(
         conn,
+        "playlist_videos",
+        {"channel_id": "TEXT NOT NULL DEFAULT ''"},
+    )
+    ensure_columns(
+        conn,
+        "playlist_video_reconciled",
+        {"channel_id": "TEXT NOT NULL DEFAULT ''"},
+    )
+    ensure_columns(
+        conn,
+        "archivarix_candidates",
+        {"channel_id": "TEXT NOT NULL DEFAULT ''"},
+    )
+    ensure_columns(
+        conn,
         "snapshot_video_recovery",
         {
             "description": "TEXT NOT NULL DEFAULT ''",
             "channel_id": "TEXT NOT NULL DEFAULT ''",
-            "channel_url": "TEXT NOT NULL DEFAULT ''",
-            "channel_thumbnail_url": "TEXT NOT NULL DEFAULT ''",
-            "channel_thumbnail_path": "TEXT NOT NULL DEFAULT ''",
+            "archivarix_channel_id": "TEXT NOT NULL DEFAULT ''",
         },
     )
     ensure_columns(
         conn,
         "video_metadata",
         {
-            "channel_thumbnail_url": "TEXT NOT NULL DEFAULT ''",
-            "channel_thumbnail_path": "TEXT NOT NULL DEFAULT ''",
-            "channel_url": "TEXT NOT NULL DEFAULT ''",
+            "channel_id": "TEXT NOT NULL DEFAULT ''",
         },
+    )
+    ensure_columns(
+        conn,
+        "youtube_history_occurrences",
+        {"channel_id": "TEXT NOT NULL DEFAULT ''"},
+    )
+    ensure_columns(
+        conn,
+        "takeout_history_occurrences",
+        {"channel_id": "TEXT NOT NULL DEFAULT ''"},
+    )
+    ensure_columns(
+        conn,
+        "history_reconciled",
+        {"channel_id": "TEXT NOT NULL DEFAULT ''"},
     )
     ensure_youtube_history_schema(conn)
     ensure_takeout_history_schema(conn)
     ensure_history_reconciled_schema(conn)
     drop_legacy_history_tables(conn)
+    ensure_channel_indexes(conn)
+    if channel_backfill_needed(conn):
+        backfill_channels(conn)
+    drop_deprecated_channel_columns(conn)
     reconciled_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_video_reconciled").fetchone()["count"]
     raw_playlist_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_videos").fetchone()["count"]
     if reconciled_count == 0 and raw_playlist_count:
@@ -447,6 +488,273 @@ def ensure_columns(
     for name, definition in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def youtube_channel_id_from_url(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    found = re.search(r"(?:youtube\.com|youtu\.be)/(?:channel/)?(UC[A-Za-z0-9_-]{20,})", value)
+    if found:
+        return found.group(1)
+    found = re.search(r"(?:^|[/?&=])(UC[A-Za-z0-9_-]{20,})(?:$|[/?&#])", value)
+    return found.group(1) if found else ""
+
+
+def youtube_channel_url(channel_id: str) -> str:
+    return f"https://www.youtube.com/channel/{channel_id}" if channel_id else ""
+
+
+def merge_channel_value(existing: str, incoming: str) -> str:
+    return incoming if incoming else existing
+
+
+def upsert_channel(
+    conn: sqlite3.Connection,
+    channel_id: str,
+    *,
+    title: str = "",
+    url: str = "",
+    thumbnail_url: str = "",
+    thumbnail_path: str = "",
+    archivarix_channel_id: str = "",
+    source: str = "",
+    updated_at: int | None = None,
+) -> str:
+    channel_id = (channel_id or "").strip()
+    if not channel_id:
+        channel_id = youtube_channel_id_from_url(url)
+    if not channel_id:
+        return ""
+    url = url or youtube_channel_url(channel_id)
+    now = updated_at or int(time.time())
+    existing = conn.execute("SELECT * FROM channels WHERE channel_id = ?", (channel_id,)).fetchone()
+    if existing:
+        conn.execute(
+            """
+            UPDATE channels
+            SET title = ?,
+                url = ?,
+                thumbnail_url = ?,
+                thumbnail_path = ?,
+                archivarix_channel_id = ?,
+                source = ?,
+                updated_at = ?
+            WHERE channel_id = ?
+            """,
+            (
+                merge_channel_value(existing["title"], title),
+                merge_channel_value(existing["url"], url),
+                merge_channel_value(existing["thumbnail_url"], thumbnail_url),
+                merge_channel_value(existing["thumbnail_path"], thumbnail_path),
+                merge_channel_value(existing["archivarix_channel_id"], archivarix_channel_id),
+                merge_channel_value(existing["source"], source),
+                now,
+                channel_id,
+            ),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO channels(
+              channel_id, title, url, thumbnail_url, thumbnail_path,
+              archivarix_channel_id, source, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (channel_id, title, url, thumbnail_url, thumbnail_path, archivarix_channel_id, source, now),
+        )
+    return channel_id
+
+
+def backfill_channels(conn: sqlite3.Connection) -> None:
+    specs = [
+        ("video_metadata", "channel_id", "channel", "channel_url", "channel_thumbnail_url", "channel_thumbnail_path", "", "metadata"),
+        ("snapshot_video_recovery", "channel_id", "channel", "channel_url", "channel_thumbnail_url", "channel_thumbnail_path", "archivarix_channel_id", "archivarix"),
+        ("playlist_videos", "channel_id", "channel", "", "", "", "", "playlist"),
+        ("playlist_video_reconciled", "channel_id", "channel", "", "", "", "", "playlist_reconciled"),
+        ("archivarix_candidates", "channel_id", "channel", "", "", "", "", "archivarix_candidate"),
+        ("youtube_history_occurrences", "channel_id", "channel", "channel_url", "", "", "", "youtube_history"),
+        ("takeout_history_occurrences", "channel_id", "channel", "channel_url", "", "", "", "takeout_history"),
+        ("history_reconciled", "channel_id", "channel", "channel_url", "", "", "", "history_reconciled"),
+    ]
+    for table, channel_id_col, title_col, url_col, thumb_url_col, thumb_path_col, arch_col, source in specs:
+        cols = table_columns(conn, table)
+        if channel_id_col not in cols:
+            continue
+        select_cols = ["rowid", channel_id_col]
+        for col in (title_col, url_col, thumb_url_col, thumb_path_col, arch_col):
+            if col and col in cols and col not in select_cols:
+                select_cols.append(col)
+        for row in conn.execute(f"SELECT {', '.join(select_cols)} FROM {table}").fetchall():
+            title = row[title_col] if title_col in row.keys() else ""
+            url = row[url_col] if url_col and url_col in row.keys() else ""
+            channel_id = row[channel_id_col] or youtube_channel_id_from_url(url)
+            channel_id = upsert_channel(
+                conn,
+                channel_id,
+                title=title or "",
+                url=url or "",
+                thumbnail_url=(row[thumb_url_col] if thumb_url_col and thumb_url_col in row.keys() else "") or "",
+                thumbnail_path=(row[thumb_path_col] if thumb_path_col and thumb_path_col in row.keys() else "") or "",
+                archivarix_channel_id=(row[arch_col] if arch_col and arch_col in row.keys() else "") or "",
+                source=source,
+            )
+            if channel_id and row[channel_id_col] != channel_id:
+                conn.execute(f"UPDATE {table} SET {channel_id_col} = ? WHERE rowid = ?", (channel_id, row["rowid"]))
+
+
+def channel_backfill_needed(conn: sqlite3.Connection) -> bool:
+    channel_count = conn.execute("SELECT COUNT(*) AS count FROM channels").fetchone()["count"]
+    if not channel_count:
+        return True
+    checks = [
+        ("video_metadata", "channel_id", "channel_url"),
+        ("snapshot_video_recovery", "channel_id", "channel_url"),
+        ("youtube_history_occurrences", "channel_id", "channel_url"),
+        ("takeout_history_occurrences", "channel_id", "channel_url"),
+        ("history_reconciled", "channel_id", "channel_url"),
+    ]
+    for table, channel_id_col, url_col in checks:
+        cols = table_columns(conn, table)
+        if channel_id_col not in cols or url_col not in cols:
+            continue
+        row = conn.execute(
+            f"""
+            SELECT 1
+            FROM {table}
+            WHERE {channel_id_col} = ''
+              AND {url_col} LIKE '%/channel/UC%'
+            LIMIT 1
+            """
+        ).fetchone()
+        if row:
+            return True
+    return False
+
+
+def ensure_channel_indexes(conn: sqlite3.Connection) -> None:
+    indexes = [
+        ("idx_snapshot_video_recovery_channel", "snapshot_video_recovery", "channel_id"),
+        ("idx_video_metadata_channel", "video_metadata", "channel_id"),
+        ("idx_playlist_videos_channel", "playlist_videos", "channel_id"),
+        ("idx_playlist_video_reconciled_channel", "playlist_video_reconciled", "channel_id"),
+        ("idx_archivarix_candidates_channel", "archivarix_candidates", "channel_id"),
+        ("idx_youtube_history_occurrences_channel", "youtube_history_occurrences", "channel_id"),
+        ("idx_takeout_history_occurrences_channel", "takeout_history_occurrences", "channel_id"),
+        ("idx_history_reconciled_channel", "history_reconciled", "channel_id"),
+    ]
+    for index_name, table, column in indexes:
+        if column in table_columns(conn, table):
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table}({column})")
+
+
+def drop_deprecated_channel_columns(conn: sqlite3.Connection) -> None:
+    cleanup_video_metadata_columns(conn)
+    cleanup_snapshot_video_recovery_columns(conn)
+
+
+def cleanup_video_metadata_columns(conn: sqlite3.Connection) -> None:
+    deprecated = {"channel", "channel_url", "channel_thumbnail_url", "channel_thumbnail_path"}
+    cols = table_columns(conn, "video_metadata")
+    if not deprecated.intersection(cols):
+        return
+    conn.execute("ALTER TABLE video_metadata RENAME TO video_metadata_old")
+    conn.execute(
+        """
+        CREATE TABLE video_metadata (
+          video_id TEXT PRIMARY KEY,
+          title TEXT NOT NULL DEFAULT '',
+          description TEXT NOT NULL DEFAULT '',
+          channel_id TEXT NOT NULL DEFAULT '',
+          duration_text TEXT NOT NULL DEFAULT '',
+          view_count TEXT NOT NULL DEFAULT '',
+          upload_date TEXT NOT NULL DEFAULT '',
+          thumbnail_url TEXT NOT NULL DEFAULT '',
+          thumbnail_path TEXT NOT NULL DEFAULT '',
+          watch_url TEXT NOT NULL DEFAULT '',
+          yt_status TEXT NOT NULL DEFAULT '',
+          fetch_status TEXT NOT NULL DEFAULT '',
+          fetch_error TEXT NOT NULL DEFAULT '',
+          fetched_at INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    old_cols = table_columns(conn, "video_metadata_old")
+    select_channel_id = "channel_id" if "channel_id" in old_cols else "''"
+    conn.execute(
+        f"""
+        INSERT INTO video_metadata(
+          video_id, title, description, channel_id, duration_text, view_count,
+          upload_date, thumbnail_url, thumbnail_path, watch_url, yt_status,
+          fetch_status, fetch_error, fetched_at, updated_at
+        )
+        SELECT video_id, title, description, {select_channel_id}, duration_text, view_count,
+               upload_date, thumbnail_url, thumbnail_path, watch_url, yt_status,
+               fetch_status, fetch_error, fetched_at, updated_at
+        FROM video_metadata_old
+        """
+    )
+    conn.execute("DROP TABLE video_metadata_old")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_video_metadata_status ON video_metadata(fetch_status, fetched_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_video_metadata_channel ON video_metadata(channel_id)")
+
+
+def cleanup_snapshot_video_recovery_columns(conn: sqlite3.Connection) -> None:
+    deprecated = {"channel", "channel_url", "channel_thumbnail_url", "channel_thumbnail_path"}
+    cols = table_columns(conn, "snapshot_video_recovery")
+    if not deprecated.intersection(cols):
+        return
+    conn.execute("ALTER TABLE snapshot_video_recovery RENAME TO snapshot_video_recovery_old")
+    conn.execute(
+        """
+        CREATE TABLE snapshot_video_recovery (
+          snapshot_key TEXT NOT NULL,
+          video_id TEXT NOT NULL,
+          title TEXT NOT NULL DEFAULT '',
+          description TEXT NOT NULL DEFAULT '',
+          channel_id TEXT NOT NULL DEFAULT '',
+          archivarix_channel_id TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT '',
+          duration_text TEXT NOT NULL DEFAULT '',
+          upload_date TEXT NOT NULL DEFAULT '',
+          view_count TEXT NOT NULL DEFAULT '',
+          thumbnail_url TEXT NOT NULL DEFAULT '',
+          thumbnail_path TEXT NOT NULL DEFAULT '',
+          archive_url TEXT NOT NULL DEFAULT '',
+          video_file_url TEXT NOT NULL DEFAULT '',
+          searched_at INTEGER NOT NULL DEFAULT 0,
+          search_status TEXT NOT NULL DEFAULT '',
+          search_error TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (snapshot_key, video_id)
+        )
+        """
+    )
+    old_cols = table_columns(conn, "snapshot_video_recovery_old")
+    select_channel_id = "channel_id" if "channel_id" in old_cols else "''"
+    select_archivarix_channel_id = "archivarix_channel_id" if "archivarix_channel_id" in old_cols else "''"
+    select_description = "description" if "description" in old_cols else "''"
+    conn.execute(
+        f"""
+        INSERT INTO snapshot_video_recovery(
+          snapshot_key, video_id, title, description, channel_id, archivarix_channel_id,
+          status, duration_text, upload_date, view_count, thumbnail_url, thumbnail_path,
+          archive_url, video_file_url, searched_at, search_status, search_error
+        )
+        SELECT snapshot_key, video_id, title, {select_description}, {select_channel_id}, {select_archivarix_channel_id},
+               status, duration_text, upload_date, view_count, thumbnail_url, thumbnail_path,
+               archive_url, video_file_url, searched_at, search_status, search_error
+        FROM snapshot_video_recovery_old
+        """
+    )
+    conn.execute("DROP TABLE snapshot_video_recovery_old")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshot_video_recovery_status ON snapshot_video_recovery(snapshot_key, search_status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshot_video_recovery_channel ON snapshot_video_recovery(channel_id)")
 
 
 def current_iso_timestamp() -> str:
@@ -486,6 +794,7 @@ def ensure_youtube_history_schema(conn: sqlite3.Connection) -> None:
         "video_id",
         "title",
         "url",
+        "channel_id",
         "channel",
         "channel_url",
         "watch_date",
@@ -508,6 +817,7 @@ def ensure_youtube_history_schema(conn: sqlite3.Connection) -> None:
           video_id TEXT NOT NULL DEFAULT '',
           title TEXT NOT NULL DEFAULT '',
           url TEXT NOT NULL DEFAULT '',
+          channel_id TEXT NOT NULL DEFAULT '',
           channel TEXT NOT NULL DEFAULT '',
           channel_url TEXT NOT NULL DEFAULT '',
           watch_date TEXT NOT NULL DEFAULT '',
@@ -528,16 +838,17 @@ def ensure_youtube_history_schema(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO youtube_history_occurrences(
-                  ordinal, video_id, title, url, channel, channel_url,
+                  ordinal, video_id, title, url, channel_id, channel, channel_url,
                   watch_date, observed_at, imported_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["ordinal"] if "ordinal" in old_cols else 0,
                     row["video_id"] if "video_id" in old_cols else "",
                     row["title"] if "title" in old_cols else "",
                     row["url"] if "url" in old_cols else "",
+                    row["channel_id"] if "channel_id" in old_cols else youtube_channel_id_from_url(row["channel_url"] if "channel_url" in old_cols else ""),
                     row["channel"] if "channel" in old_cols else "",
                     row["channel_url"] if "channel_url" in old_cols else "",
                     row["watch_date"] if "watch_date" in old_cols else "",
@@ -565,6 +876,7 @@ def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
         "video_id",
         "title",
         "url",
+        "channel_id",
         "channel",
         "channel_url",
         "watched_at_iso",
@@ -587,6 +899,7 @@ def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
           video_id TEXT NOT NULL DEFAULT '',
           title TEXT NOT NULL DEFAULT '',
           url TEXT NOT NULL DEFAULT '',
+          channel_id TEXT NOT NULL DEFAULT '',
           channel TEXT NOT NULL DEFAULT '',
           channel_url TEXT NOT NULL DEFAULT '',
           watched_at_iso TEXT NOT NULL DEFAULT '',
@@ -607,6 +920,7 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(history_reconciled)")}
     if "takeout_position" not in existing and "takeout_row_hash" in existing:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_channel ON history_reconciled(channel_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, source_quality)")
         return
     conn.execute("ALTER TABLE history_reconciled RENAME TO history_reconciled_old")
@@ -617,6 +931,7 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
           video_id TEXT NOT NULL DEFAULT '',
           title TEXT NOT NULL DEFAULT '',
           url TEXT NOT NULL DEFAULT '',
+          channel_id TEXT NOT NULL DEFAULT '',
           channel TEXT NOT NULL DEFAULT '',
           channel_url TEXT NOT NULL DEFAULT '',
           best_watch_time TEXT NOT NULL DEFAULT '',
@@ -635,6 +950,7 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute("DROP TABLE history_reconciled_old")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_channel ON history_reconciled(channel_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, source_quality)")
 
 
@@ -1909,6 +2225,21 @@ def extract_channel_url(initial_data: dict[str, Any]) -> str:
     return ""
 
 
+def extract_channel_id(initial_data: dict[str, Any], channel_url: str = "") -> str:
+    channel_id = youtube_channel_id_from_url(channel_url)
+    if channel_id:
+        return channel_id
+    for node in walk(initial_data):
+        if not isinstance(node, dict):
+            continue
+        browse = node.get("browseEndpoint")
+        if isinstance(browse, dict):
+            browse_id = str(browse.get("browseId") or "")
+            if browse_id.startswith("UC"):
+                return browse_id
+    return ""
+
+
 def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     player = extract_json_assignment(html_text, "ytInitialPlayerResponse")
     initial_data = extract_json_assignment(html_text, "ytInitialData")
@@ -1933,6 +2264,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
     channel_thumbnail_url = extract_channel_thumbnail_url(initial_data)
     channel_url = youtube_path_url(str(microformat.get("ownerProfileUrl") or "")) or extract_channel_url(initial_data)
+    channel_id = extract_channel_id(initial_data, channel_url)
     status = str(playability.get("status") or "").strip()
     reason = text_from_runs(playability.get("reason")).strip()
     if reason and status and reason not in status:
@@ -1941,6 +2273,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         "video_id": video_id,
         "title": title,
         "description": str(details.get("shortDescription") or "").strip(),
+        "channel_id": channel_id,
         "channel": str(details.get("author") or "").strip(),
         "channel_url": channel_url,
         "duration_text": format_duration(details.get("lengthSeconds")),
@@ -2020,6 +2353,10 @@ def scan_playlist_videos_ytdlp(
             continue
         title = str(entry.get("title") or video_id).strip()
         channel = str(entry.get("channel") or entry.get("uploader") or "").strip()
+        channel_id = str(entry.get("channel_id") or entry.get("uploader_id") or "").strip()
+        channel_url = str(entry.get("channel_url") or entry.get("uploader_url") or "").strip()
+        if not channel_id:
+            channel_id = youtube_channel_id_from_url(channel_url)
         duration = format_duration(entry.get("duration"))
         webpage_url = str(entry.get("webpage_url") or "")
         if not webpage_url:
@@ -2032,6 +2369,7 @@ def scan_playlist_videos_ytdlp(
                 "position": position,
                 "video_id": video_id,
                 "title": title,
+                "channel_id": channel_id,
                 "channel": channel,
                 "duration_text": duration,
                 "is_playable": 0 if hidden else 1,
@@ -2091,6 +2429,7 @@ def fetch_youtube_history_ytdlp(cookie_file: Path, limit: int = 100, start: int 
                 "video_id": video_id,
                 "title": entry.get("title") or video_id,
                 "url": watch_url,
+                "channel_id": entry.get("channel_id") or entry.get("uploader_id") or youtube_channel_id_from_url(entry.get("channel_url") or entry.get("uploader_url") or ""),
                 "channel": entry.get("channel") or entry.get("uploader") or "",
                 "channel_url": entry.get("channel_url") or entry.get("uploader_url") or "",
             }
@@ -2615,23 +2954,30 @@ def save_snapshot_video_recovery(
     recovered_status = (video or {}).get("status") or ""
     if search_status == "not_found":
         recovered_status = "NOT_FOUND"
+    archivarix_channel_id = str((video or {}).get("channelId") or "")
+    channel_id = upsert_channel(
+        conn,
+        str((video or {}).get("channelExternalId") or ""),
+        title=str((video or {}).get("channelTitle") or ""),
+        url=str((video or {}).get("channelUrl") or ""),
+        thumbnail_url=str((video or {}).get("channelThumbnailUrl") or ""),
+        thumbnail_path=str((video or {}).get("channelThumbnailPath") or ""),
+        archivarix_channel_id=archivarix_channel_id if not archivarix_channel_id.startswith("UC") else "",
+        source="archivarix",
+    )
     conn.execute(
         """
         INSERT INTO snapshot_video_recovery(
-          snapshot_key, video_id, title, description, channel, channel_id, channel_url,
-          channel_thumbnail_url, channel_thumbnail_path, status, duration_text,
+          snapshot_key, video_id, title, description, channel_id, archivarix_channel_id, status, duration_text,
           upload_date, view_count, thumbnail_url, thumbnail_path,
           archive_url, video_file_url, searched_at, search_status, search_error
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(snapshot_key, video_id) DO UPDATE SET
           title=excluded.title,
           description=excluded.description,
-          channel=excluded.channel,
           channel_id=excluded.channel_id,
-          channel_url=excluded.channel_url,
-          channel_thumbnail_url=excluded.channel_thumbnail_url,
-          channel_thumbnail_path=excluded.channel_thumbnail_path,
+          archivarix_channel_id=excluded.archivarix_channel_id,
           status=excluded.status,
           duration_text=excluded.duration_text,
           upload_date=excluded.upload_date,
@@ -2649,11 +2995,8 @@ def save_snapshot_video_recovery(
             video_id,
             (video or {}).get("title") or "",
             (video or {}).get("description") or "",
-            (video or {}).get("channelTitle") or "",
-            (video or {}).get("channelExternalId") or "",
-            (video or {}).get("channelUrl") or "",
-            (video or {}).get("channelThumbnailUrl") or "",
-            (video or {}).get("channelThumbnailPath") or "",
+            channel_id,
+            archivarix_channel_id if not archivarix_channel_id.startswith("UC") else "",
             recovered_status,
             format_duration((video or {}).get("duration")),
             (video or {}).get("uploadDate") or "",
@@ -2774,17 +3117,26 @@ def save_youtube_history_occurrences(
         else:
             inserted += 1
         last_video_id = video_id
+        channel_url = row.get("channel_url") or ""
+        channel_id = upsert_channel(
+            conn,
+            row.get("channel_id") or youtube_channel_id_from_url(channel_url),
+            title=row.get("channel") or "",
+            url=channel_url,
+            source="youtube_history",
+        )
         conn.execute(
             """
             INSERT INTO youtube_history_occurrences(
-              ordinal, video_id, title, url, channel, channel_url,
+              ordinal, video_id, title, url, channel_id, channel, channel_url,
               watch_date, observed_at, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(ordinal) DO UPDATE SET
               video_id=excluded.video_id,
               title=excluded.title,
               url=excluded.url,
+              channel_id=excluded.channel_id,
               channel=excluded.channel,
               channel_url=excluded.channel_url,
               watch_date=excluded.watch_date,
@@ -2796,8 +3148,9 @@ def save_youtube_history_occurrences(
                 video_id,
                 row.get("title") or video_id,
                 row.get("url") or f"https://www.youtube.com/watch?v={video_id}",
+                channel_id,
                 row.get("channel") or "",
-                row.get("channel_url") or "",
+                channel_url,
                 row.get("watch_date") or "",
                 observed_at,
                 now,
@@ -2869,18 +3222,19 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
         conn.execute(
             """
             INSERT INTO history_reconciled(
-              reconciled_id, video_id, title, url, channel, channel_url,
+              reconciled_id, video_id, title, url, channel_id, channel, channel_url,
               best_watch_time, watch_date, source_quality,
               youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
               match_confidence, match_notes, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"takeout:{takeout['history_key']}:{takeout['row_hash']}",
                 takeout["video_id"],
                 takeout["title"],
                 takeout["url"],
+                takeout["channel_id"],
                 takeout["channel"],
                 takeout["channel_url"],
                 takeout["watched_at_iso"],
@@ -2909,18 +3263,19 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
         conn.execute(
             """
             INSERT INTO history_reconciled(
-              reconciled_id, video_id, title, url, channel, channel_url,
+              reconciled_id, video_id, title, url, channel_id, channel, channel_url,
               best_watch_time, watch_date, source_quality,
                 youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
                 match_confidence, match_notes, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)
             """,
             (
                 f"youtube:{youtube['ordinal']}",
                 youtube["video_id"],
                 youtube["title"],
                 youtube["url"],
+                youtube["channel_id"],
                 youtube["channel"],
                 youtube["channel_url"],
                 youtube_watch_time,
@@ -2969,19 +3324,26 @@ def save_playlist_scan(
     now = int(time.time())
     conn.execute("DELETE FROM playlist_videos WHERE playlist_id = ?", (playlist_id,))
     for video in videos:
+        channel_id = upsert_channel(
+            conn,
+            video.get("channel_id") or "",
+            title=video.get("channel") or "",
+            source="playlist",
+        )
         conn.execute(
             """
             INSERT INTO playlist_videos(
-              playlist_id, position, video_id, title, channel, duration_text,
+              playlist_id, position, video_id, title, channel_id, channel, duration_text,
               is_playable, availability, url, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 video["playlist_id"],
                 video["position"],
                 video["video_id"],
                 video["title"],
+                channel_id,
                 video["channel"],
                 video["duration_text"],
                 video["is_playable"],
@@ -3103,6 +3465,7 @@ def rebuild_playlist_reconciliation(
                     (assigned["snapshot_key"], assigned["video_id"]),
                 ).fetchone()
                 title = (recovery["title"] if recovery else "") or assigned["video_id"]
+                channel_id = recovery["channel_id"] if recovery else ""
                 channel = recovery["channel"] if recovery else ""
                 duration = recovery["duration_text"] if recovery else ""
                 source_quality = "inferred_hidden_slot"
@@ -3115,6 +3478,7 @@ def rebuild_playlist_reconciliation(
                 added_at = assigned["added_at"]
             else:
                 title = current["title"]
+                channel_id = current["channel_id"]
                 channel = current["channel"]
                 duration = current["duration_text"]
                 video_id = current["video_id"]
@@ -3139,10 +3503,10 @@ def rebuild_playlist_reconciliation(
                 """
                 INSERT INTO playlist_video_reconciled(
                   playlist_id, display_position, current_position, snapshot_position,
-                  video_id, title, channel, duration_text, is_playable, availability, url,
+                  video_id, title, channel_id, channel, duration_text, is_playable, availability, url,
                   source_quality, match_confidence, match_notes, snapshot_key, added_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pid,
@@ -3151,6 +3515,7 @@ def rebuild_playlist_reconciliation(
                     snapshot_position,
                     video_id,
                     title,
+                    channel_id,
                     channel,
                     duration,
                     current["is_playable"],
@@ -3182,16 +3547,17 @@ def rebuild_playlist_reconciliation(
                     (snap["snapshot_key"], snap["video_id"]),
                 ).fetchone()
                 title = (recovery["title"] if recovery else "") or snap["video_id"]
+                channel_id = recovery["channel_id"] if recovery else ""
                 channel = recovery["channel"] if recovery else ""
                 duration = recovery["duration_text"] if recovery else ""
                 conn.execute(
                     """
                     INSERT INTO playlist_video_reconciled(
                       playlist_id, display_position, current_position, snapshot_position,
-                      video_id, title, channel, duration_text, is_playable, availability, url,
+                      video_id, title, channel_id, channel, duration_text, is_playable, availability, url,
                       source_quality, match_confidence, match_notes, snapshot_key, added_at, updated_at
                     )
-                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         pid,
@@ -3199,6 +3565,7 @@ def rebuild_playlist_reconciliation(
                         snap["position"],
                         snap["video_id"],
                         title,
+                        channel_id,
                         channel,
                         duration,
                         "Takeout candidate; current hidden slot match is ambiguous",
@@ -3279,7 +3646,7 @@ def metadata_queue_rows(
             (
               vm.video_id IS NULL
               OR vm.fetch_status = 'error'
-              OR (vm.channel <> '' AND vm.channel_url = '')
+              OR (vm.channel_id <> '' AND COALESCE(ch.url, '') = '')
               OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
             )
             """
@@ -3325,6 +3692,7 @@ def metadata_queue_rows(
                CASE WHEN q.source_priority = 0 THEN 'playlist' ELSE 'history' END AS metadata_source
         FROM q
         LEFT JOIN video_metadata vm ON vm.video_id = q.video_id
+        LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
         WHERE {" AND ".join(where)}
         ORDER BY q.source_priority,
                  CASE WHEN q.source_priority = 0 THEN q.playlist_sort ELSE 0 END DESC,
@@ -3352,7 +3720,7 @@ def metadata_queue_count(
             (
               vm.video_id IS NULL
               OR vm.fetch_status = 'error'
-              OR (vm.channel <> '' AND vm.channel_url = '')
+              OR (vm.channel_id <> '' AND COALESCE(ch.url, '') = '')
               OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
             )
             """
@@ -3372,6 +3740,7 @@ def metadata_queue_count(
         SELECT COUNT(*) AS count
         FROM q
         LEFT JOIN video_metadata vm ON vm.video_id = q.video_id
+        LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
         WHERE {" AND ".join(where)}
         """,
         params,
@@ -3729,6 +4098,7 @@ class MetadataWorker:
                     "video_id": video_id,
                     "title": "",
                     "description": "",
+                    "channel_id": "",
                     "channel": "",
                     "channel_url": "",
                     "duration_text": "",
@@ -3750,27 +4120,33 @@ class MetadataWorker:
                     error = str(exc)
                 now = int(time.time())
                 with conn:
+                    channel_id = upsert_channel(
+                        conn,
+                        metadata.get("channel_id", ""),
+                        title=metadata.get("channel", ""),
+                        url=metadata.get("channel_url", ""),
+                        thumbnail_url=metadata.get("channel_thumbnail_url", ""),
+                        thumbnail_path=metadata.get("channel_thumbnail_path", ""),
+                        source="metadata",
+                        updated_at=now,
+                    )
                     conn.execute(
                         """
                         INSERT INTO video_metadata(
-                          video_id, title, description, channel, channel_url, duration_text, view_count,
+                          video_id, title, description, channel_id, duration_text, view_count,
                           upload_date, thumbnail_url, thumbnail_path,
-                          channel_thumbnail_url, channel_thumbnail_path, watch_url,
-                          yt_status, fetch_status, fetch_error, fetched_at, updated_at
+                          watch_url, yt_status, fetch_status, fetch_error, fetched_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(video_id) DO UPDATE SET
                           title=excluded.title,
                           description=excluded.description,
-                          channel=excluded.channel,
-                          channel_url=excluded.channel_url,
+                          channel_id=excluded.channel_id,
                           duration_text=excluded.duration_text,
                           view_count=excluded.view_count,
                           upload_date=excluded.upload_date,
                           thumbnail_url=excluded.thumbnail_url,
                           thumbnail_path=excluded.thumbnail_path,
-                          channel_thumbnail_url=excluded.channel_thumbnail_url,
-                          channel_thumbnail_path=excluded.channel_thumbnail_path,
                           watch_url=excluded.watch_url,
                           yt_status=excluded.yt_status,
                           fetch_status=excluded.fetch_status,
@@ -3782,15 +4158,12 @@ class MetadataWorker:
                             video_id,
                             metadata.get("title", ""),
                             metadata.get("description", ""),
-                            metadata.get("channel", ""),
-                            metadata.get("channel_url", ""),
+                            channel_id,
                             metadata.get("duration_text", ""),
                             metadata.get("view_count", ""),
                             metadata.get("upload_date", ""),
                             metadata.get("thumbnail_url", ""),
                             metadata.get("thumbnail_path", ""),
-                            metadata.get("channel_thumbnail_url", ""),
-                            metadata.get("channel_thumbnail_path", ""),
                             metadata.get("watch_url", ""),
                             metadata.get("yt_status", ""),
                             status,
@@ -4442,19 +4815,27 @@ def scan_hidden(args: argparse.Namespace) -> None:
             conn.execute("DELETE FROM playlist_videos WHERE playlist_id = ?", (playlist_id,))
             now = int(time.time())
             for video in videos:
+                channel_id = upsert_channel(
+                    conn,
+                    video.get("channel_id") or "",
+                    title=video.get("channel") or "",
+                    source="playlist",
+                    updated_at=now,
+                )
                 conn.execute(
                     """
                     INSERT INTO playlist_videos(
-                      playlist_id, position, video_id, title, channel, duration_text,
+                      playlist_id, position, video_id, title, channel_id, channel, duration_text,
                       is_playable, availability, url, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         video["playlist_id"],
                         video["position"],
                         video["video_id"],
                         video["title"],
+                        channel_id,
                         video["channel"],
                         video["duration_text"],
                         video["is_playable"],
@@ -4536,16 +4917,24 @@ def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
                 )
                 if thumbnail_path:
                     cached += 1
+                channel_id = upsert_channel(
+                    conn,
+                    video.get("channelExternalId") or "",
+                    title=video.get("channelTitle") or "",
+                    source="archivarix_candidate",
+                    updated_at=now,
+                )
                 conn.execute(
                     """
                     INSERT INTO archivarix_candidates(
-                      playlist_id, video_id, title, channel, status, duration_text,
+                      playlist_id, video_id, title, channel_id, channel, status, duration_text,
                       upload_date, view_count, thumbnail_url, thumbnail_path,
                       archive_url, video_file_url, query, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(playlist_id, video_id) DO UPDATE SET
                       title=excluded.title,
+                      channel_id=excluded.channel_id,
                       channel=excluded.channel,
                       status=excluded.status,
                       duration_text=excluded.duration_text,
@@ -4562,6 +4951,7 @@ def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
                         playlist_id,
                         video_id,
                         video.get("title") or "",
+                        channel_id,
                         video.get("channelTitle") or "",
                         video.get("status") or "",
                         format_duration(video.get("duration")),
@@ -4762,6 +5152,7 @@ def parse_takeout_watch_history_text(text: str) -> list[dict[str, str]]:
                     "url": url,
                     "video_id": video_id,
                     "title": title or video_id,
+                    "channel_id": youtube_channel_id_from_url(channel_url),
                     "channel_url": channel_url,
                     "channel": channel,
                     "watched_at": str(record.get("time") or ""),
@@ -4787,6 +5178,7 @@ def parse_takeout_watch_history_text(text: str) -> list[dict[str, str]]:
                 "url": url,
                 "video_id": video_id,
                 "title": strip_html_fragment(match.group(3)),
+                "channel_id": youtube_channel_id_from_url(html.unescape(match.group(4) or "")),
                 "channel_url": html.unescape(match.group(4) or ""),
                 "channel": strip_html_fragment(match.group(5) or ""),
                 "watched_at": strip_html_fragment(match.group(6)),
@@ -4879,13 +5271,20 @@ def import_history(args: argparse.Namespace) -> None:
                 row_hash = history_row_hash(row)
                 if row["video_id"]:
                     distinct_video_ids.add(row["video_id"])
+                channel_id = upsert_channel(
+                    conn,
+                    row.get("channel_id") or youtube_channel_id_from_url(row["channel_url"]),
+                    title=row["channel"],
+                    url=row["channel_url"],
+                    source="takeout_history",
+                )
                 conn.execute(
                     """
                     INSERT INTO takeout_history_occurrences(
-                      history_key, row_hash, video_id, title, url, channel,
+                      history_key, row_hash, video_id, title, url, channel_id, channel,
                       channel_url, watched_at_iso
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         history_key,
@@ -4893,6 +5292,7 @@ def import_history(args: argparse.Namespace) -> None:
                         row["video_id"],
                         row["title"],
                         row["url"],
+                        channel_id,
                         row["channel"],
                         row["channel_url"],
                         watched_at_iso,
@@ -5068,12 +5468,12 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                    v.display_position AS position,
                    COALESCE(NULLIF(NULLIF(vm.title, '- YouTube'), 'YouTube'), r.title, '') AS metadata_title,
                    COALESCE(NULLIF(vm.description, ''), r.description, '') AS metadata_description,
-                   COALESCE(NULLIF(vm.channel, ''), r.channel, '') AS metadata_channel,
-                   COALESCE(NULLIF(vm.channel_url, ''), r.channel_url, CASE WHEN r.channel_id <> '' THEN 'https://www.youtube.com/channel/' || r.channel_id ELSE '' END, '') AS metadata_channel_url,
+                   COALESCE(NULLIF(vmc.title, ''), NULLIF(rc.title, ''), NULLIF(vc.title, ''), v.channel, '') AS metadata_channel,
+                   COALESCE(NULLIF(vmc.url, ''), NULLIF(rc.url, ''), NULLIF(vc.url, ''), CASE WHEN r.channel_id <> '' THEN 'https://www.youtube.com/channel/' || r.channel_id ELSE '' END, '') AS metadata_channel_url,
                    COALESCE(NULLIF(vm.duration_text, ''), r.duration_text, '') AS metadata_duration,
                    COALESCE(NULLIF(vm.upload_date, ''), r.upload_date, '') AS metadata_upload_date,
                    COALESCE(NULLIF(vm.thumbnail_path, ''), r.thumbnail_path, '') AS metadata_thumbnail_path,
-                   COALESCE(NULLIF(vm.channel_thumbnail_path, ''), r.channel_thumbnail_path, '') AS metadata_channel_thumbnail_path,
+                   COALESCE(NULLIF(vmc.thumbnail_path, ''), NULLIF(rc.thumbnail_path, ''), '') AS metadata_channel_thumbnail_path,
                    COALESCE(NULLIF(vm.fetch_status, ''), r.search_status, '') AS metadata_fetch_status,
                    COALESCE(r.status, '') AS recovered_status
             FROM playlist_video_reconciled v
@@ -5081,6 +5481,9 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             LEFT JOIN video_metadata vm ON vm.video_id = v.video_id
             LEFT JOIN snapshot_video_recovery r
               ON r.snapshot_key = v.snapshot_key AND r.video_id = v.video_id
+            LEFT JOIN channels vmc ON vmc.channel_id = vm.channel_id
+            LEFT JOIN channels rc ON rc.channel_id = r.channel_id
+            LEFT JOIN channels vc ON vc.channel_id = v.channel_id
             ORDER BY p.title COLLATE NOCASE, v.display_position
             """
         )
@@ -5130,7 +5533,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                    p.url AS playlist_url,
                    COALESCE(r.title, '') AS recovered_title,
                    COALESCE(r.description, '') AS recovered_description,
-                   COALESCE(r.channel, '') AS recovered_channel,
+                   COALESCE(NULLIF(rc.title, ''), '') AS recovered_channel,
                    COALESCE(r.status, '') AS recovered_status,
                    COALESCE(r.duration_text, '') AS recovered_duration,
                    COALESCE(r.upload_date, '') AS recovered_upload_date,
@@ -5145,6 +5548,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             LEFT JOIN snapshot_video_recovery r
               ON r.snapshot_key = sv.snapshot_key
              AND r.video_id = sv.video_id
+            LEFT JOIN channels rc ON rc.channel_id = r.channel_id
             WHERE pv.video_id IS NULL
             ORDER BY sv.playlist_title COLLATE NOCASE, sv.position
             """
@@ -5199,7 +5603,8 @@ def history_search_data(
               hr.channel || ' ' ||
               hr.video_id || ' ' ||
               COALESCE(vm.title, '') || ' ' ||
-              COALESCE(vm.channel, '') || ' ' ||
+              COALESCE(vmc.title, '') || ' ' ||
+              COALESCE(hc.title, '') || ' ' ||
               COALESCE(vm.upload_date, '') || ' ' ||
               COALESCE(vm.description, '')
             ) LIKE ?
@@ -5214,6 +5619,8 @@ def history_search_data(
             SELECT COUNT(*) AS count
             FROM history_reconciled hr
             LEFT JOIN video_metadata vm ON vm.video_id = hr.video_id
+            LEFT JOIN channels vmc ON vmc.channel_id = vm.channel_id
+            LEFT JOIN channels hc ON hc.channel_id = hr.channel_id
             {watch_where}
             """,
             watch_params,
@@ -5244,14 +5651,16 @@ def history_search_data(
                    hr.imported_at,
                    COALESCE(vm.title, '') AS metadata_title,
                    COALESCE(vm.description, '') AS metadata_description,
-                   COALESCE(vm.channel, '') AS metadata_channel,
-                   COALESCE(vm.channel_url, '') AS metadata_channel_url,
+                   COALESCE(NULLIF(vmc.title, ''), NULLIF(hc.title, ''), hr.channel, '') AS metadata_channel,
+                   COALESCE(NULLIF(vmc.url, ''), NULLIF(hc.url, ''), hr.channel_url, '') AS metadata_channel_url,
                    COALESCE(vm.duration_text, '') AS metadata_duration,
                    COALESCE(vm.thumbnail_path, '') AS metadata_thumbnail_path,
-                   COALESCE(vm.channel_thumbnail_path, '') AS metadata_channel_thumbnail_path,
+                   COALESCE(NULLIF(vmc.thumbnail_path, ''), NULLIF(hc.thumbnail_path, ''), '') AS metadata_channel_thumbnail_path,
                    COALESCE(vm.fetch_status, '') AS metadata_fetch_status
             FROM history_reconciled hr
             LEFT JOIN video_metadata vm ON vm.video_id = hr.video_id
+            LEFT JOIN channels vmc ON vmc.channel_id = vm.channel_id
+            LEFT JOIN channels hc ON hc.channel_id = hr.channel_id
             {watch_where}
             ORDER BY CASE WHEN hr.best_watch_time = '' THEN 1 ELSE 0 END,
                      hr.best_watch_time DESC,
