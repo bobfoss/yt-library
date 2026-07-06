@@ -39,6 +39,14 @@ git diff --check
 
 For schema, import, or worker changes, also run the relevant command against a local copy of `yt_playlists.sqlite3` and smoke test `/api/admin/status` and `/api/history/search?limit=1`.
 
+Restart the local service when necessary, not automatically after every action. Restart after server code, served HTML/JS, config, schema/bootstrap, or worker behavior changes so the running app picks them up. A database-only update usually does not need a restart because API requests read SQLite fresh; verify with an endpoint instead.
+
+## Data Modeling Notes
+
+Keep raw source tables and display overlays separate. `playlist_videos` should reflect the current YouTube scan, while `playlist_video_reconciled` is the overlay that restores hidden/missing identities from Takeout and Archivarix evidence. Do not overwrite raw scan rows just to improve presentation.
+
+For hidden or memory-holed playlist videos, keep uncertainty visible. Preserve badges that distinguish `Unavailable`, `restored from Takeout`, `Takeout candidate`, and Archivarix statuses such as `DELETED_FULL_META` or `NOT_FOUND`. Avoid forcing ambiguous hidden-slot matches; show candidates when counts or positions do not support a confident mapping.
+
 ## Commit & Pull Request Guidelines
 
 Git history uses concise, imperative commit subjects such as `Clean up history storage schema` and `Import Takeout history from zip archives`. Keep commits focused and avoid staging personal data artifacts. Pull requests should summarize behavior changes, schema migrations, verification commands, and UI impact. Include screenshots for visible UI changes.

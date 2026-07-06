@@ -2802,6 +2802,11 @@ def rebuild_playlist_reconciliation(
                 (pid, snapshot_key),
             )
         ] if snapshot_key else []
+        snapshot_by_video_id = {
+            row["video_id"]: row
+            for row in snapshot_rows
+            if row.get("video_id")
+        }
 
         current_ids = {row["video_id"] for row in current_rows if row.get("video_id")}
         hidden_rows = [row for row in current_rows if not row.get("video_id") or not row.get("is_playable")]
@@ -2841,9 +2846,10 @@ def rebuild_playlist_reconciliation(
                 channel = current["channel"]
                 duration = current["duration_text"]
                 video_id = current["video_id"]
-                snapshot_position = 0
-                snapshot_key_value = ""
-                added_at = ""
+                snapshot_match = snapshot_by_video_id.get(video_id) if video_id else None
+                snapshot_position = snapshot_match["position"] if snapshot_match else 0
+                snapshot_key_value = snapshot_match["snapshot_key"] if snapshot_match else ""
+                added_at = snapshot_match["added_at"] if snapshot_match else ""
                 if current.get("video_id"):
                     source_quality = "current_exact"
                     match_confidence = "video_id"
@@ -5053,6 +5059,19 @@ INDEX_HTML = """<!doctype html>
       return labels[video.source_quality] || '';
     }
 
+    function unavailableLabel(video) {
+      if (!video.is_playable) return video.availability || 'Hidden';
+      const status = String(video.recovered_status || '');
+      if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return 'Unavailable';
+      return '';
+    }
+
+    function archivarixStatusLabel(video) {
+      const status = String(video.recovered_status || '');
+      if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return `Archivarix: ${status}`;
+      return '';
+    }
+
     function creatorAvatarHtml(path, url) {
       if (!path) return '';
       const img = `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">`;
@@ -5311,7 +5330,8 @@ INDEX_HTML = """<!doctype html>
           ? `<a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayVideoTitle(video))}</a>`
           : `<div class="video-title">${escapeHtml(displayVideoTitle(video))}</div>`}
         <div class="details">
-          ${video.is_playable ? '' : `<span class="badge">${escapeHtml(video.availability || 'Hidden')}</span>`}
+          ${unavailableLabel(video) ? `<span class="badge">${escapeHtml(unavailableLabel(video))}</span>` : ''}
+          ${archivarixStatusLabel(video) ? `<span class="badge">${escapeHtml(archivarixStatusLabel(video))}</span>` : ''}
           ${sourceQualityLabel(video) ? `<span class="badge">${escapeHtml(sourceQualityLabel(video))}</span>` : ''}
           ${displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : ''}
           ${creatorAvatarHtml(video.metadata_channel_thumbnail_path, channelUrl)}
