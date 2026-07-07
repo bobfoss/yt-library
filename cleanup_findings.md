@@ -42,6 +42,26 @@ Status: completed.
 - `snapshot_playlists.source_file` and `snapshot_videos.source_file` may be redundant now that `snapshot_key` identifies the Takeout import.
 - Cleanup completed by removing the columns and keeping snapshot identity at the snapshot level.
 
+## Shared Video Card Rendering
+
+Status: completed for active library video cards.
+
+- `yt_library/templates/index.html` now routes playlist/search videos, raw hidden videos, and snapshot missing / likely hidden videos through a shared `videoCardFor()` renderer.
+- Badges are rendered as their own vertical block, and creator/channel chips render on their own line.
+- Remaining cleanup: share this same video-card concept with the history page so watch-history results do not drift from library video cards.
+
+## History Video Card Duplication
+
+- `yt_library/templates/history.html` still has its own `watchCard()`, `creatorHtml()`, and `watchedLineHtml()` helpers.
+- This card renders the same kind of object as the library video cards: thumbnail, title, badges, channel, video ID, watch progress, and description.
+- Cleanup: move common browser-side card helpers into a shared static JS module or shared template include, then adapt both `index.html` and `history.html` to use it.
+
+## Collection Card Duplication
+
+- Normal playlist cards, snapshot playlist cards, and channel cards all repeat a broad "card with title, details, links, and optional description/media" structure.
+- These cards differ enough that the payoff is smaller than the video-card cleanup, but they are candidates if UI drift continues.
+- Cleanup: consider a generic collection/entity card builder only after the history video-card duplication is resolved.
+
 ## Unused Archivarix Candidate Card
 
 - `yt_library/templates/index.html` still defines `candidateCardFor()`, but no current UI path calls it.
@@ -51,5 +71,6 @@ Status: completed.
 
 ## Suggested Order
 
-1. Fix the remaining raw playlist availability display path.
+1. Share the video-card renderer with `history.html`.
 2. Remove the unused Archivarix candidate card path.
+3. Revisit collection/entity card duplication only if playlist, snapshot playlist, and channel cards continue to drift.
