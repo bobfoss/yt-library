@@ -111,6 +111,44 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 )
             )
             return
+        if parsed.path == "/api/admin/queue":
+            params = urllib.parse.parse_qs(parsed.query)
+            queue_type = (params.get("type") or [""])[0]
+            try:
+                limit = max(1, min(100, int((params.get("limit") or ["20"])[0] or 20)))
+            except ValueError:
+                limit = 20
+            try:
+                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+            except ValueError:
+                offset = 0
+            include_total = (params.get("include_total") or ["1"])[0] not in {"0", "false", "no"}
+            conn = connect(self.db_path)
+            try:
+                if queue_type == "metadata":
+                    total = metadata_queue_count(conn, force=False, stale_days=30) if include_total else 0
+                    rows = metadata_queue_rows(conn, limit=limit, offset=offset, force=False, stale_days=30)
+                elif queue_type == "playlists":
+                    total = len(playlist_scan_queue_rows(conn, force=False, stale_days=7)) if include_total else 0
+                    rows = playlist_scan_queue_rows(conn, limit=limit, offset=offset, force=False, stale_days=7)
+                elif queue_type == "placeholders":
+                    total = playlist_placeholder_recovery_count(conn, force=False) if include_total else 0
+                    rows = playlist_placeholder_recovery_rows(conn, limit=limit, offset=offset, force=False)
+                else:
+                    self.send_json({"error": "Unknown queue type"}, status=400)
+                    return
+                self.send_json(
+                    {
+                        "type": queue_type,
+                        "limit": limit,
+                        "offset": offset,
+                        "total": total,
+                        "rows": [dict(row) for row in rows],
+                    }
+                )
+            finally:
+                conn.close()
+            return
         return super().do_GET()
 
     def do_POST(self) -> None:

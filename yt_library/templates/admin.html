@@ -116,7 +116,7 @@
             <button id="stopMetadata" type="button">Stop metadata</button>
           </div>
           <div class="queue-grid">
-            <div class="panel queue-panel">
+            <div class="panel queue-panel" id="metadataQueuePanel">
               <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
               <table>
                 <thead><tr><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
@@ -150,7 +150,7 @@
             <button id="refresh" type="button">Refresh status</button>
           </div>
           <div class="queue-grid">
-            <div class="panel queue-panel">
+            <div class="panel queue-panel" id="playlistQueuePanel">
               <div class="queue-title"><h2>Playlist queue</h2><span id="playlistQueueShown">0 shown</span></div>
               <table>
                 <thead><tr><th>Playlist</th><th>Status</th><th>Videos</th></tr></thead>
@@ -179,7 +179,7 @@
             <button id="stopPlaceholders" type="button">Stop placeholder recovery</button>
           </div>
           <div class="queue-grid">
-            <div class="panel queue-panel">
+            <div class="panel queue-panel" id="placeholderQueuePanel">
               <div class="queue-title"><h2>Recovery queue</h2><span id="placeholderQueueShown">0 shown</span></div>
               <table>
                 <thead><tr><th>Video</th><th>Playlist</th><th>Previous</th></tr></thead>
@@ -264,9 +264,61 @@
       playlistQueueRows: document.getElementById('playlistQueueRows'),
       metadataQueueRows: document.getElementById('metadataQueueRows'),
       placeholderQueueRows: document.getElementById('placeholderQueueRows'),
+      playlistQueuePanel: document.getElementById('playlistQueuePanel'),
+      metadataQueuePanel: document.getElementById('metadataQueuePanel'),
+      placeholderQueuePanel: document.getElementById('placeholderQueuePanel'),
       playlistQueueShown: document.getElementById('playlistQueueShown'),
       metadataQueueShown: document.getElementById('metadataQueueShown'),
       placeholderQueueShown: document.getElementById('placeholderQueueShown'),
+    };
+
+    const QUEUE_BATCH_SIZE = 20;
+    const queueStates = {
+      playlists: {
+        rows: [],
+        total: 0,
+        loading: false,
+        exhausted: false,
+        tbody: fields.playlistQueueRows,
+        shown: fields.playlistQueueShown,
+        panel: fields.playlistQueuePanel,
+        empty: 'No playlists queued.',
+        cells: [
+          row => row.title || row.playlist_id,
+          row => row.scan_status || 'unscanned',
+          row => `${row.video_count || 0}/${row.video_count_text || '?'}`
+        ],
+      },
+      metadata: {
+        rows: [],
+        total: 0,
+        loading: false,
+        exhausted: false,
+        tbody: fields.metadataQueueRows,
+        shown: fields.metadataQueueShown,
+        panel: fields.metadataQueuePanel,
+        empty: 'No metadata queued.',
+        cells: [
+          row => row.metadata_source === 'channel' ? (row.channel_title || row.channel_id || row.video_id) : row.video_id,
+          row => row.metadata_source || '',
+          row => row.metadata_source === 'channel' ? (row.channel_id || '') : (row.current_title || '')
+        ],
+      },
+      placeholders: {
+        rows: [],
+        total: 0,
+        loading: false,
+        exhausted: false,
+        tbody: fields.placeholderQueueRows,
+        shown: fields.placeholderQueueShown,
+        panel: fields.placeholderQueuePanel,
+        empty: 'No deleted playlist videos queued.',
+        cells: [
+          row => row.video_id,
+          row => row.playlist_title || '',
+          row => row.previous_status || ''
+        ],
+      },
     };
 
     function escapeHtml(value) {
@@ -278,6 +330,19 @@
     function fmtTime(value) {
       if (!value) return '';
       return new Date(value * 1000).toLocaleString();
+    }
+
+    function renderQueueState(state) {
+      const rows = state.rows || [];
+      if (!rows.length) {
+        state.tbody.innerHTML = `<tr><td colspan="${state.cells.length}" class="message">${escapeHtml(state.empty)}</td></tr>`;
+        state.shown.textContent = `0 shown`;
+        return;
+      }
+      state.tbody.innerHTML = rows.map(row => `
+        <tr>${state.cells.map(cell => `<td class="message">${escapeHtml(cell(row))}</td>`).join('')}</tr>
+      `).join('');
+      state.shown.textContent = `${rows.length}/${state.total || rows.length} shown`;
     }
 
     function render(data) {
@@ -338,37 +403,9 @@
         return div;
       }));
 
-      function renderQueue(tbody, rows, cells, emptyMessage) {
-        if (!rows.length) {
-          tbody.innerHTML = `<tr><td colspan="${cells.length}" class="message">${escapeHtml(emptyMessage)}</td></tr>`;
-          return;
-        }
-        tbody.innerHTML = rows.map(row => `
-          <tr>${cells.map(cell => `<td class="message">${escapeHtml(cell(row))}</td>`).join('')}</tr>
-        `).join('');
-      }
-
-      const playlistQueue = data.playlistScanQueue || [];
-      const metadataQueue = data.metadataQueue || [];
-      const placeholderQueue = data.placeholderRecoveryQueue || [];
-      fields.playlistQueueShown.textContent = `${playlistQueue.length} shown`;
-      fields.metadataQueueShown.textContent = `${metadataQueue.length} shown`;
-      fields.placeholderQueueShown.textContent = `${placeholderQueue.length} shown`;
-      renderQueue(fields.playlistQueueRows, playlistQueue, [
-        row => row.title || row.playlist_id,
-        row => row.scan_status || 'unscanned',
-        row => `${row.video_count || 0}/${row.video_count_text || '?'}`
-      ], 'No playlists queued.');
-      renderQueue(fields.metadataQueueRows, metadataQueue, [
-        row => row.metadata_source === 'channel' ? (row.channel_title || row.channel_id || row.video_id) : row.video_id,
-        row => row.metadata_source || '',
-        row => row.metadata_source === 'channel' ? (row.channel_id || '') : (row.current_title || '')
-      ], 'No metadata queued.');
-      renderQueue(fields.placeholderQueueRows, placeholderQueue, [
-        row => row.video_id,
-        row => row.playlist_title || '',
-        row => row.previous_status || ''
-      ], 'No deleted playlist videos queued.');
+      hydrateQueueState('playlists', data.playlistScanQueue || [], data.playlistScanQueueCount || 0);
+      hydrateQueueState('metadata', data.metadataQueue || [], data.metadataQueueCount || 0);
+      hydrateQueueState('placeholders', data.placeholderRecoveryQueue || [], data.placeholderRecoveryQueueCount || 0);
 
       const logs = [
         ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
@@ -388,6 +425,89 @@
 
     let statusRequest = null;
 
+    function hydrateQueueState(type, rows, total) {
+      const state = queueStates[type];
+      state.total = total;
+      if (state.rows.length <= QUEUE_BATCH_SIZE) {
+        state.rows = rows;
+        state.exhausted = rows.length >= total;
+      } else {
+        state.exhausted = state.rows.length >= total;
+      }
+      renderQueueState(state);
+    }
+
+    function resetQueueStates() {
+      for (const state of Object.values(queueStates)) {
+        state.rows = [];
+        state.total = 0;
+        state.loading = false;
+        state.exhausted = false;
+      }
+    }
+
+    async function loadMoreQueue(type) {
+      const state = queueStates[type];
+      if (!state || state.loading || state.exhausted) return;
+      if (state.total && state.rows.length >= state.total) {
+        state.exhausted = true;
+        return;
+      }
+      state.loading = true;
+      state.shown.textContent = state.total
+        ? `${state.rows.length}/${state.total} shown - loading`
+        : `${state.rows.length} shown - loading`;
+      try {
+        const params = new URLSearchParams({
+          type,
+          offset: String(state.rows.length),
+          limit: String(QUEUE_BATCH_SIZE),
+          include_total: '0',
+        });
+        const response = await fetch(`/api/admin/queue?${params}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`Queue load failed: ${response.status}`);
+        const payload = await response.json();
+        const rows = payload.rows || [];
+        state.total = payload.total || state.total;
+        state.rows.push(...rows);
+        state.exhausted = rows.length === 0 || rows.length < QUEUE_BATCH_SIZE || (state.total && state.rows.length >= state.total);
+        renderQueueState(state);
+      } finally {
+        state.loading = false;
+      }
+    }
+
+    async function loadInitialQueue(type, force = false) {
+      const state = queueStates[type];
+      if (!state || state.loading) return;
+      if (!force && state.rows.length) return;
+      state.rows = [];
+      state.total = 0;
+      state.exhausted = false;
+      await loadMoreQueue(type);
+    }
+
+    function loadAllInitialQueues() {
+      for (const type of Object.keys(queueStates)) {
+        loadInitialQueue(type).catch(error => {
+          const state = queueStates[type];
+          state.shown.textContent = `0 shown - ${error.message}`;
+        });
+      }
+    }
+
+    function handleQueueScroll(type) {
+      const state = queueStates[type];
+      const panel = state.panel;
+      if (!panel || panel.hidden) return;
+      const remaining = panel.scrollHeight - panel.scrollTop - panel.clientHeight;
+      if (remaining < 80) {
+        loadMoreQueue(type).catch(error => {
+          state.shown.textContent = `${state.rows.length}/${state.total} shown - ${error.message}`;
+        });
+      }
+    }
+
     async function loadStatus() {
       if (statusRequest) return statusRequest;
       statusRequest = (async () => {
@@ -405,6 +525,8 @@
     async function post(path, params = {}) {
       const response = await fetch(`${path}?${new URLSearchParams(params)}`, { method: 'POST' });
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+      resetQueueStates();
+      loadAllInitialQueues();
       await loadStatus();
     }
 
@@ -452,8 +574,24 @@
         const expanded = button.getAttribute('aria-expanded') === 'true';
         button.setAttribute('aria-expanded', expanded ? 'false' : 'true');
         if (panel) panel.hidden = expanded;
+        if (!expanded) {
+          const type = panel?.querySelector('tbody')?.id === 'metadataQueueRows'
+            ? 'metadata'
+            : panel?.querySelector('tbody')?.id === 'playlistQueueRows'
+              ? 'playlists'
+              : panel?.querySelector('tbody')?.id === 'placeholderQueueRows'
+                ? 'placeholders'
+                : '';
+          if (type) loadInitialQueue(type).catch(error => {
+            queueStates[type].shown.textContent = `0 shown - ${error.message}`;
+          });
+        }
       });
     });
+    for (const type of Object.keys(queueStates)) {
+      queueStates[type].panel.addEventListener('scroll', () => handleQueueScroll(type));
+    }
+    loadAllInitialQueues();
     loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
     setInterval(() => {
       loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });

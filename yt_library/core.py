@@ -3171,6 +3171,7 @@ def log_placeholder_recovery_event(
 def playlist_placeholder_recovery_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
+    offset: int = 0,
     force: bool = False,
 ) -> list[sqlite3.Row]:
     where = [
@@ -3204,10 +3205,14 @@ def playlist_placeholder_recovery_rows(
         GROUP BY v.snapshot_key, v.video_id, COALESCE(r.search_status, '')
         ORDER BY MIN(p.title) COLLATE NOCASE, MIN(v.display_position), v.video_id
     """
+    params: list[Any] = []
     if limit:
         sql += " LIMIT ?"
-        return conn.execute(sql, (limit,)).fetchall()
-    return conn.execute(sql).fetchall()
+        params.append(limit)
+        if offset:
+            sql += " OFFSET ?"
+            params.append(max(0, offset))
+    return conn.execute(sql, params).fetchall()
 
 
 def playlist_placeholder_recovery_count(conn: sqlite3.Connection, force: bool = False) -> int:
@@ -3876,6 +3881,7 @@ def rebuild_playlist_reconciliation(
 def playlist_scan_queue_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
+    offset: int = 0,
     force: bool = False,
     stale_days: int = 7,
 ) -> list[sqlite3.Row]:
@@ -3916,15 +3922,59 @@ def playlist_scan_queue_rows(
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
+        if offset:
+            sql += " OFFSET ?"
+            params.append(max(0, offset))
     return conn.execute(sql, params).fetchall()
 
 
 def metadata_queue_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
+    offset: int = 0,
     force: bool = False,
     stale_days: int = 30,
 ) -> list[sqlite3.Row]:
+    if limit and not force:
+        known_channel_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM channels ch
+                WHERE ch.channel_id <> ''
+                  AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted')
+                  AND (
+                    COALESCE(ch.url, '') = ''
+                    OR COALESCE(ch.thumbnail_path, '') = ''
+                  )
+                """
+            ).fetchone()[0]
+        )
+        if offset < known_channel_count:
+            rows = conn.execute(
+                """
+                SELECT ch.channel_id AS video_id,
+                       ch.channel_id,
+                       COALESCE(NULLIF(ch.title, ''), ch.channel_id) AS channel_title,
+                       0 AS playlist_count,
+                       '' AS current_title,
+                       'channel' AS metadata_source
+                FROM channels ch
+                WHERE ch.channel_id <> ''
+                  AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted')
+                  AND (
+                    COALESCE(ch.url, '') = ''
+                    OR COALESCE(ch.thumbnail_path, '') = ''
+                  )
+                ORDER BY COALESCE(NULLIF(ch.title, ''), ch.channel_id) COLLATE NOCASE,
+                         ch.channel_id
+                LIMIT ? OFFSET ?
+                """,
+                (limit, max(0, offset)),
+            ).fetchall()
+            if len(rows) == limit or offset + len(rows) < known_channel_count:
+                return rows
+
     stale_before = int(time.time()) - max(stale_days, 0) * 86400
     where = ["q.video_id <> ''"]
     params: list[Any] = []
@@ -4112,6 +4162,9 @@ def metadata_queue_rows(
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
+        if offset:
+            sql += " OFFSET ?"
+            params.append(max(0, offset))
     return conn.execute(sql, params).fetchall()
 
 
