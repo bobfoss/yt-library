@@ -3920,30 +3920,28 @@ def metadata_queue_rows(
           GROUP BY hr.video_id, hr.channel_id
         ),
         known_channel_sources AS (
-          SELECT MIN(ref.video_id) AS video_id,
-                 ref.channel_id,
-                 COALESCE(NULLIF(ch.title, ''), MAX(ref.channel_title), ref.channel_id) AS channel_title,
+          SELECT ch.channel_id AS video_id,
+                 ch.channel_id,
+                 COALESCE(NULLIF(ch.title, ''), ch.channel_id) AS channel_title,
                  0 AS source_priority,
-                 SUM(ref.playlist_count) AS playlist_count,
-                 MIN(ref.current_title) AS current_title,
-                 MAX(ref.playlist_sort) AS playlist_sort,
-                 MAX(ref.history_sort) AS history_sort
+                 0 AS playlist_count,
+                 '' AS current_title,
+                 0 AS playlist_sort,
+                 '' AS history_sort
           FROM channels ch
-          JOIN all_channel_refs ref ON ref.channel_id = ch.channel_id
           WHERE ch.channel_id <> ''
             AND (
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
-          GROUP BY ref.channel_id
         ),
         discovered_channel_sources AS (
-          SELECT MIN(ref.video_id) AS video_id,
+          SELECT ref.channel_id AS video_id,
                  ref.channel_id,
                  MAX(ref.channel_title) AS channel_title,
                  1 AS source_priority,
                  SUM(ref.playlist_count) AS playlist_count,
-                 MIN(ref.current_title) AS current_title,
+                 '' AS current_title,
                  MAX(ref.playlist_sort) AS playlist_sort,
                  MAX(ref.history_sort) AS history_sort
           FROM all_channel_refs ref
@@ -4091,19 +4089,17 @@ def metadata_queue_count(
             )
         ),
         known_channel_sources AS (
-          SELECT MIN(ref.video_id) AS video_id,
+          SELECT ch.channel_id AS video_id,
                  0 AS source_priority
           FROM channels ch
-          JOIN all_channel_refs ref ON ref.channel_id = ch.channel_id
           WHERE ch.channel_id <> ''
             AND (
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
-          GROUP BY ref.channel_id
         ),
         discovered_channel_sources AS (
-          SELECT MIN(ref.video_id) AS video_id,
+          SELECT ref.channel_id AS video_id,
                  1 AS source_priority
           FROM all_channel_refs ref
           LEFT JOIN channels ch ON ch.channel_id = ref.channel_id
@@ -7424,7 +7420,7 @@ ADMIN_HTML = """<!doctype html>
       renderQueue(fields.metadataQueueRows, metadataQueue, [
         row => row.metadata_source === 'channel' ? (row.channel_title || row.channel_id || row.video_id) : row.video_id,
         row => row.metadata_source || '',
-        row => row.metadata_source === 'channel' ? `via ${row.current_title || row.video_id}` : (row.current_title || '')
+        row => row.metadata_source === 'channel' ? (row.channel_id || '') : (row.current_title || '')
       ], 'No metadata queued.');
       renderQueue(fields.placeholderQueueRows, placeholderQueue, [
         row => row.video_id,
