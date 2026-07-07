@@ -326,6 +326,14 @@
       return '';
     }
 
+    function recoveredAvailabilityLabel(video) {
+      if (video.availability) return video.availability;
+      const status = String(video.recovered_status || '');
+      if (status === 'LIVE') return status;
+      if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return 'unavailable';
+      return '';
+    }
+
     function archivarixStatusLabel(video) {
       const status = String(video.recovered_status || '');
       if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return `Archivarix: ${status}`;
@@ -887,6 +895,7 @@
         <div class="position">#${video.position}</div>
         <a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayTitle)}</a>
         <div class="details">
+          ${recoveredAvailabilityLabel(video) ? `<span class="badge">${escapeHtml(recoveredAvailabilityLabel(video))}</span>` : ''}
           ${video.recovered_status ? `<span class="badge">${escapeHtml(video.recovered_status)}</span>` : ''}
           ${video.recovered_duration ? `<span>${escapeHtml(video.recovered_duration)}</span>` : ''}
           ${video.recovered_upload_date ? `<span>${escapeHtml(video.recovered_upload_date)}</span>` : ''}
