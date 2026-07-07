@@ -207,6 +207,8 @@ CREATE TABLE IF NOT EXISTS video_metadata (
   upload_date TEXT NOT NULL DEFAULT '',
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
+  watch_progress_percent INTEGER NOT NULL DEFAULT 0,
+  watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
   yt_status TEXT NOT NULL DEFAULT '',
   fetch_status TEXT NOT NULL DEFAULT '',
   fetch_error TEXT NOT NULL DEFAULT '',
@@ -233,6 +235,8 @@ CREATE TABLE IF NOT EXISTS youtube_history_occurrences (
   channel_id TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
   watch_date TEXT NOT NULL DEFAULT '',
+  watch_progress_percent INTEGER NOT NULL DEFAULT 0,
+  watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
   observed_at TEXT NOT NULL DEFAULT '',
   imported_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0,
@@ -267,6 +271,8 @@ CREATE TABLE IF NOT EXISTS history_reconciled (
   takeout_row_hash TEXT NOT NULL DEFAULT '',
   match_confidence TEXT NOT NULL DEFAULT '',
   match_notes TEXT NOT NULL DEFAULT '',
+  watch_progress_percent INTEGER NOT NULL DEFAULT 0,
+  watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
   imported_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0
 );
@@ -726,6 +732,10 @@ def drop_deprecated_channel_columns(conn: sqlite3.Connection) -> None:
 def cleanup_video_metadata_columns(conn: sqlite3.Connection) -> None:
     deprecated = {"channel", "channel_url", "channel_thumbnail_url", "channel_thumbnail_path", "watch_url"}
     cols = table_columns(conn, "video_metadata")
+    for name in ("watch_progress_percent", "watch_resume_seconds"):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE video_metadata ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
+    cols = table_columns(conn, "video_metadata")
     if not deprecated.intersection(cols):
         return
     conn.execute("ALTER TABLE video_metadata RENAME TO video_metadata_old")
@@ -741,6 +751,8 @@ def cleanup_video_metadata_columns(conn: sqlite3.Connection) -> None:
           upload_date TEXT NOT NULL DEFAULT '',
           thumbnail_url TEXT NOT NULL DEFAULT '',
           thumbnail_path TEXT NOT NULL DEFAULT '',
+          watch_progress_percent INTEGER NOT NULL DEFAULT 0,
+          watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
           yt_status TEXT NOT NULL DEFAULT '',
           fetch_status TEXT NOT NULL DEFAULT '',
           fetch_error TEXT NOT NULL DEFAULT '',
@@ -756,10 +768,12 @@ def cleanup_video_metadata_columns(conn: sqlite3.Connection) -> None:
         INSERT INTO video_metadata(
           video_id, title, description, channel_id, duration_text, view_count,
           upload_date, thumbnail_url, thumbnail_path, yt_status,
+          watch_progress_percent, watch_resume_seconds,
           fetch_status, fetch_error, fetched_at, updated_at
         )
         SELECT video_id, title, description, {select_channel_id}, duration_text, view_count,
                upload_date, thumbnail_url, thumbnail_path, yt_status,
+               watch_progress_percent, watch_resume_seconds,
                fetch_status, fetch_error, fetched_at, updated_at
         FROM video_metadata_old
         """
@@ -861,6 +875,8 @@ def ensure_youtube_history_schema(conn: sqlite3.Connection) -> None:
         "channel_id",
         "channel",
         "watch_date",
+        "watch_progress_percent",
+        "watch_resume_seconds",
         "observed_at",
         "imported_at",
         "updated_at",
@@ -883,6 +899,8 @@ def ensure_youtube_history_schema(conn: sqlite3.Connection) -> None:
           channel_id TEXT NOT NULL DEFAULT '',
           channel TEXT NOT NULL DEFAULT '',
           watch_date TEXT NOT NULL DEFAULT '',
+          watch_progress_percent INTEGER NOT NULL DEFAULT 0,
+          watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
           observed_at TEXT NOT NULL DEFAULT '',
           imported_at INTEGER NOT NULL DEFAULT 0,
           updated_at INTEGER NOT NULL DEFAULT 0,
@@ -910,9 +928,10 @@ def ensure_youtube_history_schema(conn: sqlite3.Connection) -> None:
                 """
                 INSERT OR IGNORE INTO youtube_history_occurrences(
                   ordinal, video_id, title, url, channel_id, channel,
-                  watch_date, observed_at, imported_at, updated_at
+                  watch_date, watch_progress_percent, watch_resume_seconds,
+                  observed_at, imported_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["ordinal"] if "ordinal" in old_cols else 0,
@@ -922,6 +941,8 @@ def ensure_youtube_history_schema(conn: sqlite3.Connection) -> None:
                     channel_id,
                     row["channel"] if "channel" in old_cols else "",
                     row["watch_date"] if "watch_date" in old_cols else "",
+                    row["watch_progress_percent"] if "watch_progress_percent" in old_cols else 0,
+                    row["watch_resume_seconds"] if "watch_resume_seconds" in old_cols else 0,
                     observed_at,
                     imported_at,
                     row["updated_at"] if "updated_at" in old_cols else imported_at,
@@ -1015,7 +1036,13 @@ def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
 
 def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(history_reconciled)")}
-    if "takeout_position" not in existing and "takeout_row_hash" in existing and "channel_url" not in existing:
+    if (
+        "takeout_position" not in existing
+        and "takeout_row_hash" in existing
+        and "channel_url" not in existing
+        and "watch_progress_percent" in existing
+        and "watch_resume_seconds" in existing
+    ):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_channel ON history_reconciled(channel_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, source_quality)")
@@ -1039,6 +1066,8 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
           takeout_row_hash TEXT NOT NULL DEFAULT '',
           match_confidence TEXT NOT NULL DEFAULT '',
           match_notes TEXT NOT NULL DEFAULT '',
+          watch_progress_percent INTEGER NOT NULL DEFAULT 0,
+          watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
           imported_at INTEGER NOT NULL DEFAULT 0,
           updated_at INTEGER NOT NULL DEFAULT 0
         )
@@ -1061,9 +1090,10 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
               reconciled_id, video_id, title, url, channel_id, channel,
               best_watch_time, watch_date, source_quality,
               youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
-              match_confidence, match_notes, imported_at, updated_at
+              match_confidence, match_notes, watch_progress_percent, watch_resume_seconds,
+              imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row["reconciled_id"] if "reconciled_id" in old_cols else "",
@@ -1081,6 +1111,8 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
                 row["takeout_row_hash"] if "takeout_row_hash" in old_cols else "",
                 row["match_confidence"] if "match_confidence" in old_cols else "",
                 row["match_notes"] if "match_notes" in old_cols else "",
+                row["watch_progress_percent"] if "watch_progress_percent" in old_cols else 0,
+                row["watch_resume_seconds"] if "watch_resume_seconds" in old_cols else 0,
                 row["imported_at"] if "imported_at" in old_cols else 0,
                 row["updated_at"] if "updated_at" in old_cols else 0,
             ),
@@ -2150,6 +2182,51 @@ def takeout_watch_date(watched_at: str) -> str:
     return ""
 
 
+def bounded_int(value: Any, minimum: int = 0, maximum: int = 100) -> int:
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    return max(minimum, min(maximum, number))
+
+
+def extract_watch_status_from_card(card: dict[str, Any], video_id: str) -> tuple[int, int]:
+    progress = 0
+    resume_seconds = 0
+    for node in walk(card):
+        if not isinstance(node, dict):
+            continue
+        resume = node.get("thumbnailOverlayResumePlaybackRenderer")
+        if isinstance(resume, dict) and not progress:
+            progress = bounded_int(resume.get("percentDurationWatched"))
+        progress_model = node.get("thumbnailOverlayProgressBarViewModel")
+        if isinstance(progress_model, dict) and not progress:
+            progress = bounded_int(progress_model.get("startPercent"))
+        endpoint = node.get("watchEndpoint")
+        if isinstance(endpoint, dict) and endpoint.get("videoId") == video_id and not resume_seconds:
+            start = endpoint.get("startTimeSeconds")
+            if isinstance(start, int) and start > 0:
+                resume_seconds = start
+    return progress, resume_seconds
+
+
+def find_video_card_watch_status(initial_data: dict[str, Any], video_id: str) -> tuple[int, int]:
+    for node in walk(initial_data):
+        if not isinstance(node, dict):
+            continue
+        renderer = node.get("videoRenderer")
+        if isinstance(renderer, dict) and renderer.get("videoId") == video_id:
+            progress, resume_seconds = extract_watch_status_from_card(renderer, video_id)
+            if progress or resume_seconds:
+                return progress, resume_seconds
+        lockup = node.get("lockupViewModel")
+        if isinstance(lockup, dict) and lockup.get("contentId") == video_id:
+            progress, resume_seconds = extract_watch_status_from_card(lockup, video_id)
+            if progress or resume_seconds:
+                return progress, resume_seconds
+    return 0, 0
+
+
 def parse_history_lockup(lockup: dict[str, Any], normalized_date: str) -> dict[str, Any] | None:
     video_id = lockup.get("contentId") if isinstance(lockup.get("contentId"), str) else ""
     if not video_id:
@@ -2169,6 +2246,7 @@ def parse_history_lockup(lockup: dict[str, Any], normalized_date: str) -> dict[s
     channel = rows[0][0] if rows and rows[0] else ""
     channel_url = ""
     url = ""
+    watch_progress_percent, watch_resume_seconds = extract_watch_status_from_card(lockup, video_id)
     for node in walk(lockup):
         if not isinstance(node, dict):
             continue
@@ -2178,6 +2256,8 @@ def parse_history_lockup(lockup: dict[str, Any], normalized_date: str) -> dict[s
             url = f"https://www.youtube.com/watch?v={video_id}"
             if isinstance(start, int) and start > 0:
                 url = f"{url}&t={start}s"
+                if not watch_resume_seconds:
+                    watch_resume_seconds = start
             break
         endpoint = node.get("reelWatchEndpoint")
         if isinstance(endpoint, dict) and endpoint.get("videoId") == video_id:
@@ -2192,6 +2272,8 @@ def parse_history_lockup(lockup: dict[str, Any], normalized_date: str) -> dict[s
         "channel": channel,
         "channel_url": channel_url,
         "watch_date": normalized_date,
+        "watch_progress_percent": watch_progress_percent,
+        "watch_resume_seconds": watch_resume_seconds,
     }
 
 
@@ -2462,6 +2544,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     channel_thumbnail_url = extract_channel_thumbnail_url(initial_data)
     channel_url = youtube_path_url(str(microformat.get("ownerProfileUrl") or "")) or extract_channel_url(initial_data)
     channel_id = extract_channel_id(initial_data, channel_url)
+    watch_progress_percent, watch_resume_seconds = find_video_card_watch_status(initial_data, video_id)
     status = str(playability.get("status") or "").strip()
     reason = text_from_runs(playability.get("reason")).strip()
     if reason and status and reason not in status:
@@ -2478,8 +2561,20 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         "upload_date": str(microformat.get("uploadDate") or microformat.get("publishDate") or ""),
         "thumbnail_url": thumbnail_url,
         "channel_thumbnail_url": channel_thumbnail_url,
+        "watch_progress_percent": str(watch_progress_percent),
+        "watch_resume_seconds": str(watch_resume_seconds),
         "yt_status": status or ("OK" if title else ""),
     }
+
+
+def fetch_video_card_watch_status(
+    opener: urllib.request.OpenerDirector,
+    video_id: str,
+) -> tuple[int, int]:
+    url = "https://www.youtube.com/results?" + urllib.parse.urlencode({"search_query": video_id})
+    page = request_text(opener, url)
+    initial_data = extract_json_assignment(page, "ytInitialData")
+    return find_video_card_watch_status(initial_data, video_id)
 
 
 def fetch_watch_metadata(
@@ -2490,6 +2585,15 @@ def fetch_watch_metadata(
     watch_url = f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}"
     page = request_text(opener, watch_url)
     metadata = extract_watch_metadata(page, video_id)
+    if not bounded_int(metadata.get("watch_progress_percent")) and not int(metadata.get("watch_resume_seconds") or 0):
+        try:
+            progress, resume_seconds = fetch_video_card_watch_status(opener, video_id)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            progress, resume_seconds = 0, 0
+        if progress:
+            metadata["watch_progress_percent"] = str(progress)
+        if resume_seconds:
+            metadata["watch_resume_seconds"] = str(resume_seconds)
     metadata["thumbnail_path"] = cache_video_thumbnail(
         opener,
         video_id,
@@ -3325,9 +3429,10 @@ def save_youtube_history_occurrences(
             """
             INSERT INTO youtube_history_occurrences(
               ordinal, video_id, title, url, channel_id, channel,
-              watch_date, observed_at, imported_at, updated_at
+              watch_date, watch_progress_percent, watch_resume_seconds,
+              observed_at, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(ordinal) DO UPDATE SET
               video_id=excluded.video_id,
               title=excluded.title,
@@ -3335,6 +3440,8 @@ def save_youtube_history_occurrences(
               channel_id=excluded.channel_id,
               channel=excluded.channel,
               watch_date=excluded.watch_date,
+              watch_progress_percent=excluded.watch_progress_percent,
+              watch_resume_seconds=excluded.watch_resume_seconds,
               observed_at=excluded.observed_at,
               updated_at=excluded.updated_at
             """,
@@ -3346,6 +3453,8 @@ def save_youtube_history_occurrences(
                 channel_id,
                 row.get("channel") or "",
                 row.get("watch_date") or "",
+                bounded_int(row.get("watch_progress_percent")),
+                max(0, int(row.get("watch_resume_seconds") or 0)),
                 observed_at,
                 now,
                 now,
@@ -3372,6 +3481,7 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
         ORDER BY ordinal
         """
     ).fetchall()
+    youtube_by_ordinal = {row["ordinal"]: row for row in youtube_rows}
     takeout_rows = conn.execute(
         """
         SELECT *
@@ -3410,6 +3520,13 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
     for takeout in takeout_rows:
         takeout_key = (takeout["history_key"], takeout["row_hash"])
         youtube_match = takeout_to_youtube.get(takeout_key)
+        youtube_progress = 0
+        youtube_resume = 0
+        if youtube_match:
+            youtube_row = youtube_by_ordinal.get(youtube_match)
+            if youtube_row:
+                youtube_progress = youtube_row["watch_progress_percent"] if "watch_progress_percent" in youtube_row.keys() else 0
+                youtube_resume = youtube_row["watch_resume_seconds"] if "watch_resume_seconds" in youtube_row.keys() else 0
         source_quality = "matched" if youtube_match else "takeout_exact"
         if youtube_match:
             matched += 1
@@ -3419,9 +3536,10 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
               reconciled_id, video_id, title, url, channel_id, channel,
               best_watch_time, watch_date, source_quality,
               youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
-              match_confidence, match_notes, imported_at, updated_at
+              match_confidence, match_notes, watch_progress_percent, watch_resume_seconds,
+              imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"takeout:{takeout['history_key']}:{takeout['row_hash']}",
@@ -3439,6 +3557,8 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 takeout["row_hash"],
                 "video_id_date" if youtube_match else "takeout_only",
                 "same video_id and watch_date" if youtube_match else "",
+                youtube_progress,
+                youtube_resume,
                 now,
                 now,
             ),
@@ -3459,9 +3579,10 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
               reconciled_id, video_id, title, url, channel_id, channel,
               best_watch_time, watch_date, source_quality,
                 youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
-                match_confidence, match_notes, imported_at, updated_at
+                match_confidence, match_notes, watch_progress_percent, watch_resume_seconds,
+                imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"youtube:{youtube['ordinal']}",
@@ -3477,6 +3598,8 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 youtube["ordinal"],
                 youtube_match_confidence,
                 youtube_match_notes,
+                youtube["watch_progress_percent"] if "watch_progress_percent" in youtube.keys() else 0,
+                youtube["watch_resume_seconds"] if "watch_resume_seconds" in youtube.keys() else 0,
                 youtube["imported_at"],
                 now,
             ),
@@ -4529,6 +4652,8 @@ class MetadataWorker:
                     "thumbnail_path": "",
                     "channel_thumbnail_url": "",
                     "channel_thumbnail_path": "",
+                    "watch_progress_percent": "0",
+                    "watch_resume_seconds": "0",
                     "yt_status": "",
                 }
                 try:
@@ -4565,9 +4690,10 @@ class MetadataWorker:
                             INSERT INTO video_metadata(
                               video_id, title, description, channel_id, duration_text, view_count,
                               upload_date, thumbnail_url, thumbnail_path,
+                              watch_progress_percent, watch_resume_seconds,
                               yt_status, fetch_status, fetch_error, fetched_at, updated_at
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(video_id) DO UPDATE SET
                               title=excluded.title,
                               description=excluded.description,
@@ -4577,6 +4703,8 @@ class MetadataWorker:
                               upload_date=excluded.upload_date,
                               thumbnail_url=excluded.thumbnail_url,
                               thumbnail_path=excluded.thumbnail_path,
+                              watch_progress_percent=excluded.watch_progress_percent,
+                              watch_resume_seconds=excluded.watch_resume_seconds,
                               yt_status=excluded.yt_status,
                               fetch_status=excluded.fetch_status,
                               fetch_error=excluded.fetch_error,
@@ -4593,6 +4721,8 @@ class MetadataWorker:
                                 metadata.get("upload_date", ""),
                                 metadata.get("thumbnail_url", ""),
                                 metadata.get("thumbnail_path", ""),
+                                bounded_int(metadata.get("watch_progress_percent")),
+                                max(0, int(metadata.get("watch_resume_seconds") or 0)),
                                 metadata.get("yt_status", ""),
                                 status,
                                 error,
@@ -5907,6 +6037,8 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                    COALESCE(NULLIF(vm.thumbnail_path, ''), r.thumbnail_path, '') AS metadata_thumbnail_path,
                    COALESCE(NULLIF(vmc.thumbnail_path, ''), NULLIF(rc.thumbnail_path, ''), NULLIF(vc.thumbnail_path, ''), '') AS metadata_channel_thumbnail_path,
                    COALESCE(NULLIF(vm.fetch_status, ''), r.search_status, '') AS metadata_fetch_status,
+                   COALESCE(NULLIF(vm.watch_progress_percent, 0), latest_history.watch_progress_percent, 0) AS watch_progress_percent,
+                   COALESCE(NULLIF(vm.watch_resume_seconds, 0), latest_history.watch_resume_seconds, 0) AS watch_resume_seconds,
                    COALESCE(r.status, '') AS recovered_status
             FROM playlist_video_reconciled v
             JOIN playlists p ON p.playlist_id = v.playlist_id
@@ -5916,6 +6048,14 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             LEFT JOIN channels vmc ON vmc.channel_id = vm.channel_id
             LEFT JOIN channels rc ON rc.channel_id = r.channel_id
             LEFT JOIN channels vc ON vc.channel_id = v.channel_id
+            LEFT JOIN (
+                SELECT hr.video_id,
+                       MAX(hr.watch_progress_percent) AS watch_progress_percent,
+                       MAX(hr.watch_resume_seconds) AS watch_resume_seconds
+                FROM history_reconciled hr
+                WHERE hr.video_id <> ''
+                GROUP BY hr.video_id
+            ) latest_history ON latest_history.video_id = v.video_id
             ORDER BY p.title COLLATE NOCASE, v.display_position
             """
         )
@@ -6087,6 +6227,8 @@ def history_search_data(
                    COALESCE(vm.duration_text, '') AS metadata_duration,
                    COALESCE(vm.thumbnail_path, '') AS metadata_thumbnail_path,
                    COALESCE(NULLIF(vmc.thumbnail_path, ''), NULLIF(hc.thumbnail_path, ''), '') AS metadata_channel_thumbnail_path,
+                   COALESCE(NULLIF(hr.watch_progress_percent, 0), vm.watch_progress_percent, 0) AS watch_progress_percent,
+                   COALESCE(NULLIF(hr.watch_resume_seconds, 0), vm.watch_resume_seconds, 0) AS watch_resume_seconds,
                    COALESCE(vm.fetch_status, '') AS metadata_fetch_status
             FROM history_reconciled hr
             LEFT JOIN video_metadata vm ON vm.video_id = hr.video_id
@@ -6174,7 +6316,9 @@ INDEX_HTML = """<!doctype html>
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
     .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
     .thumb-link { display: block; }
+    .thumb-wrap { position: relative; display: block; background: linear-gradient(135deg, #24424a, #d98948); }
     .thumb { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: linear-gradient(135deg, #24424a, #d98948); }
+    .watch-progress { position: absolute; left: 0; right: auto; bottom: 0; height: 4px; background: #ff0033; }
     .body { padding: 11px 12px 13px; }
     .title-row { display: flex; align-items: flex-start; gap: 8px; }
     .playlist-title { display: block; color: var(--ink); font-weight: 650; line-height: 1.25; text-decoration: none; overflow-wrap: anywhere; }
@@ -6188,6 +6332,7 @@ INDEX_HTML = """<!doctype html>
     .creator-link { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; }
     .creator-link:hover { color: var(--accent); text-decoration: underline; }
     .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
+    .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
     .badge { color: var(--warn); font-weight: 650; }
     .refresh { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
     .refresh:hover { background: var(--accent-soft); }
@@ -6362,6 +6507,36 @@ INDEX_HTML = """<!doctype html>
 
     function displayVideoDuration(video) {
       return video.metadata_duration || video.duration_text || '';
+    }
+
+    function watchProgressPercent(video) {
+      const value = Number(video.watch_progress_percent || 0);
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      return Math.max(1, Math.min(100, Math.round(value)));
+    }
+
+    function watchedLineHtml(video) {
+      const progress = watchProgressPercent(video);
+      return progress ? `<div class="watched-line">Watched ${progress}%</div>` : '';
+    }
+
+    function thumbnailWithProgress(path, video) {
+      const wrap = document.createElement('div');
+      wrap.className = 'thumb-wrap';
+      const img = document.createElement('img');
+      img.className = 'thumb';
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = `/${path}`;
+      wrap.append(img);
+      const progress = watchProgressPercent(video);
+      if (progress) {
+        const bar = document.createElement('div');
+        bar.className = 'watch-progress';
+        bar.style.width = `${progress}%`;
+        wrap.append(bar);
+      }
+      return wrap;
     }
 
     function sourceQualityLabel(video) {
@@ -6667,12 +6842,7 @@ INDEX_HTML = """<!doctype html>
       const article = document.createElement('article');
       article.className = 'card';
       if (video.metadata_thumbnail_path) {
-        const img = document.createElement('img');
-        img.className = 'thumb';
-        img.loading = 'lazy';
-        img.alt = '';
-        img.src = `/${video.metadata_thumbnail_path}`;
-        article.append(img);
+        article.append(thumbnailWithProgress(video.metadata_thumbnail_path, video));
       }
       const body = document.createElement('div');
       body.className = 'body';
@@ -6694,6 +6864,7 @@ INDEX_HTML = """<!doctype html>
           ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
           ${archivarixLinkHtml(video)}
         </div>
+        ${watchedLineHtml(video)}
         ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : ''}
       `;
       article.append(body);
@@ -6921,7 +7092,9 @@ HISTORY_HTML = """<!doctype html>
     .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
     .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
     .card.no-thumb .body { grid-column: 1 / -1; }
+    .thumb-wrap { position: relative; display: block; background: linear-gradient(135deg, #24424a, #d98948); }
     .thumb { display: block; width: 100%; height: 100%; min-height: 124px; aspect-ratio: 16 / 9; object-fit: cover; background: linear-gradient(135deg, #24424a, #d98948); }
+    .watch-progress { position: absolute; left: 0; right: auto; bottom: 0; height: 4px; background: #ff0033; }
     .body { padding: 11px 12px 13px; }
     .title { display: block; color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
     .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
@@ -6929,6 +7102,7 @@ HISTORY_HTML = """<!doctype html>
     .creator-link { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; }
     .creator-link:hover { color: var(--accent); text-decoration: underline; }
     .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
+    .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
     .badge { color: var(--warn); font-weight: 650; }
     .empty { color: var(--muted); padding: 36px 0; }
     @media (max-width: 720px) {
@@ -6938,6 +7112,7 @@ HISTORY_HTML = """<!doctype html>
       button { margin-top: 8px; height: 40px; }
       .pager { align-items: flex-start; flex-direction: column; }
       .card { grid-template-columns: 1fr; }
+      .thumb-wrap { height: auto; }
       .thumb { height: auto; min-height: 0; }
     }
   </style>
@@ -7004,16 +7179,41 @@ HISTORY_HTML = """<!doctype html>
         : `<span>${escapeHtml(name)}</span>`;
     }
 
+    function watchProgressPercent(row) {
+      const value = Number(row.watch_progress_percent || 0);
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      return Math.max(1, Math.min(100, Math.round(value)));
+    }
+
+    function watchedLineHtml(row) {
+      const progress = watchProgressPercent(row);
+      return progress ? `<div class="watched-line">Watched ${progress}%</div>` : '';
+    }
+
+    function thumbnailWithProgress(path, row) {
+      const wrap = document.createElement('div');
+      wrap.className = 'thumb-wrap';
+      const img = document.createElement('img');
+      img.className = 'thumb';
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = `/${path}`;
+      wrap.append(img);
+      const progress = watchProgressPercent(row);
+      if (progress) {
+        const bar = document.createElement('div');
+        bar.className = 'watch-progress';
+        bar.style.width = `${progress}%`;
+        wrap.append(bar);
+      }
+      return wrap;
+    }
+
     function watchCard(row) {
       const article = document.createElement('article');
       article.className = row.metadata_thumbnail_path ? 'card' : 'card no-thumb';
       if (row.metadata_thumbnail_path) {
-        const img = document.createElement('img');
-        img.className = 'thumb';
-        img.loading = 'lazy';
-        img.alt = '';
-        img.src = `/${row.metadata_thumbnail_path}`;
-        article.append(img);
+        article.append(thumbnailWithProgress(row.metadata_thumbnail_path, row));
       }
       const body = document.createElement('div');
       body.className = 'body';
@@ -7030,6 +7230,7 @@ HISTORY_HTML = """<!doctype html>
           ${row.video_id ? `<span>${escapeHtml(row.video_id)}</span>` : ''}
           ${row.metadata_fetch_status === 'error' ? '<span class="badge">metadata error</span>' : ''}
         </div>
+        ${watchedLineHtml(row)}
         ${row.metadata_description ? `<div class="description">${escapeHtml(row.metadata_description)}</div>` : ''}
       `;
       article.append(body);
