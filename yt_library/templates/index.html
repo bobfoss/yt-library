@@ -442,6 +442,19 @@
       hidden.innerHTML = `<span>Hidden videos</span><span class="count">${data.hiddenVideos.length}</span>`;
       hidden.addEventListener('click', () => setSelected('__hidden__'));
       groupsEl.appendChild(hidden);
+      const channels = document.createElement('button');
+      channels.className = 'group';
+      channels.dataset.key = '__channels__';
+      channels.innerHTML = `<span>Channels</span><span class="count">${(data.channels || []).length}</span>`;
+      channels.addEventListener('click', () => setSelected('__channels__'));
+      groupsEl.appendChild(channels);
+      const subscribedChannels = (data.channels || []).filter(isSubscribedChannel);
+      const subscribedChannelsButton = document.createElement('button');
+      subscribedChannelsButton.className = 'group';
+      subscribedChannelsButton.dataset.key = '__subscribed_channels__';
+      subscribedChannelsButton.innerHTML = `<span>Subscribed channels</span><span class="count">${subscribedChannels.length}</span>`;
+      subscribedChannelsButton.addEventListener('click', () => setSelected('__subscribed_channels__'));
+      groupsEl.appendChild(subscribedChannelsButton);
       const terminatedChannels = (data.channels || []).filter(channel => ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase()));
       const terminatedChannelsButton = document.createElement('button');
       terminatedChannelsButton.className = 'group';
@@ -548,6 +561,32 @@
         grid.replaceChildren(...rows.map(playlistVideoCardFor));
         empty.hidden = rows.length !== 0;
         empty.textContent = 'No liked videos have been captured yet.';
+        return;
+      }
+      if (selected === '__channels__') {
+        title.textContent = 'Channels';
+        const rows = (data.channels || []).filter(channel => {
+          const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        meta.textContent = `${rows.length} channels`;
+        grid.replaceChildren(...rows.map(channelCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No channels match.';
+        return;
+      }
+      if (selected === '__subscribed_channels__') {
+        title.textContent = 'Subscribed channels';
+        const rows = (data.channels || [])
+          .filter(isSubscribedChannel)
+          .filter(channel => {
+            const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`.toLowerCase();
+            return !query || haystack.includes(query);
+          });
+        meta.textContent = `${rows.length} channels`;
+        grid.replaceChildren(...rows.map(channelCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No subscribed channels match.';
         return;
       }
       if (selected === '__terminated_channels__') {
