@@ -70,7 +70,9 @@
     th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }
     th { color: var(--muted); font-weight: 600; }
     .queue-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 12px; }
-    .queue-panel { max-height: 340px; overflow: auto; }
+    .queue-panel { overflow: hidden; }
+    .queue-panel table { table-layout: fixed; }
+    .queue-scroll { max-height: 300px; overflow: auto; }
     .queue-title { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 8px; }
     .queue-title h2 { font-size: 16px; margin: 0; }
     .queue-title span { color: var(--muted); font-size: 13px; }
@@ -116,12 +118,16 @@
             <button id="stopMetadata" type="button">Stop metadata</button>
           </div>
           <div class="queue-grid">
-            <div class="panel queue-panel" id="metadataQueuePanel">
+            <div class="panel queue-panel">
               <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
               <table>
                 <thead><tr><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
+              </table>
+              <div class="queue-scroll" id="metadataQueuePanel">
+              <table>
                 <tbody id="metadataQueueRows"></tbody>
               </table>
+              </div>
             </div>
           </div>
         </div>
@@ -150,12 +156,16 @@
             <button id="refresh" type="button">Refresh status</button>
           </div>
           <div class="queue-grid">
-            <div class="panel queue-panel" id="playlistQueuePanel">
+            <div class="panel queue-panel">
               <div class="queue-title"><h2>Playlist queue</h2><span id="playlistQueueShown">0 shown</span></div>
               <table>
                 <thead><tr><th>Playlist</th><th>Status</th><th>Videos</th></tr></thead>
+              </table>
+              <div class="queue-scroll" id="playlistQueuePanel">
+              <table>
                 <tbody id="playlistQueueRows"></tbody>
               </table>
+              </div>
             </div>
           </div>
         </div>
@@ -179,12 +189,16 @@
             <button id="stopPlaceholders" type="button">Stop placeholder recovery</button>
           </div>
           <div class="queue-grid">
-            <div class="panel queue-panel" id="placeholderQueuePanel">
+            <div class="panel queue-panel">
               <div class="queue-title"><h2>Recovery queue</h2><span id="placeholderQueueShown">0 shown</span></div>
               <table>
                 <thead><tr><th>Video</th><th>Playlist</th><th>Previous</th></tr></thead>
+              </table>
+              <div class="queue-scroll" id="placeholderQueuePanel">
+              <table>
                 <tbody id="placeholderQueueRows"></tbody>
               </table>
+              </div>
             </div>
           </div>
         </div>
@@ -283,6 +297,7 @@
         shown: fields.playlistQueueShown,
         panel: fields.playlistQueuePanel,
         empty: 'No playlists queued.',
+        key: row => row.playlist_id,
         cells: [
           row => row.title || row.playlist_id,
           row => row.scan_status || 'unscanned',
@@ -298,6 +313,7 @@
         shown: fields.metadataQueueShown,
         panel: fields.metadataQueuePanel,
         empty: 'No metadata queued.',
+        key: row => `${row.metadata_source || ''}:${row.video_id || ''}:${row.channel_id || ''}`,
         cells: [
           row => row.metadata_source === 'channel' ? (row.channel_title || row.channel_id || row.video_id) : row.video_id,
           row => row.metadata_source || '',
@@ -313,6 +329,7 @@
         shown: fields.placeholderQueueShown,
         panel: fields.placeholderQueuePanel,
         empty: 'No deleted playlist videos queued.',
+        key: row => `${row.video_id || ''}:${row.playlist_id || ''}`,
         cells: [
           row => row.video_id,
           row => row.playlist_title || '',
@@ -428,13 +445,53 @@
     function hydrateQueueState(type, rows, total) {
       const state = queueStates[type];
       state.total = total;
-      if (state.rows.length <= QUEUE_BATCH_SIZE) {
-        state.rows = rows;
-        state.exhausted = rows.length >= total;
-      } else {
+      if (state.rows.length > QUEUE_BATCH_SIZE) {
         state.exhausted = state.rows.length >= total;
+        renderQueueState(state);
+        return;
       }
+      state.rows = rows;
+      state.exhausted = rows.length >= total;
       renderQueueState(state);
+    }
+
+    async function refreshLoadedQueue(type) {
+      const state = queueStates[type];
+      if (!state || state.loading || state.rows.length <= QUEUE_BATCH_SIZE) return;
+      const limit = Math.max(state.rows.length, QUEUE_BATCH_SIZE);
+      state.loading = true;
+      try {
+        const params = new URLSearchParams({
+          type,
+          offset: '0',
+          limit: String(limit),
+          include_total: '0',
+        });
+        const response = await fetch(`/api/admin/queue?${params}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`Queue refresh failed: ${response.status}`);
+        const payload = await response.json();
+        const rows = payload.rows || [];
+        const freshRowsByKey = new Map(rows.map(row => [state.key(row), row]));
+        state.rows = state.rows
+          .map(row => freshRowsByKey.get(state.key(row)) || row)
+          .filter(row => freshRowsByKey.has(state.key(row)));
+        if (state.rows.length < QUEUE_BATCH_SIZE) {
+          state.rows = rows.slice(0, QUEUE_BATCH_SIZE);
+        }
+        state.exhausted = state.total ? state.rows.length >= state.total : rows.length < limit;
+        renderQueueState(state);
+      } finally {
+        state.loading = false;
+      }
+    }
+
+    function refreshLoadedQueues() {
+      for (const type of Object.keys(queueStates)) {
+        refreshLoadedQueue(type).catch(error => {
+          const state = queueStates[type];
+          state.shown.textContent = `${state.rows.length}/${state.total} shown - ${error.message}`;
+        });
+      }
     }
 
     function resetQueueStates() {
@@ -514,6 +571,7 @@
         const response = await fetch('/api/admin/status', { cache: 'no-store' });
         if (!response.ok) throw new Error(`Status failed: ${response.status}`);
         render(await response.json());
+        refreshLoadedQueues();
       })();
       try {
         await statusRequest;

@@ -178,6 +178,9 @@ CREATE TABLE IF NOT EXISTS channels (
   archivarix_channel_id TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT '',
   status_reason TEXT NOT NULL DEFAULT '',
+  fetch_status TEXT NOT NULL DEFAULT '',
+  fetch_error TEXT NOT NULL DEFAULT '',
+  fetched_at INTEGER NOT NULL DEFAULT 0,
   source TEXT NOT NULL DEFAULT '',
   updated_at INTEGER NOT NULL DEFAULT 0
 );

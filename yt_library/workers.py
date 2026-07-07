@@ -165,6 +165,9 @@ class MetadataWorker:
                         archivarix_channel_id=metadata.get("archivarix_channel_id", ""),
                         status=metadata.get("channel_status", ""),
                         status_reason=metadata.get("channel_status_reason", ""),
+                        fetch_status=status if metadata_source == "channel" else "",
+                        fetch_error=error if metadata_source == "channel" else "",
+                        fetched_at=now if metadata_source == "channel" else 0,
                         source="metadata",
                         updated_at=now,
                     )
@@ -835,4 +838,3 @@ class PlaceholderRecoveryWorker:
 
 
 PLACEHOLDER_RECOVERY_WORKER = PlaceholderRecoveryWorker()
-

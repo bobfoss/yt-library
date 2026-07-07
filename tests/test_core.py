@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from datetime import date
 from pathlib import Path
@@ -123,6 +124,41 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("history_reconciled", tables)
         self.assertIn("metadata_worker_runs", tables)
         self.assertIn("reaction", columns)
+
+    def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
+        original_root = core.ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core.ROOT = Path(temp_dir)
+            try:
+                conn = core.connect(Path(temp_dir) / "library.sqlite3")
+                try:
+                    now = int(time.time())
+                    core.upsert_channel(
+                        conn,
+                        "UCvmGOqGlxOgpZDoszBbWxmA",
+                        title="Example Channel",
+                        thumbnail_path="",
+                        source="test",
+                        updated_at=now,
+                    )
+                    queued = core.metadata_queue_rows(conn, limit=10, stale_days=30)
+                    self.assertEqual([row["video_id"] for row in queued], ["UCvmGOqGlxOgpZDoszBbWxmA"])
+
+                    core.upsert_channel(
+                        conn,
+                        "UCvmGOqGlxOgpZDoszBbWxmA",
+                        title="Example Channel",
+                        thumbnail_path="",
+                        fetch_status="no_metadata",
+                        fetched_at=now,
+                        source="test",
+                        updated_at=now,
+                    )
+                    self.assertEqual(core.metadata_queue_rows(conn, limit=10, stale_days=30), [])
+                finally:
+                    conn.close()
+            finally:
+                core.ROOT = original_root
 
 
 if __name__ == "__main__":

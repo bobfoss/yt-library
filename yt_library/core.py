@@ -95,6 +95,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
             "subscribed": "INTEGER NOT NULL DEFAULT 0",
             "status": "TEXT NOT NULL DEFAULT ''",
             "status_reason": "TEXT NOT NULL DEFAULT ''",
+            "fetch_status": "TEXT NOT NULL DEFAULT ''",
+            "fetch_error": "TEXT NOT NULL DEFAULT ''",
+            "fetched_at": "INTEGER NOT NULL DEFAULT 0",
         },
     )
     ensure_columns(
@@ -222,6 +225,9 @@ def upsert_channel(
     archivarix_channel_id: str = "",
     status: str = "",
     status_reason: str = "",
+    fetch_status: str = "",
+    fetch_error: str = "",
+    fetched_at: int = 0,
     source: str = "",
     updated_at: int | None = None,
 ) -> str:
@@ -246,6 +252,9 @@ def upsert_channel(
                 archivarix_channel_id = ?,
                 status = ?,
                 status_reason = ?,
+                fetch_status = ?,
+                fetch_error = ?,
+                fetched_at = ?,
                 source = ?,
                 updated_at = ?
             WHERE channel_id = ?
@@ -260,6 +269,9 @@ def upsert_channel(
                 merge_channel_value(existing["archivarix_channel_id"], archivarix_channel_id),
                 merge_channel_value(existing["status"], status),
                 merge_channel_value(existing["status_reason"], status_reason),
+                merge_channel_value(existing["fetch_status"], fetch_status),
+                fetch_error if fetch_status else existing["fetch_error"],
+                fetched_at or existing["fetched_at"],
                 merge_channel_value(existing["source"], source),
                 now,
                 channel_id,
@@ -270,9 +282,10 @@ def upsert_channel(
             """
             INSERT INTO channels(
               channel_id, title, url, description, aliases, thumbnail_url, thumbnail_path,
-              archivarix_channel_id, status, status_reason, source, updated_at
+              archivarix_channel_id, status, status_reason, fetch_status, fetch_error,
+              fetched_at, source, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 channel_id,
@@ -285,6 +298,9 @@ def upsert_channel(
                 archivarix_channel_id,
                 status,
                 status_reason,
+                fetch_status,
+                fetch_error,
+                fetched_at,
                 source,
                 now,
             ),
@@ -360,6 +376,7 @@ def channel_backfill_needed(conn: sqlite3.Connection) -> bool:
 
 def ensure_channel_indexes(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_channels_title ON channels(title COLLATE NOCASE)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_channels_fetch ON channels(fetch_status, fetched_at)")
     indexes = [
         ("idx_snapshot_video_recovery_channel", "snapshot_video_recovery", "channel_id"),
         ("idx_video_metadata_channel", "video_metadata", "channel_id"),
@@ -3935,10 +3952,18 @@ def metadata_queue_rows(
     force: bool = False,
     stale_days: int = 30,
 ) -> list[sqlite3.Row]:
+    stale_before = int(time.time()) - max(stale_days, 0) * 86400
+    channel_retry_sql = f"""
+      (
+        COALESCE(ch.fetch_status, '') = 'error'
+        OR COALESCE(ch.fetched_at, 0) = 0
+        OR COALESCE(ch.fetched_at, 0) < {stale_before}
+      )
+    """
     if limit and not force:
         known_channel_count = int(
             conn.execute(
-                """
+                f"""
                 SELECT COUNT(*)
                 FROM channels ch
                 WHERE ch.channel_id <> ''
@@ -3947,12 +3972,13 @@ def metadata_queue_rows(
                     COALESCE(ch.url, '') = ''
                     OR COALESCE(ch.thumbnail_path, '') = ''
                   )
+                  AND {channel_retry_sql}
                 """
             ).fetchone()[0]
         )
         if offset < known_channel_count:
             rows = conn.execute(
-                """
+                f"""
                 SELECT ch.channel_id AS video_id,
                        ch.channel_id,
                        COALESCE(NULLIF(ch.title, ''), ch.channel_id) AS channel_title,
@@ -3966,6 +3992,7 @@ def metadata_queue_rows(
                     COALESCE(ch.url, '') = ''
                     OR COALESCE(ch.thumbnail_path, '') = ''
                   )
+                  AND {channel_retry_sql}
                 ORDER BY COALESCE(NULLIF(ch.title, ''), ch.channel_id) COLLATE NOCASE,
                          ch.channel_id
                 LIMIT ? OFFSET ?
@@ -3975,18 +4002,17 @@ def metadata_queue_rows(
             if len(rows) == limit or offset + len(rows) < known_channel_count:
                 return rows
 
-    stale_before = int(time.time()) - max(stale_days, 0) * 86400
     where = ["q.video_id <> ''"]
     params: list[Any] = []
     if not force:
         where.append(
-            """
+            f"""
             (
-              (q.source_priority IN (0, 1) AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted'))
+              (q.source_priority IN (0, 1) AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND {channel_retry_sql})
               OR (q.source_priority NOT IN (0, 1) AND vm.video_id IS NULL)
               OR vm.fetch_status = 'error'
-              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.url, '') = '')
-              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.thumbnail_path, '') = '')
+              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.url, '') = '' AND {channel_retry_sql})
+              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.thumbnail_path, '') = '' AND {channel_retry_sql})
               OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
             )
             """
@@ -4009,6 +4035,7 @@ def metadata_queue_rows(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
+            AND {channel_retry_sql}
           UNION ALL
           SELECT pv.video_id,
                  pv.channel_id,
@@ -4027,6 +4054,7 @@ def metadata_queue_rows(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
+            AND {channel_retry_sql}
           GROUP BY pv.video_id, pv.channel_id
           UNION ALL
           SELECT pvr.video_id,
@@ -4046,6 +4074,7 @@ def metadata_queue_rows(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
+            AND {channel_retry_sql}
           GROUP BY pvr.video_id, pvr.channel_id
           UNION ALL
           SELECT hr.video_id,
@@ -4063,6 +4092,7 @@ def metadata_queue_rows(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
+            AND {channel_retry_sql}
           GROUP BY hr.video_id, hr.channel_id
         ),
         known_channel_sources AS (
@@ -4080,6 +4110,7 @@ def metadata_queue_rows(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
+            AND {channel_retry_sql}
         ),
         discovered_channel_sources AS (
           SELECT ref.channel_id AS video_id,
@@ -4174,17 +4205,24 @@ def metadata_queue_count(
     stale_days: int = 30,
 ) -> int:
     stale_before = int(time.time()) - max(stale_days, 0) * 86400
+    channel_retry_sql = f"""
+      (
+        COALESCE(ch.fetch_status, '') = 'error'
+        OR COALESCE(ch.fetched_at, 0) = 0
+        OR COALESCE(ch.fetched_at, 0) < {stale_before}
+      )
+    """
     where = ["q.video_id <> ''"]
     params: list[Any] = []
     if not force:
         where.append(
-            """
+            f"""
             (
-              (q.source_priority IN (0, 1) AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted'))
+              (q.source_priority IN (0, 1) AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND {channel_retry_sql})
               OR (q.source_priority NOT IN (0, 1) AND vm.video_id IS NULL)
               OR vm.fetch_status = 'error'
-              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.url, '') = '')
-              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.thumbnail_path, '') = '')
+              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.url, '') = '' AND {channel_retry_sql})
+              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.thumbnail_path, '') = '' AND {channel_retry_sql})
               OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
             )
             """
@@ -4203,6 +4241,7 @@ def metadata_queue_count(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
+            AND {channel_retry_sql}
           UNION
           SELECT pv.video_id,
                  pv.channel_id
@@ -4214,6 +4253,7 @@ def metadata_queue_count(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
+            AND {channel_retry_sql}
           UNION
           SELECT pvr.video_id,
                  pvr.channel_id
@@ -4225,6 +4265,7 @@ def metadata_queue_count(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
+            AND {channel_retry_sql}
           UNION
           SELECT hr.video_id,
                  hr.channel_id
@@ -4236,6 +4277,7 @@ def metadata_queue_count(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
+            AND {channel_retry_sql}
         ),
         known_channel_sources AS (
           SELECT ch.channel_id AS video_id,
@@ -4246,6 +4288,7 @@ def metadata_queue_count(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
+            AND {channel_retry_sql}
         ),
         discovered_channel_sources AS (
           SELECT ref.channel_id AS video_id,
