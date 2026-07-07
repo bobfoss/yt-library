@@ -232,7 +232,6 @@ CREATE TABLE IF NOT EXISTS youtube_history_occurrences (
   url TEXT NOT NULL DEFAULT '',
   channel_id TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
-  channel_url TEXT NOT NULL DEFAULT '',
   watch_date TEXT NOT NULL DEFAULT '',
   observed_at TEXT NOT NULL DEFAULT '',
   imported_at INTEGER NOT NULL DEFAULT 0,
@@ -248,7 +247,6 @@ CREATE TABLE IF NOT EXISTS takeout_history_occurrences (
   url TEXT NOT NULL DEFAULT '',
   channel_id TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
-  channel_url TEXT NOT NULL DEFAULT '',
   watched_at_iso TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (history_key, row_hash)
 );
@@ -260,7 +258,6 @@ CREATE TABLE IF NOT EXISTS history_reconciled (
   url TEXT NOT NULL DEFAULT '',
   channel_id TEXT NOT NULL DEFAULT '',
   channel TEXT NOT NULL DEFAULT '',
-  channel_url TEXT NOT NULL DEFAULT '',
   best_watch_time TEXT NOT NULL DEFAULT '',
   watch_date TEXT NOT NULL DEFAULT '',
   source_quality TEXT NOT NULL DEFAULT '',
@@ -469,6 +466,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     ensure_channel_indexes(conn)
     if channel_backfill_needed(conn):
         backfill_channels(conn)
+    backfill_playlist_channel_ids_by_name(conn)
     drop_deprecated_channel_columns(conn)
     reconciled_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_video_reconciled").fetchone()["count"]
     raw_playlist_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_videos").fetchone()["count"]
@@ -491,6 +489,34 @@ def ensure_columns(
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+    )
+
+
+def table_row_count(conn: sqlite3.Connection, table: str) -> int:
+    if not table_exists(conn, table):
+        return 0
+    return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
+
+
+def begin_table_rebuild(conn: sqlite3.Connection, table: str) -> str:
+    old_table = f"{table}_old"
+    if table_exists(conn, old_table):
+        if table_row_count(conn, table) > table_row_count(conn, old_table):
+            conn.execute(f"DROP TABLE {old_table}")
+            conn.execute(f"ALTER TABLE {table} RENAME TO {old_table}")
+        else:
+            conn.execute(f"DROP TABLE {table}")
+    else:
+        conn.execute(f"ALTER TABLE {table} RENAME TO {old_table}")
+    return old_table
 
 
 def youtube_channel_id_from_url(value: str) -> str:
@@ -637,6 +663,7 @@ def channel_backfill_needed(conn: sqlite3.Connection) -> bool:
 
 
 def ensure_channel_indexes(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_channels_title ON channels(title COLLATE NOCASE)")
     indexes = [
         ("idx_snapshot_video_recovery_channel", "snapshot_video_recovery", "channel_id"),
         ("idx_video_metadata_channel", "video_metadata", "channel_id"),
@@ -650,6 +677,45 @@ def ensure_channel_indexes(conn: sqlite3.Connection) -> None:
     for index_name, table, column in indexes:
         if column in table_columns(conn, table):
             conn.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table}({column})")
+
+
+def backfill_playlist_channel_ids_by_name(conn: sqlite3.Connection) -> None:
+    for table in ("playlist_videos", "playlist_video_reconciled", "archivarix_candidates"):
+        cols = table_columns(conn, table)
+        if "channel_id" not in cols or "channel" not in cols:
+            continue
+        needs_backfill = conn.execute(
+            f"""
+            SELECT 1
+            FROM {table}
+            WHERE channel_id = ''
+              AND channel <> ''
+            LIMIT 1
+            """
+        ).fetchone()
+        if not needs_backfill:
+            continue
+        unique_channels: dict[str, str] = {}
+        ambiguous: set[str] = set()
+        for row in conn.execute("SELECT channel_id, title FROM channels WHERE title <> '' AND channel_id <> ''"):
+            key = row["title"].casefold()
+            if key in unique_channels and unique_channels[key] != row["channel_id"]:
+                ambiguous.add(key)
+            else:
+                unique_channels[key] = row["channel_id"]
+        for key in ambiguous:
+            unique_channels.pop(key, None)
+        for row in conn.execute(
+            f"""
+            SELECT rowid, channel
+            FROM {table}
+            WHERE channel_id = ''
+              AND channel <> ''
+            """
+        ).fetchall():
+            channel_id = unique_channels.get(row["channel"].casefold(), "")
+            if channel_id:
+                conn.execute(f"UPDATE {table} SET channel_id = ? WHERE rowid = ?", (channel_id, row["rowid"]))
 
 
 def drop_deprecated_channel_columns(conn: sqlite3.Connection) -> None:
@@ -794,7 +860,6 @@ def ensure_youtube_history_schema(conn: sqlite3.Connection) -> None:
         "url",
         "channel_id",
         "channel",
-        "channel_url",
         "watch_date",
         "observed_at",
         "imported_at",
@@ -807,7 +872,7 @@ def ensure_youtube_history_schema(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_youtube_history_occurrences_date ON youtube_history_occurrences(watch_date, video_id)")
         normalize_youtube_history_observed_at(conn)
         return
-    conn.execute("ALTER TABLE youtube_history_occurrences RENAME TO youtube_history_occurrences_old")
+    old_table = begin_table_rebuild(conn, "youtube_history_occurrences")
     conn.execute(
         """
         CREATE TABLE youtube_history_occurrences (
@@ -817,7 +882,6 @@ def ensure_youtube_history_schema(conn: sqlite3.Connection) -> None:
           url TEXT NOT NULL DEFAULT '',
           channel_id TEXT NOT NULL DEFAULT '',
           channel TEXT NOT NULL DEFAULT '',
-          channel_url TEXT NOT NULL DEFAULT '',
           watch_date TEXT NOT NULL DEFAULT '',
           observed_at TEXT NOT NULL DEFAULT '',
           imported_at INTEGER NOT NULL DEFAULT 0,
@@ -826,36 +890,44 @@ def ensure_youtube_history_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    old_cols = {row["name"] for row in conn.execute("PRAGMA table_info(youtube_history_occurrences_old)")}
+    old_cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({old_table})")}
     if old_cols:
-        for row in conn.execute("SELECT * FROM youtube_history_occurrences_old").fetchall():
+        for row in conn.execute(f"SELECT * FROM {old_table}").fetchall():
             imported_at = row["imported_at"] if "imported_at" in old_cols else 0
             observed_at = row["observed_at"] if "observed_at" in old_cols else ""
             if not is_iso_datetime(observed_at):
                 observed_at = iso_from_unix(imported_at) or current_iso_timestamp()
+            channel_url = row["channel_url"] if "channel_url" in old_cols else ""
+            channel_id = row["channel_id"] if "channel_id" in old_cols else ""
+            channel_id = upsert_channel(
+                conn,
+                channel_id or youtube_channel_id_from_url(channel_url),
+                title=row["channel"] if "channel" in old_cols else "",
+                url=channel_url,
+                source="youtube_history",
+            )
             conn.execute(
                 """
                 INSERT OR IGNORE INTO youtube_history_occurrences(
-                  ordinal, video_id, title, url, channel_id, channel, channel_url,
+                  ordinal, video_id, title, url, channel_id, channel,
                   watch_date, observed_at, imported_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["ordinal"] if "ordinal" in old_cols else 0,
                     row["video_id"] if "video_id" in old_cols else "",
                     row["title"] if "title" in old_cols else "",
                     row["url"] if "url" in old_cols else "",
-                    row["channel_id"] if "channel_id" in old_cols else youtube_channel_id_from_url(row["channel_url"] if "channel_url" in old_cols else ""),
+                    channel_id,
                     row["channel"] if "channel" in old_cols else "",
-                    row["channel_url"] if "channel_url" in old_cols else "",
                     row["watch_date"] if "watch_date" in old_cols else "",
                     observed_at,
                     imported_at,
                     row["updated_at"] if "updated_at" in old_cols else imported_at,
                 ),
             )
-    conn.execute("DROP TABLE youtube_history_occurrences_old")
+    conn.execute(f"DROP TABLE {old_table}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_youtube_history_occurrences_video ON youtube_history_occurrences(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_youtube_history_occurrences_search ON youtube_history_occurrences(title, channel, ordinal)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_youtube_history_occurrences_date ON youtube_history_occurrences(watch_date, video_id)")
@@ -876,7 +948,6 @@ def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
         "url",
         "channel_id",
         "channel",
-        "channel_url",
         "watched_at_iso",
     }
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(takeout_history_occurrences)")}
@@ -888,7 +959,7 @@ def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_time ON takeout_history_occurrences(watched_at_iso, video_id)"
         )
         return
-    conn.execute("ALTER TABLE takeout_history_occurrences RENAME TO takeout_history_occurrences_old")
+    old_table = begin_table_rebuild(conn, "takeout_history_occurrences")
     conn.execute(
         """
         CREATE TABLE takeout_history_occurrences (
@@ -899,13 +970,41 @@ def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
           url TEXT NOT NULL DEFAULT '',
           channel_id TEXT NOT NULL DEFAULT '',
           channel TEXT NOT NULL DEFAULT '',
-          channel_url TEXT NOT NULL DEFAULT '',
           watched_at_iso TEXT NOT NULL DEFAULT '',
           PRIMARY KEY (history_key, row_hash)
         )
         """
     )
-    conn.execute("DROP TABLE takeout_history_occurrences_old")
+    old_cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({old_table})")}
+    for row in conn.execute(f"SELECT * FROM {old_table}").fetchall():
+        channel_url = row["channel_url"] if "channel_url" in old_cols else ""
+        channel_id = row["channel_id"] if "channel_id" in old_cols else ""
+        channel_id = upsert_channel(
+            conn,
+            channel_id or youtube_channel_id_from_url(channel_url),
+            title=row["channel"] if "channel" in old_cols else "",
+            url=channel_url,
+            source="takeout_history",
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO takeout_history_occurrences(
+              history_key, row_hash, video_id, title, url, channel_id, channel, watched_at_iso
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["history_key"] if "history_key" in old_cols else "",
+                row["row_hash"] if "row_hash" in old_cols else "",
+                row["video_id"] if "video_id" in old_cols else "",
+                row["title"] if "title" in old_cols else "",
+                row["url"] if "url" in old_cols else "",
+                channel_id,
+                row["channel"] if "channel" in old_cols else "",
+                row["watched_at_iso"] if "watched_at_iso" in old_cols else "",
+            ),
+        )
+    conn.execute(f"DROP TABLE {old_table}")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_video ON takeout_history_occurrences(video_id)"
     )
@@ -916,12 +1015,12 @@ def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
 
 def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(history_reconciled)")}
-    if "takeout_position" not in existing and "takeout_row_hash" in existing:
+    if "takeout_position" not in existing and "takeout_row_hash" in existing and "channel_url" not in existing:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_channel ON history_reconciled(channel_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, source_quality)")
         return
-    conn.execute("ALTER TABLE history_reconciled RENAME TO history_reconciled_old")
+    old_table = begin_table_rebuild(conn, "history_reconciled")
     conn.execute(
         """
         CREATE TABLE history_reconciled (
@@ -931,7 +1030,6 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
           url TEXT NOT NULL DEFAULT '',
           channel_id TEXT NOT NULL DEFAULT '',
           channel TEXT NOT NULL DEFAULT '',
-          channel_url TEXT NOT NULL DEFAULT '',
           best_watch_time TEXT NOT NULL DEFAULT '',
           watch_date TEXT NOT NULL DEFAULT '',
           source_quality TEXT NOT NULL DEFAULT '',
@@ -946,7 +1044,48 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.execute("DROP TABLE history_reconciled_old")
+    old_cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({old_table})")}
+    for row in conn.execute(f"SELECT * FROM {old_table}").fetchall():
+        channel_url = row["channel_url"] if "channel_url" in old_cols else ""
+        channel_id = row["channel_id"] if "channel_id" in old_cols else ""
+        channel_id = upsert_channel(
+            conn,
+            channel_id or youtube_channel_id_from_url(channel_url),
+            title=row["channel"] if "channel" in old_cols else "",
+            url=channel_url,
+            source="history_reconciled",
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO history_reconciled(
+              reconciled_id, video_id, title, url, channel_id, channel,
+              best_watch_time, watch_date, source_quality,
+              youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
+              match_confidence, match_notes, imported_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["reconciled_id"] if "reconciled_id" in old_cols else "",
+                row["video_id"] if "video_id" in old_cols else "",
+                row["title"] if "title" in old_cols else "",
+                row["url"] if "url" in old_cols else "",
+                channel_id,
+                row["channel"] if "channel" in old_cols else "",
+                row["best_watch_time"] if "best_watch_time" in old_cols else "",
+                row["watch_date"] if "watch_date" in old_cols else "",
+                row["source_quality"] if "source_quality" in old_cols else "",
+                row["youtube_history_key"] if "youtube_history_key" in old_cols else "",
+                row["youtube_ordinal"] if "youtube_ordinal" in old_cols else 0,
+                row["takeout_history_key"] if "takeout_history_key" in old_cols else "",
+                row["takeout_row_hash"] if "takeout_row_hash" in old_cols else "",
+                row["match_confidence"] if "match_confidence" in old_cols else "",
+                row["match_notes"] if "match_notes" in old_cols else "",
+                row["imported_at"] if "imported_at" in old_cols else 0,
+                row["updated_at"] if "updated_at" in old_cols else 0,
+            ),
+        )
+    conn.execute(f"DROP TABLE {old_table}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_channel ON history_reconciled(channel_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, source_quality)")
@@ -2166,6 +2305,13 @@ def extract_channel_thumbnail_url(initial_data: dict[str, Any]) -> str:
     for node in walk(initial_data):
         if not isinstance(node, dict):
             continue
+        avatar = node.get("avatarViewModel")
+        if isinstance(avatar, dict):
+            image = avatar.get("image")
+            if isinstance(image, dict):
+                url = pick_thumbnail(image.get("sources", []))
+                if url:
+                    return url
         for key in ("videoOwnerRenderer", "channelThumbnailWithLinkRenderer"):
             renderer = node.get(key)
             if not isinstance(renderer, dict):
@@ -3125,17 +3271,16 @@ def save_youtube_history_occurrences(
         conn.execute(
             """
             INSERT INTO youtube_history_occurrences(
-              ordinal, video_id, title, url, channel_id, channel, channel_url,
+              ordinal, video_id, title, url, channel_id, channel,
               watch_date, observed_at, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(ordinal) DO UPDATE SET
               video_id=excluded.video_id,
               title=excluded.title,
               url=excluded.url,
               channel_id=excluded.channel_id,
               channel=excluded.channel,
-              channel_url=excluded.channel_url,
               watch_date=excluded.watch_date,
               observed_at=excluded.observed_at,
               updated_at=excluded.updated_at
@@ -3147,7 +3292,6 @@ def save_youtube_history_occurrences(
                 row.get("url") or f"https://www.youtube.com/watch?v={video_id}",
                 channel_id,
                 row.get("channel") or "",
-                channel_url,
                 row.get("watch_date") or "",
                 observed_at,
                 now,
@@ -3219,12 +3363,12 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
         conn.execute(
             """
             INSERT INTO history_reconciled(
-              reconciled_id, video_id, title, url, channel_id, channel, channel_url,
+              reconciled_id, video_id, title, url, channel_id, channel,
               best_watch_time, watch_date, source_quality,
               youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
               match_confidence, match_notes, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"takeout:{takeout['history_key']}:{takeout['row_hash']}",
@@ -3233,7 +3377,6 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 takeout["url"],
                 takeout["channel_id"],
                 takeout["channel"],
-                takeout["channel_url"],
                 takeout["watched_at_iso"],
                 takeout["watched_at_iso"][:10],
                 source_quality,
@@ -3260,12 +3403,12 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
         conn.execute(
             """
             INSERT INTO history_reconciled(
-              reconciled_id, video_id, title, url, channel_id, channel, channel_url,
+              reconciled_id, video_id, title, url, channel_id, channel,
               best_watch_time, watch_date, source_quality,
                 youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
                 match_confidence, match_notes, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)
             """,
             (
                 f"youtube:{youtube['ordinal']}",
@@ -3274,7 +3417,6 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 youtube["url"],
                 youtube["channel_id"],
                 youtube["channel"],
-                youtube["channel_url"],
                 youtube_watch_time,
                 youtube["watch_date"],
                 youtube_source_quality,
@@ -3644,6 +3786,7 @@ def metadata_queue_rows(
               vm.video_id IS NULL
               OR vm.fetch_status = 'error'
               OR (vm.channel_id <> '' AND COALESCE(ch.url, '') = '')
+              OR (vm.channel_id <> '' AND COALESCE(ch.thumbnail_path, '') = '')
               OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
             )
             """
@@ -3651,8 +3794,23 @@ def metadata_queue_rows(
         params.append(stale_before)
     sql = f"""
         WITH queue_sources AS (
-          SELECT pv.video_id,
+          SELECT vm.video_id,
                  0 AS source_priority,
+                 0 AS playlist_count,
+                 COALESCE(NULLIF(vm.title, ''), vm.video_id) AS current_title,
+                 0 AS playlist_sort,
+                 '' AS history_sort
+          FROM video_metadata vm
+          LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
+          WHERE vm.video_id <> ''
+            AND vm.channel_id <> ''
+            AND (
+              COALESCE(ch.url, '') = ''
+              OR COALESCE(ch.thumbnail_path, '') = ''
+            )
+          UNION ALL
+          SELECT pv.video_id,
+                 1 AS source_priority,
                  COUNT(DISTINCT pv.playlist_id) AS playlist_count,
                  MIN(pv.title) AS current_title,
                  MAX(MAX(COALESCE(ps.scanned_at, 0), COALESCE(p.updated_at, 0), COALESCE(pv.updated_at, 0))) AS playlist_sort,
@@ -3664,7 +3822,7 @@ def metadata_queue_rows(
           GROUP BY pv.video_id
           UNION ALL
           SELECT hr.video_id,
-                 1 AS source_priority,
+                 2 AS source_priority,
                  0 AS playlist_count,
                  MIN(hr.title) AS current_title,
                  0 AS playlist_sort,
@@ -3686,14 +3844,18 @@ def metadata_queue_rows(
         SELECT q.video_id,
                q.playlist_count,
                q.current_title,
-               CASE WHEN q.source_priority = 0 THEN 'playlist' ELSE 'history' END AS metadata_source
+               CASE
+                 WHEN q.source_priority = 0 THEN 'channel'
+                 WHEN q.source_priority = 1 THEN 'playlist'
+                 ELSE 'history'
+               END AS metadata_source
         FROM q
         LEFT JOIN video_metadata vm ON vm.video_id = q.video_id
         LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
         WHERE {" AND ".join(where)}
         ORDER BY q.source_priority,
-                 CASE WHEN q.source_priority = 0 THEN q.playlist_sort ELSE 0 END DESC,
-                 CASE WHEN q.source_priority = 1 THEN q.history_sort ELSE '' END DESC,
+                 CASE WHEN q.source_priority = 1 THEN q.playlist_sort ELSE 0 END DESC,
+                 CASE WHEN q.source_priority = 2 THEN q.history_sort ELSE '' END DESC,
                  COALESCE(vm.fetched_at, 0),
                  q.video_id
     """
@@ -3718,6 +3880,7 @@ def metadata_queue_count(
               vm.video_id IS NULL
               OR vm.fetch_status = 'error'
               OR (vm.channel_id <> '' AND COALESCE(ch.url, '') = '')
+              OR (vm.channel_id <> '' AND COALESCE(ch.thumbnail_path, '') = '')
               OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
             )
             """
@@ -3726,6 +3889,16 @@ def metadata_queue_count(
     row = conn.execute(
         f"""
         WITH q AS (
+          SELECT vm.video_id
+          FROM video_metadata vm
+          LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
+          WHERE vm.video_id <> ''
+            AND vm.channel_id <> ''
+            AND (
+              COALESCE(ch.url, '') = ''
+              OR COALESCE(ch.thumbnail_path, '') = ''
+            )
+          UNION
           SELECT video_id
           FROM playlist_videos
           WHERE video_id <> ''
@@ -3806,6 +3979,18 @@ def admin_status(
         metadata_queue_count_value = metadata_queue_count(conn, force=False, stale_days=30)
         playlist_queue_count = len(playlist_scan_queue_rows(conn, force=False, stale_days=7))
         placeholder_recovery_queue_count = playlist_placeholder_recovery_count(conn, force=False)
+        playlist_queue_rows = [
+            dict(row)
+            for row in playlist_scan_queue_rows(conn, limit=20, force=False, stale_days=7)
+        ]
+        metadata_queue_preview_rows = [
+            dict(row)
+            for row in metadata_queue_rows(conn, limit=20, force=False, stale_days=30)
+        ]
+        placeholder_recovery_queue_rows = [
+            dict(row)
+            for row in playlist_placeholder_recovery_rows(conn, limit=20, force=False)
+        ]
         latest_metadata_run = conn.execute(
             """
             SELECT *
@@ -3898,6 +4083,9 @@ def admin_status(
             "metadataQueueCount": metadata_queue_count_value,
         "playlistScanQueueCount": playlist_queue_count,
         "placeholderRecoveryQueueCount": placeholder_recovery_queue_count,
+        "playlistScanQueue": playlist_queue_rows,
+        "metadataQueue": metadata_queue_preview_rows,
+        "placeholderRecoveryQueue": placeholder_recovery_queue_rows,
         "latestRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestMetadataRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestPlaylistScanRun": dict(latest_playlist_run) if latest_playlist_run else None,
@@ -5276,9 +5464,9 @@ def import_history(args: argparse.Namespace) -> None:
                     """
                     INSERT INTO takeout_history_occurrences(
                       history_key, row_hash, video_id, title, url, channel_id, channel,
-                      channel_url, watched_at_iso
+                      watched_at_iso
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         history_key,
@@ -5288,7 +5476,6 @@ def import_history(args: argparse.Namespace) -> None:
                         row["url"],
                         channel_id,
                         row["channel"],
-                        row["channel_url"],
                         watched_at_iso,
                     ),
                 )
@@ -5467,7 +5654,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                    COALESCE(NULLIF(vm.duration_text, ''), r.duration_text, '') AS metadata_duration,
                    COALESCE(NULLIF(vm.upload_date, ''), r.upload_date, '') AS metadata_upload_date,
                    COALESCE(NULLIF(vm.thumbnail_path, ''), r.thumbnail_path, '') AS metadata_thumbnail_path,
-                   COALESCE(NULLIF(vmc.thumbnail_path, ''), NULLIF(rc.thumbnail_path, ''), '') AS metadata_channel_thumbnail_path,
+                   COALESCE(NULLIF(vmc.thumbnail_path, ''), NULLIF(rc.thumbnail_path, ''), NULLIF(vc.thumbnail_path, ''), '') AS metadata_channel_thumbnail_path,
                    COALESCE(NULLIF(vm.fetch_status, ''), r.search_status, '') AS metadata_fetch_status,
                    COALESCE(r.status, '') AS recovered_status
             FROM playlist_video_reconciled v
@@ -5632,7 +5819,6 @@ def history_search_data(
                    hr.title,
                    hr.url,
                    hr.channel,
-                   hr.channel_url,
                    hr.best_watch_time AS watched_at,
                    hr.watch_date,
                    hr.source_quality,
@@ -5646,7 +5832,7 @@ def history_search_data(
                    COALESCE(vm.title, '') AS metadata_title,
                    COALESCE(vm.description, '') AS metadata_description,
                    COALESCE(NULLIF(vmc.title, ''), NULLIF(hc.title, ''), hr.channel, '') AS metadata_channel,
-                   COALESCE(NULLIF(vmc.url, ''), NULLIF(hc.url, ''), hr.channel_url, '') AS metadata_channel_url,
+                   COALESCE(NULLIF(vmc.url, ''), NULLIF(hc.url, ''), '') AS metadata_channel_url,
                    COALESCE(vm.duration_text, '') AS metadata_duration,
                    COALESCE(vm.thumbnail_path, '') AS metadata_thumbnail_path,
                    COALESCE(NULLIF(vmc.thumbnail_path, ''), NULLIF(hc.thumbnail_path, ''), '') AS metadata_channel_thumbnail_path,
@@ -6582,7 +6768,7 @@ HISTORY_HTML = """<!doctype html>
       body.className = 'body';
       const watchUrl = row.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(row.video_id)}` : row.url;
       const channelName = row.metadata_channel || row.channel || '';
-      const channelUrl = row.metadata_channel_url || row.channel_url || '';
+      const channelUrl = row.metadata_channel_url || '';
       body.innerHTML = `
         <a class="title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayTitle(row))}</a>
         <div class="details">
@@ -6707,7 +6893,7 @@ ADMIN_HTML = """<!doctype html>
     }
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); }
-    main { max-width: 1180px; margin: 0 auto; padding: 24px; }
+    main { width: 100%; margin: 0 auto; padding: 24px; }
     header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
     h1 { font-size: 28px; margin: 0; }
     a { color: var(--accent); text-decoration: none; }
@@ -6731,6 +6917,11 @@ ADMIN_HTML = """<!doctype html>
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }
     th { color: var(--muted); font-weight: 600; }
+    .queue-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .queue-panel { max-height: 340px; overflow: auto; }
+    .queue-title { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 8px; }
+    .queue-title h2 { font-size: 16px; margin: 0; }
+    .queue-title span { color: var(--muted); font-size: 13px; }
     .time-col { width: 150px; }
     .level-col { width: 110px; }
     .video-col { width: 150px; }
@@ -6774,7 +6965,7 @@ ADMIN_HTML = """<!doctype html>
         <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
         <label class="checkbox"><input id="force" type="checkbox">Refresh already fetched</label>
         <button id="scanPlaylists" class="primary" type="button">Scan playlists</button>
-        <button id="fetchMetadata" class="primary" type="button">Fetch video metadata</button>
+        <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
         <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
         <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
         <button id="importTakeoutHistory" type="button">Import Takeout history</button>
@@ -6794,6 +6985,30 @@ ADMIN_HTML = """<!doctype html>
     </section>
 
     <section class="grid" id="metadataCounts"></section>
+
+    <section class="queue-grid">
+      <div class="panel queue-panel">
+        <div class="queue-title"><h2>Playlist queue</h2><span id="playlistQueueShown">0 shown</span></div>
+        <table>
+          <thead><tr><th>Playlist</th><th>Status</th><th>Videos</th></tr></thead>
+          <tbody id="playlistQueueRows"></tbody>
+        </table>
+      </div>
+      <div class="panel queue-panel">
+        <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
+        <table>
+          <thead><tr><th>Video</th><th>Source</th><th>Title</th></tr></thead>
+          <tbody id="metadataQueueRows"></tbody>
+        </table>
+      </div>
+      <div class="panel queue-panel">
+        <div class="queue-title"><h2>Recovery queue</h2><span id="placeholderQueueShown">0 shown</span></div>
+        <table>
+          <thead><tr><th>Video</th><th>Playlist</th><th>Previous</th></tr></thead>
+          <tbody id="placeholderQueueRows"></tbody>
+        </table>
+      </div>
+    </section>
 
     <section class="panel logs">
       <table>
@@ -6837,6 +7052,12 @@ ADMIN_HTML = """<!doctype html>
       metadataRunStatus: document.getElementById('metadataRunStatus'),
       liveHistoryRunStatus: document.getElementById('liveHistoryRunStatus'),
       placeholderRunStatus: document.getElementById('placeholderRunStatus'),
+      playlistQueueRows: document.getElementById('playlistQueueRows'),
+      metadataQueueRows: document.getElementById('metadataQueueRows'),
+      placeholderQueueRows: document.getElementById('placeholderQueueRows'),
+      playlistQueueShown: document.getElementById('playlistQueueShown'),
+      metadataQueueShown: document.getElementById('metadataQueueShown'),
+      placeholderQueueShown: document.getElementById('placeholderQueueShown'),
     };
 
     function escapeHtml(value) {
@@ -6891,6 +7112,38 @@ ADMIN_HTML = """<!doctype html>
         div.innerHTML = `<div class="metric">${escapeHtml(row.fetch_status || 'blank')}</div><div class="value">${row.count}</div>`;
         return div;
       }));
+
+      function renderQueue(tbody, rows, cells, emptyMessage) {
+        if (!rows.length) {
+          tbody.innerHTML = `<tr><td colspan="${cells.length}" class="message">${escapeHtml(emptyMessage)}</td></tr>`;
+          return;
+        }
+        tbody.innerHTML = rows.map(row => `
+          <tr>${cells.map(cell => `<td class="message">${escapeHtml(cell(row))}</td>`).join('')}</tr>
+        `).join('');
+      }
+
+      const playlistQueue = data.playlistScanQueue || [];
+      const metadataQueue = data.metadataQueue || [];
+      const placeholderQueue = data.placeholderRecoveryQueue || [];
+      fields.playlistQueueShown.textContent = `${playlistQueue.length} shown`;
+      fields.metadataQueueShown.textContent = `${metadataQueue.length} shown`;
+      fields.placeholderQueueShown.textContent = `${placeholderQueue.length} shown`;
+      renderQueue(fields.playlistQueueRows, playlistQueue, [
+        row => row.title || row.playlist_id,
+        row => row.scan_status || 'unscanned',
+        row => `${row.video_count || 0}/${row.video_count_text || '?'}`
+      ], 'No playlists queued.');
+      renderQueue(fields.metadataQueueRows, metadataQueue, [
+        row => row.video_id,
+        row => row.metadata_source || '',
+        row => row.current_title || ''
+      ], 'No metadata queued.');
+      renderQueue(fields.placeholderQueueRows, placeholderQueue, [
+        row => row.video_id,
+        row => row.playlist_title || '',
+        row => row.previous_status || ''
+      ], 'No deleted playlist videos queued.');
 
       const logs = [
         ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
