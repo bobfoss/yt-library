@@ -94,6 +94,29 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(core.extract_reaction_from_initial_data(disliked), "D")
         self.assertEqual(core.extract_reaction_from_initial_data({"isToggled": False}), "")
 
+    def test_extract_channel_handle_aliases_from_browse_endpoints(self) -> None:
+        initial_data = {
+            "tabs": [
+                {
+                    "tabRenderer": {
+                        "endpoint": {
+                            "commandMetadata": {
+                                "webCommandMetadata": {
+                                    "url": "/@DJICONmusic/featured",
+                                },
+                            },
+                            "browseEndpoint": {
+                                "browseId": "UCYrXHY9MvPNpoa3uSGatOrA",
+                                "canonicalBaseUrl": "/@DJICONmusic",
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+
+        self.assertEqual(core.extract_channel_handle_aliases(initial_data), "@DJICONmusic")
+
 
 class SchemaTests(unittest.TestCase):
     def test_connect_bootstraps_expected_tables(self) -> None:

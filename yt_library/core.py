@@ -2269,6 +2269,31 @@ def endpoint_channel_url(endpoint: dict[str, Any]) -> str:
     return ""
 
 
+def extract_channel_handle_aliases(initial_data: dict[str, Any]) -> str:
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for node in walk(initial_data):
+        if not isinstance(node, dict):
+            continue
+        candidates: list[str] = []
+        metadata = node.get("webCommandMetadata")
+        if isinstance(metadata, dict):
+            candidates.append(str(metadata.get("url") or ""))
+        browse = node.get("browseEndpoint")
+        if isinstance(browse, dict):
+            candidates.append(str(browse.get("canonicalBaseUrl") or ""))
+        for value in candidates:
+            found = re.search(r"(?:^|/)@([A-Za-z0-9._-]+)(?:$|[/?#])", value)
+            if not found:
+                continue
+            alias = f"@{found.group(1)}"
+            key = alias.casefold()
+            if key not in seen:
+                seen.add(key)
+                aliases.append(alias)
+    return ", ".join(aliases)
+
+
 def extract_channel_url(initial_data: dict[str, Any]) -> str:
     for node in walk(initial_data):
         if not isinstance(node, dict):
@@ -2350,7 +2375,7 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
         "channel": title,
         "channel_url": channel_url,
         "channel_description": description,
-        "channel_aliases": "",
+        "channel_aliases": extract_channel_handle_aliases(initial_data),
         "channel_thumbnail_url": absolute_url(thumbnail_url),
         "channel_status": status,
         "channel_status_reason": status_reason,
@@ -2375,7 +2400,7 @@ def channel_renderer_metadata(renderer: dict[str, Any]) -> dict[str, str]:
         "channel": text_from_runs(renderer.get("title")).strip(),
         "channel_url": channel_url,
         "channel_description": text_from_runs(renderer.get("description")).strip(),
-        "channel_aliases": "",
+        "channel_aliases": extract_channel_handle_aliases(renderer),
         "channel_thumbnail_url": absolute_url(thumbnail_url),
         "channel_status": "",
         "channel_status_reason": "",
