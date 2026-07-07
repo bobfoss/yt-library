@@ -365,6 +365,7 @@
       const filters = activeSearchFilters();
       const results = [];
       const seenVideoKeys = new Set();
+      const seenPlaylistVideoKeys = new Set();
       if (filters.has('playlists')) {
         for (const playlist of data.playlists) {
           const haystack = `${playlist.title} ${playlist.owner} ${playlist.description} ${playlist.playlist_id}`;
@@ -393,6 +394,7 @@
             const key = `${video.playlist_id}:${video.position}:${video.video_id}`;
             if (!seenVideoKeys.has(key)) {
               seenVideoKeys.add(key);
+              seenPlaylistVideoKeys.add(`${video.playlist_id}:${video.video_id}`);
               results.push({ kind: 'video', score: titleHit ? 1 : 3, item: video, matchedDescription: descriptionHit && !titleHit });
             }
           }
@@ -400,6 +402,7 @@
       }
       if (filters.has('hidden')) {
         for (const video of data.snapshotMissing || []) {
+          if (seenPlaylistVideoKeys.has(`${video.playlist_id}:${video.video_id}`)) continue;
           const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.recovered_title} ${video.recovered_description} ${video.recovered_channel} ${video.recovered_status}`;
           if (includesQuery(haystack, query)) {
             results.push({ kind: 'missing', score: 4, item: video });
@@ -893,7 +896,7 @@
           ${video.recovered_status ? `<span class="badge">${escapeHtml(video.recovered_status)}</span>` : ''}
           ${video.recovered_duration ? `<span>${escapeHtml(video.recovered_duration)}</span>` : ''}
           ${video.recovered_upload_date ? `<span>${escapeHtml(video.recovered_upload_date)}</span>` : ''}
-          ${video.recovered_channel ? `<span>${escapeHtml(video.recovered_channel)}</span>` : ''}
+          ${creatorHtml(video.recovered_channel_thumbnail_path, video.recovered_channel, video.recovered_channel_url)}
           ${video.added_at ? `<span>Added ${escapeHtml(video.added_at.slice(0, 10))}</span>` : ''}
           <span>${escapeHtml(video.video_id)}</span>
           <a class="playlist-link" href="${archivarixUrl}" target="_blank" rel="noreferrer">Archivarix</a>

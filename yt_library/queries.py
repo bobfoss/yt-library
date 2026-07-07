@@ -146,6 +146,8 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                    COALESCE(r.title, '') AS recovered_title,
                    COALESCE(r.description, '') AS recovered_description,
                    COALESCE(NULLIF(rc.title, ''), '') AS recovered_channel,
+                   COALESCE(NULLIF(rc.url, ''), CASE WHEN r.channel_id <> '' THEN 'https://www.youtube.com/channel/' || r.channel_id ELSE '' END, '') AS recovered_channel_url,
+                   COALESCE(NULLIF(rc.thumbnail_path, ''), '') AS recovered_channel_thumbnail_path,
                    COALESCE(r.status, '') AS recovered_status,
                    COALESCE(r.duration_text, '') AS recovered_duration,
                    COALESCE(r.upload_date, '') AS recovered_upload_date,
