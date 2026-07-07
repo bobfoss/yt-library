@@ -8,6 +8,8 @@ The project intentionally favors YouTube web-interface data where practical, usi
 
 The core product goal is not to become a downloader or media server. It is a personal library-management layer that makes YouTube account state easier to inspect, search, preserve, and reconcile. Downloading may be adjacent later, but the current center of gravity is metadata, organization, history, and evidence.
 
+This project is still in an early alpha stage. Prefer the design that clarifies the domain and future maintenance, even when that means a large schema, API, UI, or architecture change. Avoid preserving awkward legacy shapes just because they already exist; source evidence and personal data should be protected, but the application structure is still allowed to move.
+
 ## System Shape
 
 The app is intentionally compact: `yt_library_manager.py` owns the HTTP server, SQLite schema and migrations, web/YouTube parsing, importers, workers, API endpoints, and embedded HTML views.
