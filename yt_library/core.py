@@ -51,6 +51,17 @@ TAKEOUT_DIR = ROOT / "YouTube and YouTube Music"
 HISTORY_BATCH_SIZE = 1000
 HISTORY_BATCH_DELAY_SECONDS = 10.0
 
+PLAYLIST_MATCH_TYPE_NOTES = {
+    "ambiguous_hidden_candidate": "missing from current playable scan; hidden slot mapping is ambiguous",
+    "ambiguous_hidden_slot": "current hidden slot has no exposed video ID",
+    "inferred_hidden_slot": "matched hidden current slot to missing Takeout video by ordered equal counts",
+}
+PLAYLIST_MATCH_TYPE_LABELS = {
+    "ambiguous_hidden_candidate": "Takeout candidate",
+    "ambiguous_hidden_slot": "hidden slot",
+    "inferred_hidden_slot": "restored from Takeout",
+}
+
 
 SCHEMA = load_schema()
 
@@ -79,8 +90,12 @@ def connect(db_path: Path) -> sqlite3.Connection:
     ensure_columns(
         conn,
         "playlist_video_reconciled",
-        {"channel_id": "TEXT NOT NULL DEFAULT ''"},
+        {
+            "channel_id": "TEXT NOT NULL DEFAULT ''",
+            "match_type": "TEXT NOT NULL DEFAULT ''",
+        },
     )
+    ensure_playlist_video_reconciled_schema(conn)
     ensure_columns(
         conn,
         "archivarix_candidates",
@@ -193,6 +208,186 @@ def begin_table_rebuild(conn: sqlite3.Connection, table: str) -> str:
     return old_table
 
 
+def playlist_match_type_note(match_type: str) -> str:
+    return PLAYLIST_MATCH_TYPE_NOTES.get(match_type or "", "")
+
+
+def playlist_match_type_label(match_type: str) -> str:
+    return PLAYLIST_MATCH_TYPE_LABELS.get(match_type or "", "")
+
+
+def playlist_match_type_from_legacy(source_quality: str, match_notes: str) -> str:
+    source_quality = source_quality or ""
+    if source_quality in PLAYLIST_MATCH_TYPE_NOTES:
+        return source_quality
+    normalized_note = (match_notes or "").strip()
+    for match_type, note in PLAYLIST_MATCH_TYPE_NOTES.items():
+        if normalized_note == note:
+            return match_type
+    return ""
+
+
+def playlist_source_quality_from_legacy(source_quality: str, match_type: str) -> str:
+    if source_quality not in PLAYLIST_MATCH_TYPE_NOTES:
+        return source_quality or ""
+    if match_type in {"ambiguous_hidden_candidate", "inferred_hidden_slot"}:
+        return "takeout"
+    if match_type == "ambiguous_hidden_slot":
+        return "current"
+    return ""
+
+
+def video_availability_from_recovery_status(status: str) -> str:
+    status = (status or "").strip()
+    status_upper = status.upper()
+    if status_upper == "LIVE":
+        return "live"
+    if status_upper == "NOT_FOUND" or status_upper.startswith("DELETED_"):
+        return "unavailable"
+    return ""
+
+
+def normalize_video_availability(
+    video_id: str,
+    availability: str = "",
+    is_playable: bool | int | None = None,
+    recovered_status: str = "",
+) -> str:
+    if not video_id:
+        return ""
+    availability = (availability or "").strip()
+    legacy_note_values = {
+        "Takeout candidate; current hidden slot match is ambiguous",
+        *PLAYLIST_MATCH_TYPE_NOTES.values(),
+    }
+    if availability in legacy_note_values:
+        availability = ""
+    lowered = availability.lower()
+    if lowered == "unavailable video is hidden":
+        return "unavailable"
+    if availability:
+        return availability
+    recovered_availability = video_availability_from_recovery_status(recovered_status)
+    if recovered_availability:
+        return recovered_availability
+    if is_playable:
+        return "public"
+    return ""
+
+
+def reconciled_video_availability(
+    video_id: str,
+    current_availability: str = "",
+    recovered_status: str = "",
+    is_playable: bool | int | None = None,
+) -> str:
+    return normalize_video_availability(video_id, current_availability, is_playable, recovered_status)
+
+
+def ensure_playlist_video_reconciled_schema(conn: sqlite3.Connection) -> None:
+    cols = table_columns(conn, "playlist_video_reconciled")
+    if "match_type" in cols and "match_notes" not in cols:
+        return
+    old_table = begin_table_rebuild(conn, "playlist_video_reconciled")
+    old_cols = table_columns(conn, old_table)
+    conn.execute(
+        """
+        CREATE TABLE playlist_video_reconciled (
+          playlist_id TEXT NOT NULL REFERENCES playlists(playlist_id) ON DELETE CASCADE,
+          display_position INTEGER NOT NULL,
+          current_position INTEGER NOT NULL DEFAULT 0,
+          snapshot_position INTEGER NOT NULL DEFAULT 0,
+          video_id TEXT NOT NULL DEFAULT '',
+          title TEXT NOT NULL DEFAULT '',
+          channel_id TEXT NOT NULL DEFAULT '',
+          channel TEXT NOT NULL DEFAULT '',
+          duration_text TEXT NOT NULL DEFAULT '',
+          is_playable INTEGER NOT NULL DEFAULT 1,
+          availability TEXT NOT NULL DEFAULT '',
+          url TEXT NOT NULL DEFAULT '',
+          source_quality TEXT NOT NULL DEFAULT '',
+          match_type TEXT NOT NULL DEFAULT '',
+          match_confidence TEXT NOT NULL DEFAULT '',
+          snapshot_key TEXT NOT NULL DEFAULT '',
+          added_at TEXT NOT NULL DEFAULT '',
+          updated_at INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (playlist_id, display_position)
+        )
+        """
+    )
+    for row in conn.execute(f"SELECT * FROM {old_table}").fetchall():
+        source_quality = row["source_quality"] if "source_quality" in old_cols else ""
+        legacy_notes = row["match_notes"] if "match_notes" in old_cols else ""
+        match_type = (
+            row["match_type"] if "match_type" in old_cols else ""
+        ) or playlist_match_type_from_legacy(source_quality, legacy_notes)
+        source_quality = playlist_source_quality_from_legacy(source_quality, match_type)
+        video_id = row["video_id"] if "video_id" in old_cols else ""
+        snapshot_key = row["snapshot_key"] if "snapshot_key" in old_cols else ""
+        recovered_status = ""
+        if video_id and snapshot_key:
+            recovery = conn.execute(
+                """
+                SELECT status
+                FROM snapshot_video_recovery
+                WHERE snapshot_key = ? AND video_id = ?
+                """,
+                (snapshot_key, video_id),
+            ).fetchone()
+            recovered_status = recovery["status"] if recovery else ""
+        availability = reconciled_video_availability(
+            video_id,
+            row["availability"] if "availability" in old_cols else "",
+            recovered_status,
+            row["is_playable"] if "is_playable" in old_cols else 1,
+        )
+        if availability in PLAYLIST_MATCH_TYPE_NOTES.values():
+            availability = reconciled_video_availability(
+                video_id,
+                "",
+                recovered_status,
+                row["is_playable"] if "is_playable" in old_cols else 1,
+            )
+        if availability == "Takeout candidate; current hidden slot match is ambiguous":
+            availability = reconciled_video_availability(
+                video_id,
+                "",
+                recovered_status,
+                row["is_playable"] if "is_playable" in old_cols else 1,
+            )
+        conn.execute(
+            """
+            INSERT INTO playlist_video_reconciled(
+              playlist_id, display_position, current_position, snapshot_position,
+              video_id, title, channel_id, channel, duration_text, is_playable, availability, url,
+              source_quality, match_type, match_confidence, snapshot_key, added_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["playlist_id"],
+                row["display_position"],
+                row["current_position"] if "current_position" in old_cols else 0,
+                row["snapshot_position"] if "snapshot_position" in old_cols else 0,
+                video_id,
+                row["title"] if "title" in old_cols else "",
+                row["channel_id"] if "channel_id" in old_cols else "",
+                row["channel"] if "channel" in old_cols else "",
+                row["duration_text"] if "duration_text" in old_cols else "",
+                row["is_playable"] if "is_playable" in old_cols else 1,
+                availability,
+                row["url"] if "url" in old_cols else "",
+                source_quality,
+                match_type,
+                row["match_confidence"] if "match_confidence" in old_cols else "",
+                snapshot_key,
+                row["added_at"] if "added_at" in old_cols else "",
+                row["updated_at"] if "updated_at" in old_cols else int(time.time()),
+            ),
+        )
+    conn.execute(f"DROP TABLE {old_table}")
+
+
 def youtube_channel_id_from_url(value: str) -> str:
     value = (value or "").strip()
     if not value:
@@ -206,6 +401,13 @@ def youtube_channel_id_from_url(value: str) -> str:
 
 def youtube_channel_url(channel_id: str) -> str:
     return f"https://www.youtube.com/channel/{channel_id}" if channel_id else ""
+
+
+def channel_title_for_id(conn: sqlite3.Connection, channel_id: str) -> str:
+    if not channel_id:
+        return ""
+    row = conn.execute("SELECT title FROM channels WHERE channel_id = ?", (channel_id,)).fetchone()
+    return row["title"] if row else ""
 
 
 def merge_channel_value(existing: str, incoming: str) -> str:
@@ -2972,6 +3174,7 @@ def scan_playlist_videos_ytdlp(
             webpage_url = f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}"
         availability = str(entry.get("availability") or "").strip()
         hidden = availability.lower() in {"private", "needs_auth", "premium_only", "subscriber_only"}
+        availability = normalize_video_availability(video_id, availability, not hidden)
         videos.append(
             {
                 "playlist_id": playlist_id,
@@ -4097,11 +4300,13 @@ def rebuild_playlist_reconciliation(
                 ).fetchone()
                 title = (recovery["title"] if recovery else "") or assigned["video_id"]
                 channel_id = recovery["channel_id"] if recovery else ""
-                channel = recovery["channel"] if recovery else ""
+                channel = channel_title_for_id(conn, channel_id)
                 duration = recovery["duration_text"] if recovery else ""
-                source_quality = "inferred_hidden_slot"
+                recovered_status = recovery["status"] if recovery else ""
+                source_quality = "takeout"
+                match_type = "inferred_hidden_slot"
                 match_confidence = "count_equal_ordered"
-                match_notes = "matched hidden current slot to missing Takeout video by ordered equal counts"
+                availability = reconciled_video_availability(assigned["video_id"], "", recovered_status, 0)
                 inferred += 1
                 video_id = assigned["video_id"]
                 snapshot_position = assigned["position"]
@@ -4119,23 +4324,26 @@ def rebuild_playlist_reconciliation(
                 added_at = snapshot_match["added_at"] if snapshot_match else ""
                 if current.get("video_id"):
                     source_quality = "current_exact"
+                    match_type = ""
                     match_confidence = "video_id"
-                    match_notes = ""
+                    availability = reconciled_video_availability(video_id, current["availability"], "", current["is_playable"])
                 elif current.get("is_playable"):
                     source_quality = "current_unknown"
+                    match_type = ""
                     match_confidence = "current_only"
-                    match_notes = ""
+                    availability = ""
                 else:
-                    source_quality = "ambiguous_hidden_slot"
+                    source_quality = "current"
+                    match_type = "ambiguous_hidden_slot"
                     match_confidence = "hidden_slot_only"
-                    match_notes = "current hidden slot has no exposed video ID"
+                    availability = ""
                     ambiguous += 1
             conn.execute(
                 """
                 INSERT INTO playlist_video_reconciled(
                   playlist_id, display_position, current_position, snapshot_position,
                   video_id, title, channel_id, channel, duration_text, is_playable, availability, url,
-                  source_quality, match_confidence, match_notes, snapshot_key, added_at, updated_at
+                  source_quality, match_type, match_confidence, snapshot_key, added_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -4150,11 +4358,11 @@ def rebuild_playlist_reconciliation(
                     channel,
                     duration,
                     current["is_playable"],
-                    current["availability"],
+                    availability,
                     current["url"] or (f"https://www.youtube.com/watch?v={video_id}&list={pid}" if video_id else ""),
                     source_quality,
+                    match_type,
                     match_confidence,
-                    match_notes,
                     snapshot_key_value,
                     added_at,
                     now,
@@ -4179,14 +4387,15 @@ def rebuild_playlist_reconciliation(
                 ).fetchone()
                 title = (recovery["title"] if recovery else "") or snap["video_id"]
                 channel_id = recovery["channel_id"] if recovery else ""
-                channel = recovery["channel"] if recovery else ""
+                channel = channel_title_for_id(conn, channel_id)
                 duration = recovery["duration_text"] if recovery else ""
+                recovered_status = recovery["status"] if recovery else ""
                 conn.execute(
                     """
                     INSERT INTO playlist_video_reconciled(
                       playlist_id, display_position, current_position, snapshot_position,
                       video_id, title, channel_id, channel, duration_text, is_playable, availability, url,
-                      source_quality, match_confidence, match_notes, snapshot_key, added_at, updated_at
+                      source_quality, match_type, match_confidence, snapshot_key, added_at, updated_at
                     )
                     VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -4199,11 +4408,11 @@ def rebuild_playlist_reconciliation(
                         channel_id,
                         channel,
                         duration,
-                        "Takeout candidate; current hidden slot match is ambiguous",
+                        reconciled_video_availability(snap["video_id"], "", recovered_status, 0),
                         f"https://www.youtube.com/watch?v={snap['video_id']}&list={pid}",
+                        "takeout",
                         "ambiguous_hidden_candidate",
                         "snapshot_missing",
-                        "missing from current playable scan; hidden slot mapping is ambiguous",
                         snap["snapshot_key"],
                         snap["added_at"],
                         now,

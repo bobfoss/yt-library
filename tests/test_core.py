@@ -179,6 +179,27 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(metadata["channel_status"], "deleted")
         self.assertEqual(metadata["duration_text"], "8:08")
 
+    def test_playlist_match_type_helpers_keep_notes_out_of_rows(self) -> None:
+        self.assertEqual(core.playlist_match_type_label("ambiguous_hidden_candidate"), "Takeout candidate")
+        self.assertEqual(
+            core.playlist_match_type_note("ambiguous_hidden_candidate"),
+            "missing from current playable scan; hidden slot mapping is ambiguous",
+        )
+        self.assertEqual(
+            core.playlist_match_type_from_legacy(
+                "current",
+                "current hidden slot has no exposed video ID",
+            ),
+            "ambiguous_hidden_slot",
+        )
+        self.assertEqual(
+            core.reconciled_video_availability("Ax8Yn8DPZe0", "", "LIVE"),
+            "live",
+        )
+        self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "", "", 1), "public")
+        self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "subscriber_only", "", 0), "subscriber_only")
+        self.assertEqual(core.reconciled_video_availability("", "private", "LIVE"), "")
+
 
 class SchemaTests(unittest.TestCase):
     def test_connect_bootstraps_expected_tables(self) -> None:
@@ -199,6 +220,10 @@ class SchemaTests(unittest.TestCase):
                         row["name"]
                         for row in conn.execute("PRAGMA table_info(video_metadata)")
                     }
+                    reconciled_columns = {
+                        row["name"]
+                        for row in conn.execute("PRAGMA table_info(playlist_video_reconciled)")
+                    }
                 finally:
                     conn.close()
             finally:
@@ -209,6 +234,8 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("history_reconciled", tables)
         self.assertIn("metadata_worker_runs", tables)
         self.assertIn("reaction", columns)
+        self.assertIn("match_type", reconciled_columns)
+        self.assertNotIn("match_notes", reconciled_columns)
 
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT

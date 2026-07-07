@@ -5,6 +5,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from .core import playlist_match_type_label, playlist_match_type_note
+
+
 def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
     groups = [
         dict(row)
@@ -100,6 +103,9 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             """
         )
     ]
+    for video in playlist_videos:
+        video["match_label"] = playlist_match_type_label(video.get("match_type", ""))
+        video["match_note"] = playlist_match_type_note(video.get("match_type", ""))
     archivarix_candidates = [
         dict(row)
         for row in conn.execute(

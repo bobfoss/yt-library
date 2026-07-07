@@ -313,18 +313,12 @@
       return wrap;
     }
 
-    function sourceQualityLabel(video) {
-      const labels = {
-        inferred_hidden_slot: 'restored from Takeout',
-        ambiguous_hidden_slot: 'hidden slot',
-        ambiguous_hidden_candidate: 'Takeout candidate',
-        current_unknown: 'current'
-      };
-      return labels[video.source_quality] || '';
+    function matchTypeLabel(video) {
+      return video.match_label || '';
     }
 
     function unavailableLabel(video) {
-      if (!video.is_playable) return video.availability || 'Hidden';
+      if (!video.is_playable) return video.availability || '';
       const status = String(video.recovered_status || '');
       if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return 'Unavailable';
       const title = String(video.title || '').trim().toLowerCase().replace(/^[\[\(]+|[\]\)]+$/g, '');
@@ -387,9 +381,9 @@
       }
       if (filters.has('videos') || filters.has('descriptions') || filters.has('hidden')) {
         for (const video of data.playlistVideos || []) {
-          const titleHit = filters.has('videos') && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.video_id} ${video.playlist_title}`, query);
+          const titleHit = filters.has('videos') && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.match_label} ${video.match_note} ${video.video_id} ${video.playlist_title}`, query);
           const descriptionHit = filters.has('descriptions') && includesQuery(video.metadata_description, query);
-          const hiddenHit = filters.has('hidden') && !video.is_playable && includesQuery(`${displayVideoTitle(video)} ${video.availability} ${video.video_id} ${video.playlist_title}`, query);
+          const hiddenHit = filters.has('hidden') && !video.is_playable && includesQuery(`${displayVideoTitle(video)} ${video.availability} ${video.match_label} ${video.match_note} ${video.video_id} ${video.playlist_title}`, query);
           if (titleHit || descriptionHit || hiddenHit) {
             const key = `${video.playlist_id}:${video.position}:${video.video_id}`;
             if (!seenVideoKeys.has(key)) {
@@ -720,7 +714,7 @@
           ${unavailableLabel(video) ? `<span class="badge">${escapeHtml(unavailableLabel(video))}</span>` : ''}
           ${reactionLabel(video) ? `<span class="badge">${escapeHtml(reactionLabel(video))}</span>` : ''}
           ${archivarixStatusLabel(video) ? `<span class="badge">${escapeHtml(archivarixStatusLabel(video))}</span>` : ''}
-          ${sourceQualityLabel(video) ? `<span class="badge">${escapeHtml(sourceQualityLabel(video))}</span>` : ''}
+          ${matchTypeLabel(video) ? `<span class="badge" title="${escapeHtml(video.match_note)}">${escapeHtml(matchTypeLabel(video))}</span>` : ''}
           ${displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : ''}
           ${creatorHtml(video.metadata_channel_thumbnail_path, channelName, channelUrl)}
           ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
