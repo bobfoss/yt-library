@@ -110,7 +110,6 @@ CREATE TABLE IF NOT EXISTS snapshot_playlists (
   updated_at TEXT NOT NULL DEFAULT '',
   visibility TEXT NOT NULL DEFAULT '',
   video_order TEXT NOT NULL DEFAULT '',
-  source_file TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (snapshot_key, playlist_id)
 );
 
@@ -121,7 +120,6 @@ CREATE TABLE IF NOT EXISTS snapshot_videos (
   position INTEGER NOT NULL,
   video_id TEXT NOT NULL,
   added_at TEXT NOT NULL DEFAULT '',
-  source_file TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (snapshot_key, playlist_id, position, video_id)
 );
 

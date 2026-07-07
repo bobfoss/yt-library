@@ -241,6 +241,14 @@ class SchemaTests(unittest.TestCase):
                         row["name"]
                         for row in conn.execute("PRAGMA table_info(history_reconciled)")
                     }
+                    snapshot_playlist_columns = {
+                        row["name"]
+                        for row in conn.execute("PRAGMA table_info(snapshot_playlists)")
+                    }
+                    snapshot_video_columns = {
+                        row["name"]
+                        for row in conn.execute("PRAGMA table_info(snapshot_videos)")
+                    }
                 finally:
                     conn.close()
             finally:
@@ -259,6 +267,8 @@ class SchemaTests(unittest.TestCase):
         self.assertNotIn("source_quality", history_columns)
         self.assertNotIn("match_confidence", history_columns)
         self.assertNotIn("match_notes", history_columns)
+        self.assertNotIn("source_file", snapshot_playlist_columns)
+        self.assertNotIn("source_file", snapshot_video_columns)
 
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT

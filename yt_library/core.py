@@ -731,6 +731,7 @@ def backfill_playlist_channel_ids_by_name(conn: sqlite3.Connection) -> None:
 def drop_deprecated_channel_columns(conn: sqlite3.Connection) -> None:
     cleanup_video_metadata_columns(conn)
     cleanup_snapshot_video_recovery_columns(conn)
+    cleanup_snapshot_source_file_columns(conn)
 
 
 def cleanup_video_metadata_columns(conn: sqlite3.Connection) -> None:
@@ -841,6 +842,67 @@ def cleanup_snapshot_video_recovery_columns(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE snapshot_video_recovery_old")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshot_video_recovery_status ON snapshot_video_recovery(snapshot_key, search_status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshot_video_recovery_channel ON snapshot_video_recovery(channel_id)")
+
+
+def cleanup_snapshot_source_file_columns(conn: sqlite3.Connection) -> None:
+    playlist_cols = table_columns(conn, "snapshot_playlists")
+    if "source_file" in playlist_cols:
+        conn.execute("ALTER TABLE snapshot_playlists RENAME TO snapshot_playlists_old")
+        conn.execute(
+            """
+            CREATE TABLE snapshot_playlists (
+              snapshot_key TEXT NOT NULL REFERENCES snapshots(snapshot_key) ON DELETE CASCADE,
+              playlist_id TEXT NOT NULL,
+              title TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL DEFAULT '',
+              updated_at TEXT NOT NULL DEFAULT '',
+              visibility TEXT NOT NULL DEFAULT '',
+              video_order TEXT NOT NULL DEFAULT '',
+              PRIMARY KEY (snapshot_key, playlist_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO snapshot_playlists(
+              snapshot_key, playlist_id, title, created_at, updated_at, visibility, video_order
+            )
+            SELECT snapshot_key, playlist_id, title, created_at, updated_at, visibility, video_order
+            FROM snapshot_playlists_old
+            """
+        )
+        conn.execute("DROP TABLE snapshot_playlists_old")
+
+    video_cols = table_columns(conn, "snapshot_videos")
+    if "source_file" in video_cols:
+        conn.execute("ALTER TABLE snapshot_videos RENAME TO snapshot_videos_old")
+        conn.execute(
+            """
+            CREATE TABLE snapshot_videos (
+              snapshot_key TEXT NOT NULL REFERENCES snapshots(snapshot_key) ON DELETE CASCADE,
+              playlist_id TEXT NOT NULL,
+              playlist_title TEXT NOT NULL DEFAULT '',
+              position INTEGER NOT NULL,
+              video_id TEXT NOT NULL,
+              added_at TEXT NOT NULL DEFAULT '',
+              PRIMARY KEY (snapshot_key, playlist_id, position, video_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO snapshot_videos(
+              snapshot_key, playlist_id, playlist_title, position, video_id, added_at
+            )
+            SELECT snapshot_key, playlist_id, playlist_title, position, video_id, added_at
+            FROM snapshot_videos_old
+            """
+        )
+        conn.execute("DROP TABLE snapshot_videos_old")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshot_videos_video ON snapshot_videos(snapshot_key, video_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_snapshot_videos_playlist ON snapshot_videos(snapshot_key, playlist_id, position)"
+        )
 
 
 def current_iso_timestamp() -> str:
@@ -5472,9 +5534,9 @@ def import_takeout_snapshot(args: argparse.Namespace) -> None:
                 """
                 INSERT INTO snapshot_playlists(
                   snapshot_key, playlist_id, title, created_at, updated_at,
-                  visibility, video_order, source_file
+                  visibility, video_order
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     snapshot_key,
@@ -5484,7 +5546,6 @@ def import_takeout_snapshot(args: argparse.Namespace) -> None:
                     row.get("Playlist Update Timestamp", "").strip(),
                     row.get("Playlist Visibility", "").strip(),
                     row.get("Playlist Video Order", "").strip(),
-                    str(playlists_csv.relative_to(ROOT)).replace("\\", "/"),
                 ),
             )
 
@@ -5506,15 +5567,14 @@ def import_takeout_snapshot(args: argparse.Namespace) -> None:
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO snapshot_playlists(
-                      snapshot_key, playlist_id, title, source_file
+                      snapshot_key, playlist_id, title
                     )
-                    VALUES (?, ?, ?, ?)
+                    VALUES (?, ?, ?)
                     """,
                     (
                         snapshot_key,
                         playlist_id,
                         playlist_title,
-                        str(video_file.relative_to(ROOT)).replace("\\", "/"),
                     ),
                 )
             else:
@@ -5531,9 +5591,9 @@ def import_takeout_snapshot(args: argparse.Namespace) -> None:
                         """
                         INSERT INTO snapshot_videos(
                           snapshot_key, playlist_id, playlist_title, position,
-                          video_id, added_at, source_file
+                          video_id, added_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
                             snapshot_key,
@@ -5542,7 +5602,6 @@ def import_takeout_snapshot(args: argparse.Namespace) -> None:
                             position,
                             video_id,
                             row.get("Playlist Video Creation Timestamp", "").strip(),
-                            str(video_file.relative_to(ROOT)).replace("\\", "/"),
                         ),
                     )
                     imported_video_rows += 1

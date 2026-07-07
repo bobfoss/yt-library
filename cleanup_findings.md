@@ -37,11 +37,12 @@ Status: completed.
 
 ## Snapshot Source File Columns
 
+Status: completed.
+
 - `snapshot_playlists.source_file` and `snapshot_videos.source_file` may be redundant now that `snapshot_key` identifies the Takeout import.
-- Cleanup: review whether per-file forensic traceability is still useful inside a zip import.
-- If not useful, migrate these columns away and keep snapshot identity at the snapshot level.
+- Cleanup completed by removing the columns and keeping snapshot identity at the snapshot level.
 
 ## Suggested Order
 
 1. Fix the remaining raw playlist availability display path.
-2. Revisit snapshot `source_file` columns after the history cleanup.
+2. All tracked cleanup items are complete.
