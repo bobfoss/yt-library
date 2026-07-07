@@ -46,6 +46,12 @@ $code | & "C:\Users\michael.keenan\.cache\codex-runtimes\codex-primary-runtime\d
 
 When using `Start-Process`, pass a single quoted argument string or otherwise verify paths with spaces remain intact; cookie files such as `"YT cookies.txt"` must not be split into separate arguments.
 
+SQLite can be held open by long-running ad hoc probes. If migrations fail with `database is locked`, inspect local `python.exe`/`pwsh.exe` processes for stale diagnostic scripts before changing application code. Stop only the stale probe, not the active server, unless a server restart is needed.
+
+Metadata workers materialize their queue when a run starts. Queue priority changes, new source labels, or extractor fixes require stopping/restarting the metadata worker or restarting the service before the running worker will use the new ordering. A server restart interrupts active in-process workers.
+
+YouTube creator avatars may appear in newer watch-page data under `avatarViewModel.image.sources`, not only older `videoOwnerRenderer` or `channelThumbnailWithLinkRenderer` thumbnail shapes. Keep the channel avatar extractor broad enough to handle both.
+
 ## Coding Style & Naming Conventions
 
 Prefer Python implementations and keep changes inside `yt_library_manager.py` unless a real module split is justified. Use 4-space indentation, type hints for new helper functions, and descriptive snake_case names. Keep comments rare and useful. Follow existing patterns for SQLite helpers, worker classes, and API route handling.
