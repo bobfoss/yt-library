@@ -170,6 +170,71 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             )
             self.send_json(result)
             return
+        if parsed.path == "/api/admin/metadata/fetch-provided":
+            target = (params.get("target") or [""])[0]
+            conn = connect(self.db_path)
+            run_id = uuid.uuid4().hex
+            started_at = int(time.time())
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO metadata_worker_runs(
+                          run_id, status, started_at, total, requested_limit, message
+                        )
+                        VALUES (?, 'running', ?, 1, 1, ?)
+                        """,
+                        (run_id, started_at, "Provided metadata fetch started"),
+                    )
+                    log_worker_event(conn, run_id, "provided", "Provided metadata fetch started", target)
+                    try:
+                        opener = load_cookie_opener(self.cookie_file)
+                        result = fetch_provided_metadata(conn, opener, self.video_thumbs, target)
+                    except Exception as exc:
+                        message = f"Provided metadata fetch failed: {exc}"
+                        conn.execute(
+                            """
+                            UPDATE metadata_worker_runs
+                            SET status = 'error',
+                                finished_at = ?,
+                                processed = 1,
+                                failed = 1,
+                                last_video_id = ?,
+                                message = ?
+                            WHERE run_id = ?
+                            """,
+                            (int(time.time()), target, message, run_id),
+                        )
+                        log_worker_event(conn, run_id, "provided error", message, target)
+                        self.send_json({"error": str(exc)}, status=400)
+                        return
+                    message = f"{result['status']}: {result['title']}"
+                    conn.execute(
+                        """
+                        UPDATE metadata_worker_runs
+                        SET status = 'complete',
+                            finished_at = ?,
+                            processed = 1,
+                            found = CASE WHEN ? = 'ok' THEN 1 ELSE 0 END,
+                            failed = CASE WHEN ? = 'ok' THEN 0 ELSE 1 END,
+                            last_video_id = ?,
+                            message = ?
+                        WHERE run_id = ?
+                        """,
+                        (
+                            int(time.time()),
+                            result["status"],
+                            result["status"],
+                            result["subject_id"],
+                            message,
+                            run_id,
+                        ),
+                    )
+                    log_worker_event(conn, run_id, f"provided {result['source']}", message, result["subject_id"])
+                self.send_json(result)
+            finally:
+                conn.close()
+            return
         if parsed.path in {"/api/admin/worker/stop", "/api/admin/metadata/stop"}:
             self.send_json(METADATA_WORKER.stop())
             return

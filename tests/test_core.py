@@ -34,6 +34,8 @@ class CoreHelperTests(unittest.TestCase):
     def test_id_and_numeric_helpers(self) -> None:
         self.assertEqual(core.extract_video_id("https://www.youtube.com/watch?v=abc-123_DEF"), "abc-123_DEF")
         self.assertEqual(core.extract_video_id("https://youtu.be/abc-123_DEF"), "abc-123_DEF")
+        self.assertEqual(core.extract_video_id("https://www.youtube.com/shorts/abc-123_DEF"), "abc-123_DEF")
+        self.assertEqual(core.extract_video_id("https://www.youtube.com/embed/abc-123_DEF"), "abc-123_DEF")
         self.assertEqual(
             core.youtube_channel_id_from_url("https://www.youtube.com/channel/UCvmGOqGlxOgpZDoszBbWxmA"),
             "UCvmGOqGlxOgpZDoszBbWxmA",
@@ -116,6 +118,66 @@ class CoreHelperTests(unittest.TestCase):
         }
 
         self.assertEqual(core.extract_channel_handle_aliases(initial_data), "@DJICONmusic")
+
+    def test_resolve_metadata_target_for_direct_ids(self) -> None:
+        self.assertEqual(core.resolve_metadata_target(None, "abc-123_DEF"), ("video", "abc-123_DEF"))
+        self.assertEqual(
+            core.resolve_metadata_target(None, "UCvmGOqGlxOgpZDoszBbWxmA"),
+            ("channel", "UCvmGOqGlxOgpZDoszBbWxmA"),
+        )
+
+    def test_useful_video_metadata_rejects_youtube_unavailable_placeholder(self) -> None:
+        self.assertFalse(
+            core.useful_video_metadata(
+                {
+                    "title": "- YouTube",
+                    "yt_status": "ERROR: Video unavailable",
+                    "channel_id": "",
+                }
+            )
+        )
+        self.assertTrue(
+            core.useful_video_metadata(
+                {
+                    "title": "Recovered title",
+                    "yt_status": "DELETED_FULL_META",
+                    "channel_id": "UC95ANqPeSKRNEH1CaCOs2ew",
+                }
+            )
+        )
+
+    def test_metadata_from_archivarix_video_includes_channel_metadata(self) -> None:
+        metadata = core.metadata_from_archivarix_video(
+            "Ax8Yn8DPZe0",
+            {
+                "title": "Why Do Windshields Have Those Small Black Dots?",
+                "description": "Video description",
+                "channelExternalId": "UC95ANqPeSKRNEH1CaCOs2ew",
+                "channelTitle": "History of Simple Things",
+                "channelUrl": "https://www.youtube.com/channel/UC95ANqPeSKRNEH1CaCOs2ew",
+                "channelDescription": "Channel description",
+                "channelAliases": "youtube.com/@historyofsimplethings",
+                "channelThumbnailUrl": "https://yt3.example/avatar.jpg",
+                "channelThumbnailPath": "video_thumbs/UC95ANqPeSKRNEH1CaCOs2ew.jpg",
+                "channelId": "12345",
+                "channelStatus": "deleted",
+                "channelStatusReason": "Deleted/terminated channel reported by Archivarix.",
+                "duration": 488,
+                "viewCount": 399359,
+                "uploadDate": "2025-03-20",
+                "status": "DELETED_FULL_META",
+            },
+            "https://archive.example/thumb.jpg",
+            "video_thumbs/Ax8Yn8DPZe0.jpg",
+        )
+
+        self.assertEqual(metadata["channel_id"], "UC95ANqPeSKRNEH1CaCOs2ew")
+        self.assertEqual(metadata["channel"], "History of Simple Things")
+        self.assertEqual(metadata["channel_description"], "Channel description")
+        self.assertEqual(metadata["channel_aliases"], "youtube.com/@historyofsimplethings")
+        self.assertEqual(metadata["archivarix_channel_id"], "12345")
+        self.assertEqual(metadata["channel_status"], "deleted")
+        self.assertEqual(metadata["duration_text"], "8:08")
 
 
 class SchemaTests(unittest.TestCase):

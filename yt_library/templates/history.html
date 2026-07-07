@@ -58,9 +58,11 @@
     .body { padding: 11px 12px 13px; }
     .title { display: block; color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
     .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
-    .channel-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; vertical-align: middle; }
-    .creator-link { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; }
+    .channel-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; vertical-align: middle; flex: 0 0 auto; }
+    .creator-link { color: var(--muted); text-decoration: none; }
     .creator-link:hover { color: var(--accent); text-decoration: underline; }
+    .creator-chip { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+    .creator-name { min-width: 0; overflow-wrap: anywhere; }
     .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
     .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
     .badge { color: var(--warn); font-weight: 650; }
@@ -126,17 +128,13 @@
       return row.metadata_title || row.title || row.video_id;
     }
 
-    function creatorAvatarHtml(path, url) {
-      if (!path) return '';
-      const img = `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">`;
-      return url ? `<a class="creator-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${img}</a>` : img;
-    }
-
-    function creatorNameHtml(name, url) {
+    function creatorHtml(path, name, url) {
       if (!name) return '';
+      const avatar = path ? `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">` : '';
+      const content = `${avatar}<span class="creator-name">${escapeHtml(name)}</span>`;
       return url
-        ? `<a class="creator-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(name)}</a>`
-        : `<span>${escapeHtml(name)}</span>`;
+        ? `<a class="creator-link creator-chip" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${content}</a>`
+        : `<span class="creator-chip">${content}</span>`;
     }
 
     function watchProgressPercent(row) {
@@ -193,8 +191,7 @@
           ${row.watched_at ? `<span>${escapeHtml(row.watched_at)}</span>` : ''}
           ${row.source_quality ? `<span class="badge">${escapeHtml(row.source_quality)}</span>` : ''}
           ${reactionLabel(row) ? `<span class="badge">${escapeHtml(reactionLabel(row))}</span>` : ''}
-          ${creatorAvatarHtml(row.metadata_channel_thumbnail_path, channelUrl)}
-          ${creatorNameHtml(channelName, channelUrl)}
+          ${creatorHtml(row.metadata_channel_thumbnail_path, channelName, channelUrl)}
           ${row.video_id ? `<span>${escapeHtml(row.video_id)}</span>` : ''}
           ${row.metadata_fetch_status === 'error' ? '<span class="badge">metadata error</span>' : ''}
         </div>

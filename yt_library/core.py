@@ -2624,6 +2624,300 @@ def fetch_watch_metadata(
     return metadata
 
 
+def extract_channel_handle(value: str) -> str:
+    value = html.unescape((value or "").strip())
+    parsed = urllib.parse.urlparse(value)
+    path = parsed.path if parsed.scheme or parsed.netloc else value
+    found = re.search(r"(?:^|/)@([A-Za-z0-9._-]+)(?:$|[/?#])", path)
+    return f"@{found.group(1)}" if found else ""
+
+
+def resolve_channel_id(
+    opener: urllib.request.OpenerDirector,
+    value: str,
+) -> str:
+    value = html.unescape((value or "").strip())
+    channel_id = youtube_channel_id_from_url(value)
+    if channel_id:
+        return channel_id
+    if re.fullmatch(r"UC[A-Za-z0-9_-]{20,}", value):
+        return value
+    handle = extract_channel_handle(value)
+    if not handle:
+        return ""
+    url = f"https://www.youtube.com/{handle}"
+    page = request_text(opener, url)
+    metadata = extract_channel_page_metadata(page, "")
+    return metadata.get("channel_id", "")
+
+
+def resolve_metadata_target(
+    opener: urllib.request.OpenerDirector,
+    value: str,
+) -> tuple[str, str]:
+    value = html.unescape((value or "").strip())
+    if not value:
+        return "", ""
+    channel_id = resolve_channel_id(opener, value)
+    if channel_id:
+        return "channel", channel_id
+    video_id = extract_video_id(value)
+    if not video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", value):
+        video_id = value
+    if video_id:
+        return "video", video_id
+    return "", ""
+
+
+def store_video_metadata(
+    conn: sqlite3.Connection,
+    metadata: dict[str, str],
+    status: str,
+    error: str = "",
+    updated_at: int | None = None,
+) -> str:
+    now = updated_at or int(time.time())
+    channel_id = upsert_channel(
+        conn,
+        metadata.get("channel_id", ""),
+        title=metadata.get("channel", ""),
+        url=metadata.get("channel_url", ""),
+        description=metadata.get("channel_description", ""),
+        aliases=metadata.get("channel_aliases", ""),
+        thumbnail_url=metadata.get("channel_thumbnail_url", ""),
+        thumbnail_path=metadata.get("channel_thumbnail_path", ""),
+        archivarix_channel_id=metadata.get("archivarix_channel_id", ""),
+        status=metadata.get("channel_status", ""),
+        status_reason=metadata.get("channel_status_reason", ""),
+        source="metadata",
+        updated_at=now,
+    )
+    conn.execute(
+        """
+        INSERT INTO video_metadata(
+          video_id, title, description, channel_id, duration_text, view_count,
+          upload_date, thumbnail_url, thumbnail_path,
+          reaction, watch_progress_percent, watch_resume_seconds,
+          yt_status, fetch_status, fetch_error, fetched_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(video_id) DO UPDATE SET
+          title=excluded.title,
+          description=excluded.description,
+          channel_id=excluded.channel_id,
+          duration_text=excluded.duration_text,
+          view_count=excluded.view_count,
+          upload_date=excluded.upload_date,
+          thumbnail_url=excluded.thumbnail_url,
+          thumbnail_path=excluded.thumbnail_path,
+          reaction=excluded.reaction,
+          watch_progress_percent=excluded.watch_progress_percent,
+          watch_resume_seconds=excluded.watch_resume_seconds,
+          yt_status=excluded.yt_status,
+          fetch_status=excluded.fetch_status,
+          fetch_error=excluded.fetch_error,
+          fetched_at=excluded.fetched_at,
+          updated_at=excluded.updated_at
+        """,
+        (
+            metadata.get("video_id", ""),
+            metadata.get("title", ""),
+            metadata.get("description", ""),
+            channel_id,
+            metadata.get("duration_text", ""),
+            metadata.get("view_count", ""),
+            metadata.get("upload_date", ""),
+            metadata.get("thumbnail_url", ""),
+            metadata.get("thumbnail_path", ""),
+            metadata.get("reaction", ""),
+            bounded_int(metadata.get("watch_progress_percent")),
+            max(0, int(metadata.get("watch_resume_seconds") or 0)),
+            metadata.get("yt_status", ""),
+            status,
+            error,
+            now,
+            now,
+        ),
+    )
+    return channel_id
+
+
+def useful_video_metadata(metadata: dict[str, str]) -> bool:
+    title = (metadata.get("title") or "").strip()
+    yt_status = (metadata.get("yt_status") or "").strip().upper()
+    if title in {"", "YouTube", "- YouTube"}:
+        return False
+    if yt_status.startswith("ERROR") and not metadata.get("channel_id"):
+        return False
+    return True
+
+
+def metadata_from_archivarix_video(video_id: str, video: dict[str, Any], thumbnail_url: str, thumbnail_path: str) -> dict[str, str]:
+    return {
+        "video_id": video_id,
+        "title": str(video.get("title") or "").strip(),
+        "description": str(video.get("description") or "").strip(),
+        "channel_id": str(video.get("channelExternalId") or "").strip(),
+        "channel": str(video.get("channelTitle") or "").strip(),
+        "channel_url": str(video.get("channelUrl") or "").strip(),
+        "channel_description": str(video.get("channelDescription") or "").strip(),
+        "channel_aliases": str(video.get("channelAliases") or "").strip(),
+        "channel_thumbnail_url": str(video.get("channelThumbnailUrl") or "").strip(),
+        "channel_thumbnail_path": str(video.get("channelThumbnailPath") or "").strip(),
+        "archivarix_channel_id": str(video.get("channelId") or "").strip(),
+        "channel_status": str(video.get("channelStatus") or "").strip(),
+        "channel_status_reason": str(video.get("channelStatusReason") or "").strip(),
+        "duration_text": format_duration(video.get("duration")),
+        "view_count": str(video.get("viewCount") or ""),
+        "upload_date": str(video.get("uploadDate") or ""),
+        "thumbnail_url": thumbnail_url or str(video.get("thumbnailArchiveUrl") or video.get("thumbnailUrl") or ""),
+        "thumbnail_path": thumbnail_path,
+        "reaction": "",
+        "watch_progress_percent": "0",
+        "watch_resume_seconds": "0",
+        "yt_status": str(video.get("status") or ""),
+    }
+
+
+def enrich_archivarix_video_channel(
+    video: dict[str, Any],
+    channel_id: str,
+    archivarix_opener: urllib.request.OpenerDirector,
+) -> None:
+    if not channel_id:
+        return
+    try:
+        fields = archivarix_lookup_channel(channel_id, archivarix_opener)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        fields = {}
+    if not fields:
+        return
+    channel_metadata = archivarix_channel_metadata(fields, channel_id)
+    if channel_metadata.get("channel"):
+        video["channelTitle"] = channel_metadata["channel"]
+    if channel_metadata.get("channel_id"):
+        video["channelExternalId"] = channel_metadata["channel_id"]
+    if channel_metadata.get("channel_url"):
+        video["channelUrl"] = channel_metadata["channel_url"]
+    if channel_metadata.get("channel_description"):
+        video["channelDescription"] = channel_metadata["channel_description"]
+    if channel_metadata.get("channel_aliases"):
+        video["channelAliases"] = channel_metadata["channel_aliases"]
+    if channel_metadata.get("channel_thumbnail_url"):
+        video["channelThumbnailUrl"] = channel_metadata["channel_thumbnail_url"]
+    if channel_metadata.get("archivarix_channel_id"):
+        video["channelId"] = channel_metadata["archivarix_channel_id"]
+    if channel_metadata.get("channel_status"):
+        video["channelStatus"] = channel_metadata["channel_status"]
+    if channel_metadata.get("channel_status_reason"):
+        video["channelStatusReason"] = channel_metadata["channel_status_reason"]
+
+
+def store_channel_metadata(
+    conn: sqlite3.Connection,
+    metadata: dict[str, str],
+    status: str,
+    error: str = "",
+    updated_at: int | None = None,
+) -> str:
+    now = updated_at or int(time.time())
+    return upsert_channel(
+        conn,
+        metadata.get("channel_id", ""),
+        title=metadata.get("channel", ""),
+        url=metadata.get("channel_url", ""),
+        description=metadata.get("channel_description", ""),
+        aliases=metadata.get("channel_aliases", ""),
+        thumbnail_url=metadata.get("channel_thumbnail_url", ""),
+        thumbnail_path=metadata.get("channel_thumbnail_path", ""),
+        archivarix_channel_id=metadata.get("archivarix_channel_id", ""),
+        status=metadata.get("channel_status", ""),
+        status_reason=metadata.get("channel_status_reason", ""),
+        fetch_status=status,
+        fetch_error=error,
+        fetched_at=now,
+        source="metadata",
+        updated_at=now,
+    )
+
+
+def fetch_provided_metadata(
+    conn: sqlite3.Connection,
+    opener: urllib.request.OpenerDirector,
+    thumb_dir: Path,
+    target: str,
+) -> dict[str, str]:
+    source, subject_id = resolve_metadata_target(opener, target)
+    if not source or not subject_id:
+        raise ValueError("Enter a YouTube watch URL, video ID, channel URL, channel ID, or @handle.")
+    now = int(time.time())
+    if source == "channel":
+        metadata = fetch_channel_metadata(opener, subject_id, thumb_dir, fallback_query=target)
+        status = "ok" if (
+            metadata.get("channel")
+            or metadata.get("channel_url")
+            or metadata.get("channel_thumbnail_path")
+        ) else "no_metadata"
+        channel_id = store_channel_metadata(conn, metadata, status, updated_at=now)
+        return {
+            "source": source,
+            "subject_id": channel_id or subject_id,
+            "status": status,
+            "title": metadata.get("channel", "") or channel_id or subject_id,
+        }
+    metadata = fetch_watch_metadata(opener, subject_id, thumb_dir)
+    status = "ok" if useful_video_metadata(metadata) else "no_metadata"
+    if status != "ok":
+        try:
+            archivarix_opener = load_cookie_opener(ARCHIVARIX_COOKIE_FILE)
+            video, thumbnail_url, thumbnail_path, arch_status, arch_error = recover_archivarix_video(
+                subject_id,
+                thumb_dir,
+                archivarix_opener,
+                refresh_metadata=True,
+                channel_cache={},
+            )
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            video = None
+            thumbnail_url = ""
+            thumbnail_path = ""
+            arch_status = "error"
+            arch_error = "Archivarix fallback failed"
+        if video:
+            channel_id = str(video.get("channelExternalId") or "")
+            enrich_archivarix_video_channel(video, channel_id, archivarix_opener)
+            if video.get("channelThumbnailUrl") and not video.get("channelThumbnailPath"):
+                video["channelThumbnailPath"] = cache_channel_thumbnail(
+                    archivarix_opener,
+                    channel_id or subject_id,
+                    str(video.get("channelThumbnailUrl") or ""),
+                    thumb_dir,
+                )
+            metadata = metadata_from_archivarix_video(subject_id, video, thumbnail_url, thumbnail_path)
+            status = "ok" if useful_video_metadata(metadata) else "no_metadata"
+            for row in conn.execute(
+                "SELECT DISTINCT snapshot_key FROM snapshot_videos WHERE video_id = ?",
+                (subject_id,),
+            ).fetchall():
+                save_snapshot_video_recovery(
+                    conn,
+                    row["snapshot_key"],
+                    subject_id,
+                    video,
+                    thumbnail_url,
+                    thumbnail_path,
+                    arch_status,
+                    arch_error,
+                )
+    store_video_metadata(conn, metadata, status, updated_at=now)
+    return {
+        "source": source,
+        "subject_id": subject_id,
+        "status": status,
+        "title": metadata.get("title", "") or subject_id,
+    }
+
+
 def scan_playlist_videos_ytdlp(
     playlist_id: str,
     cookie_file: Path,
@@ -3280,6 +3574,8 @@ def save_snapshot_video_recovery(
         str((video or {}).get("channelExternalId") or ""),
         title=str((video or {}).get("channelTitle") or ""),
         url=str((video or {}).get("channelUrl") or ""),
+        description=str((video or {}).get("channelDescription") or ""),
+        aliases=str((video or {}).get("channelAliases") or ""),
         thumbnail_url=str((video or {}).get("channelThumbnailUrl") or ""),
         thumbnail_path=str((video or {}).get("channelThumbnailPath") or ""),
         archivarix_channel_id=archivarix_channel_id if not archivarix_channel_id.startswith("UC") else "",
@@ -4965,6 +5261,8 @@ def extract_video_id(value: str) -> str:
     parsed = urllib.parse.urlparse(html.unescape(value))
     if parsed.netloc.endswith("youtube.com") and parsed.path == "/watch":
         return (urllib.parse.parse_qs(parsed.query).get("v") or [""])[0]
+    if parsed.netloc.endswith("youtube.com") and parsed.path.startswith(("/shorts/", "/embed/")):
+        return parsed.path.strip("/").split("/", 1)[1].split("/", 1)[0]
     if parsed.netloc == "youtu.be":
         return parsed.path.strip("/")
     return ""

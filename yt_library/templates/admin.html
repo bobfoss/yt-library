@@ -55,6 +55,7 @@
     .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0 18px; }
     label { color: var(--muted); display: grid; gap: 5px; font-size: 13px; }
     input { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 8px 10px; font: inherit; width: 120px; }
+    .wide-input { width: min(720px, calc(100vw - 360px)); }
     label.checkbox { display: flex; flex-direction: row; align-items: center; gap: 7px; padding-bottom: 8px; }
     label.checkbox input { width: auto; }
     button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 9px 12px; font: inherit; cursor: pointer; }
@@ -116,6 +117,10 @@
             <label class="checkbox"><input id="metadataForce" type="checkbox">Refresh already fetched</label>
             <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
             <button id="stopMetadata" type="button">Stop metadata</button>
+          </div>
+          <div class="controls">
+            <label>URL/video/channel ID<input id="providedMetadataTarget" class="wide-input" type="text" placeholder="https://www.youtube.com/watch?v=..."></label>
+            <button id="fetchProvidedMetadata" class="primary" type="button">Fetch Provided Metadata</button>
           </div>
           <div class="queue-grid">
             <div class="panel queue-panel">
@@ -251,6 +256,7 @@
       logs: document.getElementById('logs'),
       playlistLimit: document.getElementById('playlistLimit'),
       metadataLimit: document.getElementById('metadataLimit'),
+      providedMetadataTarget: document.getElementById('providedMetadataTarget'),
       placeholderLimit: document.getElementById('placeholderLimit'),
       playlistDelay: document.getElementById('playlistDelay'),
       metadataDelay: document.getElementById('metadataDelay'),
@@ -583,9 +589,11 @@
     async function post(path, params = {}) {
       const response = await fetch(`${path}?${new URLSearchParams(params)}`, { method: 'POST' });
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+      const payload = await response.json();
       resetQueueStates();
       loadAllInitialQueues();
       await loadStatus();
+      return payload;
     }
 
     document.getElementById('scanPlaylists').addEventListener('click', () => post('/api/admin/playlists/start', {
@@ -600,6 +608,18 @@
       stale_days: fields.metadataStaleDays.value,
       force: fields.metadataForce.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
+    document.getElementById('fetchProvidedMetadata').addEventListener('click', async () => {
+      const target = fields.providedMetadataTarget.value.trim();
+      if (!target) {
+        alert('Enter a YouTube URL, video ID, channel ID, or @handle.');
+        return;
+      }
+      try {
+        await post('/api/admin/metadata/fetch-provided', { target });
+      } catch (error) {
+        alert(error.message);
+      }
+    });
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start', {
     }).catch(error => alert(error.message)));
     document.getElementById('verifyLiveHistory').addEventListener('click', () => {
