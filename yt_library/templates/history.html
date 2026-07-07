@@ -150,6 +150,13 @@
       return progress ? `<div class="watched-line">Watched ${progress}%</div>` : '';
     }
 
+    function reactionLabel(row) {
+      const reaction = String(row.reaction || '').trim().toUpperCase();
+      if (reaction === 'L') return 'Liked';
+      if (reaction === 'D') return 'Disliked';
+      return '';
+    }
+
     function thumbnailWithProgress(path, row) {
       const wrap = document.createElement('div');
       wrap.className = 'thumb-wrap';
@@ -185,6 +192,7 @@
         <div class="details">
           ${row.watched_at ? `<span>${escapeHtml(row.watched_at)}</span>` : ''}
           ${row.source_quality ? `<span class="badge">${escapeHtml(row.source_quality)}</span>` : ''}
+          ${reactionLabel(row) ? `<span class="badge">${escapeHtml(reactionLabel(row))}</span>` : ''}
           ${creatorAvatarHtml(row.metadata_channel_thumbnail_path, channelUrl)}
           ${creatorNameHtml(channelName, channelUrl)}
           ${row.video_id ? `<span>${escapeHtml(row.video_id)}</span>` : ''}

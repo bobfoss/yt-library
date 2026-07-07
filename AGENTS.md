@@ -88,6 +88,8 @@ Keep raw source tables and display overlays separate. `playlist_videos` should r
 
 For hidden or memory-holed playlist videos, keep uncertainty visible. Preserve badges that distinguish `Unavailable`, `restored from Takeout`, `Takeout candidate`, and Archivarix statuses such as `DELETED_FULL_META` or `NOT_FOUND`. Avoid forcing ambiguous hidden-slot matches; show candidates when counts or positions do not support a confident mapping.
 
+Video like/dislike state is stored on `video_metadata.reaction` as a compact per-video value: `L`, `D`, or empty. The `Liked videos` browser view is derived from metadata instead of being stored as a normal playlist.
+
 ## Commit & Pull Request Guidelines
 
 Git history uses concise, imperative commit subjects such as `Clean up history storage schema` and `Import Takeout history from zip archives`. Keep commits focused and avoid staging personal data artifacts. Pull requests should summarize behavior changes, schema migrations, verification commands, and UI impact. Include screenshots for visible UI changes.

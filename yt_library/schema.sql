@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS video_metadata (
   upload_date TEXT NOT NULL DEFAULT '',
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
+  reaction TEXT NOT NULL DEFAULT '',
   watch_progress_percent INTEGER NOT NULL DEFAULT 0,
   watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
   yt_status TEXT NOT NULL DEFAULT '',

@@ -65,6 +65,34 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(rows[0]["channel"], "Example Channel")
         self.assertEqual(rows[0]["channel_id"], "UCvmGOqGlxOgpZDoszBbWxmA")
 
+    def test_extract_reaction_from_toggled_buttons(self) -> None:
+        liked = {
+            "segmentedLikeDislikeButtonViewModel": {
+                "likeButtonViewModel": {
+                    "toggleButtonViewModel": {
+                        "isToggled": True,
+                        "defaultIcon": {"iconType": "LIKE"},
+                        "accessibilityText": "Unlike this video",
+                    }
+                }
+            }
+        }
+        disliked = {
+            "segmentedLikeDislikeButtonViewModel": {
+                "dislikeButtonViewModel": {
+                    "toggleButtonViewModel": {
+                        "isToggled": True,
+                        "defaultIcon": {"iconType": "DISLIKE"},
+                        "accessibilityText": "Remove dislike",
+                    }
+                }
+            }
+        }
+
+        self.assertEqual(core.extract_reaction_from_initial_data(liked), "L")
+        self.assertEqual(core.extract_reaction_from_initial_data(disliked), "D")
+        self.assertEqual(core.extract_reaction_from_initial_data({"isToggled": False}), "")
+
 
 class SchemaTests(unittest.TestCase):
     def test_connect_bootstraps_expected_tables(self) -> None:
@@ -81,6 +109,10 @@ class SchemaTests(unittest.TestCase):
                             "SELECT name FROM sqlite_master WHERE type = 'table'"
                         )
                     }
+                    columns = {
+                        row["name"]
+                        for row in conn.execute("PRAGMA table_info(video_metadata)")
+                    }
                 finally:
                     conn.close()
             finally:
@@ -90,6 +122,7 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("channels", tables)
         self.assertIn("history_reconciled", tables)
         self.assertIn("metadata_worker_runs", tables)
+        self.assertIn("reaction", columns)
 
 
 if __name__ == "__main__":

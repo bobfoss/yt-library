@@ -125,6 +125,7 @@ class MetadataWorker:
                     "thumbnail_path": "",
                     "channel_thumbnail_url": "",
                     "channel_thumbnail_path": "",
+                    "reaction": "",
                     "watch_progress_percent": "0",
                     "watch_resume_seconds": "0",
                     "yt_status": "",
@@ -173,10 +174,11 @@ class MetadataWorker:
                             INSERT INTO video_metadata(
                               video_id, title, description, channel_id, duration_text, view_count,
                               upload_date, thumbnail_url, thumbnail_path,
+                              reaction,
                               watch_progress_percent, watch_resume_seconds,
                               yt_status, fetch_status, fetch_error, fetched_at, updated_at
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(video_id) DO UPDATE SET
                               title=excluded.title,
                               description=excluded.description,
@@ -186,6 +188,7 @@ class MetadataWorker:
                               upload_date=excluded.upload_date,
                               thumbnail_url=excluded.thumbnail_url,
                               thumbnail_path=excluded.thumbnail_path,
+                              reaction=excluded.reaction,
                               watch_progress_percent=excluded.watch_progress_percent,
                               watch_resume_seconds=excluded.watch_resume_seconds,
                               yt_status=excluded.yt_status,
@@ -204,6 +207,7 @@ class MetadataWorker:
                                 metadata.get("upload_date", ""),
                                 metadata.get("thumbnail_url", ""),
                                 metadata.get("thumbnail_path", ""),
+                                metadata.get("reaction", ""),
                                 bounded_int(metadata.get("watch_progress_percent")),
                                 max(0, int(metadata.get("watch_resume_seconds") or 0)),
                                 metadata.get("yt_status", ""),
@@ -831,5 +835,4 @@ class PlaceholderRecoveryWorker:
 
 
 PLACEHOLDER_RECOVERY_WORKER = PlaceholderRecoveryWorker()
-
 

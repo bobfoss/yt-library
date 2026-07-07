@@ -273,6 +273,25 @@
       return progress ? `<div class="watched-line">Watched ${progress}%</div>` : '';
     }
 
+    function reactionLabel(video) {
+      const reaction = String(video.reaction || '').trim().toUpperCase();
+      if (reaction === 'L') return 'Liked';
+      if (reaction === 'D') return 'Disliked';
+      return '';
+    }
+
+    function likedVideos() {
+      const byId = new Map();
+      for (const video of data.playlistVideos || []) {
+        if (String(video.reaction || '').toUpperCase() !== 'L') continue;
+        const key = video.video_id || `${video.playlist_id}:${video.position}`;
+        if (!byId.has(key)) byId.set(key, video);
+      }
+      return [...byId.values()].sort((a, b) =>
+        displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' })
+      );
+    }
+
     function thumbnailWithProgress(path, video) {
       const wrap = document.createElement('div');
       wrap.className = 'thumb-wrap';
@@ -369,7 +388,7 @@
       }
       if (filters.has('videos') || filters.has('descriptions') || filters.has('hidden')) {
         for (const video of data.playlistVideos || []) {
-          const titleHit = filters.has('videos') && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${video.video_id} ${video.playlist_title}`, query);
+          const titleHit = filters.has('videos') && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.video_id} ${video.playlist_title}`, query);
           const descriptionHit = filters.has('descriptions') && includesQuery(video.metadata_description, query);
           const hiddenHit = filters.has('hidden') && !video.is_playable && includesQuery(`${displayVideoTitle(video)} ${video.availability} ${video.video_id} ${video.playlist_title}`, query);
           if (titleHit || descriptionHit || hiddenHit) {
@@ -410,6 +429,13 @@
       all.innerHTML = `<span>All playlists</span><span class="count">${data.playlists.length}</span>`;
       all.addEventListener('click', () => setSelected(''));
       groupsEl.appendChild(all);
+      const likedRows = likedVideos();
+      const liked = document.createElement('button');
+      liked.className = 'group';
+      liked.dataset.key = '__liked__';
+      liked.innerHTML = `<span>Liked videos</span><span class="count">${likedRows.length}</span>`;
+      liked.addEventListener('click', () => setSelected('__liked__'));
+      groupsEl.appendChild(liked);
       const hidden = document.createElement('button');
       hidden.className = 'group';
       hidden.dataset.key = '__hidden__';
@@ -510,6 +536,18 @@
         meta.textContent = `${rows.length} shown`;
         grid.replaceChildren(...rows.map(hiddenVideoCardFor));
         empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__liked__') {
+        title.textContent = 'Liked videos';
+        const rows = likedVideos().filter(video => {
+          const haystack = `${displayVideoTitle(video)} ${displayVideoChannel(video)} ${video.metadata_description} ${video.playlist_title} ${video.video_id}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        meta.textContent = `${rows.length} videos`;
+        grid.replaceChildren(...rows.map(playlistVideoCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No liked videos have been captured yet.';
         return;
       }
       if (selected === '__terminated_channels__') {
@@ -640,6 +678,7 @@
           : `<div class="video-title">${escapeHtml(displayVideoTitle(video))}</div>`}
         <div class="details">
           ${unavailableLabel(video) ? `<span class="badge">${escapeHtml(unavailableLabel(video))}</span>` : ''}
+          ${reactionLabel(video) ? `<span class="badge">${escapeHtml(reactionLabel(video))}</span>` : ''}
           ${archivarixStatusLabel(video) ? `<span class="badge">${escapeHtml(archivarixStatusLabel(video))}</span>` : ''}
           ${sourceQualityLabel(video) ? `<span class="badge">${escapeHtml(sourceQualityLabel(video))}</span>` : ''}
           ${displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : ''}

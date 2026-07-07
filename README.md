@@ -9,6 +9,7 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 - Import YouTube Takeout history zip files without extracting them first.
 - Reconcile live YouTube history observations with precise Takeout watch timestamps.
 - Cache video thumbnails and creator channel avatars locally.
+- Capture YouTube like/dislike reaction state during metadata fetches and expose a derived Liked videos view.
 - Monitor playlist scans, metadata fetches, history verification, and Takeout imports from the admin page.
 
 ## Project Layout
@@ -59,7 +60,7 @@ git diff --check
 
 ## Testing
 
-The test suite uses the Python standard library `unittest` runner, so there is no separate test dependency. Current coverage focuses on stable, local behavior: date/time normalization, Takeout watch-history parsing, temporary SQLite schema bootstrap, and history search filtering/sorting. Tests must not use real cookies, network requests, or personal runtime databases.
+The test suite uses the Python standard library `unittest` runner, so there is no separate test dependency. Current coverage focuses on stable, local behavior: date/time normalization, reaction extraction, Takeout watch-history parsing, temporary SQLite schema bootstrap, and history search filtering/sorting. Tests must not use real cookies, network requests, or personal runtime databases.
 
 ## Data Notes
 

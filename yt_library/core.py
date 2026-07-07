@@ -111,6 +111,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
         "video_metadata",
         {
             "channel_id": "TEXT NOT NULL DEFAULT ''",
+            "reaction": "TEXT NOT NULL DEFAULT ''",
         },
     )
     ensure_columns(
@@ -421,6 +422,8 @@ def drop_deprecated_channel_columns(conn: sqlite3.Connection) -> None:
 def cleanup_video_metadata_columns(conn: sqlite3.Connection) -> None:
     deprecated = {"channel", "channel_url", "channel_thumbnail_url", "channel_thumbnail_path", "watch_url"}
     cols = table_columns(conn, "video_metadata")
+    if "reaction" not in cols:
+        conn.execute("ALTER TABLE video_metadata ADD COLUMN reaction TEXT NOT NULL DEFAULT ''")
     for name in ("watch_progress_percent", "watch_resume_seconds"):
         if name not in cols:
             conn.execute(f"ALTER TABLE video_metadata ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
@@ -440,6 +443,7 @@ def cleanup_video_metadata_columns(conn: sqlite3.Connection) -> None:
           upload_date TEXT NOT NULL DEFAULT '',
           thumbnail_url TEXT NOT NULL DEFAULT '',
           thumbnail_path TEXT NOT NULL DEFAULT '',
+          reaction TEXT NOT NULL DEFAULT '',
           watch_progress_percent INTEGER NOT NULL DEFAULT 0,
           watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
           yt_status TEXT NOT NULL DEFAULT '',
@@ -452,16 +456,17 @@ def cleanup_video_metadata_columns(conn: sqlite3.Connection) -> None:
     )
     old_cols = table_columns(conn, "video_metadata_old")
     select_channel_id = "channel_id" if "channel_id" in old_cols else "''"
+    select_reaction = "reaction" if "reaction" in old_cols else "''"
     conn.execute(
         f"""
         INSERT INTO video_metadata(
           video_id, title, description, channel_id, duration_text, view_count,
-          upload_date, thumbnail_url, thumbnail_path, yt_status,
+          upload_date, thumbnail_url, thumbnail_path, reaction, yt_status,
           watch_progress_percent, watch_resume_seconds,
           fetch_status, fetch_error, fetched_at, updated_at
         )
         SELECT video_id, title, description, {select_channel_id}, duration_text, view_count,
-               upload_date, thumbnail_url, thumbnail_path, yt_status,
+               upload_date, thumbnail_url, thumbnail_path, {select_reaction}, yt_status,
                watch_progress_percent, watch_resume_seconds,
                fetch_status, fetch_error, fetched_at, updated_at
         FROM video_metadata_old
@@ -1964,6 +1969,43 @@ def bounded_int(value: Any, minimum: int = 0, maximum: int = 100) -> int:
     return max(minimum, min(maximum, number))
 
 
+def compact_json_text(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def reaction_from_button_node(node: dict[str, Any]) -> str:
+    blob = compact_json_text(node).lower()
+    icon_types = {
+        str(item.get("iconType") or "").lower()
+        for item in walk(node)
+        if isinstance(item, dict) and item.get("iconType")
+    }
+    if "dislike" in icon_types or re.search(r"\bdislike(?:d)?\b", blob):
+        return "D"
+    if "like" in icon_types or re.search(r"\blike(?:d)?\b", blob):
+        return "L"
+    return ""
+
+
+def extract_reaction_from_initial_data(initial_data: dict[str, Any]) -> str:
+    for node in walk(initial_data):
+        if not isinstance(node, dict):
+            continue
+        if node.get("isToggled") is True or node.get("isToggledButton") is True:
+            reaction = reaction_from_button_node(node)
+            if reaction:
+                return reaction
+        toggle_model = node.get("toggleButtonViewModel")
+        if isinstance(toggle_model, dict) and toggle_model.get("isToggled") is True:
+            reaction = reaction_from_button_node(node)
+            if reaction:
+                return reaction
+    return ""
+
+
 def extract_watch_status_from_card(card: dict[str, Any], video_id: str) -> tuple[int, int]:
     progress = 0
     resume_seconds = 0
@@ -2474,6 +2516,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     channel_url = youtube_path_url(str(microformat.get("ownerProfileUrl") or "")) or extract_channel_url(initial_data)
     channel_id = extract_channel_id(initial_data, channel_url)
     watch_progress_percent, watch_resume_seconds = find_video_card_watch_status(initial_data, video_id)
+    reaction = extract_reaction_from_initial_data(initial_data)
     status = str(playability.get("status") or "").strip()
     reason = text_from_runs(playability.get("reason")).strip()
     if reason and status and reason not in status:
@@ -2490,6 +2533,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         "upload_date": str(microformat.get("uploadDate") or microformat.get("publishDate") or ""),
         "thumbnail_url": thumbnail_url,
         "channel_thumbnail_url": channel_thumbnail_url,
+        "reaction": reaction,
         "watch_progress_percent": str(watch_progress_percent),
         "watch_resume_seconds": str(watch_resume_seconds),
         "yt_status": status or ("OK" if title else ""),

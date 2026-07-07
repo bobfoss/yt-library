@@ -76,6 +76,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                    COALESCE(NULLIF(vm.thumbnail_path, ''), r.thumbnail_path, '') AS metadata_thumbnail_path,
                    COALESCE(NULLIF(vmc.thumbnail_path, ''), NULLIF(rc.thumbnail_path, ''), NULLIF(vc.thumbnail_path, ''), '') AS metadata_channel_thumbnail_path,
                    COALESCE(NULLIF(vm.fetch_status, ''), r.search_status, '') AS metadata_fetch_status,
+                   COALESCE(vm.reaction, '') AS reaction,
                    COALESCE(NULLIF(vm.watch_progress_percent, 0), latest_history.watch_progress_percent, 0) AS watch_progress_percent,
                    COALESCE(NULLIF(vm.watch_resume_seconds, 0), latest_history.watch_resume_seconds, 0) AS watch_resume_seconds,
                    COALESCE(r.status, '') AS recovered_status
@@ -267,6 +268,7 @@ def history_search_data(
                    COALESCE(vm.duration_text, '') AS metadata_duration,
                    COALESCE(vm.thumbnail_path, '') AS metadata_thumbnail_path,
                    COALESCE(NULLIF(vmc.thumbnail_path, ''), NULLIF(hc.thumbnail_path, ''), '') AS metadata_channel_thumbnail_path,
+                   COALESCE(vm.reaction, '') AS reaction,
                    COALESCE(NULLIF(hr.watch_progress_percent, 0), vm.watch_progress_percent, 0) AS watch_progress_percent,
                    COALESCE(NULLIF(hr.watch_resume_seconds, 0), vm.watch_resume_seconds, 0) AS watch_resume_seconds,
                    COALESCE(vm.fetch_status, '') AS metadata_fetch_status
@@ -300,5 +302,4 @@ def history_search_data(
         "watch": watch_rows,
         "totals": {**total, "filtered_watch_rows": filtered_watch_rows},
     }
-
 
