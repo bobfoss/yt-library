@@ -550,9 +550,9 @@
       await loadMoreQueue(type);
     }
 
-    function loadAllInitialQueues() {
+    function loadAllInitialQueues(force = false) {
       for (const type of Object.keys(queueStates)) {
-        loadInitialQueue(type).catch(error => {
+        loadInitialQueue(type, force).catch(error => {
           const state = queueStates[type];
           state.shown.textContent = `0 shown - ${error.message}`;
         });
@@ -571,8 +571,26 @@
       }
     }
 
-    async function loadStatus() {
-      if (statusRequest) return statusRequest;
+    function scheduleActionPolls() {
+      for (const delay of [500, 1200]) {
+        window.setTimeout(() => {
+          loadStatus({ force: true }).catch(error => {
+            fields.playlistRunStatus.textContent = error.message;
+          });
+        }, delay);
+      }
+    }
+
+    async function loadStatus(options = {}) {
+      const force = Boolean(options.force);
+      if (statusRequest && !force) return statusRequest;
+      if (statusRequest && force) {
+        try {
+          await statusRequest;
+        } catch (error) {
+          // A forced action refresh should still get its own current read.
+        }
+      }
       statusRequest = (async () => {
         const response = await fetch('/api/admin/status', { cache: 'no-store' });
         if (!response.ok) throw new Error(`Status failed: ${response.status}`);
@@ -591,8 +609,9 @@
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);
       const payload = await response.json();
       resetQueueStates();
-      loadAllInitialQueues();
-      await loadStatus();
+      await loadStatus({ force: true });
+      loadAllInitialQueues(true);
+      scheduleActionPolls();
       return payload;
     }
 
@@ -645,7 +664,7 @@
     document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
     document.getElementById('stopLiveHistory').addEventListener('click', () => post('/api/admin/live-history/stop').catch(error => alert(error.message)));
     document.getElementById('stopPlaceholders').addEventListener('click', () => post('/api/admin/placeholders/stop').catch(error => alert(error.message)));
-    document.getElementById('refresh').addEventListener('click', () => loadStatus().catch(error => alert(error.message)));
+    document.getElementById('refresh').addEventListener('click', () => loadStatus({ force: true }).catch(error => alert(error.message)));
     document.querySelectorAll('.fold-toggle').forEach(button => {
       const panel = document.getElementById(button.getAttribute('aria-controls'));
       button.addEventListener('click', () => {
@@ -670,7 +689,12 @@
       queueStates[type].panel.addEventListener('scroll', () => handleQueueScroll(type));
     }
     loadAllInitialQueues();
-    loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
+    loadStatus({ force: true })
+      .then(() => {
+        loadAllInitialQueues(true);
+        scheduleActionPolls();
+      })
+      .catch(error => { fields.playlistRunStatus.textContent = error.message; });
     setInterval(() => {
       loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
     }, 5000);

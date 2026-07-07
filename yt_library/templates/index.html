@@ -30,10 +30,10 @@
       }
     }
     * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); }
-    .app { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); overflow: hidden; }
+    .app { display: grid; grid-template-columns: 280px 1fr; height: 100vh; min-height: 0; }
     aside { border-right: 1px solid var(--line); background: var(--panel); padding: 18px 14px; position: sticky; top: 0; height: 100vh; overflow: auto; }
-    main { padding: 24px; }
+    main { min-height: 0; padding: 24px; display: flex; flex-direction: column; }
     h1 { font-size: 20px; margin: 0 0 14px; }
     .home-title { color: var(--ink); text-decoration: none; display: inline-block; }
     .home-title:hover { color: var(--ink); text-decoration: none; }
@@ -49,6 +49,7 @@
     .toolbar { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
     .title { font-size: 28px; line-height: 1.1; margin: 0; }
     .meta { color: var(--muted); font-size: 14px; }
+    .results-scroll { min-height: 0; overflow: auto; padding-right: 4px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
     .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
     .thumb-link { display: block; }
@@ -87,9 +88,11 @@
     .status { color: var(--warn); }
     .empty { color: var(--muted); padding: 36px 0; }
     @media (max-width: 760px) {
-      .app { grid-template-columns: 1fr; }
+      body { overflow: auto; }
+      .app { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
       aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
       main { padding: 18px 14px; }
+      .results-scroll { overflow: visible; padding-right: 0; }
       .toolbar { display: block; }
       .title { font-size: 24px; margin-bottom: 6px; }
     }
@@ -121,8 +124,10 @@
           <div id="view-meta" class="meta"></div>
         </div>
       </div>
-      <section id="grid" class="grid"></section>
-      <div id="empty" class="empty" hidden>No playlists match.</div>
+      <div class="results-scroll">
+        <section id="grid" class="grid"></section>
+        <div id="empty" class="empty" hidden>No playlists match.</div>
+      </div>
     </main>
   </div>
   <script>
