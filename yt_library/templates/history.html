@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YT Library History</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f4ef;
+      --panel: #fffdf8;
+      --ink: #25231f;
+      --muted: #6b655c;
+      --line: #ded6cb;
+      --accent: #0b7285;
+      --accent-soft: #d7f2f4;
+      --warn: #9a3412;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161513;
+        --panel: #211f1b;
+        --ink: #f4efe7;
+        --muted: #b8afa3;
+        --line: #39342d;
+        --accent: #67d8e6;
+        --accent-soft: #173b40;
+        --warn: #f4a261;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); }
+    .page { max-width: 1240px; margin: 0 auto; padding: 24px; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    h1 { font-size: 30px; line-height: 1.1; margin: 0; }
+    nav { display: flex; gap: 12px; flex-wrap: wrap; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .searchbar { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-bottom: 12px; }
+    input[type="search"] { width: 100%; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 11px 12px; font: inherit; }
+    button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 0 14px; font: inherit; cursor: pointer; }
+    button:hover { background: var(--accent-soft); }
+    .meta { color: var(--muted); font-size: 14px; margin-bottom: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+    .pager-controls { display: flex; gap: 8px; }
+    .pager button { min-height: 36px; }
+    .pager button:disabled { cursor: default; opacity: .5; background: var(--panel); }
+    .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+    .tab { padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); cursor: pointer; }
+    .tab.active { background: var(--accent-soft); color: var(--ink); }
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+    .card.no-thumb .body { grid-column: 1 / -1; }
+    .thumb-wrap { position: relative; display: block; background: linear-gradient(135deg, #24424a, #d98948); }
+    .thumb { display: block; width: 100%; height: 100%; min-height: 124px; aspect-ratio: 16 / 9; object-fit: cover; background: linear-gradient(135deg, #24424a, #d98948); }
+    .watch-progress { position: absolute; left: 0; right: auto; bottom: 0; height: 4px; background: #ff0033; }
+    .body { padding: 11px 12px 13px; }
+    .title { display: block; color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
+    .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .channel-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; vertical-align: middle; }
+    .creator-link { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; }
+    .creator-link:hover { color: var(--accent); text-decoration: underline; }
+    .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
+    .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
+    .badge { color: var(--warn); font-weight: 650; }
+    .empty { color: var(--muted); padding: 36px 0; }
+    @media (max-width: 720px) {
+      .page { padding: 18px 14px; }
+      header, .searchbar { display: block; }
+      nav { margin-top: 10px; }
+      button { margin-top: 8px; height: 40px; }
+      .pager { align-items: flex-start; flex-direction: column; }
+      .card { grid-template-columns: 1fr; }
+      .thumb-wrap { height: auto; }
+      .thumb { height: auto; min-height: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>YT Library History</h1>
+      <nav>
+        <a href="/">Playlists</a>
+        <a href="/admin">Admin</a>
+      </nav>
+    </header>
+    <div class="searchbar">
+      <input id="search" type="search" placeholder="Search watch history and metadata descriptions" autocomplete="off" autofocus>
+      <button id="refresh" type="button">Search</button>
+    </div>
+    <div id="meta" class="meta"></div>
+    <div class="pager">
+      <div id="pageInfo"></div>
+      <div class="pager-controls">
+        <button id="prevPage" type="button">Previous</button>
+        <button id="nextPage" type="button">Next</button>
+      </div>
+    </div>
+    <section id="results" class="grid"></section>
+    <div id="empty" class="empty" hidden>No history matches.</div>
+  </div>
+  <script>
+    const input = document.getElementById('search');
+    const refresh = document.getElementById('refresh');
+    const meta = document.getElementById('meta');
+    const pageInfo = document.getElementById('pageInfo');
+    const prevPage = document.getElementById('prevPage');
+    const nextPage = document.getElementById('nextPage');
+    const results = document.getElementById('results');
+    const empty = document.getElementById('empty');
+    let latest = { watch: [], totals: {} };
+    const pageSize = 250;
+    let offset = 0;
+    let timer = null;
+    let requestId = 0;
+
+    function escapeHtml(value) {
+      return String(value || '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
+    function displayTitle(row) {
+      return row.metadata_title || row.title || row.video_id;
+    }
+
+    function creatorAvatarHtml(path, url) {
+      if (!path) return '';
+      const img = `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">`;
+      return url ? `<a class="creator-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${img}</a>` : img;
+    }
+
+    function creatorNameHtml(name, url) {
+      if (!name) return '';
+      return url
+        ? `<a class="creator-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(name)}</a>`
+        : `<span>${escapeHtml(name)}</span>`;
+    }
+
+    function watchProgressPercent(row) {
+      const value = Number(row.watch_progress_percent || 0);
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      return Math.max(1, Math.min(100, Math.round(value)));
+    }
+
+    function watchedLineHtml(row) {
+      const progress = watchProgressPercent(row);
+      return progress ? `<div class="watched-line">Watched ${progress}%</div>` : '';
+    }
+
+    function thumbnailWithProgress(path, row) {
+      const wrap = document.createElement('div');
+      wrap.className = 'thumb-wrap';
+      const img = document.createElement('img');
+      img.className = 'thumb';
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = `/${path}`;
+      wrap.append(img);
+      const progress = watchProgressPercent(row);
+      if (progress) {
+        const bar = document.createElement('div');
+        bar.className = 'watch-progress';
+        bar.style.width = `${progress}%`;
+        wrap.append(bar);
+      }
+      return wrap;
+    }
+
+    function watchCard(row) {
+      const article = document.createElement('article');
+      article.className = row.metadata_thumbnail_path ? 'card' : 'card no-thumb';
+      if (row.metadata_thumbnail_path) {
+        article.append(thumbnailWithProgress(row.metadata_thumbnail_path, row));
+      }
+      const body = document.createElement('div');
+      body.className = 'body';
+      const watchUrl = row.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(row.video_id)}` : row.url;
+      const channelName = row.metadata_channel || row.channel || '';
+      const channelUrl = row.metadata_channel_url || '';
+      body.innerHTML = `
+        <a class="title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayTitle(row))}</a>
+        <div class="details">
+          ${row.watched_at ? `<span>${escapeHtml(row.watched_at)}</span>` : ''}
+          ${row.source_quality ? `<span class="badge">${escapeHtml(row.source_quality)}</span>` : ''}
+          ${creatorAvatarHtml(row.metadata_channel_thumbnail_path, channelUrl)}
+          ${creatorNameHtml(channelName, channelUrl)}
+          ${row.video_id ? `<span>${escapeHtml(row.video_id)}</span>` : ''}
+          ${row.metadata_fetch_status === 'error' ? '<span class="badge">metadata error</span>' : ''}
+        </div>
+        ${watchedLineHtml(row)}
+        ${row.metadata_description ? `<div class="description">${escapeHtml(row.metadata_description)}</div>` : ''}
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function render() {
+      const rows = latest.watch || [];
+      results.className = 'grid';
+      results.replaceChildren(...rows.map(watchCard));
+      empty.hidden = rows.length !== 0;
+      const totals = latest.totals || {};
+      const filtered = totals.filtered_watch_rows || 0;
+      const start = filtered && rows.length ? (latest.offset || 0) + 1 : 0;
+      const end = filtered && rows.length ? (latest.offset || 0) + rows.length : 0;
+      meta.innerHTML = `
+        <span>${latest.watch.length} watch results shown</span>
+        <span>${filtered} matching watch rows</span>
+        <span>${totals.watch_rows || 0} watch rows</span>
+        <span>${totals.distinct_watch_videos || 0} distinct videos</span>
+      `;
+      pageInfo.textContent = filtered ? `${start}-${end} of ${filtered}` : '0 results';
+      prevPage.disabled = (latest.offset || 0) <= 0;
+      nextPage.disabled = ((latest.offset || 0) + rows.length) >= filtered;
+    }
+
+    async function load() {
+      const myRequest = ++requestId;
+      refresh.disabled = true;
+      refresh.textContent = 'Searching';
+      const params = new URLSearchParams({
+        q: input.value.trim(),
+        limit: String(pageSize),
+        offset: String(offset)
+      });
+      const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`History search failed: ${response.status}`);
+      const payload = await response.json();
+      if (myRequest === requestId) {
+        latest = payload;
+        render();
+      }
+      refresh.disabled = false;
+      refresh.textContent = 'Search';
+    }
+
+    function schedule() {
+      clearTimeout(timer);
+      offset = 0;
+      timer = setTimeout(() => load().catch(error => {
+        meta.textContent = error.message;
+        refresh.disabled = false;
+        refresh.textContent = 'Search';
+      }), 250);
+    }
+
+    input.addEventListener('input', schedule);
+    refresh.addEventListener('click', () => {
+      offset = 0;
+      load().catch(error => meta.textContent = error.message);
+    });
+    prevPage.addEventListener('click', () => {
+      offset = Math.max(0, offset - pageSize);
+      load().catch(error => meta.textContent = error.message);
+    });
+    nextPage.addEventListener('click', () => {
+      offset += pageSize;
+      load().catch(error => meta.textContent = error.message);
+    });
+    load().catch(error => {
+      meta.textContent = error.message;
+      refresh.disabled = false;
+      refresh.textContent = 'Search';
+    });
+  </script>
+</body>
+</html>

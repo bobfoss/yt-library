@@ -1,0 +1,304 @@
+"""HTTP server and request routing for YT Library Manager."""
+
+from __future__ import annotations
+
+import argparse
+import http.server
+import json
+import posixpath
+import sys
+import time
+import urllib.parse
+import uuid
+from pathlib import Path
+from typing import Any
+
+from .core import *
+from .queries import fetch_app_data, history_search_data
+from .templates import load_template
+from .workers import (
+    LIVE_HISTORY_WORKER,
+    METADATA_WORKER,
+    PLACEHOLDER_RECOVERY_WORKER,
+    PLAYLIST_SCAN_WORKER,
+)
+
+
+INDEX_HTML = load_template("index.html")
+HISTORY_HTML = load_template("history.html")
+ADMIN_HTML = load_template("admin.html")
+
+class LibraryHandler(http.server.SimpleHTTPRequestHandler):
+    def __init__(
+        self,
+        *args,
+        db_path: Path,
+        cookie_file: Path,
+        video_thumbs: Path,
+        takeout_dir: Path,
+        directory: str | None = None,
+        **kwargs,
+    ):
+        self.db_path = db_path
+        self.cookie_file = cookie_file
+        self.video_thumbs = video_thumbs
+        self.takeout_dir = takeout_dir
+        super().__init__(*args, directory=directory, **kwargs)
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in {"/", "/index.html"}:
+            body = INDEX_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/admin":
+            body = ADMIN_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/history":
+            body = HISTORY_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/api/data":
+            conn = connect(self.db_path)
+            try:
+                data = fetch_app_data(conn)
+            finally:
+                conn.close()
+            self.send_json(data)
+            return
+        if parsed.path == "/api/history/search":
+            params = urllib.parse.parse_qs(parsed.query)
+            query = (params.get("q") or [""])[0]
+            try:
+                limit = max(1, int((params.get("limit") or ["200"])[0] or 200))
+            except ValueError:
+                limit = 200
+            try:
+                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+            except ValueError:
+                offset = 0
+            conn = connect(self.db_path)
+            try:
+                data = history_search_data(conn, query, limit=limit, offset=offset)
+            finally:
+                conn.close()
+            self.send_json(data)
+            return
+        if parsed.path == "/api/admin/status":
+            self.send_json(
+                admin_status(
+                    self.db_path,
+                    METADATA_WORKER,
+                    PLAYLIST_SCAN_WORKER,
+                    LIVE_HISTORY_WORKER,
+                    PLACEHOLDER_RECOVERY_WORKER,
+                )
+            )
+            return
+        return super().do_GET()
+
+    def do_POST(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        if parsed.path in {"/api/admin/worker/start", "/api/admin/metadata/start"}:
+            limit = max(0, int((params.get("limit") or ["25"])[0] or 0))
+            delay = max(1.0, float((params.get("delay") or ["12"])[0] or 12))
+            stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
+            force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
+            result = METADATA_WORKER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                delay=delay,
+                limit=limit,
+                force=force,
+                stale_days=stale_days,
+            )
+            self.send_json(result)
+            return
+        if parsed.path in {"/api/admin/worker/stop", "/api/admin/metadata/stop"}:
+            self.send_json(METADATA_WORKER.stop())
+            return
+        if parsed.path == "/api/admin/playlists/start":
+            limit = max(0, int((params.get("limit") or ["25"])[0] or 0))
+            delay = max(1.0, float((params.get("delay") or ["3"])[0] or 3))
+            stale_days = max(0, int((params.get("stale_days") or ["7"])[0] or 7))
+            force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
+            result = PLAYLIST_SCAN_WORKER.start(
+                self.db_path,
+                self.cookie_file,
+                delay=delay,
+                limit=limit,
+                force=force,
+                stale_days=stale_days,
+            )
+            self.send_json(result)
+            return
+        if parsed.path == "/api/admin/playlists/stop":
+            self.send_json(PLAYLIST_SCAN_WORKER.stop())
+            return
+        if parsed.path == "/api/admin/placeholders/start":
+            limit = max(0, int((params.get("limit") or ["25"])[0] or 0))
+            delay = max(1.0, float((params.get("delay") or ["3"])[0] or 3))
+            force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
+            result = PLACEHOLDER_RECOVERY_WORKER.start(
+                self.db_path,
+                ARCHIVARIX_COOKIE_FILE,
+                DEFAULT_ARCHIVARIX_THUMB_DIR,
+                delay=delay,
+                limit=limit,
+                force=force,
+            )
+            self.send_json(result)
+            return
+        if parsed.path == "/api/admin/placeholders/stop":
+            self.send_json(PLACEHOLDER_RECOVERY_WORKER.stop())
+            return
+        if parsed.path == "/api/admin/playlists/reconcile":
+            conn = connect(self.db_path)
+            run_id = uuid.uuid4().hex
+            started_at = int(time.time())
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scan_worker_runs(
+                          run_id, status, started_at, requested_limit, message
+                        )
+                        VALUES (?, 'running', ?, 0, ?)
+                        """,
+                        (run_id, started_at, "Playlist reconciliation started"),
+                    )
+                    log_playlist_scan_event(conn, run_id, "info", "Playlist reconciliation started")
+                    stats = rebuild_playlist_reconciliation(conn)
+                    message = (
+                        f"Playlist reconciliation complete: {stats['rows']} rows, "
+                        f"{stats['inferred']} inferred, {stats['ambiguous']} ambiguous"
+                    )
+                    conn.execute(
+                        """
+                        UPDATE playlist_scan_worker_runs
+                        SET status = 'complete',
+                            finished_at = ?,
+                            total = ?,
+                            processed = ?,
+                            found = ?,
+                            failed = 0,
+                            message = ?
+                        WHERE run_id = ?
+                        """,
+                        (
+                            int(time.time()),
+                            stats["playlists"],
+                            stats["playlists"],
+                            stats["inferred"],
+                            message,
+                            run_id,
+                        ),
+                    )
+                    log_playlist_scan_event(conn, run_id, "info", message)
+            finally:
+                conn.close()
+            self.send_json({"ok": True, "run_id": run_id, **stats})
+            return
+        if parsed.path == "/api/admin/live-history/start":
+            result = LIVE_HISTORY_WORKER.start(
+                self.db_path,
+                self.cookie_file,
+                mode="recent",
+            )
+            self.send_json(result)
+            return
+        if parsed.path in {"/api/admin/live-history/verify", "/api/admin/live-history/rebuild"}:
+            result = LIVE_HISTORY_WORKER.start(
+                self.db_path,
+                self.cookie_file,
+                mode="verify",
+            )
+            self.send_json(result)
+            return
+        if parsed.path == "/api/admin/live-history/stop":
+            self.send_json(LIVE_HISTORY_WORKER.stop())
+            return
+        if parsed.path == "/api/admin/history/import-takeout":
+            import_history(
+                argparse.Namespace(
+                    db=str(self.db_path),
+                    takeout=str(self.takeout_dir),
+                    history_key="",
+                )
+            )
+            self.send_json({"ok": True, "message": "Takeout history imported and reconciled"})
+            return
+        if parsed.path == "/api/admin/history/reconcile":
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    stats = rebuild_history_reconciliation(conn)
+            finally:
+                conn.close()
+            self.send_json({"ok": True, **stats})
+            return
+        self.send_error(404, "Not found")
+
+    def send_json(self, data: Any, status: int = 200) -> None:
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def translate_path(self, path: str) -> str:
+        path = urllib.parse.urlparse(path).path
+        path = posixpath.normpath(urllib.parse.unquote(path))
+        parts = [part for part in path.split("/") if part and part not in {".", ".."}]
+        result = ROOT
+        for part in parts:
+            result /= part
+        return str(result)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        sys.stderr.write("%s - %s\n" % (self.log_date_time_string(), format % args))
+
+
+def serve(args: argparse.Namespace) -> None:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}. Run import first.")
+    reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER, PLACEHOLDER_RECOVERY_WORKER)
+
+    def handler(*handler_args, **handler_kwargs):
+        return LibraryHandler(
+            *handler_args,
+            db_path=db_path,
+            cookie_file=Path(args.cookies),
+            video_thumbs=Path(args.video_thumbs),
+            takeout_dir=Path(args.takeout),
+            directory=str(ROOT),
+            **handler_kwargs,
+        )
+
+    server = http.server.ThreadingHTTPServer((args.host, args.port), handler)
+    print(f"Serving http://{args.host}:{args.port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopped")

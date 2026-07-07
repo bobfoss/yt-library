@@ -2,9 +2,15 @@
 
 ## Project Structure & Module Organization
 
-This repository is a small Python web app for browsing and enriching a personal YouTube library.
+This repository is a Python web app for browsing, enriching, and reconciling a personal YouTube library.
 
-- `yt_library_manager.py` contains the HTTP server, SQLite schema/migrations, workers, importers, and HTML templates.
+- `yt_library_manager.py` is the compatibility CLI shim; keep existing commands routed through it.
+- `yt_library/core.py` contains database migrations, importers, parsers, metadata fetchers, and reconciliation logic.
+- `yt_library/server.py` contains HTTP routing and local API endpoints.
+- `yt_library/workers.py` contains background worker orchestration.
+- `yt_library/queries.py` contains read models for the browser and history search.
+- `yt_library/schema.sql` is the SQLite schema, loaded by `yt_library/schema.py`.
+- `yt_library/templates/` contains the browser, history, and admin HTML.
 - `requirements.txt` lists Python dependencies, including `yt-dlp`.
 - `yt_library.sqlite3`, cookie files, thumbnail folders, and Takeout zip exports are local runtime data and should not be committed.
 - Common generated asset folders include `thumbs/`, `video_thumbs/`, and `archivarix_thumbs/`.
@@ -15,7 +21,8 @@ Use the repository root as the working directory.
 
 ```powershell
 python -m pip install -r requirements.txt
-python -m py_compile yt_library_manager.py
+$files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName })
+python -m py_compile @files
 python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout .
 python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout .
 ```
@@ -54,14 +61,15 @@ YouTube creator avatars may appear in newer watch-page data under `avatarViewMod
 
 ## Coding Style & Naming Conventions
 
-Prefer Python implementations and keep changes inside `yt_library_manager.py` unless a real module split is justified. Use 4-space indentation, type hints for new helper functions, and descriptive snake_case names. Keep comments rare and useful. Follow existing patterns for SQLite helpers, worker classes, and API route handling.
+Prefer Python implementations and put changes in the module that owns the behavior. Use 4-space indentation, type hints for new helper functions, and descriptive snake_case names. Keep comments rare and useful. Follow existing patterns for SQLite helpers, worker classes, API route handling, and template edits.
 
 ## Testing Guidelines
 
 There is no formal test suite yet. For each change, at minimum run:
 
 ```powershell
-python -m py_compile yt_library_manager.py
+$files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName })
+python -m py_compile @files
 git diff --check
 ```
 

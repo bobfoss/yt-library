@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YT Library Admin</title>
+  <style>
+    :root {
+      --bg: #f7f4ef;
+      --panel: #fffaf2;
+      --ink: #22201d;
+      --muted: #6b655c;
+      --line: #ded6cb;
+      --accent: #0b7285;
+      --accent-soft: #d7f2f4;
+      --warn: #9a3412;
+      --ok: #166534;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161513;
+        --panel: #211f1b;
+        --ink: #f4efe7;
+        --muted: #b8afa3;
+        --line: #39342d;
+        --accent: #67d8e6;
+        --accent-soft: #173b40;
+        --warn: #f4a261;
+        --ok: #86efac;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); }
+    main { width: 100%; margin: 0 auto; padding: 24px; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    h1 { font-size: 28px; margin: 0; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 12px; }
+    .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; }
+    .workstreams { display: grid; gap: 24px; margin-bottom: 18px; }
+    .workstream { border-top: 1px solid var(--line); padding-top: 18px; }
+    .workstream-header { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin-bottom: 12px; }
+    .workstream-header h2 { font-size: 20px; margin: 0; }
+    .workstream-header .status { justify-content: flex-end; }
+    .fold-toggle { border: 0; background: transparent; color: var(--ink); font-size: 20px; font-weight: 700; padding: 0; }
+    .fold-toggle:hover { background: transparent; color: var(--accent); }
+    .fold-toggle::before { content: ">"; color: var(--accent); display: inline-block; margin-right: 8px; }
+    .fold-toggle[aria-expanded="true"]::before { content: "v"; }
+    .fold-panel { border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, 0.02); margin: 12px 0; padding: 0 12px 12px; }
+    .fold-panel[hidden] { display: none; }
+    .metric { color: var(--muted); font-size: 13px; }
+    .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
+    .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0 18px; }
+    label { color: var(--muted); display: grid; gap: 5px; font-size: 13px; }
+    input { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 8px 10px; font: inherit; width: 120px; }
+    label.checkbox { display: flex; flex-direction: row; align-items: center; gap: 7px; padding-bottom: 8px; }
+    label.checkbox input { width: auto; }
+    button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 9px 12px; font: inherit; cursor: pointer; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.danger { background: #b91c1c; border-color: #dc2626; color: #fff; }
+    button.danger:hover { background: #dc2626; color: #fff; }
+    button:hover { background: var(--accent-soft); color: var(--ink); }
+    .status { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 14px; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; }
+    .running { color: var(--ok); }
+    .warn { color: var(--warn); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .queue-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 12px; }
+    .queue-panel { max-height: 340px; overflow: auto; }
+    .queue-title { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 8px; }
+    .queue-title h2 { font-size: 16px; margin: 0; }
+    .queue-title span { color: var(--muted); font-size: 13px; }
+    .time-col { width: 150px; }
+    .level-col { width: 110px; }
+    .video-col { width: 150px; }
+    .time-cell { white-space: nowrap; }
+    .logs { max-height: 430px; overflow: auto; }
+    .message { overflow-wrap: anywhere; }
+    @media (max-width: 700px) {
+      main { padding: 16px; }
+      header { display: block; }
+      .workstream-header { display: block; }
+      .workstream-header .status { justify-content: flex-start; margin-top: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>YT Library Admin</h1>
+      <nav><a href="/">Playlists</a> <a href="/history">History search</a></nav>
+    </header>
+
+    <section class="workstreams">
+      <section class="workstream">
+        <div class="workstream-header">
+          <h2><button class="fold-toggle" type="button" aria-expanded="false" aria-controls="metadataFold">Metadata</button></h2>
+          <div id="metadataRunStatus" class="status"></div>
+        </div>
+        <div class="grid">
+          <div class="panel"><div class="metric">Metadata queue</div><div id="metadataQueueCount" class="value">0</div></div>
+          <div class="panel"><div class="metric">Metadata worker</div><div id="metadataWorkerState" class="value">idle</div></div>
+        </div>
+        <div class="grid" id="metadataCounts"></div>
+        <div id="metadataFold" class="fold-panel" hidden>
+          <div class="controls">
+            <label>Limit<input id="metadataLimit" type="number" min="0" step="1" value="10"></label>
+            <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
+            <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
+            <label class="checkbox"><input id="metadataForce" type="checkbox">Refresh already fetched</label>
+            <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
+            <button id="stopMetadata" type="button">Stop metadata</button>
+          </div>
+          <div class="queue-grid">
+            <div class="panel queue-panel">
+              <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
+              <table>
+                <thead><tr><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
+                <tbody id="metadataQueueRows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="workstream">
+        <div class="workstream-header">
+          <h2><button class="fold-toggle" type="button" aria-expanded="false" aria-controls="playlistFold">Playlists</button></h2>
+          <div id="playlistRunStatus" class="status"></div>
+        </div>
+        <div class="grid">
+          <div class="panel"><div class="metric">Playlist video rows</div><div id="playlistRows" class="value">0</div></div>
+          <div class="panel"><div class="metric">Distinct video IDs</div><div id="distinctVideos" class="value">0</div></div>
+          <div class="panel"><div class="metric">Playlist scan queue</div><div id="playlistQueueCount" class="value">0</div></div>
+          <div class="panel"><div class="metric">Playlist scanner</div><div id="playlistWorkerState" class="value">idle</div></div>
+        </div>
+        <div id="playlistFold" class="fold-panel" hidden>
+          <div class="controls">
+            <label>Limit<input id="playlistLimit" type="number" min="0" step="1" value="10"></label>
+            <label>Playlist delay<input id="playlistDelay" type="number" min="1" step="1" value="3"></label>
+            <label>Playlist stale days<input id="playlistStaleDays" type="number" min="0" step="1" value="7"></label>
+            <label class="checkbox"><input id="playlistForce" type="checkbox">Refresh already fetched</label>
+            <button id="scanPlaylists" class="primary" type="button">Scan playlists</button>
+            <button id="reconcilePlaylists" type="button">Reconcile playlists</button>
+            <button id="stopPlaylists" type="button">Stop playlist scan</button>
+            <button id="refresh" type="button">Refresh status</button>
+          </div>
+          <div class="queue-grid">
+            <div class="panel queue-panel">
+              <div class="queue-title"><h2>Playlist queue</h2><span id="playlistQueueShown">0 shown</span></div>
+              <table>
+                <thead><tr><th>Playlist</th><th>Status</th><th>Videos</th></tr></thead>
+                <tbody id="playlistQueueRows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="workstream">
+        <div class="workstream-header">
+          <h2><button class="fold-toggle" type="button" aria-expanded="false" aria-controls="placeholderFold">Placeholder Recovery</button></h2>
+          <div id="placeholderRunStatus" class="status"></div>
+        </div>
+        <div class="grid">
+          <div class="panel"><div class="metric">Placeholder recovery queue</div><div id="placeholderQueueCount" class="value">0</div></div>
+          <div class="panel"><div class="metric">Placeholder recovery</div><div id="placeholderWorkerState" class="value">idle</div></div>
+        </div>
+        <div id="placeholderFold" class="fold-panel" hidden>
+          <div class="controls">
+            <label>Limit<input id="placeholderLimit" type="number" min="0" step="1" value="10"></label>
+            <label>Recovery delay<input id="recoveryDelay" type="number" min="1" step="1" value="3"></label>
+            <label class="checkbox"><input id="placeholderForce" type="checkbox">Refresh already fetched</label>
+            <button id="recoverPlaceholders" class="primary" type="button">Recover deleted playlist videos</button>
+            <button id="stopPlaceholders" type="button">Stop placeholder recovery</button>
+          </div>
+          <div class="queue-grid">
+            <div class="panel queue-panel">
+              <div class="queue-title"><h2>Recovery queue</h2><span id="placeholderQueueShown">0 shown</span></div>
+              <table>
+                <thead><tr><th>Video</th><th>Playlist</th><th>Previous</th></tr></thead>
+                <tbody id="placeholderQueueRows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="workstream">
+        <div class="workstream-header">
+          <h2><button class="fold-toggle" type="button" aria-expanded="false" aria-controls="historyFold">History</button></h2>
+          <div id="liveHistoryRunStatus" class="status"></div>
+        </div>
+        <div class="grid">
+          <div class="panel"><div class="metric">History rows</div><div id="historyRows" class="value">0</div></div>
+          <div class="panel"><div class="metric">History video IDs</div><div id="historyVideos" class="value">0</div></div>
+          <div class="panel"><div class="metric">Fetched history rows</div><div id="liveHistoryRows" class="value">0</div></div>
+          <div class="panel"><div class="metric">History fetch</div><div id="liveHistoryWorkerState" class="value">idle</div></div>
+        </div>
+        <div id="historyFold" class="fold-panel" hidden>
+          <div class="controls">
+            <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
+            <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
+            <button id="importTakeoutHistory" type="button">Import Takeout history</button>
+            <button id="reconcileHistory" type="button">Reconcile history</button>
+            <button id="stopLiveHistory" type="button">Stop history fetch</button>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section class="panel logs">
+      <table>
+        <colgroup>
+          <col class="time-col">
+          <col class="level-col">
+          <col class="video-col">
+          <col>
+        </colgroup>
+        <thead><tr><th>Time</th><th>Level</th><th>Subject</th><th>Message</th></tr></thead>
+        <tbody id="logs"></tbody>
+      </table>
+    </section>
+  </main>
+  <script>
+    const fields = {
+      playlistRows: document.getElementById('playlistRows'),
+      distinctVideos: document.getElementById('distinctVideos'),
+      historyRows: document.getElementById('historyRows'),
+      historyVideos: document.getElementById('historyVideos'),
+      liveHistoryRows: document.getElementById('liveHistoryRows'),
+      metadataCounts: document.getElementById('metadataCounts'),
+      logs: document.getElementById('logs'),
+      playlistLimit: document.getElementById('playlistLimit'),
+      metadataLimit: document.getElementById('metadataLimit'),
+      placeholderLimit: document.getElementById('placeholderLimit'),
+      playlistDelay: document.getElementById('playlistDelay'),
+      metadataDelay: document.getElementById('metadataDelay'),
+      recoveryDelay: document.getElementById('recoveryDelay'),
+      playlistStaleDays: document.getElementById('playlistStaleDays'),
+      metadataStaleDays: document.getElementById('metadataStaleDays'),
+      playlistForce: document.getElementById('playlistForce'),
+      metadataForce: document.getElementById('metadataForce'),
+      placeholderForce: document.getElementById('placeholderForce'),
+      playlistQueueCount: document.getElementById('playlistQueueCount'),
+      metadataQueueCount: document.getElementById('metadataQueueCount'),
+      placeholderQueueCount: document.getElementById('placeholderQueueCount'),
+      playlistWorkerState: document.getElementById('playlistWorkerState'),
+      metadataWorkerState: document.getElementById('metadataWorkerState'),
+      liveHistoryWorkerState: document.getElementById('liveHistoryWorkerState'),
+      placeholderWorkerState: document.getElementById('placeholderWorkerState'),
+      playlistRunStatus: document.getElementById('playlistRunStatus'),
+      metadataRunStatus: document.getElementById('metadataRunStatus'),
+      liveHistoryRunStatus: document.getElementById('liveHistoryRunStatus'),
+      placeholderRunStatus: document.getElementById('placeholderRunStatus'),
+      stopPlaylists: document.getElementById('stopPlaylists'),
+      stopMetadata: document.getElementById('stopMetadata'),
+      stopLiveHistory: document.getElementById('stopLiveHistory'),
+      stopPlaceholders: document.getElementById('stopPlaceholders'),
+      playlistQueueRows: document.getElementById('playlistQueueRows'),
+      metadataQueueRows: document.getElementById('metadataQueueRows'),
+      placeholderQueueRows: document.getElementById('placeholderQueueRows'),
+      playlistQueueShown: document.getElementById('playlistQueueShown'),
+      metadataQueueShown: document.getElementById('metadataQueueShown'),
+      placeholderQueueShown: document.getElementById('placeholderQueueShown'),
+    };
+
+    function escapeHtml(value) {
+      return String(value || '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
+    function fmtTime(value) {
+      if (!value) return '';
+      return new Date(value * 1000).toLocaleString();
+    }
+
+    function render(data) {
+      fields.playlistRows.textContent = data.counts.playlist_video_rows || 0;
+      fields.distinctVideos.textContent = data.counts.distinct_playlist_videos || 0;
+      fields.historyRows.textContent = data.counts.history_rows || 0;
+      fields.historyVideos.textContent = data.counts.distinct_history_videos || 0;
+      fields.liveHistoryRows.textContent = data.liveHistoryCounts?.live_rows || 0;
+      fields.playlistQueueCount.textContent = data.playlistScanQueueCount || 0;
+      fields.metadataQueueCount.textContent = data.metadataQueueCount || 0;
+      fields.placeholderQueueCount.textContent = data.placeholderRecoveryQueueCount || 0;
+      fields.playlistWorkerState.textContent = data.playlistScanRunning ? 'running' : 'idle';
+      fields.playlistWorkerState.className = `value ${data.playlistScanRunning ? 'running' : ''}`;
+      fields.metadataWorkerState.textContent = data.metadataRunning ? 'running' : 'idle';
+      fields.metadataWorkerState.className = `value ${data.metadataRunning ? 'running' : ''}`;
+      fields.liveHistoryWorkerState.textContent = data.liveHistoryRunning ? 'running' : 'idle';
+      fields.liveHistoryWorkerState.className = `value ${data.liveHistoryRunning ? 'running' : ''}`;
+      fields.placeholderWorkerState.textContent = data.placeholderRecoveryRunning ? 'running' : 'idle';
+      fields.placeholderWorkerState.className = `value ${data.placeholderRecoveryRunning ? 'running' : ''}`;
+      fields.stopPlaylists.classList.toggle('danger', Boolean(data.playlistScanRunning));
+      fields.stopMetadata.classList.toggle('danger', Boolean(data.metadataRunning));
+      fields.stopLiveHistory.classList.toggle('danger', Boolean(data.liveHistoryRunning));
+      fields.stopPlaceholders.classList.toggle('danger', Boolean(data.placeholderRecoveryRunning));
+
+      function runHtml(run, label) {
+        return run ? `
+          <span class="badge">${escapeHtml(label)}</span>
+          <span class="badge">${escapeHtml(run.status)}</span>
+          <span class="badge">${run.processed}/${run.total} processed</span>
+          <span class="badge">${run.found} ok</span>
+          <span class="badge ${run.failed ? 'warn' : ''}">${run.failed} failed</span>
+          <span class="badge">${escapeHtml(run.message)}</span>
+          <span class="badge">Started ${fmtTime(run.started_at)}</span>
+        ` : `<span class="badge">${escapeHtml(label)}: no runs yet</span>`;
+      }
+
+      fields.playlistRunStatus.innerHTML = runHtml(data.latestPlaylistScanRun, 'Playlist scan');
+      fields.metadataRunStatus.innerHTML = runHtml(data.latestMetadataRun, 'Metadata');
+      fields.liveHistoryRunStatus.innerHTML = runHtml(data.latestLiveHistoryRun, 'History');
+      fields.placeholderRunStatus.innerHTML = runHtml(data.latestPlaceholderRecoveryRun, 'Placeholder recovery');
+
+      const channelCounts = data.channelCounts || {};
+      const channelCards = [
+        { label: 'Channels', count: channelCounts.total || 0 },
+        { label: 'Channel thumbs cached', count: channelCounts.thumbnail_cached || 0 },
+        { label: 'Channel thumbs missing', count: channelCounts.thumbnail_missing || 0 },
+        { label: 'Channels terminated', count: channelCounts.terminated || 0 },
+        { label: 'Channel URLs missing', count: channelCounts.url_missing || 0 },
+      ];
+      const videoMetadataCards = (data.metadataCounts || []).map(row => ({
+        label: `Video metadata: ${row.fetch_status || 'blank'}`,
+        count: row.count,
+      }));
+      fields.metadataCounts.replaceChildren(...[...channelCards, ...videoMetadataCards].map(row => {
+        const div = document.createElement('div');
+        div.className = 'panel';
+        div.innerHTML = `<div class="metric">${escapeHtml(row.label)}</div><div class="value">${row.count}</div>`;
+        return div;
+      }));
+
+      function renderQueue(tbody, rows, cells, emptyMessage) {
+        if (!rows.length) {
+          tbody.innerHTML = `<tr><td colspan="${cells.length}" class="message">${escapeHtml(emptyMessage)}</td></tr>`;
+          return;
+        }
+        tbody.innerHTML = rows.map(row => `
+          <tr>${cells.map(cell => `<td class="message">${escapeHtml(cell(row))}</td>`).join('')}</tr>
+        `).join('');
+      }
+
+      const playlistQueue = data.playlistScanQueue || [];
+      const metadataQueue = data.metadataQueue || [];
+      const placeholderQueue = data.placeholderRecoveryQueue || [];
+      fields.playlistQueueShown.textContent = `${playlistQueue.length} shown`;
+      fields.metadataQueueShown.textContent = `${metadataQueue.length} shown`;
+      fields.placeholderQueueShown.textContent = `${placeholderQueue.length} shown`;
+      renderQueue(fields.playlistQueueRows, playlistQueue, [
+        row => row.title || row.playlist_id,
+        row => row.scan_status || 'unscanned',
+        row => `${row.video_count || 0}/${row.video_count_text || '?'}`
+      ], 'No playlists queued.');
+      renderQueue(fields.metadataQueueRows, metadataQueue, [
+        row => row.metadata_source === 'channel' ? (row.channel_title || row.channel_id || row.video_id) : row.video_id,
+        row => row.metadata_source || '',
+        row => row.metadata_source === 'channel' ? (row.channel_id || '') : (row.current_title || '')
+      ], 'No metadata queued.');
+      renderQueue(fields.placeholderQueueRows, placeholderQueue, [
+        row => row.video_id,
+        row => row.playlist_title || '',
+        row => row.previous_status || ''
+      ], 'No deleted playlist videos queued.');
+
+      const logs = [
+        ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
+        ...(data.metadataLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'metadata' })),
+        ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
+        ...(data.placeholderRecoveryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'placeholder' })),
+      ].sort((a, b) => (b.created_at - a.created_at) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
+      fields.logs.innerHTML = logs.map(log => `
+        <tr>
+          <td class="time-cell">${fmtTime(log.created_at)}</td>
+          <td>${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
+          <td>${escapeHtml(log.subject_id || '')}</td>
+          <td class="message">${escapeHtml(log.message)}</td>
+        </tr>
+      `).join('');
+    }
+
+    let statusRequest = null;
+
+    async function loadStatus() {
+      if (statusRequest) return statusRequest;
+      statusRequest = (async () => {
+        const response = await fetch('/api/admin/status', { cache: 'no-store' });
+        if (!response.ok) throw new Error(`Status failed: ${response.status}`);
+        render(await response.json());
+      })();
+      try {
+        await statusRequest;
+      } finally {
+        statusRequest = null;
+      }
+    }
+
+    async function post(path, params = {}) {
+      const response = await fetch(`${path}?${new URLSearchParams(params)}`, { method: 'POST' });
+      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+      await loadStatus();
+    }
+
+    document.getElementById('scanPlaylists').addEventListener('click', () => post('/api/admin/playlists/start', {
+      limit: fields.playlistLimit.value,
+      delay: fields.playlistDelay.value,
+      stale_days: fields.playlistStaleDays.value,
+      force: fields.playlistForce.checked ? '1' : '0',
+    }).catch(error => alert(error.message)));
+    document.getElementById('fetchMetadata').addEventListener('click', () => post('/api/admin/metadata/start', {
+      limit: fields.metadataLimit.value,
+      delay: fields.metadataDelay.value,
+      stale_days: fields.metadataStaleDays.value,
+      force: fields.metadataForce.checked ? '1' : '0',
+    }).catch(error => alert(error.message)));
+    document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start', {
+    }).catch(error => alert(error.message)));
+    document.getElementById('verifyLiveHistory').addEventListener('click', () => {
+      if (!confirm('Verify the full YouTube history? This may run for a long time, but existing fetched history will be kept.')) return;
+      post('/api/admin/live-history/verify').catch(error => alert(error.message));
+    });
+    document.getElementById('importTakeoutHistory').addEventListener('click', () => {
+      if (!confirm('Import Takeout watch history and rebuild reconciliation? Existing Takeout rows for this history key will be replaced.')) return;
+      post('/api/admin/history/import-takeout').catch(error => alert(error.message));
+    });
+    document.getElementById('reconcileHistory').addEventListener('click', () => {
+      post('/api/admin/history/reconcile').catch(error => alert(error.message));
+    });
+    document.getElementById('reconcilePlaylists').addEventListener('click', () => {
+      post('/api/admin/playlists/reconcile').catch(error => alert(error.message));
+    });
+    document.getElementById('recoverPlaceholders').addEventListener('click', () => post('/api/admin/placeholders/start', {
+      limit: fields.placeholderLimit.value,
+      delay: fields.recoveryDelay.value,
+      force: fields.placeholderForce.checked ? '1' : '0',
+    }).catch(error => alert(error.message)));
+    document.getElementById('stopPlaylists').addEventListener('click', () => post('/api/admin/playlists/stop').catch(error => alert(error.message)));
+    document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
+    document.getElementById('stopLiveHistory').addEventListener('click', () => post('/api/admin/live-history/stop').catch(error => alert(error.message)));
+    document.getElementById('stopPlaceholders').addEventListener('click', () => post('/api/admin/placeholders/stop').catch(error => alert(error.message)));
+    document.getElementById('refresh').addEventListener('click', () => loadStatus().catch(error => alert(error.message)));
+    document.querySelectorAll('.fold-toggle').forEach(button => {
+      const panel = document.getElementById(button.getAttribute('aria-controls'));
+      button.addEventListener('click', () => {
+        const expanded = button.getAttribute('aria-expanded') === 'true';
+        button.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        if (panel) panel.hidden = expanded;
+      });
+    });
+    loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
+    setInterval(() => {
+      loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
+    }, 5000);
+  </script>
+</body>
+</html>

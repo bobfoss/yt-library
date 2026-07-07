@@ -13,7 +13,13 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 
 ## Project Layout
 
-- `yt_library_manager.py` is the main application, including the HTTP server, SQLite schema, workers, importers, and HTML templates.
+- `yt_library_manager.py` is a compatibility CLI shim; keep using it for commands.
+- `yt_library/core.py` contains database migrations, importers, parsers, metadata fetchers, and reconciliation logic.
+- `yt_library/server.py` contains HTTP routing and local API endpoints.
+- `yt_library/workers.py` contains background worker orchestration.
+- `yt_library/queries.py` contains read models for the library and history views.
+- `yt_library/schema.sql` is the SQLite schema, loaded by `yt_library/schema.py`.
+- `yt_library/templates/` contains the browser, history, and admin HTML.
 - `requirements.txt` lists Python dependencies.
 - `AGENTS.md` contains contributor guidance.
 - Runtime data such as `yt_library.sqlite3`, cookie files, Takeout zip exports, thumbnail folders, and logs should stay local and uncommitted.
@@ -41,7 +47,8 @@ Open:
 ## Useful Commands
 
 ```powershell
-python -m py_compile yt_library_manager.py
+$files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName })
+python -m py_compile @files
 python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout .
 git diff --check
 ```

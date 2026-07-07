@@ -1,0 +1,879 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YT Library</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f4ef;
+      --panel: #fffdf8;
+      --ink: #25231f;
+      --muted: #6b655c;
+      --line: #ded6cb;
+      --accent: #0b7285;
+      --accent-soft: #d7f2f4;
+      --warn: #9a3412;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161513;
+        --panel: #211f1b;
+        --ink: #f4efe7;
+        --muted: #b8afa3;
+        --line: #39342d;
+        --accent: #67d8e6;
+        --accent-soft: #173b40;
+        --warn: #f4a261;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); }
+    .app { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+    aside { border-right: 1px solid var(--line); background: var(--panel); padding: 18px 14px; position: sticky; top: 0; height: 100vh; overflow: auto; }
+    main { padding: 24px; }
+    h1 { font-size: 20px; margin: 0 0 14px; }
+    .home-title { color: var(--ink); text-decoration: none; display: inline-block; }
+    .home-title:hover { color: var(--ink); text-decoration: none; }
+    .search { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 10px 12px; font: inherit; margin-bottom: 16px; }
+    .filters { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 10px 0; margin-bottom: 14px; display: grid; gap: 7px; }
+    .filter-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .filter { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    .filter input { accent-color: var(--accent); }
+    .group { width: 100%; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin: 2px 0; border-radius: 6px; cursor: pointer; text-align: left; font: inherit; }
+    .group:hover, .group.active { background: var(--accent-soft); }
+    .group.child { padding-left: 28px; color: var(--muted); }
+    .count { color: var(--muted); font-size: 12px; margin-left: 8px; }
+    .toolbar { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .title { font-size: 28px; line-height: 1.1; margin: 0; }
+    .meta { color: var(--muted); font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
+    .thumb-link { display: block; }
+    .thumb-wrap { position: relative; display: block; background: linear-gradient(135deg, #24424a, #d98948); }
+    .thumb { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: linear-gradient(135deg, #24424a, #d98948); }
+    .watch-progress { position: absolute; left: 0; right: auto; bottom: 0; height: 4px; background: #ff0033; }
+    .body { padding: 11px 12px 13px; }
+    .title-row { display: flex; align-items: flex-start; gap: 8px; }
+    .playlist-title { display: block; color: var(--ink); font-weight: 650; line-height: 1.25; text-decoration: none; overflow-wrap: anywhere; }
+    .playlist-title:hover { color: var(--accent); }
+    .title-row .playlist-title { flex: 1; min-width: 0; }
+    .external-link { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 6px; color: var(--accent); text-decoration: none; }
+    .external-link:hover { background: var(--accent-soft); }
+    .external-link svg { width: 15px; height: 15px; }
+    .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .channel-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; vertical-align: middle; }
+    .creator-link { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; }
+    .creator-link:hover { color: var(--accent); text-decoration: underline; }
+    .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
+    .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
+    .badge { color: var(--warn); font-weight: 650; }
+    .refresh { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
+    .refresh:hover { background: var(--accent-soft); }
+    .top-link { display: inline-block; color: var(--accent); text-decoration: none; margin: -4px 0 14px; font-size: 13px; }
+    .top-link:hover { text-decoration: underline; }
+    .filter.child { margin-left: 18px; font-size: 13px; }
+    .video-title { color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
+    .playlist-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
+    .playlist-link:hover { text-decoration: underline; }
+    .result-kind { color: var(--muted); font-size: 12px; text-transform: uppercase; margin-bottom: 5px; }
+    .position { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+    .status { color: var(--warn); }
+    .empty { color: var(--muted); padding: 36px 0; }
+    @media (max-width: 760px) {
+      .app { grid-template-columns: 1fr; }
+      aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      main { padding: 18px 14px; }
+      .toolbar { display: block; }
+      .title { font-size: 24px; margin-bottom: 6px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <h1><a class="home-title" href="/">YT Library</a></h1>
+      <a class="top-link" href="/history">History search</a>
+      <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
+      <div class="filters" aria-label="Search filters">
+        <div class="filter-title">Search In</div>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="playlists" checked> Playlists</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="channels" checked> Channels</label>
+        <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_subscribed" checked> Subscribed</label>
+        <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_unsubscribed" checked> Non-subscribed</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="videos" checked> Video titles</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="descriptions" checked> Descriptions</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="hidden" checked> Hidden/missing</label>
+      </div>
+      <nav id="groups"></nav>
+    </aside>
+    <main>
+      <div class="toolbar">
+        <h2 id="view-title" class="title">All playlists</h2>
+        <div class="details">
+          <button id="refresh" class="refresh" type="button">Refresh</button>
+          <div id="view-meta" class="meta"></div>
+        </div>
+      </div>
+      <section id="grid" class="grid"></section>
+      <div id="empty" class="empty" hidden>No playlists match.</div>
+    </main>
+  </div>
+  <script>
+    let data = null;
+    let playlists = new Map();
+    let memberships = new Map();
+    let children = new Map();
+    let playlistVideos = new Map();
+
+    let selected = '';
+    const search = document.getElementById('search');
+    const refresh = document.getElementById('refresh');
+    const groupsEl = document.getElementById('groups');
+    const searchFilters = [...document.querySelectorAll('.search-filter')];
+    const channelsFilter = document.querySelector('[data-filter="channels"]');
+    const channelChildFilters = [...document.querySelectorAll('.channel-child-filter')];
+    const grid = document.getElementById('grid');
+    const empty = document.getElementById('empty');
+    const title = document.getElementById('view-title');
+    const meta = document.getElementById('view-meta');
+
+    async function loadData() {
+      refresh.disabled = true;
+      refresh.textContent = 'Refreshing';
+      const response = await fetch('/api/data', { cache: 'no-store' });
+      if (!response.ok) throw new Error(`Data refresh failed: ${response.status}`);
+      data = await response.json();
+      playlists = new Map(data.playlists.map(p => [p.playlist_id, p]));
+      playlistVideos = new Map();
+      for (const video of data.playlistVideos || []) {
+        if (!playlistVideos.has(video.playlist_id)) playlistVideos.set(video.playlist_id, []);
+        playlistVideos.get(video.playlist_id).push(video);
+      }
+      memberships = new Map();
+      for (const item of data.memberships) {
+        if (!memberships.has(item.group_key)) memberships.set(item.group_key, []);
+        memberships.get(item.group_key).push(item.playlist_id);
+      }
+      children = new Map();
+      for (const group of data.groups) {
+        const parent = group.parent_key || '';
+        if (!children.has(parent)) children.set(parent, []);
+        children.get(parent).push(group);
+      }
+      selected = selectionFromHash();
+      renderGroups();
+      render();
+      refresh.disabled = false;
+      refresh.textContent = 'Refresh';
+    }
+
+    function playlistSelection(playlistId) {
+      return `__playlist__:${playlistId}`;
+    }
+
+    function localPlaylistHref(playlistId) {
+      return `#playlist=${encodeURIComponent(playlistId)}`;
+    }
+
+    function selectionFromHash() {
+      const hash = window.location.hash || '';
+      if (hash.startsWith('#playlist=')) {
+        const playlistId = decodeURIComponent(hash.slice('#playlist='.length));
+        if (playlistId) return playlistSelection(playlistId);
+      }
+      return selected.startsWith('__playlist__:') ? '' : selected;
+    }
+
+    function setSelected(value) {
+      selected = value;
+      if (value.startsWith('__playlist__:')) {
+        search.value = '';
+        const playlistId = value.slice('__playlist__:'.length);
+        if (window.location.hash !== localPlaylistHref(playlistId)) {
+          window.location.hash = localPlaylistHref(playlistId);
+          return;
+        }
+      } else if (window.location.hash) {
+        history.pushState('', document.title, window.location.pathname + window.location.search);
+      }
+      renderGroups();
+      render();
+    }
+
+    function groupCount(groupKey) {
+      const own = memberships.get(groupKey) || [];
+      const nested = (children.get(groupKey) || []).flatMap(child => memberships.get(child.group_key) || []);
+      return new Set([...own, ...nested]).size;
+    }
+
+    function groupPlaylistIds(groupKey) {
+      if (!groupKey) {
+        return data.playlists.map(playlist => playlist.playlist_id);
+      }
+      const ids = [];
+      for (const id of memberships.get(groupKey) || []) ids.push(id);
+      for (const child of children.get(groupKey) || []) {
+        for (const id of memberships.get(child.group_key) || []) ids.push(id);
+      }
+      return [...new Set(ids)];
+    }
+
+    function activeSearchFilters() {
+      return new Set(searchFilters.filter(input => input.checked).map(input => input.dataset.filter));
+    }
+
+    function syncChannelParentFilter() {
+      if (!channelsFilter || !channelChildFilters.length) return;
+      const checkedCount = channelChildFilters.filter(input => input.checked).length;
+      channelsFilter.checked = checkedCount === channelChildFilters.length;
+      channelsFilter.indeterminate = checkedCount > 0 && checkedCount < channelChildFilters.length;
+    }
+
+    function isSubscribedChannel(channel) {
+      return Number(channel.subscribed || 0) === 1;
+    }
+
+    function includesQuery(value, query) {
+      return String(value || '').toLowerCase().includes(query);
+    }
+
+    function usefulMetadataTitle(video) {
+      const title = String(video.metadata_title || '').trim();
+      if (!title || title === '- YouTube' || title === 'YouTube') return '';
+      return title;
+    }
+
+    function displayVideoTitle(video) {
+      return usefulMetadataTitle(video) || video.title || video.video_id;
+    }
+
+    function displayVideoChannel(video) {
+      return video.metadata_channel || video.channel || '';
+    }
+
+    function displayVideoChannelUrl(video) {
+      return video.metadata_channel_url || '';
+    }
+
+    function displayVideoDuration(video) {
+      return video.metadata_duration || video.duration_text || '';
+    }
+
+    function watchProgressPercent(video) {
+      const value = Number(video.watch_progress_percent || 0);
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      return Math.max(1, Math.min(100, Math.round(value)));
+    }
+
+    function watchedLineHtml(video) {
+      const progress = watchProgressPercent(video);
+      return progress ? `<div class="watched-line">Watched ${progress}%</div>` : '';
+    }
+
+    function thumbnailWithProgress(path, video) {
+      const wrap = document.createElement('div');
+      wrap.className = 'thumb-wrap';
+      const img = document.createElement('img');
+      img.className = 'thumb';
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = `/${path}`;
+      wrap.append(img);
+      const progress = watchProgressPercent(video);
+      if (progress) {
+        const bar = document.createElement('div');
+        bar.className = 'watch-progress';
+        bar.style.width = `${progress}%`;
+        wrap.append(bar);
+      }
+      return wrap;
+    }
+
+    function sourceQualityLabel(video) {
+      const labels = {
+        inferred_hidden_slot: 'restored from Takeout',
+        ambiguous_hidden_slot: 'hidden slot',
+        ambiguous_hidden_candidate: 'Takeout candidate',
+        current_unknown: 'current'
+      };
+      return labels[video.source_quality] || '';
+    }
+
+    function unavailableLabel(video) {
+      if (!video.is_playable) return video.availability || 'Hidden';
+      const status = String(video.recovered_status || '');
+      if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return 'Unavailable';
+      const title = String(video.title || '').trim().toLowerCase().replace(/^[\[\(]+|[\]\)]+$/g, '');
+      if (title === 'private video' || title === 'deleted video') return video.title || 'Unavailable';
+      return '';
+    }
+
+    function archivarixStatusLabel(video) {
+      const status = String(video.recovered_status || '');
+      if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return `Archivarix: ${status}`;
+      return '';
+    }
+
+    function archivarixVideoUrl(video) {
+      return video.video_id ? `https://tube.archivarix.net/?q=${encodeURIComponent(video.video_id)}` : '';
+    }
+
+    function shouldShowArchivarixLink(video) {
+      return Boolean(video.video_id && (unavailableLabel(video) || archivarixStatusLabel(video)));
+    }
+
+    function archivarixLinkHtml(video) {
+      const url = archivarixVideoUrl(video);
+      if (!url || !shouldShowArchivarixLink(video)) return '';
+      return `<a class="playlist-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Archivarix</a>`;
+    }
+
+    function creatorAvatarHtml(path, url) {
+      if (!path) return '';
+      const img = `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">`;
+      return url ? `<a class="creator-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${img}</a>` : img;
+    }
+
+    function creatorNameHtml(name, url) {
+      if (!name) return '';
+      return url
+        ? `<a class="creator-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(name)}</a>`
+        : `<span>${escapeHtml(name)}</span>`;
+    }
+
+    function buildOmniResults(query) {
+      const filters = activeSearchFilters();
+      const results = [];
+      const seenVideoKeys = new Set();
+      if (filters.has('playlists')) {
+        for (const playlist of data.playlists) {
+          const haystack = `${playlist.title} ${playlist.owner} ${playlist.description} ${playlist.playlist_id}`;
+          if (includesQuery(haystack, query)) {
+            results.push({ kind: 'playlist', score: includesQuery(playlist.title, query) ? 0 : 2, item: playlist });
+          }
+        }
+      }
+      if (filters.has('channels_subscribed') || filters.has('channels_unsubscribed')) {
+        for (const channel of data.channels || []) {
+          const subscribed = isSubscribedChannel(channel);
+          if (subscribed && !filters.has('channels_subscribed')) continue;
+          if (!subscribed && !filters.has('channels_unsubscribed')) continue;
+          const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`;
+          if (includesQuery(haystack, query)) {
+            results.push({ kind: 'channel', score: includesQuery(channel.title, query) ? 0 : 2, item: channel });
+          }
+        }
+      }
+      if (filters.has('videos') || filters.has('descriptions') || filters.has('hidden')) {
+        for (const video of data.playlistVideos || []) {
+          const titleHit = filters.has('videos') && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${video.video_id} ${video.playlist_title}`, query);
+          const descriptionHit = filters.has('descriptions') && includesQuery(video.metadata_description, query);
+          const hiddenHit = filters.has('hidden') && !video.is_playable && includesQuery(`${displayVideoTitle(video)} ${video.availability} ${video.video_id} ${video.playlist_title}`, query);
+          if (titleHit || descriptionHit || hiddenHit) {
+            const key = `${video.playlist_id}:${video.position}:${video.video_id}`;
+            if (!seenVideoKeys.has(key)) {
+              seenVideoKeys.add(key);
+              results.push({ kind: 'video', score: titleHit ? 1 : 3, item: video, matchedDescription: descriptionHit && !titleHit });
+            }
+          }
+        }
+      }
+      if (filters.has('hidden')) {
+        for (const video of data.snapshotMissing || []) {
+          const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.recovered_title} ${video.recovered_description} ${video.recovered_channel} ${video.recovered_status}`;
+          if (includesQuery(haystack, query)) {
+            results.push({ kind: 'missing', score: 4, item: video });
+          }
+        }
+      }
+      return results.sort((a, b) => a.score - b.score).slice(0, 500);
+    }
+
+    function buttonFor(group, child=false) {
+      const button = document.createElement('button');
+      button.className = `group ${child ? 'child' : ''}`;
+      button.dataset.key = group.group_key;
+      button.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="count">${groupCount(group.group_key)}</span>`;
+      button.addEventListener('click', () => setSelected(group.group_key));
+      return button;
+    }
+
+    function renderGroups() {
+      if (!data) return;
+      groupsEl.replaceChildren();
+      const all = document.createElement('button');
+      all.className = 'group';
+      all.dataset.key = '';
+      all.innerHTML = `<span>All playlists</span><span class="count">${data.playlists.length}</span>`;
+      all.addEventListener('click', () => setSelected(''));
+      groupsEl.appendChild(all);
+      const hidden = document.createElement('button');
+      hidden.className = 'group';
+      hidden.dataset.key = '__hidden__';
+      hidden.innerHTML = `<span>Hidden videos</span><span class="count">${data.hiddenVideos.length}</span>`;
+      hidden.addEventListener('click', () => setSelected('__hidden__'));
+      groupsEl.appendChild(hidden);
+      const terminatedChannels = (data.channels || []).filter(channel => ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase()));
+      const terminatedChannelsButton = document.createElement('button');
+      terminatedChannelsButton.className = 'group';
+      terminatedChannelsButton.dataset.key = '__terminated_channels__';
+      terminatedChannelsButton.innerHTML = `<span>Terminated channels</span><span class="count">${terminatedChannels.length}</span>`;
+      terminatedChannelsButton.addEventListener('click', () => setSelected('__terminated_channels__'));
+      groupsEl.appendChild(terminatedChannelsButton);
+      const hiddenPlaylists = data.playlists.filter(playlist => (playlist.hidden_count || 0) > 0);
+      const hiddenPlaylistButton = document.createElement('button');
+      hiddenPlaylistButton.className = 'group';
+      hiddenPlaylistButton.dataset.key = '__hidden_playlists__';
+      hiddenPlaylistButton.innerHTML = `<span>Playlists with hidden</span><span class="count">${hiddenPlaylists.length}</span>`;
+      hiddenPlaylistButton.addEventListener('click', () => setSelected('__hidden_playlists__'));
+      groupsEl.appendChild(hiddenPlaylistButton);
+      const snapshot = document.createElement('button');
+      snapshot.className = 'group';
+      snapshot.dataset.key = '__snapshot__';
+      snapshot.innerHTML = `<span>Takeout snapshot</span><span class="count">${data.snapshotPlaylists.length}</span>`;
+      snapshot.addEventListener('click', () => setSelected('__snapshot__'));
+      groupsEl.appendChild(snapshot);
+      const missing = document.createElement('button');
+      missing.className = 'group';
+      missing.dataset.key = '__snapshot_missing__';
+      missing.innerHTML = `<span>Snapshot missing</span><span class="count">${data.snapshotMissing.length}</span>`;
+      missing.addEventListener('click', () => setSelected('__snapshot_missing__'));
+      groupsEl.appendChild(missing);
+      const likelyHidden = document.createElement('button');
+      likelyHidden.className = 'group';
+      likelyHidden.dataset.key = '__snapshot_likely_hidden__';
+      likelyHidden.innerHTML = `<span>Likely hidden IDs</span><span class="count">${data.snapshotLikelyHidden.length}</span>`;
+      likelyHidden.addEventListener('click', () => setSelected('__snapshot_likely_hidden__'));
+      groupsEl.appendChild(likelyHidden);
+      for (const group of children.get('') || []) {
+        groupsEl.appendChild(buttonFor(group));
+        for (const child of children.get(group.group_key) || []) {
+          groupsEl.appendChild(buttonFor(child, true));
+        }
+      }
+    }
+
+    function render() {
+      if (!data) {
+        title.textContent = 'Loading';
+        meta.textContent = '';
+        return;
+      }
+      const query = search.value.trim().toLowerCase();
+      empty.textContent = 'No playlists match.';
+      for (const button of groupsEl.querySelectorAll('.group')) {
+        button.classList.toggle('active', button.dataset.key === selected);
+      }
+      if (query) {
+        const rows = buildOmniResults(query);
+        title.textContent = 'Search results';
+        meta.textContent = `${rows.length} shown`;
+        grid.replaceChildren(...rows.map(searchResultCardFor));
+        empty.textContent = 'No results match.';
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected.startsWith('__playlist__:')) {
+        const playlistId = selected.slice('__playlist__:'.length);
+        const playlist = playlists.get(playlistId);
+        if (!playlist) {
+          title.textContent = 'Playlist not found';
+          meta.textContent = playlistId;
+          grid.replaceChildren();
+          empty.hidden = false;
+          return;
+        }
+        const rows = (playlistVideos.get(playlistId) || []).filter(video => {
+          const haystack = `${video.title} ${video.channel} ${video.availability} ${video.video_id}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        title.textContent = playlist.title;
+        meta.innerHTML = `
+          <a class="playlist-link" href="${playlist.url}" target="_blank" rel="noreferrer">YouTube</a>
+          <span>${rows.length} videos</span>
+          ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} hidden</span>` : ''}
+        `;
+        grid.replaceChildren(...rows.map(playlistVideoCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.';
+        return;
+      }
+      if (selected === '__hidden__') {
+        title.textContent = 'Hidden videos';
+        const rows = data.hiddenVideos.filter(video => {
+          const haystack = `${video.title} ${video.channel} ${video.availability} ${video.playlist_title} ${video.video_id}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        meta.textContent = `${rows.length} shown`;
+        grid.replaceChildren(...rows.map(hiddenVideoCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__terminated_channels__') {
+        title.textContent = 'Terminated channels';
+        const rows = (data.channels || [])
+          .filter(channel => ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase()))
+          .filter(channel => {
+            const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`.toLowerCase();
+            return !query || haystack.includes(query);
+          });
+        meta.textContent = `${rows.length} channels`;
+        grid.replaceChildren(...rows.map(channelCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__hidden_playlists__') {
+        title.textContent = 'Playlists with hidden videos';
+        const rows = data.playlists
+          .filter(playlist => (playlist.hidden_count || 0) > 0)
+          .filter(playlist => {
+            const haystack = `${playlist.title} ${playlist.owner} ${playlist.description} ${playlist.playlist_id}`.toLowerCase();
+            return !query || haystack.includes(query);
+          })
+          .sort((a, b) =>
+            (b.hidden_count || 0) - (a.hidden_count || 0)
+            || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
+          );
+        meta.textContent = `${rows.length} playlists`;
+        grid.replaceChildren(...rows.map(cardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__snapshot__') {
+        const label = data.snapshots[0]?.label || 'Takeout snapshot';
+        title.textContent = label;
+        const rows = data.snapshotPlaylists.filter(playlist => {
+          const haystack = `${playlist.title} ${playlist.playlist_id} ${playlist.visibility}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        meta.textContent = `${rows.length} playlists`;
+        grid.replaceChildren(...rows.map(snapshotPlaylistCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__snapshot_missing__') {
+        title.textContent = 'Snapshot missing';
+        const rows = data.snapshotMissing.filter(video => {
+          const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.added_at}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        meta.textContent = `${rows.length} video IDs`;
+        grid.replaceChildren(...rows.map(snapshotMissingCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__snapshot_likely_hidden__') {
+        title.textContent = 'Likely hidden IDs';
+        const rows = data.snapshotLikelyHidden.filter(video => {
+          const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.added_at} ${video.recovered_title}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        meta.textContent = `${rows.length} video IDs`;
+        grid.replaceChildren(...rows.map(snapshotMissingCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      const group = data.groups.find(g => g.group_key === selected);
+      title.textContent = group ? group.name : 'All playlists';
+      const ids = groupPlaylistIds(selected);
+      const rows = ids.map(id => playlists.get(id)).filter(Boolean).filter(p => {
+        const haystack = `${p.title} ${p.owner} ${p.description} ${p.playlist_id}`.toLowerCase();
+        return !query || haystack.includes(query);
+      });
+      meta.textContent = `${rows.length} shown`;
+      grid.replaceChildren(...rows.map(cardFor));
+      empty.hidden = rows.length !== 0;
+    }
+
+    function cardFor(playlist) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      const localHref = localPlaylistHref(playlist.playlist_id);
+      const img = document.createElement('img');
+      img.className = 'thumb';
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = playlist.thumbnail_path ? `/${playlist.thumbnail_path}` : '';
+      const thumbLink = document.createElement('a');
+      thumbLink.className = 'thumb-link';
+      thumbLink.href = localHref;
+      thumbLink.append(img);
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.innerHTML = `
+        <div class="title-row">
+          <a class="playlist-title" href="${localHref}">${escapeHtml(playlist.title)}</a>
+          <a class="external-link" href="${playlist.url}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(playlist.title)} on YouTube">
+            ${externalLinkSvg()}
+          </a>
+        </div>
+        <div class="details">
+          ${playlist.video_count_text ? `<span>${escapeHtml(playlist.video_count_text)}</span>` : ''}
+          ${playlist.scanned_video_count ? `<span>${playlist.scanned_video_count} scanned</span>` : ''}
+          ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} hidden</span>` : ''}
+          ${playlist.owner ? `<span>${escapeHtml(playlist.owner)}</span>` : ''}
+          ${playlist.fetch_status === 'error' ? '<span class="status">Fetch failed</span>' : ''}
+        </div>
+      `;
+      article.append(thumbLink, body);
+      return article;
+    }
+
+    function playlistVideoCardFor(video) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      if (video.metadata_thumbnail_path) {
+        article.append(thumbnailWithProgress(video.metadata_thumbnail_path, video));
+      }
+      const body = document.createElement('div');
+      body.className = 'body';
+      const watchUrl = video.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}&list=${encodeURIComponent(video.playlist_id)}` : '';
+      const channelName = displayVideoChannel(video);
+      const channelUrl = displayVideoChannelUrl(video);
+      body.innerHTML = `
+        <div class="position">#${video.position}</div>
+        ${watchUrl
+          ? `<a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayVideoTitle(video))}</a>`
+          : `<div class="video-title">${escapeHtml(displayVideoTitle(video))}</div>`}
+        <div class="details">
+          ${unavailableLabel(video) ? `<span class="badge">${escapeHtml(unavailableLabel(video))}</span>` : ''}
+          ${archivarixStatusLabel(video) ? `<span class="badge">${escapeHtml(archivarixStatusLabel(video))}</span>` : ''}
+          ${sourceQualityLabel(video) ? `<span class="badge">${escapeHtml(sourceQualityLabel(video))}</span>` : ''}
+          ${displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : ''}
+          ${creatorAvatarHtml(video.metadata_channel_thumbnail_path, channelUrl)}
+          ${creatorNameHtml(channelName, channelUrl)}
+          ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
+          ${archivarixLinkHtml(video)}
+        </div>
+        ${watchedLineHtml(video)}
+        ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : ''}
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function searchResultCardFor(result) {
+      if (result.kind === 'playlist') {
+        return cardFor(result.item);
+      }
+      if (result.kind === 'channel') {
+        return channelCardFor(result.item);
+      }
+      if (result.kind === 'missing') {
+        return snapshotMissingCardFor(result.item);
+      }
+      const video = result.item;
+      const article = playlistVideoCardFor(video);
+      const body = article.querySelector('.body');
+      if (body) {
+        const kind = document.createElement('div');
+        kind.className = 'result-kind';
+        kind.textContent = result.matchedDescription ? 'Description match' : 'Video';
+        body.prepend(kind);
+        const source = document.createElement('div');
+        source.className = 'details';
+        source.innerHTML = `<a class="playlist-link" href="${localPlaylistHref(video.playlist_id)}">${escapeHtml(video.playlist_title)}</a>`;
+        body.append(source);
+      }
+      return article;
+    }
+
+    function channelCardFor(channel) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      if (channel.thumbnail_path) {
+        const img = document.createElement('img');
+        img.className = 'thumb';
+        img.loading = 'lazy';
+        img.alt = '';
+        img.src = `/${channel.thumbnail_path}`;
+        article.append(img);
+      }
+      const body = document.createElement('div');
+      body.className = 'body';
+      const youtubeUrl = channel.url || (channel.channel_id ? `https://www.youtube.com/channel/${encodeURIComponent(channel.channel_id)}` : '');
+      const archivarixUrl = channel.channel_id ? `https://tube.archivarix.net/?q=${encodeURIComponent(channel.channel_id)}` : '';
+      const status = String(channel.status || '').toLowerCase();
+      const subscribedLabel = isSubscribedChannel(channel) ? 'Subscribed' : 'Non-subscribed';
+      body.innerHTML = `
+        <div class="result-kind">Channel</div>
+        <a class="playlist-title" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">${escapeHtml(channel.title || channel.channel_id)}</a>
+        <div class="details">
+          <span>${subscribedLabel}</span>
+          ${status ? `<span class="badge">${escapeHtml(status)}</span>` : ''}
+          ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
+          ${channel.archivarix_channel_id ? `<span>Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
+        </div>
+        ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
+        ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
+        ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : ''}
+        <div class="details">
+          ${youtubeUrl ? `<a class="playlist-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">YouTube</a>` : ''}
+          ${archivarixUrl ? `<a class="playlist-link" href="${escapeHtml(archivarixUrl)}" target="_blank" rel="noreferrer">Archivarix</a>` : ''}
+        </div>
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function externalLinkSvg() {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"></path><path d="M8 7h9v9"></path><path d="M7 7H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"></path></svg>';
+    }
+
+    function hiddenVideoCardFor(video) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.innerHTML = `
+        <div class="position">#${video.position}</div>
+        <div class="video-title">${escapeHtml(video.title)}</div>
+        <div class="details">
+          ${video.availability ? `<span class="badge">${escapeHtml(video.availability)}</span>` : '<span class="badge">Hidden</span>'}
+          ${video.channel ? `<span>${escapeHtml(video.channel)}</span>` : ''}
+          ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
+        </div>
+        <div class="details">
+          <a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>
+        </div>
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function candidateCardFor(video) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      const img = document.createElement('img');
+      img.className = 'thumb';
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = video.thumbnail_path ? `/${video.thumbnail_path}` : '';
+      const body = document.createElement('div');
+      body.className = 'body';
+      const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`;
+      body.innerHTML = `
+        <a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(video.title)}</a>
+        <div class="details">
+          <span class="badge">${escapeHtml(video.status)}</span>
+          ${video.duration_text ? `<span>${escapeHtml(video.duration_text)}</span>` : ''}
+          ${video.upload_date ? `<span>${escapeHtml(video.upload_date)}</span>` : ''}
+          ${video.channel ? `<span>${escapeHtml(video.channel)}</span>` : ''}
+          <span>${escapeHtml(video.video_id)}</span>
+        </div>
+        <div class="details">
+          <a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>
+        </div>
+      `;
+      article.append(img, body);
+      return article;
+    }
+
+    function snapshotPlaylistCardFor(playlist) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      const body = document.createElement('div');
+      body.className = 'body';
+      const currentName = playlist.current_title || '';
+      body.innerHTML = `
+        <div class="playlist-title">${escapeHtml(playlist.title)}</div>
+        <div class="details">
+          <span>${playlist.video_count} videos</span>
+          ${playlist.current_video_count ? `<span>${playlist.current_video_count} current</span>` : ''}
+          ${playlist.current_hidden_count ? `<span class="badge">${playlist.current_hidden_count} hidden now</span>` : ''}
+          ${playlist.visibility ? `<span>${escapeHtml(playlist.visibility)}</span>` : ''}
+        </div>
+        <div class="details">
+          <span>${escapeHtml(playlist.playlist_id)}</span>
+          ${currentName && currentName !== playlist.title ? `<span>Current: ${escapeHtml(currentName)}</span>` : ''}
+        </div>
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function snapshotMissingCardFor(video) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      if (video.recovered_thumbnail_path) {
+        const img = document.createElement('img');
+        img.className = 'thumb';
+        img.loading = 'lazy';
+        img.alt = '';
+        img.src = `/${video.recovered_thumbnail_path}`;
+        article.append(img);
+      }
+      const body = document.createElement('div');
+      body.className = 'body';
+      const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`;
+      const archivarixUrl = `https://tube.archivarix.net/?q=${encodeURIComponent(video.video_id)}`;
+      const displayTitle = video.recovered_title || video.video_id;
+      body.innerHTML = `
+        <div class="position">#${video.position}</div>
+        <a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayTitle)}</a>
+        <div class="details">
+          ${video.recovered_status ? `<span class="badge">${escapeHtml(video.recovered_status)}</span>` : ''}
+          ${video.recovered_duration ? `<span>${escapeHtml(video.recovered_duration)}</span>` : ''}
+          ${video.recovered_upload_date ? `<span>${escapeHtml(video.recovered_upload_date)}</span>` : ''}
+          ${video.recovered_channel ? `<span>${escapeHtml(video.recovered_channel)}</span>` : ''}
+          ${video.added_at ? `<span>Added ${escapeHtml(video.added_at.slice(0, 10))}</span>` : ''}
+          <span>${escapeHtml(video.video_id)}</span>
+          <a class="playlist-link" href="${archivarixUrl}" target="_blank" rel="noreferrer">Archivarix</a>
+        </div>
+        ${video.recovered_description ? `<div class="description">${escapeHtml(video.recovered_description)}</div>` : ''}
+        <div class="details">
+          <a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.current_title || video.playlist_title)}</a>
+        </div>
+      `;
+      article.append(body);
+      return article;
+    }
+
+    function escapeHtml(value) {
+      return String(value || '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
+    search.addEventListener('input', render);
+    if (channelsFilter) {
+      channelsFilter.addEventListener('change', () => {
+        channelsFilter.indeterminate = false;
+        for (const child of channelChildFilters) child.checked = channelsFilter.checked;
+        render();
+      });
+    }
+    for (const input of channelChildFilters) {
+      input.addEventListener('change', () => {
+        syncChannelParentFilter();
+        render();
+      });
+    }
+    for (const input of searchFilters) {
+      if (input === channelsFilter || channelChildFilters.includes(input)) continue;
+      input.addEventListener('change', render);
+    }
+    syncChannelParentFilter();
+    window.addEventListener('hashchange', () => {
+      selected = selectionFromHash();
+      if (selected.startsWith('__playlist__:')) search.value = '';
+      renderGroups();
+      render();
+    });
+    refresh.addEventListener('click', () => loadData().catch(error => {
+      meta.textContent = error.message;
+      refresh.disabled = false;
+      refresh.textContent = 'Refresh';
+    }));
+    loadData().catch(error => {
+      title.textContent = 'Unable to load data';
+      meta.textContent = error.message;
+      refresh.disabled = false;
+      refresh.textContent = 'Refresh';
+    });
+  </script>
+</body>
+</html>
