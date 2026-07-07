@@ -11,6 +11,7 @@ This repository is a Python web app for browsing, enriching, and reconciling a p
 - `yt_library/queries.py` contains read models for the browser and history search.
 - `yt_library/schema.sql` is the SQLite schema, loaded by `yt_library/schema.py`.
 - `yt_library/templates/` contains the browser, history, and admin HTML.
+- `tests/` contains the standard-library `unittest` suite for helpers, schema bootstrap, and read models.
 - `requirements.txt` lists Python dependencies, including `yt-dlp`.
 - `yt_library.sqlite3`, cookie files, thumbnail folders, and Takeout zip exports are local runtime data and should not be committed.
 - Common generated asset folders include `thumbs/`, `video_thumbs/`, and `archivarix_thumbs/`.
@@ -21,8 +22,9 @@ Use the repository root as the working directory.
 
 ```powershell
 python -m pip install -r requirements.txt
-$files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName })
+$files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
 python -m py_compile @files
+python -m unittest discover -s tests -v
 python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout .
 python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout .
 ```
@@ -65,13 +67,16 @@ Prefer Python implementations and put changes in the module that owns the behavi
 
 ## Testing Guidelines
 
-There is no formal test suite yet. For each change, at minimum run:
+The formal test suite uses Python's standard `unittest` runner. For each change, at minimum run:
 
 ```powershell
-$files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName })
+$files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
 python -m py_compile @files
+python -m unittest discover -s tests -v
 git diff --check
 ```
+
+Current tests cover pure helpers, Takeout watch-history parsing, temporary SQLite schema bootstrap, and history search read models. Keep tests local-only: do not require real cookies, network access, personal Takeout zips, or the live `yt_library.sqlite3`.
 
 For schema, import, or worker changes, also run the relevant command against a local copy of `yt_library.sqlite3` and smoke test `/api/admin/status` and `/api/history/search?limit=1`.
 

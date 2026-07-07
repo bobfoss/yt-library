@@ -20,6 +20,7 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 - `yt_library/queries.py` contains read models for the library and history views.
 - `yt_library/schema.sql` is the SQLite schema, loaded by `yt_library/schema.py`.
 - `yt_library/templates/` contains the browser, history, and admin HTML.
+- `tests/` contains the basic `unittest` suite for pure helpers, schema bootstrap, and read models.
 - `requirements.txt` lists Python dependencies.
 - `AGENTS.md` contains contributor guidance.
 - Runtime data such as `yt_library.sqlite3`, cookie files, Takeout zip exports, thumbnail folders, and logs should stay local and uncommitted.
@@ -47,13 +48,18 @@ Open:
 ## Useful Commands
 
 ```powershell
-$files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName })
+$files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
 python -m py_compile @files
+python -m unittest discover -s tests -v
 python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout .
 git diff --check
 ```
 
 `import-history` scans the Takeout path for watch history zip files, imports watch rows, and rebuilds reconciliation.
+
+## Testing
+
+The test suite uses the Python standard library `unittest` runner, so there is no separate test dependency. Current coverage focuses on stable, local behavior: date/time normalization, Takeout watch-history parsing, temporary SQLite schema bootstrap, and history search filtering/sorting. Tests must not use real cookies, network requests, or personal runtime databases.
 
 ## Data Notes
 
