@@ -42,7 +42,14 @@ Status: completed.
 - `snapshot_playlists.source_file` and `snapshot_videos.source_file` may be redundant now that `snapshot_key` identifies the Takeout import.
 - Cleanup completed by removing the columns and keeping snapshot identity at the snapshot level.
 
+## Unused Archivarix Candidate Card
+
+- `yt_library/templates/index.html` still defines `candidateCardFor()`, but no current UI path calls it.
+- It appears to be leftover from the earlier Archivarix candidate workflow that rendered rows from `data.archivarixCandidates` / `archivarix_candidates`.
+- The richer snapshot and playlist video card paths now cover the active recovered-video display needs.
+- Cleanup: remove `candidateCardFor()` and then review whether the `archivarixCandidates` API payload and table path are still useful.
+
 ## Suggested Order
 
 1. Fix the remaining raw playlist availability display path.
-2. All tracked cleanup items are complete.
+2. Remove the unused Archivarix candidate card path.
