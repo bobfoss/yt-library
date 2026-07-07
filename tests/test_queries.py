@@ -25,13 +25,36 @@ class HistorySearchTests(unittest.TestCase):
         self.conn.executemany(
             """
             INSERT INTO history_reconciled(
-              reconciled_id, video_id, title, channel, best_watch_time, watch_date, imported_at
+              reconciled_id, video_id, title, channel, best_watch_time, watch_date,
+              source_type, match_type, time_quality, imported_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                ("old", "old123", "Old Router Video", "Net Channel", "2026-07-01T09:00:00-07:00", "2026-07-01", 1),
-                ("new", "new123", "New Fiber Video", "Got Wire", "2026-07-05T09:00:00-07:00", "2026-07-05", 2),
+                (
+                    "old",
+                    "old123",
+                    "Old Router Video",
+                    "Net Channel",
+                    "2026-07-01T09:00:00-07:00",
+                    "2026-07-01",
+                    "takeout",
+                    "takeout_only",
+                    "exact",
+                    1,
+                ),
+                (
+                    "new",
+                    "new123",
+                    "New Fiber Video",
+                    "Got Wire",
+                    "2026-07-05T09:00:00-07:00",
+                    "2026-07-05",
+                    "youtube",
+                    "youtube_only",
+                    "date_only",
+                    2,
+                ),
             ],
         )
         self.conn.execute(
@@ -45,6 +68,7 @@ class HistorySearchTests(unittest.TestCase):
 
         data = history_search_data(self.conn, "", limit=10)
         self.assertEqual([row["video_id"] for row in data["watch"]], ["new123", "old123"])
+        self.assertEqual(data["watch"][0]["history_badges"], ["YouTube", "date only", "YouTube only"])
 
         filtered = history_search_data(self.conn, "gateway", limit=10)
         self.assertEqual(filtered["totals"]["filtered_watch_rows"], 1)

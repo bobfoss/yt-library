@@ -13,21 +13,27 @@ Status: completed.
 
 ## History Reconciliation Semantics
 
+Status: completed.
+
 - `history_reconciled.source_quality` currently mixes source, match state, and time quality.
 - Current values include examples such as `matched`, `takeout_exact`, `youtube_date_only`, and `youtube_observed_only`.
-- Cleanup: split this into compact factual fields, likely something like source lineage plus `match_type` and/or `time_quality`.
+- Cleanup completed by replacing `source_quality` with compact `source_type`, `match_type`, and `time_quality` fields.
 - Derive user-facing labels from code mappings instead of rendering raw keys.
 
 ## History Match Notes
 
+Status: completed.
+
 - `history_reconciled.match_notes` stores generated prose, including the YouTube observed-time explanation.
-- Cleanup: replace generated prose with a compact key, then map that key to display text in code.
+- Cleanup completed by removing `match_notes` and deriving explanatory text from `time_quality`.
 - Keep free-form notes only if we later identify truly source-authored or user-authored notes.
 
 ## Raw History UI Badges
 
+Status: completed.
+
 - `yt_library/templates/history.html` renders `source_quality` directly as a badge.
-- Cleanup: introduce a mapping function similar to playlist match labels so internal keys do not leak into the UI.
+- Cleanup completed by rendering derived `history_badges` from the history search read model.
 
 ## Snapshot Source File Columns
 
@@ -38,7 +44,4 @@ Status: completed.
 ## Suggested Order
 
 1. Fix the remaining raw playlist availability display path.
-2. Normalize `history_reconciled` source/match/time semantics.
-3. Replace `history_reconciled.match_notes` with mapped keys.
-4. Update history UI badges to use derived labels.
-5. Revisit snapshot `source_file` columns after the history cleanup.
+2. Revisit snapshot `source_file` columns after the history cleanup.

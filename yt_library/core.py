@@ -62,6 +62,25 @@ PLAYLIST_MATCH_TYPE_LABELS = {
     "inferred_hidden_slot": "restored from Takeout",
 }
 
+HISTORY_SOURCE_TYPE_LABELS = {
+    "takeout_youtube": "Takeout + YouTube",
+    "takeout": "Takeout",
+    "youtube": "YouTube",
+}
+HISTORY_MATCH_TYPE_LABELS = {
+    "video_id_date": "matched by video/date",
+    "takeout_only": "Takeout only",
+    "youtube_only": "YouTube only",
+}
+HISTORY_TIME_QUALITY_LABELS = {
+    "exact": "exact time",
+    "date_only": "date only",
+    "observed_only": "observed time",
+}
+HISTORY_TIME_QUALITY_NOTES = {
+    "observed_only": "YouTube history entry had no watch date; observed_at is fetch time",
+}
+
 
 SCHEMA = load_schema()
 
@@ -235,6 +254,82 @@ def playlist_source_quality_from_legacy(source_quality: str, match_type: str) ->
     if match_type == "ambiguous_hidden_slot":
         return "current"
     return ""
+
+
+def history_source_type_from_legacy(source_quality: str = "", source_type: str = "") -> str:
+    source_type = (source_type or "").strip()
+    if source_type:
+        return source_type
+    source_quality = (source_quality or "").strip()
+    if source_quality == "matched":
+        return "takeout_youtube"
+    if source_quality == "takeout_exact":
+        return "takeout"
+    if source_quality in {"youtube_date_only", "youtube_observed_only"}:
+        return "youtube"
+    return source_quality
+
+
+def history_match_type_from_legacy(
+    source_quality: str = "",
+    match_confidence: str = "",
+    match_type: str = "",
+) -> str:
+    match_type = (match_type or "").strip()
+    if match_type:
+        return match_type
+    match_confidence = (match_confidence or "").strip()
+    if match_confidence:
+        if match_confidence == "observed_only":
+            return "youtube_only"
+        return match_confidence
+    source_quality = (source_quality or "").strip()
+    if source_quality == "matched":
+        return "video_id_date"
+    if source_quality == "takeout_exact":
+        return "takeout_only"
+    if source_quality in {"youtube_date_only", "youtube_observed_only"}:
+        return "youtube_only"
+    return ""
+
+
+def history_time_quality_from_legacy(
+    source_quality: str = "",
+    time_quality: str = "",
+    best_watch_time: str = "",
+    watch_date: str = "",
+) -> str:
+    time_quality = (time_quality or "").strip()
+    if time_quality:
+        return time_quality
+    source_quality = (source_quality or "").strip()
+    if source_quality in {"matched", "takeout_exact"}:
+        return "exact"
+    if source_quality == "youtube_date_only":
+        return "date_only"
+    if source_quality == "youtube_observed_only":
+        return "observed_only"
+    if best_watch_time:
+        return "exact"
+    if watch_date:
+        return "date_only"
+    return ""
+
+
+def history_source_type_label(source_type: str) -> str:
+    return HISTORY_SOURCE_TYPE_LABELS.get(source_type or "", source_type or "")
+
+
+def history_match_type_label(match_type: str) -> str:
+    return HISTORY_MATCH_TYPE_LABELS.get(match_type or "", match_type or "")
+
+
+def history_time_quality_label(time_quality: str) -> str:
+    return HISTORY_TIME_QUALITY_LABELS.get(time_quality or "", time_quality or "")
+
+
+def history_time_quality_note(time_quality: str) -> str:
+    return HISTORY_TIME_QUALITY_NOTES.get(time_quality or "", "")
 
 
 def video_availability_from_recovery_status(status: str) -> str:
@@ -950,15 +1045,14 @@ def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
 def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(history_reconciled)")}
     if (
-        "takeout_position" not in existing
-        and "takeout_row_hash" in existing
-        and "channel_url" not in existing
-        and "watch_progress_percent" in existing
-        and "watch_resume_seconds" in existing
+        {"source_type", "match_type", "time_quality"}.issubset(existing)
+        and "source_quality" not in existing
+        and "match_confidence" not in existing
+        and "match_notes" not in existing
     ):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_channel ON history_reconciled(channel_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, source_quality)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, time_quality)")
         return
     old_table = begin_table_rebuild(conn, "history_reconciled")
     conn.execute(
@@ -972,13 +1066,13 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
           channel TEXT NOT NULL DEFAULT '',
           best_watch_time TEXT NOT NULL DEFAULT '',
           watch_date TEXT NOT NULL DEFAULT '',
-          source_quality TEXT NOT NULL DEFAULT '',
+          source_type TEXT NOT NULL DEFAULT '',
+          match_type TEXT NOT NULL DEFAULT '',
+          time_quality TEXT NOT NULL DEFAULT '',
           youtube_history_key TEXT NOT NULL DEFAULT '',
           youtube_ordinal INTEGER NOT NULL DEFAULT 0,
           takeout_history_key TEXT NOT NULL DEFAULT '',
           takeout_row_hash TEXT NOT NULL DEFAULT '',
-          match_confidence TEXT NOT NULL DEFAULT '',
-          match_notes TEXT NOT NULL DEFAULT '',
           watch_progress_percent INTEGER NOT NULL DEFAULT 0,
           watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
           imported_at INTEGER NOT NULL DEFAULT 0,
@@ -997,14 +1091,29 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
             url=channel_url,
             source="history_reconciled",
         )
+        source_quality = row["source_quality"] if "source_quality" in old_cols else ""
+        source_type = history_source_type_from_legacy(
+            source_quality,
+            row["source_type"] if "source_type" in old_cols else "",
+        )
+        match_type = history_match_type_from_legacy(
+            source_quality,
+            row["match_confidence"] if "match_confidence" in old_cols else "",
+            row["match_type"] if "match_type" in old_cols else "",
+        )
+        time_quality = history_time_quality_from_legacy(
+            source_quality,
+            row["time_quality"] if "time_quality" in old_cols else "",
+            row["best_watch_time"] if "best_watch_time" in old_cols else "",
+            row["watch_date"] if "watch_date" in old_cols else "",
+        )
         conn.execute(
             """
             INSERT OR IGNORE INTO history_reconciled(
               reconciled_id, video_id, title, url, channel_id, channel,
-              best_watch_time, watch_date, source_quality,
+              best_watch_time, watch_date, source_type, match_type, time_quality,
               youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
-              match_confidence, match_notes, watch_progress_percent, watch_resume_seconds,
-              imported_at, updated_at
+              watch_progress_percent, watch_resume_seconds, imported_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -1017,13 +1126,13 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
                 row["channel"] if "channel" in old_cols else "",
                 row["best_watch_time"] if "best_watch_time" in old_cols else "",
                 row["watch_date"] if "watch_date" in old_cols else "",
-                row["source_quality"] if "source_quality" in old_cols else "",
+                source_type,
+                match_type,
+                time_quality,
                 row["youtube_history_key"] if "youtube_history_key" in old_cols else "",
                 row["youtube_ordinal"] if "youtube_ordinal" in old_cols else 0,
                 row["takeout_history_key"] if "takeout_history_key" in old_cols else "",
                 row["takeout_row_hash"] if "takeout_row_hash" in old_cols else "",
-                row["match_confidence"] if "match_confidence" in old_cols else "",
-                row["match_notes"] if "match_notes" in old_cols else "",
                 row["watch_progress_percent"] if "watch_progress_percent" in old_cols else 0,
                 row["watch_resume_seconds"] if "watch_resume_seconds" in old_cols else 0,
                 row["imported_at"] if "imported_at" in old_cols else 0,
@@ -1033,7 +1142,7 @@ def ensure_history_reconciled_schema(conn: sqlite3.Connection) -> None:
     conn.execute(f"DROP TABLE {old_table}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_channel ON history_reconciled(channel_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, source_quality)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, time_quality)")
 
 
 def load_cookie_jar(cookie_file: Path) -> http.cookiejar.MozillaCookieJar:
@@ -4046,17 +4155,18 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
             if youtube_row:
                 youtube_progress = youtube_row["watch_progress_percent"] if "watch_progress_percent" in youtube_row.keys() else 0
                 youtube_resume = youtube_row["watch_resume_seconds"] if "watch_resume_seconds" in youtube_row.keys() else 0
-        source_quality = "matched" if youtube_match else "takeout_exact"
+        source_type = "takeout_youtube" if youtube_match else "takeout"
+        match_type = "video_id_date" if youtube_match else "takeout_only"
+        time_quality = "exact"
         if youtube_match:
             matched += 1
         conn.execute(
             """
             INSERT INTO history_reconciled(
               reconciled_id, video_id, title, url, channel_id, channel,
-              best_watch_time, watch_date, source_quality,
+              best_watch_time, watch_date, source_type, match_type, time_quality,
               youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
-              match_confidence, match_notes, watch_progress_percent, watch_resume_seconds,
-              imported_at, updated_at
+              watch_progress_percent, watch_resume_seconds, imported_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -4069,13 +4179,13 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 takeout["channel"],
                 takeout["watched_at_iso"],
                 takeout["watched_at_iso"][:10],
-                source_quality,
+                source_type,
+                match_type,
+                time_quality,
                 "youtube" if youtube_match else "",
                 youtube_match if youtube_match else 0,
                 takeout["history_key"],
                 takeout["row_hash"],
-                "video_id_date" if youtube_match else "takeout_only",
-                "same video_id and watch_date" if youtube_match else "",
                 youtube_progress,
                 youtube_resume,
                 now,
@@ -4089,19 +4199,16 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
         if youtube_key in matched_youtube:
             continue
         youtube_watch_time = youtube_watch_datetime(youtube["watch_date"]) if youtube["watch_date"] else ""
-        youtube_source_quality = "youtube_date_only" if youtube["watch_date"] else "youtube_observed_only"
-        youtube_match_confidence = "youtube_only" if youtube["watch_date"] else "observed_only"
-        youtube_match_notes = "" if youtube["watch_date"] else "YouTube history entry had no watch date; observed_at is fetch time"
+        youtube_time_quality = "date_only" if youtube["watch_date"] else "observed_only"
         conn.execute(
             """
             INSERT INTO history_reconciled(
               reconciled_id, video_id, title, url, channel_id, channel,
-              best_watch_time, watch_date, source_quality,
+              best_watch_time, watch_date, source_type, match_type, time_quality,
                 youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
-                match_confidence, match_notes, watch_progress_percent, watch_resume_seconds,
-                imported_at, updated_at
+                watch_progress_percent, watch_resume_seconds, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)
             """,
             (
                 f"youtube:{youtube['ordinal']}",
@@ -4112,11 +4219,11 @@ def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
                 youtube["channel"],
                 youtube_watch_time,
                 youtube["watch_date"],
-                youtube_source_quality,
+                "youtube",
+                "youtube_only",
+                youtube_time_quality,
                 "youtube",
                 youtube["ordinal"],
-                youtube_match_confidence,
-                youtube_match_notes,
                 youtube["watch_progress_percent"] if "watch_progress_percent" in youtube.keys() else 0,
                 youtube["watch_resume_seconds"] if "watch_resume_seconds" in youtube.keys() else 0,
                 youtube["imported_at"],

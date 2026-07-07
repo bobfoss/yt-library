@@ -5,7 +5,14 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from .core import playlist_match_type_label, playlist_match_type_note
+from .core import (
+    history_match_type_label,
+    history_source_type_label,
+    history_time_quality_label,
+    history_time_quality_note,
+    playlist_match_type_label,
+    playlist_match_type_note,
+)
 
 
 def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -262,9 +269,9 @@ def history_search_data(
                    hr.channel,
                    hr.best_watch_time AS watched_at,
                    hr.watch_date,
-                   hr.source_quality,
-                   hr.match_confidence,
-                   hr.match_notes,
+                   hr.source_type,
+                   hr.match_type,
+                   hr.time_quality,
                    hr.youtube_history_key,
                    hr.youtube_ordinal,
                    hr.takeout_history_key,
@@ -295,6 +302,16 @@ def history_search_data(
             [*watch_params, limit, offset],
         )
     ]
+    for row in watch_rows:
+        source_label = history_source_type_label(row.get("source_type", ""))
+        time_label = history_time_quality_label(row.get("time_quality", ""))
+        match_label = history_match_type_label(row.get("match_type", ""))
+        row["source_label"] = source_label
+        row["time_quality_label"] = time_label
+        row["match_label"] = match_label
+        row["time_quality_note"] = history_time_quality_note(row.get("time_quality", ""))
+        labels = [label for label in (source_label, time_label, match_label) if label]
+        row["history_badges"] = labels
     total = dict(
         conn.execute(
             """

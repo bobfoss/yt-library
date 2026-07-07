@@ -222,13 +222,13 @@ CREATE TABLE IF NOT EXISTS history_reconciled (
   channel TEXT NOT NULL DEFAULT '',
   best_watch_time TEXT NOT NULL DEFAULT '',
   watch_date TEXT NOT NULL DEFAULT '',
-  source_quality TEXT NOT NULL DEFAULT '',
+  source_type TEXT NOT NULL DEFAULT '',
+  match_type TEXT NOT NULL DEFAULT '',
+  time_quality TEXT NOT NULL DEFAULT '',
   youtube_history_key TEXT NOT NULL DEFAULT '',
   youtube_ordinal INTEGER NOT NULL DEFAULT 0,
   takeout_history_key TEXT NOT NULL DEFAULT '',
   takeout_row_hash TEXT NOT NULL DEFAULT '',
-  match_confidence TEXT NOT NULL DEFAULT '',
-  match_notes TEXT NOT NULL DEFAULT '',
   watch_progress_percent INTEGER NOT NULL DEFAULT 0,
   watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
   imported_at INTEGER NOT NULL DEFAULT 0,
@@ -356,7 +356,7 @@ CREATE INDEX IF NOT EXISTS idx_youtube_history_occurrences_date ON youtube_histo
 CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_video ON takeout_history_occurrences(video_id);
 CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_time ON takeout_history_occurrences(watched_at_iso, video_id);
 CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id);
-CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, source_quality);
+CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, time_quality);
 CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_run ON metadata_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_run ON playlist_scan_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_live_history_worker_log_run ON live_history_worker_log(run_id, created_at);

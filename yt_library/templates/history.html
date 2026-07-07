@@ -189,7 +189,7 @@
         <a class="title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayTitle(row))}</a>
         <div class="details">
           ${row.watched_at ? `<span>${escapeHtml(row.watched_at)}</span>` : ''}
-          ${row.source_quality ? `<span class="badge">${escapeHtml(row.source_quality)}</span>` : ''}
+          ${(row.history_badges || []).map(label => `<span class="badge">${escapeHtml(label)}</span>`).join('')}
           ${reactionLabel(row) ? `<span class="badge">${escapeHtml(reactionLabel(row))}</span>` : ''}
           ${creatorHtml(row.metadata_channel_thumbnail_path, channelName, channelUrl)}
           ${row.video_id ? `<span>${escapeHtml(row.video_id)}</span>` : ''}

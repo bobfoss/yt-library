@@ -200,6 +200,19 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "subscriber_only", "", 0), "subscriber_only")
         self.assertEqual(core.reconciled_video_availability("", "private", "LIVE"), "")
 
+    def test_history_reconciliation_helpers_split_legacy_source_quality(self) -> None:
+        self.assertEqual(core.history_source_type_from_legacy("matched"), "takeout_youtube")
+        self.assertEqual(core.history_match_type_from_legacy("matched"), "video_id_date")
+        self.assertEqual(core.history_time_quality_from_legacy("matched"), "exact")
+        self.assertEqual(core.history_source_type_from_legacy("youtube_observed_only"), "youtube")
+        self.assertEqual(
+            core.history_match_type_from_legacy("youtube_observed_only", "observed_only"),
+            "youtube_only",
+        )
+        self.assertEqual(core.history_time_quality_from_legacy("youtube_observed_only"), "observed_only")
+        self.assertEqual(core.history_time_quality_label("observed_only"), "observed time")
+        self.assertIn("observed_at", core.history_time_quality_note("observed_only"))
+
 
 class SchemaTests(unittest.TestCase):
     def test_connect_bootstraps_expected_tables(self) -> None:
@@ -224,6 +237,10 @@ class SchemaTests(unittest.TestCase):
                         row["name"]
                         for row in conn.execute("PRAGMA table_info(playlist_video_reconciled)")
                     }
+                    history_columns = {
+                        row["name"]
+                        for row in conn.execute("PRAGMA table_info(history_reconciled)")
+                    }
                 finally:
                     conn.close()
             finally:
@@ -236,6 +253,12 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("reaction", columns)
         self.assertIn("match_type", reconciled_columns)
         self.assertNotIn("match_notes", reconciled_columns)
+        self.assertIn("source_type", history_columns)
+        self.assertIn("match_type", history_columns)
+        self.assertIn("time_quality", history_columns)
+        self.assertNotIn("source_quality", history_columns)
+        self.assertNotIn("match_confidence", history_columns)
+        self.assertNotIn("match_notes", history_columns)
 
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT
