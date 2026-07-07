@@ -5067,6 +5067,8 @@ def metadata_queue_subject_key(video_id: str, channel_id: str, metadata_source: 
     metadata_source = (metadata_source or "").strip() or "history"
     channel_id = (channel_id or "").strip()
     video_id = (video_id or "").strip()
+    if metadata_source == "playlist_scan":
+        return f"playlist:{video_id or channel_id}"
     if metadata_source == "channel":
         return f"channel:{channel_id or video_id}"
     return f"video:{video_id}"
@@ -5251,6 +5253,8 @@ def enqueue_provided_metadata_target(conn: sqlite3.Connection, target: str) -> d
     source = "provided"
     playlist_id = extract_playlist_id(target) or ""
     if playlist_id and not extract_video_id(target):
+        if "youtube.com/" in target or "youtu.be/" in target:
+            return enqueue_playlist_scan_target(conn, playlist_id)
         return enqueue_playlist_metadata_targets(conn, playlist_id)
     if target.startswith("@"):
         channel_id = target
@@ -5280,6 +5284,37 @@ def enqueue_provided_metadata_target(conn: sqlite3.Connection, target: str) -> d
         "video_id": video_id or channel_id,
         "channel_id": channel_id,
         "metadata_source": source,
+    }
+
+
+def enqueue_playlist_scan_target(conn: sqlite3.Connection, playlist_id: str) -> dict[str, str]:
+    playlist_id = (playlist_id or "").strip()
+    if not playlist_id:
+        raise ValueError("Enter a YouTube playlist URL or playlist ID.")
+    title_row = conn.execute(
+        """
+        SELECT title
+        FROM playlists
+        WHERE playlist_id = ?
+        """,
+        (playlist_id,),
+    ).fetchone()
+    subject_key = enqueue_metadata_item(
+        conn,
+        video_id=playlist_id,
+        current_title=title_row["title"] if title_row else playlist_id,
+        metadata_source="playlist_scan",
+        source_key=playlist_id,
+        priority=0,
+        manual=True,
+    )
+    return {
+        "subject_key": subject_key,
+        "video_id": "",
+        "channel_id": "",
+        "metadata_source": "playlist",
+        "playlist_id": playlist_id,
+        "queued_count": "1",
     }
 
 

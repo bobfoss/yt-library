@@ -322,7 +322,7 @@
         cells: [
           row => row.metadata_source === 'channel' ? (row.channel_title || row.channel_id || row.video_id) : row.video_id,
           row => [
-            `${row.metadata_source || ''}${row.manual ? ' manual' : ''}`,
+            `${row.metadata_source === 'playlist_scan' ? 'playlist' : (row.metadata_source || '')}${row.manual ? ' manual' : ''}`,
             row.source_key || '',
           ].filter(Boolean).join('\n'),
           row => row.metadata_source === 'channel' ? (row.channel_id || '') : (row.current_title || ''),

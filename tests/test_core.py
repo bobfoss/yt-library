@@ -323,15 +323,32 @@ class SchemaTests(unittest.TestCase):
                             "https://www.youtube.com/playlist?list=PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
                         )
                     self.assertEqual(queued_playlist["metadata_source"], "playlist")
-                    self.assertEqual(queued_playlist["queued_count"], "2")
+                    self.assertEqual(queued_playlist["queued_count"], "1")
                     playlist_queue_rows = [
+                        row
+                        for row in core.metadata_queue_rows(conn, limit=10)
+                        if row["metadata_source"] == "playlist_scan"
+                    ]
+                    self.assertEqual(len(playlist_queue_rows), 1)
+                    self.assertEqual(
+                        {row["source_key"] for row in playlist_queue_rows},
+                        {"PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4"},
+                    )
+                    with conn:
+                        queued_playlist_id = core.enqueue_provided_metadata_target(
+                            conn,
+                            "PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
+                        )
+                    self.assertEqual(queued_playlist_id["metadata_source"], "playlist")
+                    self.assertEqual(queued_playlist_id["queued_count"], "2")
+                    playlist_video_rows = [
                         row
                         for row in core.metadata_queue_rows(conn, limit=10)
                         if row["metadata_source"] == "playlist"
                     ]
                     self.assertEqual(
-                        {row["source_key"] for row in playlist_queue_rows},
-                        {"PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4"},
+                        {row["video_id"] for row in playlist_video_rows},
+                        {"abc12345678", "def12345678"},
                     )
 
                     core.upsert_channel(

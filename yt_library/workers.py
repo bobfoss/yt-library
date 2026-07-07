@@ -66,7 +66,7 @@ class MetadataWorker:
         conn = connect(db_path)
         opener = load_cookie_opener(cookie_file)
         try:
-            rows = metadata_queue_rows(conn, limit=limit, force=force, stale_days=stale_days)
+            initial_total = metadata_queue_count(conn, force=force, stale_days=stale_days)
             with conn:
                 conn.execute(
                     """
@@ -79,7 +79,7 @@ class MetadataWorker:
                     (
                         run_id,
                         int(time.time()),
-                        len(rows),
+                        initial_total,
                         delay,
                         limit,
                         1 if force else 0,
@@ -87,12 +87,23 @@ class MetadataWorker:
                         "Metadata worker started",
                     ),
                 )
-                log_worker_event(conn, run_id, "info", f"Queued {len(rows)} metadata items")
+                log_worker_event(conn, run_id, "info", f"Queued {initial_total} metadata items")
 
             processed = 0
             found = 0
             failed = 0
-            for row in rows:
+            attempted_queue_ids: set[int] = set()
+            while True:
+                rows = [
+                    candidate
+                    for candidate in metadata_queue_rows(conn, force=force, stale_days=stale_days)
+                    if int(candidate["queue_id"] or 0) not in attempted_queue_ids
+                ]
+                if not rows:
+                    break
+                if limit and processed >= limit:
+                    break
+                row = rows[0]
                 if self._stop.is_set():
                     with conn:
                         conn.execute(
@@ -106,10 +117,84 @@ class MetadataWorker:
                         log_worker_event(conn, run_id, "warn", "Worker stopped by request")
                     return
                 queue_id = int(row["queue_id"]) if "queue_id" in row.keys() else 0
+                if queue_id:
+                    attempted_queue_ids.add(queue_id)
                 video_id = row["video_id"]
                 metadata_source = row["metadata_source"] if "metadata_source" in row.keys() else "history"
                 queued_channel_id = row["channel_id"] if "channel_id" in row.keys() else ""
                 queued_channel_title = row["channel_title"] if "channel_title" in row.keys() else ""
+                if metadata_source == "playlist_scan":
+                    playlist_id = video_id
+                    playlist_title = row["current_title"] or playlist_id
+                    status = "ok"
+                    error = ""
+                    backend = "web"
+                    ytdlp_error = ""
+                    videos: list[dict[str, Any]] = []
+                    try:
+                        videos = scan_playlist_videos_ytdlp(playlist_id, cookie_file)
+                        backend = "yt-dlp"
+                    except Exception as exc:
+                        ytdlp_error = str(exc)
+                        try:
+                            videos = scan_playlist_videos(opener, playlist_id)
+                        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as web_exc:
+                            status = "error"
+                            error = str(web_exc)
+                    expected_row = conn.execute(
+                        """
+                        SELECT video_count_text
+                        FROM playlists
+                        WHERE playlist_id = ?
+                        """,
+                        (playlist_id,),
+                    ).fetchone()
+                    expected_count = expected_video_count(expected_row["video_count_text"] if expected_row else "")
+                    if status == "ok" and not videos and expected_count > 0:
+                        status = "error"
+                        error = f"Parsed 0 videos, but playlist metadata says {expected_count} videos"
+                        if ytdlp_error:
+                            error += f"; yt-dlp failed: {ytdlp_error[:500]}"
+                    with conn:
+                        if status == "error":
+                            failed += 1
+                            log_worker_event(conn, run_id, "playlist manual error", f"{playlist_title}: {error}", playlist_id)
+                        else:
+                            video_count, hidden_count = save_playlist_scan(conn, playlist_id, videos, status, error)
+                            queued = enqueue_playlist_metadata_targets(conn, playlist_id)
+                            queued_count = int(queued.get("queued_count") or 0)
+                            found += 1
+                            log_worker_event(
+                                conn,
+                                run_id,
+                                "playlist manual",
+                                (
+                                    f"{playlist_title}: {video_count} videos, {hidden_count} hidden "
+                                    f"({backend}); queued {queued_count} metadata items"
+                                ),
+                                playlist_id,
+                            )
+                            if queue_id:
+                                conn.execute("DELETE FROM metadata_queue WHERE queue_id = ?", (queue_id,))
+                        processed += 1
+                        remaining = metadata_queue_count(conn, force=force, stale_days=stale_days)
+                        conn.execute(
+                            """
+                            UPDATE metadata_worker_runs
+                            SET total = ?, processed = ?, found = ?, failed = ?, last_video_id = ?, message = ?
+                            WHERE run_id = ?
+                            """,
+                            (
+                                processed + remaining,
+                                processed,
+                                found,
+                                failed,
+                                playlist_id,
+                                f"Processed {processed}; {remaining} queued",
+                                run_id,
+                            ),
+                        )
+                    continue
                 status = "ok"
                 error = ""
                 metadata: dict[str, str] = {
@@ -239,19 +324,20 @@ class MetadataWorker:
                     conn.execute(
                         """
                         UPDATE metadata_worker_runs
-                        SET processed = ?, found = ?, failed = ?, last_video_id = ?, message = ?
+                        SET total = ?, processed = ?, found = ?, failed = ?, last_video_id = ?, message = ?
                         WHERE run_id = ?
                         """,
                         (
+                            processed + metadata_queue_count(conn, force=force, stale_days=stale_days),
                             processed,
                             found,
                             failed,
                             video_id,
-                            f"Processed {processed} of {len(rows)}",
+                            f"Processed {processed}; {metadata_queue_count(conn, force=force, stale_days=stale_days)} queued",
                             run_id,
                         ),
                     )
-                if delay and processed < len(rows):
+                if delay and metadata_queue_count(conn, force=force, stale_days=stale_days) > 0:
                     time.sleep(delay)
             with conn:
                 conn.execute(
@@ -260,7 +346,7 @@ class MetadataWorker:
                     SET status = 'complete', finished_at = ?, message = ?
                     WHERE run_id = ?
                     """,
-                    (int(time.time()), f"Completed {processed} videos", run_id),
+                    (int(time.time()), f"Completed {processed} items", run_id),
                 )
                 log_worker_event(conn, run_id, "info", f"Worker complete: {processed} processed")
         except Exception as exc:
