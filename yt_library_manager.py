@@ -6995,8 +6995,13 @@ ADMIN_HTML = """<!doctype html>
     h1 { font-size: 28px; margin: 0; }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 12px; }
     .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; }
+    .workstreams { display: grid; gap: 24px; margin-bottom: 18px; }
+    .workstream { border-top: 1px solid var(--line); padding-top: 18px; }
+    .workstream-header { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin-bottom: 12px; }
+    .workstream-header h2 { font-size: 20px; margin: 0; }
+    .workstream-header .status { justify-content: flex-end; }
     .metric { color: var(--muted); font-size: 13px; }
     .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
     .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0 18px; }
@@ -7014,7 +7019,7 @@ ADMIN_HTML = """<!doctype html>
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }
     th { color: var(--muted); font-weight: 600; }
-    .queue-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .queue-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 12px; }
     .queue-panel { max-height: 340px; overflow: auto; }
     .queue-title { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 8px; }
     .queue-title h2 { font-size: 16px; margin: 0; }
@@ -7028,6 +7033,8 @@ ADMIN_HTML = """<!doctype html>
     @media (max-width: 700px) {
       main { padding: 16px; }
       header { display: block; }
+      .workstream-header { display: block; }
+      .workstream-header .status { justify-content: flex-start; margin-top: 8px; }
     }
   </style>
 </head>
@@ -7038,73 +7045,102 @@ ADMIN_HTML = """<!doctype html>
       <nav><a href="/">Playlists</a> <a href="/history">History search</a></nav>
     </header>
 
-    <section class="grid">
-      <div class="panel"><div class="metric">Playlist video rows</div><div id="playlistRows" class="value">0</div></div>
-      <div class="panel"><div class="metric">Distinct video IDs</div><div id="distinctVideos" class="value">0</div></div>
-      <div class="panel"><div class="metric">History rows</div><div id="historyRows" class="value">0</div></div>
-      <div class="panel"><div class="metric">History video IDs</div><div id="historyVideos" class="value">0</div></div>
-      <div class="panel"><div class="metric">Fetched history rows</div><div id="liveHistoryRows" class="value">0</div></div>
-      <div class="panel"><div class="metric">Playlist scan queue</div><div id="playlistQueueCount" class="value">0</div></div>
-      <div class="panel"><div class="metric">Metadata queue</div><div id="metadataQueueCount" class="value">0</div></div>
-      <div class="panel"><div class="metric">Placeholder recovery queue</div><div id="placeholderQueueCount" class="value">0</div></div>
-      <div class="panel"><div class="metric">Playlist scanner</div><div id="playlistWorkerState" class="value">idle</div></div>
-      <div class="panel"><div class="metric">Metadata worker</div><div id="metadataWorkerState" class="value">idle</div></div>
-      <div class="panel"><div class="metric">History fetch</div><div id="liveHistoryWorkerState" class="value">idle</div></div>
-      <div class="panel"><div class="metric">Placeholder recovery</div><div id="placeholderWorkerState" class="value">idle</div></div>
-    </section>
+    <section class="workstreams">
+      <section class="workstream">
+        <div class="workstream-header">
+          <h2>Playlists</h2>
+          <div id="playlistRunStatus" class="status"></div>
+        </div>
+        <div class="grid">
+          <div class="panel"><div class="metric">Playlist video rows</div><div id="playlistRows" class="value">0</div></div>
+          <div class="panel"><div class="metric">Distinct video IDs</div><div id="distinctVideos" class="value">0</div></div>
+          <div class="panel"><div class="metric">Playlist scan queue</div><div id="playlistQueueCount" class="value">0</div></div>
+          <div class="panel"><div class="metric">Playlist scanner</div><div id="playlistWorkerState" class="value">idle</div></div>
+        </div>
+        <div class="controls">
+          <label>Limit<input id="playlistLimit" type="number" min="0" step="1" value="10"></label>
+          <label>Playlist delay<input id="playlistDelay" type="number" min="1" step="1" value="3"></label>
+          <label>Playlist stale days<input id="playlistStaleDays" type="number" min="0" step="1" value="7"></label>
+          <label class="checkbox"><input id="playlistForce" type="checkbox">Refresh already fetched</label>
+          <button id="scanPlaylists" class="primary" type="button">Scan playlists</button>
+          <button id="reconcilePlaylists" type="button">Reconcile playlists</button>
+          <button id="stopPlaylists" type="button">Stop playlist scan</button>
+          <button id="refresh" type="button">Refresh status</button>
+        </div>
+        <div class="queue-grid">
+          <div class="panel queue-panel">
+            <div class="queue-title"><h2>Playlist queue</h2><span id="playlistQueueShown">0 shown</span></div>
+            <table>
+              <thead><tr><th>Playlist</th><th>Status</th><th>Videos</th></tr></thead>
+              <tbody id="playlistQueueRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
 
-    <section class="panel">
-      <div class="controls">
-        <label>Limit<input id="limit" type="number" min="0" step="1" value="10"></label>
-        <label>Playlist delay<input id="playlistDelay" type="number" min="1" step="1" value="3"></label>
-        <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
-        <label>Playlist stale days<input id="playlistStaleDays" type="number" min="0" step="1" value="7"></label>
-        <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
-        <label class="checkbox"><input id="force" type="checkbox">Refresh already fetched</label>
-        <button id="scanPlaylists" class="primary" type="button">Scan playlists</button>
-        <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
-        <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
-        <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
-        <button id="importTakeoutHistory" type="button">Import Takeout history</button>
-        <button id="reconcileHistory" type="button">Reconcile history</button>
-        <button id="reconcilePlaylists" type="button">Reconcile playlists</button>
-        <button id="recoverPlaceholders" type="button">Recover deleted playlist videos</button>
-        <button id="stopPlaylists" type="button">Stop playlist scan</button>
-        <button id="stopMetadata" type="button">Stop metadata</button>
-        <button id="stopLiveHistory" type="button">Stop history fetch</button>
-        <button id="stopPlaceholders" type="button">Stop placeholder recovery</button>
-        <button id="refresh" type="button">Refresh status</button>
-      </div>
-      <div id="playlistRunStatus" class="status"></div>
-      <div id="metadataRunStatus" class="status" style="margin-top:8px"></div>
-      <div id="liveHistoryRunStatus" class="status" style="margin-top:8px"></div>
-      <div id="placeholderRunStatus" class="status" style="margin-top:8px"></div>
-    </section>
+      <section class="workstream">
+        <div class="workstream-header">
+          <h2>Metadata</h2>
+          <div class="status">
+            <div id="metadataRunStatus" class="status"></div>
+            <div id="placeholderRunStatus" class="status"></div>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="panel"><div class="metric">Metadata queue</div><div id="metadataQueueCount" class="value">0</div></div>
+          <div class="panel"><div class="metric">Metadata worker</div><div id="metadataWorkerState" class="value">idle</div></div>
+          <div class="panel"><div class="metric">Placeholder recovery queue</div><div id="placeholderQueueCount" class="value">0</div></div>
+          <div class="panel"><div class="metric">Placeholder recovery</div><div id="placeholderWorkerState" class="value">idle</div></div>
+        </div>
+        <div class="grid" id="metadataCounts"></div>
+        <div class="controls">
+          <label>Limit<input id="metadataLimit" type="number" min="0" step="1" value="10"></label>
+          <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
+          <label>Recovery delay<input id="recoveryDelay" type="number" min="1" step="1" value="3"></label>
+          <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
+          <label class="checkbox"><input id="metadataForce" type="checkbox">Refresh already fetched</label>
+          <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
+          <button id="recoverPlaceholders" type="button">Recover deleted playlist videos</button>
+          <button id="stopMetadata" type="button">Stop metadata</button>
+          <button id="stopPlaceholders" type="button">Stop placeholder recovery</button>
+        </div>
+        <div class="queue-grid">
+          <div class="panel queue-panel">
+            <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
+            <table>
+              <thead><tr><th>Video</th><th>Source</th><th>Title</th></tr></thead>
+              <tbody id="metadataQueueRows"></tbody>
+            </table>
+          </div>
+          <div class="panel queue-panel">
+            <div class="queue-title"><h2>Recovery queue</h2><span id="placeholderQueueShown">0 shown</span></div>
+            <table>
+              <thead><tr><th>Video</th><th>Playlist</th><th>Previous</th></tr></thead>
+              <tbody id="placeholderQueueRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
 
-    <section class="grid" id="metadataCounts"></section>
-
-    <section class="queue-grid">
-      <div class="panel queue-panel">
-        <div class="queue-title"><h2>Playlist queue</h2><span id="playlistQueueShown">0 shown</span></div>
-        <table>
-          <thead><tr><th>Playlist</th><th>Status</th><th>Videos</th></tr></thead>
-          <tbody id="playlistQueueRows"></tbody>
-        </table>
-      </div>
-      <div class="panel queue-panel">
-        <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
-        <table>
-          <thead><tr><th>Video</th><th>Source</th><th>Title</th></tr></thead>
-          <tbody id="metadataQueueRows"></tbody>
-        </table>
-      </div>
-      <div class="panel queue-panel">
-        <div class="queue-title"><h2>Recovery queue</h2><span id="placeholderQueueShown">0 shown</span></div>
-        <table>
-          <thead><tr><th>Video</th><th>Playlist</th><th>Previous</th></tr></thead>
-          <tbody id="placeholderQueueRows"></tbody>
-        </table>
-      </div>
+      <section class="workstream">
+        <div class="workstream-header">
+          <h2>History</h2>
+          <div id="liveHistoryRunStatus" class="status"></div>
+        </div>
+        <div class="grid">
+          <div class="panel"><div class="metric">History rows</div><div id="historyRows" class="value">0</div></div>
+          <div class="panel"><div class="metric">History video IDs</div><div id="historyVideos" class="value">0</div></div>
+          <div class="panel"><div class="metric">Fetched history rows</div><div id="liveHistoryRows" class="value">0</div></div>
+          <div class="panel"><div class="metric">History fetch</div><div id="liveHistoryWorkerState" class="value">idle</div></div>
+        </div>
+        <div class="controls">
+          <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
+          <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
+          <button id="importTakeoutHistory" type="button">Import Takeout history</button>
+          <button id="reconcileHistory" type="button">Reconcile history</button>
+          <button id="stopLiveHistory" type="button">Stop history fetch</button>
+        </div>
+      </section>
     </section>
 
     <section class="panel logs">
@@ -7127,17 +7163,17 @@ ADMIN_HTML = """<!doctype html>
       historyRows: document.getElementById('historyRows'),
       historyVideos: document.getElementById('historyVideos'),
       liveHistoryRows: document.getElementById('liveHistoryRows'),
-      queueCount: document.getElementById('queueCount'),
-      workerState: document.getElementById('workerState'),
-      runStatus: document.getElementById('runStatus'),
       metadataCounts: document.getElementById('metadataCounts'),
       logs: document.getElementById('logs'),
-      limit: document.getElementById('limit'),
+      playlistLimit: document.getElementById('playlistLimit'),
+      metadataLimit: document.getElementById('metadataLimit'),
       playlistDelay: document.getElementById('playlistDelay'),
       metadataDelay: document.getElementById('metadataDelay'),
+      recoveryDelay: document.getElementById('recoveryDelay'),
       playlistStaleDays: document.getElementById('playlistStaleDays'),
       metadataStaleDays: document.getElementById('metadataStaleDays'),
-      force: document.getElementById('force'),
+      playlistForce: document.getElementById('playlistForce'),
+      metadataForce: document.getElementById('metadataForce'),
       playlistQueueCount: document.getElementById('playlistQueueCount'),
       metadataQueueCount: document.getElementById('metadataQueueCount'),
       placeholderQueueCount: document.getElementById('placeholderQueueCount'),
@@ -7258,10 +7294,20 @@ ADMIN_HTML = """<!doctype html>
       `).join('');
     }
 
+    let statusRequest = null;
+
     async function loadStatus() {
-      const response = await fetch('/api/admin/status', { cache: 'no-store' });
-      if (!response.ok) throw new Error(`Status failed: ${response.status}`);
-      render(await response.json());
+      if (statusRequest) return statusRequest;
+      statusRequest = (async () => {
+        const response = await fetch('/api/admin/status', { cache: 'no-store' });
+        if (!response.ok) throw new Error(`Status failed: ${response.status}`);
+        render(await response.json());
+      })();
+      try {
+        await statusRequest;
+      } finally {
+        statusRequest = null;
+      }
     }
 
     async function post(path, params = {}) {
@@ -7271,16 +7317,16 @@ ADMIN_HTML = """<!doctype html>
     }
 
     document.getElementById('scanPlaylists').addEventListener('click', () => post('/api/admin/playlists/start', {
-      limit: fields.limit.value,
+      limit: fields.playlistLimit.value,
       delay: fields.playlistDelay.value,
       stale_days: fields.playlistStaleDays.value,
-      force: fields.force.checked ? '1' : '0',
+      force: fields.playlistForce.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
     document.getElementById('fetchMetadata').addEventListener('click', () => post('/api/admin/metadata/start', {
-      limit: fields.limit.value,
+      limit: fields.metadataLimit.value,
       delay: fields.metadataDelay.value,
       stale_days: fields.metadataStaleDays.value,
-      force: fields.force.checked ? '1' : '0',
+      force: fields.metadataForce.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start', {
     }).catch(error => alert(error.message)));
@@ -7299,9 +7345,9 @@ ADMIN_HTML = """<!doctype html>
       post('/api/admin/playlists/reconcile').catch(error => alert(error.message));
     });
     document.getElementById('recoverPlaceholders').addEventListener('click', () => post('/api/admin/placeholders/start', {
-      limit: fields.limit.value,
-      delay: fields.playlistDelay.value,
-      force: fields.force.checked ? '1' : '0',
+      limit: fields.metadataLimit.value,
+      delay: fields.recoveryDelay.value,
+      force: fields.metadataForce.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
     document.getElementById('stopPlaylists').addEventListener('click', () => post('/api/admin/playlists/stop').catch(error => alert(error.message)));
     document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
@@ -7309,7 +7355,9 @@ ADMIN_HTML = """<!doctype html>
     document.getElementById('stopPlaceholders').addEventListener('click', () => post('/api/admin/placeholders/stop').catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus().catch(error => alert(error.message)));
     loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
-    setInterval(loadStatus, 5000);
+    setInterval(() => {
+      loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
+    }, 5000);
   </script>
 </body>
 </html>
