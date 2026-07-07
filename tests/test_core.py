@@ -40,6 +40,9 @@ class CoreHelperTests(unittest.TestCase):
             core.youtube_channel_id_from_url("https://www.youtube.com/channel/UCvmGOqGlxOgpZDoszBbWxmA"),
             "UCvmGOqGlxOgpZDoszBbWxmA",
         )
+        self.assertEqual(core.youtube_channel_ref_from_url("https://www.youtube.com/@ESSIGI"), "@ESSIGI")
+        self.assertEqual(core.youtube_channel_url("@ESSIGI"), "https://www.youtube.com/@ESSIGI")
+        self.assertEqual(core.youtube_channel_url("c/Example"), "https://www.youtube.com/c/Example")
         self.assertEqual(core.format_duration(65), "1:05")
         self.assertEqual(core.format_duration(3661), "1:01:01")
         self.assertEqual(core.bounded_int("140"), 100)
@@ -257,6 +260,7 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("playlists", tables)
         self.assertIn("channels", tables)
         self.assertIn("history_reconciled", tables)
+        self.assertIn("metadata_queue", tables)
         self.assertIn("metadata_worker_runs", tables)
         self.assertIn("reaction", columns)
         self.assertIn("match_type", reconciled_columns)
@@ -286,8 +290,49 @@ class SchemaTests(unittest.TestCase):
                         source="test",
                         updated_at=now,
                     )
-                    queued = core.metadata_queue_rows(conn, limit=10, stale_days=30)
+                    queued = core.metadata_queue_candidate_rows(conn, limit=10, stale_days=30)
                     self.assertEqual([row["video_id"] for row in queued], ["UCvmGOqGlxOgpZDoszBbWxmA"])
+
+                    stats = core.rebuild_metadata_queue(conn, stale_days=30)
+                    self.assertEqual(stats["inserted"], 1)
+                    persisted = core.metadata_queue_rows(conn, limit=10)
+                    self.assertEqual([row["video_id"] for row in persisted], ["UCvmGOqGlxOgpZDoszBbWxmA"])
+
+                    with conn:
+                        queued = core.enqueue_provided_metadata_target(conn, "https://www.youtube.com/@ESSIGI")
+                    self.assertEqual(queued["channel_id"], "@ESSIGI")
+                    self.assertEqual(queued["metadata_source"], "channel")
+
+                    with conn:
+                        conn.execute(
+                            """
+                            INSERT INTO playlists(playlist_id, title)
+                            VALUES ('PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4', 'Test playlist')
+                            """
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO playlist_videos(playlist_id, position, video_id, title)
+                            VALUES
+                              ('PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4', 1, 'abc12345678', 'First'),
+                              ('PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4', 2, 'def12345678', 'Second')
+                            """
+                        )
+                        queued_playlist = core.enqueue_provided_metadata_target(
+                            conn,
+                            "https://www.youtube.com/playlist?list=PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
+                        )
+                    self.assertEqual(queued_playlist["metadata_source"], "playlist")
+                    self.assertEqual(queued_playlist["queued_count"], "2")
+                    playlist_queue_rows = [
+                        row
+                        for row in core.metadata_queue_rows(conn, limit=10)
+                        if row["metadata_source"] == "playlist"
+                    ]
+                    self.assertEqual(
+                        {row["source_key"] for row in playlist_queue_rows},
+                        {"PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4"},
+                    )
 
                     core.upsert_channel(
                         conn,
@@ -299,7 +344,8 @@ class SchemaTests(unittest.TestCase):
                         source="test",
                         updated_at=now,
                     )
-                    self.assertEqual(core.metadata_queue_rows(conn, limit=10, stale_days=30), [])
+                    remaining = core.metadata_queue_candidate_rows(conn, limit=10, stale_days=30)
+                    self.assertNotIn("UCvmGOqGlxOgpZDoszBbWxmA", [row["video_id"] for row in remaining])
                 finally:
                     conn.close()
             finally:

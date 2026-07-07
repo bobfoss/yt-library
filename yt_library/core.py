@@ -166,6 +166,11 @@ def connect(db_path: Path) -> sqlite3.Connection:
         "history_reconciled",
         {"channel_id": "TEXT NOT NULL DEFAULT ''"},
     )
+    ensure_columns(
+        conn,
+        "metadata_queue",
+        {"source_key": "TEXT NOT NULL DEFAULT ''"},
+    )
     ensure_youtube_history_schema(conn)
     ensure_takeout_history_schema(conn)
     ensure_history_reconciled_schema(conn)
@@ -176,6 +181,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     backfill_playlist_channel_ids_by_name(conn)
     sync_takeout_subscriptions(conn, ROOT)
     drop_deprecated_channel_columns(conn)
+    normalize_metadata_queue_targets(conn)
     reconciled_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_video_reconciled").fetchone()["count"]
     raw_playlist_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_videos").fetchone()["count"]
     if reconciled_count == 0 and raw_playlist_count:
@@ -495,7 +501,33 @@ def youtube_channel_id_from_url(value: str) -> str:
 
 
 def youtube_channel_url(channel_id: str) -> str:
-    return f"https://www.youtube.com/channel/{channel_id}" if channel_id else ""
+    channel_id = (channel_id or "").strip()
+    if not channel_id:
+        return ""
+    if channel_id.startswith(("http://", "https://")):
+        return channel_id
+    if channel_id.startswith("@"):
+        return f"https://www.youtube.com/{channel_id}"
+    if channel_id.startswith(("c/", "user/")):
+        return f"https://www.youtube.com/{channel_id}"
+    return f"https://www.youtube.com/channel/{channel_id}"
+
+
+def youtube_channel_ref_from_url(value: str) -> str:
+    value = html.unescape((value or "").strip())
+    channel_id = youtube_channel_id_from_url(value)
+    if channel_id:
+        return channel_id
+    parsed = urllib.parse.urlparse(value)
+    path = parsed.path if parsed.scheme or parsed.netloc else value
+    parts = [part for part in path.strip("/").split("/") if part]
+    if not parts:
+        return ""
+    if parts[0].startswith("@"):
+        return parts[0]
+    if parts[0] in {"c", "user"} and len(parts) > 1:
+        return f"{parts[0]}/{parts[1]}"
+    return ""
 
 
 def channel_title_for_id(conn: sqlite3.Connection, channel_id: str) -> str:
@@ -4644,7 +4676,7 @@ def playlist_scan_queue_rows(
     return conn.execute(sql, params).fetchall()
 
 
-def metadata_queue_rows(
+def metadata_queue_candidate_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
     offset: int = 0,
@@ -4683,7 +4715,8 @@ def metadata_queue_rows(
                        COALESCE(NULLIF(ch.title, ''), ch.channel_id) AS channel_title,
                        0 AS playlist_count,
                        '' AS current_title,
-                       'channel' AS metadata_source
+                       'channel' AS metadata_source,
+                       0 AS priority
                 FROM channels ch
                 WHERE ch.channel_id <> ''
                   AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted')
@@ -4873,6 +4906,7 @@ def metadata_queue_rows(
                q.channel_title,
                q.playlist_count,
                q.current_title,
+               q.source_priority AS priority,
                CASE
                  WHEN q.source_priority IN (0, 1) THEN 'channel'
                  WHEN q.source_priority = 2 THEN 'playlist'
@@ -4898,7 +4932,7 @@ def metadata_queue_rows(
     return conn.execute(sql, params).fetchall()
 
 
-def metadata_queue_count(
+def metadata_queue_candidate_count(
     conn: sqlite3.Connection,
     force: bool = False,
     stale_days: int = 30,
@@ -5027,6 +5061,279 @@ def metadata_queue_count(
         params,
     ).fetchone()
     return int(row["count"] or 0)
+
+
+def metadata_queue_subject_key(video_id: str, channel_id: str, metadata_source: str) -> str:
+    metadata_source = (metadata_source or "").strip() or "history"
+    channel_id = (channel_id or "").strip()
+    video_id = (video_id or "").strip()
+    if metadata_source == "channel":
+        return f"channel:{channel_id or video_id}"
+    return f"video:{video_id}"
+
+
+def metadata_queue_rows(
+    conn: sqlite3.Connection,
+    limit: int = 0,
+    offset: int = 0,
+    force: bool = False,
+    stale_days: int = 30,
+) -> list[sqlite3.Row]:
+    del force, stale_days
+    sql = """
+        SELECT queue_id,
+               subject_key,
+               video_id,
+               channel_id,
+               channel_title,
+               playlist_count,
+               current_title,
+               metadata_source,
+               source_key,
+               priority,
+               manual,
+               created_at,
+               updated_at
+        FROM metadata_queue
+        ORDER BY priority, queue_id
+    """
+    params: list[Any] = []
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+        if offset:
+            sql += " OFFSET ?"
+            params.append(max(0, offset))
+    return conn.execute(sql, params).fetchall()
+
+
+def metadata_queue_count(
+    conn: sqlite3.Connection,
+    force: bool = False,
+    stale_days: int = 30,
+) -> int:
+    del force, stale_days
+    row = conn.execute("SELECT COUNT(*) AS count FROM metadata_queue").fetchone()
+    return int(row["count"] or 0)
+
+
+def clear_metadata_queue(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) AS count FROM metadata_queue").fetchone()
+    count = int(row["count"] or 0)
+    conn.execute("DELETE FROM metadata_queue")
+    return count
+
+
+def remove_metadata_queue_entry(conn: sqlite3.Connection, queue_id: int) -> bool:
+    cursor = conn.execute("DELETE FROM metadata_queue WHERE queue_id = ?", (queue_id,))
+    return cursor.rowcount > 0
+
+
+def normalize_metadata_queue_targets(conn: sqlite3.Connection) -> None:
+    if "metadata_queue" not in {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }:
+        return
+    rows = conn.execute(
+        """
+        SELECT queue_id, video_id, channel_id, channel_title, metadata_source, priority, manual
+        FROM metadata_queue
+        WHERE metadata_source = 'channel'
+          AND (channel_id LIKE 'http://%' OR channel_id LIKE 'https://%')
+        """
+    ).fetchall()
+    for row in rows:
+        channel_ref = youtube_channel_ref_from_url(row["channel_id"])
+        if not channel_ref:
+            continue
+        conn.execute("DELETE FROM metadata_queue WHERE queue_id = ?", (row["queue_id"],))
+        enqueue_metadata_item(
+            conn,
+            video_id=channel_ref,
+            channel_id=channel_ref,
+            channel_title=row["channel_title"] or row["channel_id"],
+            metadata_source="channel",
+            priority=int(row["priority"] or 0),
+            manual=bool(row["manual"]),
+        )
+
+
+def enqueue_metadata_item(
+    conn: sqlite3.Connection,
+    *,
+    video_id: str = "",
+    channel_id: str = "",
+    channel_title: str = "",
+    current_title: str = "",
+    metadata_source: str = "history",
+    source_key: str = "",
+    playlist_count: int = 0,
+    priority: int = 100,
+    manual: bool = False,
+) -> str:
+    now = int(time.time())
+    video_id = (video_id or "").strip()
+    channel_id = (channel_id or "").strip()
+    metadata_source = (metadata_source or "").strip() or "history"
+    subject_key = metadata_queue_subject_key(video_id, channel_id, metadata_source)
+    if not video_id and not channel_id:
+        raise ValueError("Metadata queue item needs a video ID or channel ID")
+    conn.execute(
+        """
+        INSERT INTO metadata_queue(
+          subject_key, video_id, channel_id, channel_title, current_title,
+          metadata_source, source_key, playlist_count, priority, manual, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(subject_key) DO UPDATE SET
+          video_id=excluded.video_id,
+          channel_id=excluded.channel_id,
+          channel_title=COALESCE(NULLIF(excluded.channel_title, ''), metadata_queue.channel_title),
+          current_title=COALESCE(NULLIF(excluded.current_title, ''), metadata_queue.current_title),
+          metadata_source=excluded.metadata_source,
+          source_key=COALESCE(NULLIF(excluded.source_key, ''), metadata_queue.source_key),
+          playlist_count=MAX(metadata_queue.playlist_count, excluded.playlist_count),
+          priority=MIN(metadata_queue.priority, excluded.priority),
+          manual=MAX(metadata_queue.manual, excluded.manual),
+          updated_at=excluded.updated_at
+        """,
+        (
+            subject_key,
+            video_id,
+            channel_id,
+            channel_title or "",
+            current_title or "",
+            metadata_source,
+            source_key or "",
+            max(0, int(playlist_count or 0)),
+            int(priority),
+            1 if manual else 0,
+            now,
+            now,
+        ),
+    )
+    return subject_key
+
+
+def rebuild_metadata_queue(
+    conn: sqlite3.Connection,
+    *,
+    force: bool = False,
+    stale_days: int = 30,
+) -> dict[str, int]:
+    rows = metadata_queue_candidate_rows(conn, force=force, stale_days=stale_days)
+    cleared = clear_metadata_queue(conn)
+    inserted = 0
+    for index, row in enumerate(rows, start=1):
+        source = row["metadata_source"] or "history"
+        priority = int(row["priority"] or 0) * 1_000_000 + index
+        enqueue_metadata_item(
+            conn,
+            video_id=row["video_id"] or "",
+            channel_id=row["channel_id"] or "",
+            channel_title=row["channel_title"] or "",
+            current_title=row["current_title"] or "",
+            metadata_source=source,
+            playlist_count=int(row["playlist_count"] or 0),
+            priority=priority,
+            manual=False,
+        )
+        inserted += 1
+    return {"cleared": cleared, "inserted": inserted}
+
+
+def enqueue_provided_metadata_target(conn: sqlite3.Connection, target: str) -> dict[str, str]:
+    target = (target or "").strip()
+    if not target:
+        raise ValueError("Enter a YouTube URL, video ID, channel ID, or @handle.")
+    channel_id = ""
+    video_id = ""
+    source = "provided"
+    playlist_id = extract_playlist_id(target) or ""
+    if playlist_id and not extract_video_id(target):
+        return enqueue_playlist_metadata_targets(conn, playlist_id)
+    if target.startswith("@"):
+        channel_id = target
+        source = "channel"
+    elif "youtube.com/" in target or "youtu.be/" in target:
+        video_id = extract_video_id(target)
+        channel_id = "" if video_id else youtube_channel_ref_from_url(target)
+        if channel_id:
+            source = "channel"
+    elif target.startswith(("UC", "HC", "channel/", "c/", "user/")):
+        channel_id = youtube_channel_ref_from_url(target) or target.removeprefix("channel/")
+        source = "channel"
+    else:
+        video_id = target
+    subject_key = enqueue_metadata_item(
+        conn,
+        video_id=video_id or channel_id,
+        channel_id=channel_id,
+        channel_title=target if source == "channel" else "",
+        current_title=target if source != "channel" else "",
+        metadata_source=source,
+        priority=0,
+        manual=True,
+    )
+    return {
+        "subject_key": subject_key,
+        "video_id": video_id or channel_id,
+        "channel_id": channel_id,
+        "metadata_source": source,
+    }
+
+
+def enqueue_playlist_metadata_targets(conn: sqlite3.Connection, playlist_id: str) -> dict[str, str]:
+    playlist_id = (playlist_id or "").strip()
+    if not playlist_id:
+        raise ValueError("Enter a YouTube playlist URL or playlist ID.")
+    rows = conn.execute(
+        """
+        SELECT video_id,
+               MAX(title) AS title,
+               MIN(display_position) AS position
+        FROM playlist_video_reconciled
+        WHERE playlist_id = ?
+          AND video_id <> ''
+        GROUP BY video_id
+        ORDER BY position
+        """,
+        (playlist_id,),
+    ).fetchall()
+    if not rows:
+        rows = conn.execute(
+            """
+            SELECT video_id,
+                   MAX(title) AS title,
+                   MIN(position) AS position
+            FROM playlist_videos
+            WHERE playlist_id = ?
+              AND video_id <> ''
+            GROUP BY video_id
+            ORDER BY position
+            """,
+            (playlist_id,),
+        ).fetchall()
+    if not rows:
+        raise ValueError(f"No known videos found for playlist {playlist_id}. Scan the playlist first.")
+    for index, row in enumerate(rows):
+        enqueue_metadata_item(
+            conn,
+            video_id=row["video_id"] or "",
+            current_title=row["title"] or "",
+            metadata_source="playlist",
+            source_key=playlist_id,
+            priority=index,
+            manual=True,
+        )
+    return {
+        "subject_key": f"playlist:{playlist_id}",
+        "video_id": "",
+        "channel_id": "",
+        "metadata_source": "playlist",
+        "playlist_id": playlist_id,
+        "queued_count": str(len(rows)),
+    }
 
 
 def admin_status(

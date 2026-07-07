@@ -105,6 +105,7 @@ class MetadataWorker:
                         )
                         log_worker_event(conn, run_id, "warn", "Worker stopped by request")
                     return
+                queue_id = int(row["queue_id"]) if "queue_id" in row.keys() else 0
                 video_id = row["video_id"]
                 metadata_source = row["metadata_source"] if "metadata_source" in row.keys() else "history"
                 queued_channel_id = row["channel_id"] if "channel_id" in row.keys() else ""
@@ -233,6 +234,8 @@ class MetadataWorker:
                             log_worker_event(conn, run_id, metadata_source, f"{status}: {channel_label} (via {title})", channel_label)
                         else:
                             log_worker_event(conn, run_id, metadata_source, f"{status}: {title}", video_id)
+                    if queue_id and status != "error":
+                        conn.execute("DELETE FROM metadata_queue WHERE queue_id = ?", (queue_id,))
                     conn.execute(
                         """
                         UPDATE metadata_worker_runs

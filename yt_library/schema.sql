@@ -260,6 +260,22 @@ CREATE TABLE IF NOT EXISTS metadata_worker_log (
   message TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS metadata_queue (
+  queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  subject_key TEXT NOT NULL UNIQUE,
+  video_id TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL DEFAULT '',
+  channel_title TEXT NOT NULL DEFAULT '',
+  current_title TEXT NOT NULL DEFAULT '',
+  metadata_source TEXT NOT NULL DEFAULT '',
+  source_key TEXT NOT NULL DEFAULT '',
+  playlist_count INTEGER NOT NULL DEFAULT 0,
+  priority INTEGER NOT NULL DEFAULT 0,
+  manual INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS playlist_scan_worker_runs (
   run_id TEXT PRIMARY KEY,
   status TEXT NOT NULL DEFAULT '',
@@ -355,6 +371,8 @@ CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_video ON takeout_hist
 CREATE INDEX IF NOT EXISTS idx_takeout_history_occurrences_time ON takeout_history_occurrences(watched_at_iso, video_id);
 CREATE INDEX IF NOT EXISTS idx_history_reconciled_video ON history_reconciled(video_id);
 CREATE INDEX IF NOT EXISTS idx_history_reconciled_date ON history_reconciled(watch_date, time_quality);
+CREATE INDEX IF NOT EXISTS idx_metadata_queue_order ON metadata_queue(priority, queue_id);
+CREATE INDEX IF NOT EXISTS idx_metadata_queue_source ON metadata_queue(metadata_source, updated_at);
 CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_run ON metadata_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_run ON playlist_scan_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_live_history_worker_log_run ON live_history_worker_log(run_id, created_at);

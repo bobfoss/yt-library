@@ -73,6 +73,7 @@
     .queue-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 12px; }
     .queue-panel { overflow: hidden; }
     .queue-panel table { table-layout: fixed; }
+    .queue-panel .message { white-space: pre-line; }
     .queue-scroll { max-height: 300px; overflow: auto; }
     .queue-title { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 8px; }
     .queue-title h2 { font-size: 16px; margin: 0; }
@@ -111,22 +112,22 @@
         <div class="grid" id="metadataCounts"></div>
         <div id="metadataFold" class="fold-panel" hidden>
           <div class="controls">
-            <label>Limit<input id="metadataLimit" type="number" min="0" step="1" value="10"></label>
-            <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
             <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
             <label class="checkbox"><input id="metadataForce" type="checkbox">Refresh already fetched</label>
             <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
+            <button id="rebuildMetadataQueue" type="button">Rebuild queue</button>
+            <button id="clearMetadataQueue" type="button">Clear queue</button>
             <button id="stopMetadata" type="button">Stop metadata</button>
           </div>
           <div class="controls">
             <label>URL/video/channel ID<input id="providedMetadataTarget" class="wide-input" type="text" placeholder="https://www.youtube.com/watch?v=..."></label>
-            <button id="fetchProvidedMetadata" class="primary" type="button">Fetch Provided Metadata</button>
+            <button id="fetchProvidedMetadata" class="primary" type="button">Add to queue</button>
           </div>
           <div class="queue-grid">
             <div class="panel queue-panel">
               <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
               <table>
-                <thead><tr><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
+                <thead><tr><th>Subject</th><th>Source</th><th>Details</th><th>Action</th></tr></thead>
               </table>
               <div class="queue-scroll" id="metadataQueuePanel">
               <table>
@@ -255,11 +256,9 @@
       metadataCounts: document.getElementById('metadataCounts'),
       logs: document.getElementById('logs'),
       playlistLimit: document.getElementById('playlistLimit'),
-      metadataLimit: document.getElementById('metadataLimit'),
       providedMetadataTarget: document.getElementById('providedMetadataTarget'),
       placeholderLimit: document.getElementById('placeholderLimit'),
       playlistDelay: document.getElementById('playlistDelay'),
-      metadataDelay: document.getElementById('metadataDelay'),
       recoveryDelay: document.getElementById('recoveryDelay'),
       playlistStaleDays: document.getElementById('playlistStaleDays'),
       metadataStaleDays: document.getElementById('metadataStaleDays'),
@@ -319,12 +318,17 @@
         shown: fields.metadataQueueShown,
         panel: fields.metadataQueuePanel,
         empty: 'No metadata queued.',
-        key: row => `${row.metadata_source || ''}:${row.video_id || ''}:${row.channel_id || ''}`,
+        key: row => String(row.queue_id || `${row.metadata_source || ''}:${row.video_id || ''}:${row.channel_id || ''}`),
         cells: [
           row => row.metadata_source === 'channel' ? (row.channel_title || row.channel_id || row.video_id) : row.video_id,
-          row => row.metadata_source || '',
-          row => row.metadata_source === 'channel' ? (row.channel_id || '') : (row.current_title || '')
+          row => [
+            `${row.metadata_source || ''}${row.manual ? ' manual' : ''}`,
+            row.source_key || '',
+          ].filter(Boolean).join('\n'),
+          row => row.metadata_source === 'channel' ? (row.channel_id || '') : (row.current_title || ''),
+          row => `<button class="remove-queue-entry" type="button" data-queue-id="${escapeHtml(row.queue_id || '')}">Remove</button>`
         ],
+        htmlColumns: new Set([3]),
       },
       placeholders: {
         rows: [],
@@ -363,7 +367,11 @@
         return;
       }
       state.tbody.innerHTML = rows.map(row => `
-        <tr>${state.cells.map(cell => `<td class="message">${escapeHtml(cell(row))}</td>`).join('')}</tr>
+        <tr>${state.cells.map((cell, index) => {
+          const value = cell(row);
+          const html = state.htmlColumns && state.htmlColumns.has(index);
+          return `<td class="message">${html ? value : escapeHtml(value)}</td>`;
+        }).join('')}</tr>
       `).join('');
       state.shown.textContent = `${rows.length}/${state.total || rows.length} shown`;
     }
@@ -622,11 +630,17 @@
       force: fields.playlistForce.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
     document.getElementById('fetchMetadata').addEventListener('click', () => post('/api/admin/metadata/start', {
-      limit: fields.metadataLimit.value,
-      delay: fields.metadataDelay.value,
       stale_days: fields.metadataStaleDays.value,
       force: fields.metadataForce.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
+    document.getElementById('rebuildMetadataQueue').addEventListener('click', () => post('/api/admin/metadata/rebuild-queue', {
+      stale_days: fields.metadataStaleDays.value,
+      force: fields.metadataForce.checked ? '1' : '0',
+    }).catch(error => alert(error.message)));
+    document.getElementById('clearMetadataQueue').addEventListener('click', () => {
+      if (!confirm('Clear the metadata queue? This will remove pending manual and rebuilt entries.')) return;
+      post('/api/admin/metadata/clear-queue').catch(error => alert(error.message));
+    });
     document.getElementById('fetchProvidedMetadata').addEventListener('click', async () => {
       const target = fields.providedMetadataTarget.value.trim();
       if (!target) {
@@ -638,6 +652,13 @@
       } catch (error) {
         alert(error.message);
       }
+    });
+    fields.metadataQueueRows.addEventListener('click', event => {
+      const button = event.target.closest('.remove-queue-entry');
+      if (!button) return;
+      const queueId = button.dataset.queueId || '';
+      if (!queueId) return;
+      post('/api/admin/metadata/remove-queue-entry', { queue_id: queueId }).catch(error => alert(error.message));
     });
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start', {
     }).catch(error => alert(error.message)));

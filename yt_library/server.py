@@ -155,8 +155,8 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
         if parsed.path in {"/api/admin/worker/start", "/api/admin/metadata/start"}:
-            limit = max(0, int((params.get("limit") or ["25"])[0] or 0))
-            delay = max(1.0, float((params.get("delay") or ["12"])[0] or 12))
+            limit = 0
+            delay = 1.0
             stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
             force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
             result = METADATA_WORKER.start(
@@ -173,67 +173,61 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/admin/metadata/fetch-provided":
             target = (params.get("target") or [""])[0]
             conn = connect(self.db_path)
-            run_id = uuid.uuid4().hex
-            started_at = int(time.time())
             try:
                 with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO metadata_worker_runs(
-                          run_id, status, started_at, total, requested_limit, message
-                        )
-                        VALUES (?, 'running', ?, 1, 1, ?)
-                        """,
-                        (run_id, started_at, "Provided metadata fetch started"),
-                    )
-                    log_worker_event(conn, run_id, "provided", "Provided metadata fetch started", target)
                     try:
-                        opener = load_cookie_opener(self.cookie_file)
-                        result = fetch_provided_metadata(conn, opener, self.video_thumbs, target)
-                    except Exception as exc:
-                        message = f"Provided metadata fetch failed: {exc}"
-                        conn.execute(
-                            """
-                            UPDATE metadata_worker_runs
-                            SET status = 'error',
-                                finished_at = ?,
-                                processed = 1,
-                                failed = 1,
-                                last_video_id = ?,
-                                message = ?
-                            WHERE run_id = ?
-                            """,
-                            (int(time.time()), target, message, run_id),
-                        )
-                        log_worker_event(conn, run_id, "provided error", message, target)
+                        result = enqueue_provided_metadata_target(conn, target)
+                    except ValueError as exc:
                         self.send_json({"error": str(exc)}, status=400)
                         return
-                    message = f"{result['status']}: {result['title']}"
-                    conn.execute(
-                        """
-                        UPDATE metadata_worker_runs
-                        SET status = 'complete',
-                            finished_at = ?,
-                            processed = 1,
-                            found = CASE WHEN ? = 'ok' THEN 1 ELSE 0 END,
-                            failed = CASE WHEN ? = 'ok' THEN 0 ELSE 1 END,
-                            last_video_id = ?,
-                            message = ?
-                        WHERE run_id = ?
-                        """,
-                        (
-                            int(time.time()),
-                            result["status"],
-                            result["status"],
-                            result["subject_id"],
-                            message,
-                            run_id,
-                        ),
-                    )
-                    log_worker_event(conn, run_id, f"provided {result['source']}", message, result["subject_id"])
-                self.send_json(result)
+                self.send_json({"ok": True, "message": "Queued provided metadata target", **result})
             finally:
                 conn.close()
+            return
+        if parsed.path == "/api/admin/metadata/rebuild-queue":
+            if METADATA_WORKER.is_running():
+                self.send_json({"error": "Stop metadata worker before rebuilding the queue"}, status=409)
+                return
+            try:
+                stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
+            except ValueError:
+                stale_days = 30
+            force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    stats = rebuild_metadata_queue(conn, force=force, stale_days=stale_days)
+            finally:
+                conn.close()
+            self.send_json({"ok": True, **stats})
+            return
+        if parsed.path == "/api/admin/metadata/clear-queue":
+            if METADATA_WORKER.is_running():
+                self.send_json({"error": "Stop metadata worker before clearing the queue"}, status=409)
+                return
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    cleared = clear_metadata_queue(conn)
+            finally:
+                conn.close()
+            self.send_json({"ok": True, "cleared": cleared})
+            return
+        if parsed.path == "/api/admin/metadata/remove-queue-entry":
+            try:
+                queue_id = int((params.get("queue_id") or ["0"])[0] or 0)
+            except ValueError:
+                queue_id = 0
+            if not queue_id:
+                self.send_json({"error": "Missing queue_id"}, status=400)
+                return
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    removed = remove_metadata_queue_entry(conn, queue_id)
+            finally:
+                conn.close()
+            self.send_json({"ok": removed, "removed": removed})
             return
         if parsed.path in {"/api/admin/worker/stop", "/api/admin/metadata/stop"}:
             self.send_json(METADATA_WORKER.stop())
