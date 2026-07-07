@@ -9,6 +9,7 @@ import hashlib
 import html
 import http.cookiejar
 import http.server
+import io
 import json
 import mimetypes
 import os
@@ -220,9 +221,14 @@ CREATE TABLE IF NOT EXISTS channels (
   channel_id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT '',
   url TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  aliases TEXT NOT NULL DEFAULT '',
+  subscribed INTEGER NOT NULL DEFAULT 0,
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
   archivarix_channel_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  status_reason TEXT NOT NULL DEFAULT '',
   source TEXT NOT NULL DEFAULT '',
   updated_at INTEGER NOT NULL DEFAULT 0
 );
@@ -439,6 +445,17 @@ def connect(db_path: Path) -> sqlite3.Connection:
     )
     ensure_columns(
         conn,
+        "channels",
+        {
+            "description": "TEXT NOT NULL DEFAULT ''",
+            "aliases": "TEXT NOT NULL DEFAULT ''",
+            "subscribed": "INTEGER NOT NULL DEFAULT 0",
+            "status": "TEXT NOT NULL DEFAULT ''",
+            "status_reason": "TEXT NOT NULL DEFAULT ''",
+        },
+    )
+    ensure_columns(
+        conn,
         "snapshot_video_recovery",
         {
             "description": "TEXT NOT NULL DEFAULT ''",
@@ -476,6 +493,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     if channel_backfill_needed(conn):
         backfill_channels(conn)
     backfill_playlist_channel_ids_by_name(conn)
+    sync_takeout_subscriptions(conn, ROOT)
     drop_deprecated_channel_columns(conn)
     reconciled_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_video_reconciled").fetchone()["count"]
     raw_playlist_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_videos").fetchone()["count"]
@@ -553,9 +571,13 @@ def upsert_channel(
     *,
     title: str = "",
     url: str = "",
+    description: str = "",
+    aliases: str = "",
     thumbnail_url: str = "",
     thumbnail_path: str = "",
     archivarix_channel_id: str = "",
+    status: str = "",
+    status_reason: str = "",
     source: str = "",
     updated_at: int | None = None,
 ) -> str:
@@ -573,9 +595,13 @@ def upsert_channel(
             UPDATE channels
             SET title = ?,
                 url = ?,
+                description = ?,
+                aliases = ?,
                 thumbnail_url = ?,
                 thumbnail_path = ?,
                 archivarix_channel_id = ?,
+                status = ?,
+                status_reason = ?,
                 source = ?,
                 updated_at = ?
             WHERE channel_id = ?
@@ -583,9 +609,13 @@ def upsert_channel(
             (
                 merge_channel_value(existing["title"], title),
                 merge_channel_value(existing["url"], url),
+                merge_channel_value(existing["description"], description),
+                merge_channel_value(existing["aliases"], aliases),
                 merge_channel_value(existing["thumbnail_url"], thumbnail_url),
                 merge_channel_value(existing["thumbnail_path"], thumbnail_path),
                 merge_channel_value(existing["archivarix_channel_id"], archivarix_channel_id),
+                merge_channel_value(existing["status"], status),
+                merge_channel_value(existing["status_reason"], status_reason),
                 merge_channel_value(existing["source"], source),
                 now,
                 channel_id,
@@ -595,12 +625,25 @@ def upsert_channel(
         conn.execute(
             """
             INSERT INTO channels(
-              channel_id, title, url, thumbnail_url, thumbnail_path,
-              archivarix_channel_id, source, updated_at
+              channel_id, title, url, description, aliases, thumbnail_url, thumbnail_path,
+              archivarix_channel_id, status, status_reason, source, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (channel_id, title, url, thumbnail_url, thumbnail_path, archivarix_channel_id, source, now),
+            (
+                channel_id,
+                title,
+                url,
+                description,
+                aliases,
+                thumbnail_url,
+                thumbnail_path,
+                archivarix_channel_id,
+                status,
+                status_reason,
+                source,
+                now,
+            ),
         )
     return channel_id
 
@@ -1422,6 +1465,13 @@ def pick_thumbnail(thumbnails: list[dict[str, Any]]) -> str:
     return html.unescape(best["url"])
 
 
+def absolute_url(value: str) -> str:
+    value = (value or "").strip()
+    if value.startswith("//"):
+        return f"https:{value}"
+    return value
+
+
 def content_text(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -1791,6 +1841,81 @@ def archivarix_lookup_video(
     return None
 
 
+def archivarix_lookup_channel(
+    channel_id: str,
+    opener: urllib.request.OpenerDirector | None = None,
+) -> dict[str, Any]:
+    if not channel_id:
+        return {}
+    opener = opener or urllib.request.build_opener()
+    request = urllib.request.Request(
+        "https://tube.archivarix.net/api/search",
+        data=json.dumps({"query": channel_id}).encode("utf-8"),
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+            ),
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Referer": "https://tube.archivarix.net/",
+        },
+        method="POST",
+    )
+    with opener.open(request, timeout=20) as response:
+        session = json.loads(response.read().decode("utf-8", "replace")).get("data", {})
+    endpoint = session.get("sseEndpointUrl")
+    if not isinstance(endpoint, str) or not endpoint:
+        return {}
+    stream_url = urllib.parse.urljoin("https://tube.archivarix.net", endpoint)
+    stream_request = urllib.request.Request(
+        stream_url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+            ),
+            "Accept": "text/event-stream",
+            "Referer": f"https://tube.archivarix.net/?q={urllib.parse.quote(channel_id)}",
+        },
+    )
+    event = ""
+    fields: dict[str, Any] = {}
+    with opener.open(stream_request, timeout=25) as response:
+        for raw_line in response:
+            line = raw_line.decode("utf-8", "replace").strip()
+            if not line:
+                event = ""
+                continue
+            if line.startswith("event:"):
+                event = line.partition(":")[2].strip()
+                continue
+            if not line.startswith("data:"):
+                continue
+            payload_text = line.partition(":")[2].strip()
+            if event in {"search:channel_resolved", "search:channel_update"}:
+                payload = json.loads(payload_text)
+                fields.update({k: v for k, v in archivarix_channel_recovery_fields(payload).items() if v})
+                status = str(payload.get("channelStatus") or "").strip()
+                if status:
+                    fields["channelStatus"] = status
+                internal_id = str(payload.get("id") or payload.get("internalId") or "").strip()
+                if internal_id:
+                    fields["archivarixChannelId"] = internal_id
+                if fields.get("channelTitle") and fields.get("channelThumbnailUrl"):
+                    return fields
+                continue
+            if event == "search:video":
+                payload = json.loads(payload_text)
+                internal_id = str(payload.get("channelId") or "").strip()
+                if internal_id:
+                    fields["archivarixChannelId"] = internal_id
+                return fields
+            if event in {"search:complete", "search:error"}:
+                return fields
+    return fields
+
+
 def archivarix_channel_recovery_fields(payload: dict[str, Any]) -> dict[str, Any]:
     channel_id = str(payload.get("channelId") or "")
     if channel_id and not channel_id.startswith("UC"):
@@ -1812,6 +1937,9 @@ def archivarix_channel_recovery_fields(payload: dict[str, Any]) -> dict[str, Any
         "channelExternalId": channel_id,
         "channelUrl": channel_url,
         "channelThumbnailUrl": thumbnail_url,
+        "archivarixChannelId": str(payload.get("archivarixChannelId") or payload.get("internalId") or ""),
+        "channelDescription": str(payload.get("channelDescription") or payload.get("description") or ""),
+        "channelAliases": ", ".join(str(item) for item in payload.get("channelAliases") or payload.get("aliases") or []),
     }
 
 
@@ -2476,6 +2604,9 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
     channel_url = youtube_channel_url(channel_id)
     thumbnail_url = ""
     found_channel_id = channel_id
+    description = ""
+    status = ""
+    status_reason = ""
     for node in walk(initial_data):
         if not isinstance(node, dict):
             continue
@@ -2483,12 +2614,28 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
         if not isinstance(renderer, dict):
             continue
         title = str(renderer.get("title") or title or "").strip()
+        description = str(renderer.get("description") or description or "").strip()
         found_channel_id = str(renderer.get("externalId") or found_channel_id or "").strip()
         channel_url = youtube_path_url(str(renderer.get("channelUrl") or "")) or channel_url
         avatar = renderer.get("avatar")
         if isinstance(avatar, dict):
             thumbnail_url = pick_thumbnail(avatar.get("thumbnails", [])) or thumbnail_url
         break
+    lower_text = html.unescape(re.sub(r"\s+", " ", html_text)).lower()
+    if "this account has been terminated" in lower_text:
+        status = "terminated"
+        found = re.search(
+            r"(This account has been terminated[^<\"{}]+)",
+            html_text,
+            flags=re.IGNORECASE,
+        )
+        if found:
+            status_reason = html.unescape(re.sub(r"\s+", " ", found.group(1))).strip()
+        if not status_reason:
+            status_reason = "This account has been terminated."
+    elif "this channel was removed because it violated our community guidelines" in lower_text:
+        status = "terminated"
+        status_reason = "This channel was removed because it violated YouTube Community Guidelines."
     if not thumbnail_url:
         thumbnail_url = extract_channel_thumbnail_url(initial_data)
     if not title:
@@ -2500,7 +2647,110 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
         "channel_id": found_channel_id or channel_id,
         "channel": title,
         "channel_url": channel_url,
-        "channel_thumbnail_url": thumbnail_url,
+        "channel_description": description,
+        "channel_aliases": "",
+        "channel_thumbnail_url": absolute_url(thumbnail_url),
+        "channel_status": status,
+        "channel_status_reason": status_reason,
+        "archivarix_channel_id": "",
+    }
+
+
+def normalized_channel_match(value: str) -> str:
+    value = re.sub(r"\s+", " ", (value or "").strip()).lower()
+    return value.removeprefix("@")
+
+
+def channel_renderer_metadata(renderer: dict[str, Any]) -> dict[str, str]:
+    endpoint = renderer.get("navigationEndpoint")
+    channel_url = endpoint_channel_url(endpoint) if isinstance(endpoint, dict) else ""
+    thumbnail = renderer.get("thumbnail")
+    thumbnail_url = ""
+    if isinstance(thumbnail, dict):
+        thumbnail_url = pick_thumbnail(thumbnail.get("thumbnails", []))
+    return {
+        "channel_id": str(renderer.get("channelId") or "").strip(),
+        "channel": text_from_runs(renderer.get("title")).strip(),
+        "channel_url": channel_url,
+        "channel_description": text_from_runs(renderer.get("description")).strip(),
+        "channel_aliases": "",
+        "channel_thumbnail_url": absolute_url(thumbnail_url),
+        "channel_status": "",
+        "channel_status_reason": "",
+        "archivarix_channel_id": "",
+    }
+
+
+def extract_channel_search_metadata(
+    html_text: str,
+    channel_id: str,
+    fallback_query: str = "",
+) -> dict[str, str]:
+    initial_data = extract_json_assignment(html_text, "ytInitialData")
+    fallback_key = normalized_channel_match(fallback_query)
+    title_matches: list[dict[str, str]] = []
+    handle_matches: list[dict[str, str]] = []
+    for node in walk(initial_data):
+        if not isinstance(node, dict):
+            continue
+        renderer = node.get("channelRenderer")
+        if not isinstance(renderer, dict):
+            continue
+        metadata = channel_renderer_metadata(renderer)
+        found_channel_id = metadata.get("channel_id", "")
+        if channel_id and found_channel_id == channel_id:
+            return metadata
+        if fallback_key:
+            title_key = normalized_channel_match(metadata.get("channel", ""))
+            url_key = normalized_channel_match(metadata.get("channel_url", "").rstrip("/").rsplit("/", 1)[-1])
+            if title_key == fallback_key:
+                title_matches.append(metadata)
+            if url_key == fallback_key:
+                handle_matches.append(metadata)
+    if len(handle_matches) == 1:
+        return handle_matches[0]
+    if len(title_matches) == 1:
+        return title_matches[0]
+    return {
+        "channel_id": channel_id,
+        "channel": "",
+        "channel_url": youtube_channel_url(channel_id),
+        "channel_description": "",
+        "channel_aliases": "",
+        "channel_thumbnail_url": "",
+        "channel_status": "",
+        "channel_status_reason": "",
+        "archivarix_channel_id": "",
+    }
+
+
+def merge_channel_metadata(primary: dict[str, str], fallback: dict[str, str]) -> dict[str, str]:
+    return {
+        "channel_id": primary.get("channel_id", "") or fallback.get("channel_id", ""),
+        "channel": primary.get("channel", "") or fallback.get("channel", ""),
+        "channel_url": primary.get("channel_url", "") or fallback.get("channel_url", ""),
+        "channel_description": primary.get("channel_description", "") or fallback.get("channel_description", ""),
+        "channel_aliases": primary.get("channel_aliases", "") or fallback.get("channel_aliases", ""),
+        "channel_thumbnail_url": primary.get("channel_thumbnail_url", "") or fallback.get("channel_thumbnail_url", ""),
+        "channel_status": primary.get("channel_status", "") or fallback.get("channel_status", ""),
+        "channel_status_reason": primary.get("channel_status_reason", "") or fallback.get("channel_status_reason", ""),
+        "archivarix_channel_id": primary.get("archivarix_channel_id", "") or fallback.get("archivarix_channel_id", ""),
+    }
+
+
+def archivarix_channel_metadata(fields: dict[str, Any], channel_id: str) -> dict[str, str]:
+    status = str(fields.get("channelStatus") or "").strip()
+    status_reason = "Deleted/terminated channel reported by Archivarix." if status == "deleted" else ""
+    return {
+        "channel_id": str(fields.get("channelExternalId") or channel_id or "").strip(),
+        "channel": str(fields.get("channelTitle") or "").strip(),
+        "channel_url": str(fields.get("channelUrl") or youtube_channel_url(channel_id) or "").strip(),
+        "channel_description": str(fields.get("channelDescription") or "").strip(),
+        "channel_aliases": str(fields.get("channelAliases") or "").strip(),
+        "channel_thumbnail_url": absolute_url(str(fields.get("channelThumbnailUrl") or "")),
+        "channel_status": status,
+        "channel_status_reason": status_reason,
+        "archivarix_channel_id": str(fields.get("archivarixChannelId") or "").strip(),
     }
 
 
@@ -2508,10 +2758,43 @@ def fetch_channel_metadata(
     opener: urllib.request.OpenerDirector,
     channel_id: str,
     thumb_dir: Path,
+    fallback_query: str = "",
 ) -> dict[str, str]:
     channel_url = youtube_channel_url(channel_id)
     page = request_text(opener, channel_url)
     metadata = extract_channel_page_metadata(page, channel_id)
+    if not (metadata.get("channel") and metadata.get("channel_thumbnail_url")):
+        search_terms = [
+            term.strip()
+            for term in (fallback_query, channel_id)
+            if term and term.strip()
+        ]
+        seen_terms: set[str] = set()
+        for term in search_terms:
+            term_key = term.lower()
+            if term_key in seen_terms:
+                continue
+            seen_terms.add(term_key)
+            search_url = "https://www.youtube.com/results?" + urllib.parse.urlencode({"search_query": term})
+            search_page = request_text(opener, search_url)
+            search_metadata = extract_channel_search_metadata(search_page, channel_id, fallback_query or term)
+            metadata = merge_channel_metadata(metadata, search_metadata)
+            if metadata.get("channel") and metadata.get("channel_thumbnail_url"):
+                break
+    if (
+        metadata.get("channel_status") == "terminated"
+        or not (metadata.get("channel") and metadata.get("channel_thumbnail_url"))
+    ):
+        try:
+            archivarix_opener = load_cookie_opener(ARCHIVARIX_COOKIE_FILE)
+            archivarix_fields = archivarix_lookup_channel(channel_id, archivarix_opener)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            archivarix_fields = {}
+        if archivarix_fields:
+            metadata = merge_channel_metadata(
+                metadata,
+                archivarix_channel_metadata(archivarix_fields, channel_id),
+            )
     metadata["channel_thumbnail_path"] = cache_channel_thumbnail(
         opener,
         metadata.get("channel_id", "") or channel_id,
@@ -3962,11 +4245,11 @@ def metadata_queue_rows(
         where.append(
             """
             (
-              q.source_priority IN (0, 1)
-              OR vm.video_id IS NULL
+              (q.source_priority IN (0, 1) AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted'))
+              OR (q.source_priority NOT IN (0, 1) AND vm.video_id IS NULL)
               OR vm.fetch_status = 'error'
-              OR (vm.channel_id <> '' AND COALESCE(ch.url, '') = '')
-              OR (vm.channel_id <> '' AND COALESCE(ch.thumbnail_path, '') = '')
+              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.url, '') = '')
+              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.thumbnail_path, '') = '')
               OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
             )
             """
@@ -4130,7 +4413,7 @@ def metadata_queue_rows(
                END AS metadata_source
         FROM q
         LEFT JOIN video_metadata vm ON vm.video_id = q.video_id
-        LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
+        LEFT JOIN channels ch ON ch.channel_id = COALESCE(NULLIF(vm.channel_id, ''), NULLIF(q.channel_id, ''))
         WHERE {" AND ".join(where)}
         ORDER BY q.source_priority,
                  CASE WHEN q.source_priority IN (0, 1) THEN q.channel_title ELSE '' END COLLATE NOCASE,
@@ -4157,11 +4440,11 @@ def metadata_queue_count(
         where.append(
             """
             (
-              q.source_priority IN (0, 1)
-              OR vm.video_id IS NULL
+              (q.source_priority IN (0, 1) AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted'))
+              OR (q.source_priority NOT IN (0, 1) AND vm.video_id IS NULL)
               OR vm.fetch_status = 'error'
-              OR (vm.channel_id <> '' AND COALESCE(ch.url, '') = '')
-              OR (vm.channel_id <> '' AND COALESCE(ch.thumbnail_path, '') = '')
+              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.url, '') = '')
+              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.thumbnail_path, '') = '')
               OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
             )
             """
@@ -4256,7 +4539,7 @@ def metadata_queue_count(
         SELECT COUNT(*) AS count
         FROM q
         LEFT JOIN video_metadata vm ON vm.video_id = q.video_id
-        LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
+        LEFT JOIN channels ch ON ch.channel_id = COALESCE(NULLIF(vm.channel_id, ''), q.video_id)
         WHERE {" AND ".join(where)}
         """,
         params,
@@ -4328,7 +4611,8 @@ def admin_status(
                 SELECT
                   COUNT(*) AS total,
                   SUM(CASE WHEN COALESCE(thumbnail_path, '') <> '' THEN 1 ELSE 0 END) AS thumbnail_cached,
-                  SUM(CASE WHEN COALESCE(thumbnail_path, '') = '' THEN 1 ELSE 0 END) AS thumbnail_missing,
+                  SUM(CASE WHEN COALESCE(thumbnail_path, '') = '' AND COALESCE(status, '') NOT IN ('terminated', 'deleted') THEN 1 ELSE 0 END) AS thumbnail_missing,
+                  SUM(CASE WHEN COALESCE(status, '') IN ('terminated', 'deleted') THEN 1 ELSE 0 END) AS terminated,
                   SUM(CASE WHEN COALESCE(url, '') = '' THEN 1 ELSE 0 END) AS url_missing
                 FROM channels
                 WHERE channel_id <> ''
@@ -4661,7 +4945,12 @@ class MetadataWorker:
                 }
                 try:
                     if metadata_source == "channel" and queued_channel_id:
-                        metadata = fetch_channel_metadata(opener, queued_channel_id, thumb_dir)
+                        metadata = fetch_channel_metadata(
+                            opener,
+                            queued_channel_id,
+                            thumb_dir,
+                            fallback_query=queued_channel_title,
+                        )
                         if not (
                             metadata.get("channel")
                             or metadata.get("channel_url")
@@ -4682,8 +4971,13 @@ class MetadataWorker:
                         metadata.get("channel_id", ""),
                         title=metadata.get("channel", ""),
                         url=metadata.get("channel_url", ""),
+                        description=metadata.get("channel_description", ""),
+                        aliases=metadata.get("channel_aliases", ""),
                         thumbnail_url=metadata.get("channel_thumbnail_url", ""),
                         thumbnail_path=metadata.get("channel_thumbnail_path", ""),
+                        archivarix_channel_id=metadata.get("archivarix_channel_id", ""),
+                        status=metadata.get("channel_status", ""),
+                        status_reason=metadata.get("channel_status_reason", ""),
                         source="metadata",
                         updated_at=now,
                     )
@@ -5785,6 +6079,53 @@ def read_zip_member_text(zf: zipfile.ZipFile, suffix: str) -> str:
     return ""
 
 
+def load_takeout_subscriptions(takeout_path: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for zip_path in find_takeout_zips(takeout_path):
+        with zipfile.ZipFile(zip_path) as zf:
+            text = read_zip_member_text(zf, "subscriptions/subscriptions.csv")
+        if not text:
+            continue
+        for row in csv.DictReader(io.StringIO(text)):
+            channel_id = (row.get("Channel Id") or row.get("Channel ID") or "").strip()
+            channel_url = (row.get("Channel Url") or row.get("Channel URL") or "").strip()
+            if not channel_id:
+                channel_id = youtube_channel_id_from_url(channel_url)
+            if not channel_id:
+                continue
+            rows.append(
+                {
+                    "channel_id": channel_id,
+                    "channel_url": channel_url,
+                    "title": (row.get("Channel Title") or "").strip(),
+                }
+            )
+        if rows:
+            break
+    return rows
+
+
+def sync_takeout_subscriptions(conn: sqlite3.Connection, takeout_path: Path) -> None:
+    existing = conn.execute("SELECT COUNT(*) FROM channels WHERE subscribed = 1").fetchone()[0]
+    if existing:
+        return
+    rows = load_takeout_subscriptions(takeout_path)
+    if not rows:
+        return
+    now = int(time.time())
+    for row in rows:
+        channel_id = upsert_channel(
+            conn,
+            row["channel_id"],
+            title=row["title"],
+            url=row["channel_url"],
+            source="takeout_subscriptions",
+            updated_at=now,
+        )
+        if channel_id:
+            conn.execute("UPDATE channels SET subscribed = 1 WHERE channel_id = ?", (channel_id,))
+
+
 def load_takeout_history_source(takeout_path: Path, requested_key: str = "") -> tuple[str, str]:
     zip_path = find_takeout_zip(takeout_path)
     if zip_path:
@@ -6025,6 +6366,17 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             """
         )
     ]
+    channels = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT *
+            FROM channels
+            WHERE channel_id <> ''
+            ORDER BY title COLLATE NOCASE, channel_id
+            """
+        )
+    ]
     playlist_videos = [
         dict(row)
         for row in conn.execute(
@@ -6151,6 +6503,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
         "playlists": playlists,
         "memberships": memberships,
         "playlistVideos": playlist_videos,
+        "channels": channels,
         "hiddenVideos": hidden_videos,
         "archivarixCandidates": archivarix_candidates,
         "snapshots": snapshots,
@@ -6341,6 +6694,7 @@ INDEX_HTML = """<!doctype html>
     .refresh:hover { background: var(--accent-soft); }
     .top-link { display: inline-block; color: var(--accent); text-decoration: none; margin: -4px 0 14px; font-size: 13px; }
     .top-link:hover { text-decoration: underline; }
+    .filter.child { margin-left: 18px; font-size: 13px; }
     .video-title { color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
     .playlist-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
     .playlist-link:hover { text-decoration: underline; }
@@ -6366,6 +6720,9 @@ INDEX_HTML = """<!doctype html>
       <div class="filters" aria-label="Search filters">
         <div class="filter-title">Search In</div>
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="playlists" checked> Playlists</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="channels" checked> Channels</label>
+        <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_subscribed" checked> Subscribed</label>
+        <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_unsubscribed" checked> Non-subscribed</label>
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="videos" checked> Video titles</label>
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="descriptions" checked> Descriptions</label>
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="hidden" checked> Hidden/missing</label>
@@ -6396,6 +6753,8 @@ INDEX_HTML = """<!doctype html>
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
     const searchFilters = [...document.querySelectorAll('.search-filter')];
+    const channelsFilter = document.querySelector('[data-filter="channels"]');
+    const channelChildFilters = [...document.querySelectorAll('.channel-child-filter')];
     const grid = document.getElementById('grid');
     const empty = document.getElementById('empty');
     const title = document.getElementById('view-title');
@@ -6484,6 +6843,17 @@ INDEX_HTML = """<!doctype html>
 
     function activeSearchFilters() {
       return new Set(searchFilters.filter(input => input.checked).map(input => input.dataset.filter));
+    }
+
+    function syncChannelParentFilter() {
+      if (!channelsFilter || !channelChildFilters.length) return;
+      const checkedCount = channelChildFilters.filter(input => input.checked).length;
+      channelsFilter.checked = checkedCount === channelChildFilters.length;
+      channelsFilter.indeterminate = checkedCount > 0 && checkedCount < channelChildFilters.length;
+    }
+
+    function isSubscribedChannel(channel) {
+      return Number(channel.subscribed || 0) === 1;
     }
 
     function includesQuery(value, query) {
@@ -6606,6 +6976,17 @@ INDEX_HTML = """<!doctype html>
           }
         }
       }
+      if (filters.has('channels_subscribed') || filters.has('channels_unsubscribed')) {
+        for (const channel of data.channels || []) {
+          const subscribed = isSubscribedChannel(channel);
+          if (subscribed && !filters.has('channels_subscribed')) continue;
+          if (!subscribed && !filters.has('channels_unsubscribed')) continue;
+          const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`;
+          if (includesQuery(haystack, query)) {
+            results.push({ kind: 'channel', score: includesQuery(channel.title, query) ? 0 : 2, item: channel });
+          }
+        }
+      }
       if (filters.has('videos') || filters.has('descriptions') || filters.has('hidden')) {
         for (const video of data.playlistVideos || []) {
           const titleHit = filters.has('videos') && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${video.video_id} ${video.playlist_title}`, query);
@@ -6655,6 +7036,13 @@ INDEX_HTML = """<!doctype html>
       hidden.innerHTML = `<span>Hidden videos</span><span class="count">${data.hiddenVideos.length}</span>`;
       hidden.addEventListener('click', () => setSelected('__hidden__'));
       groupsEl.appendChild(hidden);
+      const terminatedChannels = (data.channels || []).filter(channel => ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase()));
+      const terminatedChannelsButton = document.createElement('button');
+      terminatedChannelsButton.className = 'group';
+      terminatedChannelsButton.dataset.key = '__terminated_channels__';
+      terminatedChannelsButton.innerHTML = `<span>Terminated channels</span><span class="count">${terminatedChannels.length}</span>`;
+      terminatedChannelsButton.addEventListener('click', () => setSelected('__terminated_channels__'));
+      groupsEl.appendChild(terminatedChannelsButton);
       const hiddenPlaylists = data.playlists.filter(playlist => (playlist.hidden_count || 0) > 0);
       const hiddenPlaylistButton = document.createElement('button');
       hiddenPlaylistButton.className = 'group';
@@ -6741,6 +7129,19 @@ INDEX_HTML = """<!doctype html>
         });
         meta.textContent = `${rows.length} shown`;
         grid.replaceChildren(...rows.map(hiddenVideoCardFor));
+        empty.hidden = rows.length !== 0;
+        return;
+      }
+      if (selected === '__terminated_channels__') {
+        title.textContent = 'Terminated channels';
+        const rows = (data.channels || [])
+          .filter(channel => ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase()))
+          .filter(channel => {
+            const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`.toLowerCase();
+            return !query || haystack.includes(query);
+          });
+        meta.textContent = `${rows.length} channels`;
+        grid.replaceChildren(...rows.map(channelCardFor));
         empty.hidden = rows.length !== 0;
         return;
       }
@@ -6878,6 +7279,9 @@ INDEX_HTML = """<!doctype html>
       if (result.kind === 'playlist') {
         return cardFor(result.item);
       }
+      if (result.kind === 'channel') {
+        return channelCardFor(result.item);
+      }
       if (result.kind === 'missing') {
         return snapshotMissingCardFor(result.item);
       }
@@ -6894,6 +7298,44 @@ INDEX_HTML = """<!doctype html>
         source.innerHTML = `<a class="playlist-link" href="${localPlaylistHref(video.playlist_id)}">${escapeHtml(video.playlist_title)}</a>`;
         body.append(source);
       }
+      return article;
+    }
+
+    function channelCardFor(channel) {
+      const article = document.createElement('article');
+      article.className = 'card';
+      if (channel.thumbnail_path) {
+        const img = document.createElement('img');
+        img.className = 'thumb';
+        img.loading = 'lazy';
+        img.alt = '';
+        img.src = `/${channel.thumbnail_path}`;
+        article.append(img);
+      }
+      const body = document.createElement('div');
+      body.className = 'body';
+      const youtubeUrl = channel.url || (channel.channel_id ? `https://www.youtube.com/channel/${encodeURIComponent(channel.channel_id)}` : '');
+      const archivarixUrl = channel.channel_id ? `https://tube.archivarix.net/?q=${encodeURIComponent(channel.channel_id)}` : '';
+      const status = String(channel.status || '').toLowerCase();
+      const subscribedLabel = isSubscribedChannel(channel) ? 'Subscribed' : 'Non-subscribed';
+      body.innerHTML = `
+        <div class="result-kind">Channel</div>
+        <a class="playlist-title" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">${escapeHtml(channel.title || channel.channel_id)}</a>
+        <div class="details">
+          <span>${subscribedLabel}</span>
+          ${status ? `<span class="badge">${escapeHtml(status)}</span>` : ''}
+          ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
+          ${channel.archivarix_channel_id ? `<span>Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
+        </div>
+        ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
+        ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
+        ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : ''}
+        <div class="details">
+          ${youtubeUrl ? `<a class="playlist-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">YouTube</a>` : ''}
+          ${archivarixUrl ? `<a class="playlist-link" href="${escapeHtml(archivarixUrl)}" target="_blank" rel="noreferrer">Archivarix</a>` : ''}
+        </div>
+      `;
+      article.append(body);
       return article;
     }
 
@@ -7017,7 +7459,24 @@ INDEX_HTML = """<!doctype html>
     }
 
     search.addEventListener('input', render);
-    for (const input of searchFilters) input.addEventListener('change', render);
+    if (channelsFilter) {
+      channelsFilter.addEventListener('change', () => {
+        channelsFilter.indeterminate = false;
+        for (const child of channelChildFilters) child.checked = channelsFilter.checked;
+        render();
+      });
+    }
+    for (const input of channelChildFilters) {
+      input.addEventListener('change', () => {
+        syncChannelParentFilter();
+        render();
+      });
+    }
+    for (const input of searchFilters) {
+      if (input === channelsFilter || channelChildFilters.includes(input)) continue;
+      input.addEventListener('change', render);
+    }
+    syncChannelParentFilter();
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
       if (selected.startsWith('__playlist__:')) search.value = '';
@@ -7640,6 +8099,7 @@ ADMIN_HTML = """<!doctype html>
         { label: 'Channels', count: channelCounts.total || 0 },
         { label: 'Channel thumbs cached', count: channelCounts.thumbnail_cached || 0 },
         { label: 'Channel thumbs missing', count: channelCounts.thumbnail_missing || 0 },
+        { label: 'Channels terminated', count: channelCounts.terminated || 0 },
         { label: 'Channel URLs missing', count: channelCounts.url_missing || 0 },
       ];
       const videoMetadataCards = (data.metadataCounts || []).map(row => ({
