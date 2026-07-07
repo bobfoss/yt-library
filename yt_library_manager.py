@@ -1617,11 +1617,12 @@ def cache_video_thumbnail(
 
 def cache_channel_thumbnail(
     opener: urllib.request.OpenerDirector,
-    video_id: str,
+    subject_id: str,
     thumbnail_url: str,
     thumb_dir: Path,
+    referer_url: str = "",
 ) -> str:
-    if not video_id or not thumbnail_url:
+    if not subject_id or not thumbnail_url:
         return ""
     thumb_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -1629,12 +1630,12 @@ def cache_channel_thumbnail(
             opener,
             thumbnail_url,
             timeout=30,
-            referer=f"https://www.youtube.com/watch?v={video_id}",
+            referer=referer_url or f"https://www.youtube.com/watch?v={subject_id}",
         )
     except Exception:
         return ""
     ext = thumbnail_extension(content_type, thumbnail_url)
-    target = thumb_dir / f"{safe_name(video_id)}_channel{ext}"
+    target = thumb_dir / f"{safe_name(subject_id)}_channel{ext}"
     target.write_bytes(body)
     return local_asset_path(target)
 
@@ -2382,6 +2383,58 @@ def extract_channel_id(initial_data: dict[str, Any], channel_url: str = "") -> s
             if browse_id.startswith("UC"):
                 return browse_id
     return ""
+
+
+def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, str]:
+    initial_data = extract_json_assignment(html_text, "ytInitialData")
+    title = ""
+    channel_url = youtube_channel_url(channel_id)
+    thumbnail_url = ""
+    found_channel_id = channel_id
+    for node in walk(initial_data):
+        if not isinstance(node, dict):
+            continue
+        renderer = node.get("channelMetadataRenderer")
+        if not isinstance(renderer, dict):
+            continue
+        title = str(renderer.get("title") or title or "").strip()
+        found_channel_id = str(renderer.get("externalId") or found_channel_id or "").strip()
+        channel_url = youtube_path_url(str(renderer.get("channelUrl") or "")) or channel_url
+        avatar = renderer.get("avatar")
+        if isinstance(avatar, dict):
+            thumbnail_url = pick_thumbnail(avatar.get("thumbnails", [])) or thumbnail_url
+        break
+    if not thumbnail_url:
+        thumbnail_url = extract_channel_thumbnail_url(initial_data)
+    if not title:
+        found = re.search(r"<title>(.*?)</title>", html_text, flags=re.DOTALL)
+        if found:
+            title = html.unescape(re.sub(r"\s+", " ", found.group(1))).strip()
+            title = re.sub(r"\s+-\s+YouTube$", "", title)
+    return {
+        "channel_id": found_channel_id or channel_id,
+        "channel": title,
+        "channel_url": channel_url,
+        "channel_thumbnail_url": thumbnail_url,
+    }
+
+
+def fetch_channel_metadata(
+    opener: urllib.request.OpenerDirector,
+    channel_id: str,
+    thumb_dir: Path,
+) -> dict[str, str]:
+    channel_url = youtube_channel_url(channel_id)
+    page = request_text(opener, channel_url)
+    metadata = extract_channel_page_metadata(page, channel_id)
+    metadata["channel_thumbnail_path"] = cache_channel_thumbnail(
+        opener,
+        metadata.get("channel_id", "") or channel_id,
+        metadata.get("channel_thumbnail_url", ""),
+        thumb_dir,
+        referer_url=channel_url,
+    )
+    return metadata
 
 
 def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
@@ -3783,7 +3836,7 @@ def metadata_queue_rows(
         where.append(
             """
             (
-              q.source_priority = 0
+              q.source_priority IN (0, 1)
               OR vm.video_id IS NULL
               OR vm.fetch_status = 'error'
               OR (vm.channel_id <> '' AND COALESCE(ch.url, '') = '')
@@ -3794,9 +3847,10 @@ def metadata_queue_rows(
         )
         params.append(stale_before)
     sql = f"""
-        WITH channel_sources AS (
+        WITH all_channel_refs AS (
           SELECT vm.video_id,
-                 0 AS source_priority,
+                 vm.channel_id,
+                 COALESCE(NULLIF(ch.title, ''), vm.channel_id) AS channel_title,
                  0 AS playlist_count,
                  COALESCE(NULLIF(vm.title, ''), vm.video_id) AS current_title,
                  0 AS playlist_sort,
@@ -3811,7 +3865,8 @@ def metadata_queue_rows(
             )
           UNION ALL
           SELECT pv.video_id,
-                 0 AS source_priority,
+                 pv.channel_id,
+                 COALESCE(NULLIF(ch.title, ''), NULLIF(pv.channel, ''), pv.channel_id) AS channel_title,
                  COUNT(DISTINCT pv.playlist_id) AS playlist_count,
                  MIN(pv.title) AS current_title,
                  MAX(MAX(COALESCE(ps.scanned_at, 0), COALESCE(p.updated_at, 0), COALESCE(pv.updated_at, 0))) AS playlist_sort,
@@ -3826,10 +3881,11 @@ def metadata_queue_rows(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
-          GROUP BY pv.video_id
+          GROUP BY pv.video_id, pv.channel_id
           UNION ALL
           SELECT pvr.video_id,
-                 0 AS source_priority,
+                 pvr.channel_id,
+                 COALESCE(NULLIF(ch.title, ''), NULLIF(pvr.channel, ''), pvr.channel_id) AS channel_title,
                  COUNT(DISTINCT pvr.playlist_id) AS playlist_count,
                  MIN(pvr.title) AS current_title,
                  MAX(MAX(COALESCE(ps.scanned_at, 0), COALESCE(p.updated_at, 0), COALESCE(pvr.updated_at, 0))) AS playlist_sort,
@@ -3844,10 +3900,11 @@ def metadata_queue_rows(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
-          GROUP BY pvr.video_id
+          GROUP BY pvr.video_id, pvr.channel_id
           UNION ALL
           SELECT hr.video_id,
-                 0 AS source_priority,
+                 hr.channel_id,
+                 COALESCE(NULLIF(ch.title, ''), NULLIF(hr.channel, ''), hr.channel_id) AS channel_title,
                  0 AS playlist_count,
                  MIN(hr.title) AS current_title,
                  0 AS playlist_sort,
@@ -3860,13 +3917,49 @@ def metadata_queue_rows(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
-          GROUP BY hr.video_id
+          GROUP BY hr.video_id, hr.channel_id
+        ),
+        known_channel_sources AS (
+          SELECT MIN(ref.video_id) AS video_id,
+                 ref.channel_id,
+                 COALESCE(NULLIF(ch.title, ''), MAX(ref.channel_title), ref.channel_id) AS channel_title,
+                 0 AS source_priority,
+                 SUM(ref.playlist_count) AS playlist_count,
+                 MIN(ref.current_title) AS current_title,
+                 MAX(ref.playlist_sort) AS playlist_sort,
+                 MAX(ref.history_sort) AS history_sort
+          FROM channels ch
+          JOIN all_channel_refs ref ON ref.channel_id = ch.channel_id
+          WHERE ch.channel_id <> ''
+            AND (
+              COALESCE(ch.url, '') = ''
+              OR COALESCE(ch.thumbnail_path, '') = ''
+            )
+          GROUP BY ref.channel_id
+        ),
+        discovered_channel_sources AS (
+          SELECT MIN(ref.video_id) AS video_id,
+                 ref.channel_id,
+                 MAX(ref.channel_title) AS channel_title,
+                 1 AS source_priority,
+                 SUM(ref.playlist_count) AS playlist_count,
+                 MIN(ref.current_title) AS current_title,
+                 MAX(ref.playlist_sort) AS playlist_sort,
+                 MAX(ref.history_sort) AS history_sort
+          FROM all_channel_refs ref
+          LEFT JOIN channels ch ON ch.channel_id = ref.channel_id
+          WHERE ch.channel_id IS NULL
+          GROUP BY ref.channel_id
         ),
         queue_sources AS (
-          SELECT * FROM channel_sources
+          SELECT * FROM known_channel_sources
+          UNION ALL
+          SELECT * FROM discovered_channel_sources
           UNION ALL
           SELECT pv.video_id,
-                 1 AS source_priority,
+                 '' AS channel_id,
+                 '' AS channel_title,
+                 2 AS source_priority,
                  COUNT(DISTINCT pv.playlist_id) AS playlist_count,
                  MIN(pv.title) AS current_title,
                  MAX(MAX(COALESCE(ps.scanned_at, 0), COALESCE(p.updated_at, 0), COALESCE(pv.updated_at, 0))) AS playlist_sort,
@@ -3878,7 +3971,9 @@ def metadata_queue_rows(
           GROUP BY pv.video_id
           UNION ALL
           SELECT hr.video_id,
-                 2 AS source_priority,
+                 '' AS channel_id,
+                 '' AS channel_title,
+                 3 AS source_priority,
                  0 AS playlist_count,
                  MIN(hr.title) AS current_title,
                  0 AS playlist_sort,
@@ -3890,6 +3985,8 @@ def metadata_queue_rows(
         q AS (
           SELECT video_id,
                  MIN(source_priority) AS source_priority,
+                 MAX(channel_id) AS channel_id,
+                 MAX(channel_title) AS channel_title,
                  SUM(playlist_count) AS playlist_count,
                  MIN(current_title) AS current_title,
                  MAX(playlist_sort) AS playlist_sort,
@@ -3898,11 +3995,13 @@ def metadata_queue_rows(
           GROUP BY video_id
         )
         SELECT q.video_id,
+               q.channel_id,
+               q.channel_title,
                q.playlist_count,
                q.current_title,
                CASE
-                 WHEN q.source_priority = 0 THEN 'channel'
-                 WHEN q.source_priority = 1 THEN 'playlist'
+                 WHEN q.source_priority IN (0, 1) THEN 'channel'
+                 WHEN q.source_priority = 2 THEN 'playlist'
                  ELSE 'history'
                END AS metadata_source
         FROM q
@@ -3910,8 +4009,9 @@ def metadata_queue_rows(
         LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
         WHERE {" AND ".join(where)}
         ORDER BY q.source_priority,
-                 CASE WHEN q.source_priority = 1 THEN q.playlist_sort ELSE 0 END DESC,
-                 CASE WHEN q.source_priority = 2 THEN q.history_sort ELSE '' END DESC,
+                 CASE WHEN q.source_priority IN (0, 1) THEN q.channel_title ELSE '' END COLLATE NOCASE,
+                 CASE WHEN q.source_priority = 2 THEN q.playlist_sort ELSE 0 END DESC,
+                 CASE WHEN q.source_priority = 3 THEN q.history_sort ELSE '' END DESC,
                  COALESCE(vm.fetched_at, 0),
                  q.video_id
     """
@@ -3933,7 +4033,7 @@ def metadata_queue_count(
         where.append(
             """
             (
-              q.source_priority = 0
+              q.source_priority IN (0, 1)
               OR vm.video_id IS NULL
               OR vm.fetch_status = 'error'
               OR (vm.channel_id <> '' AND COALESCE(ch.url, '') = '')
@@ -3945,8 +4045,9 @@ def metadata_queue_count(
         params.append(stale_before)
     row = conn.execute(
         f"""
-        WITH channel_sources AS (
-          SELECT vm.video_id
+        WITH all_channel_refs AS (
+          SELECT vm.video_id,
+                 vm.channel_id
           FROM video_metadata vm
           LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
           WHERE vm.video_id <> ''
@@ -3956,7 +4057,8 @@ def metadata_queue_count(
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
           UNION
-          SELECT pv.video_id
+          SELECT pv.video_id,
+                 pv.channel_id
           FROM playlist_videos pv
           LEFT JOIN channels ch ON ch.channel_id = pv.channel_id
           WHERE pv.video_id <> ''
@@ -3966,7 +4068,8 @@ def metadata_queue_count(
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
           UNION
-          SELECT pvr.video_id
+          SELECT pvr.video_id,
+                 pvr.channel_id
           FROM playlist_video_reconciled pvr
           LEFT JOIN channels ch ON ch.channel_id = pvr.channel_id
           WHERE pvr.video_id <> ''
@@ -3976,7 +4079,8 @@ def metadata_queue_count(
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
           UNION
-          SELECT hr.video_id
+          SELECT hr.video_id,
+                 hr.channel_id
           FROM history_reconciled hr
           LEFT JOIN channels ch ON ch.channel_id = hr.channel_id
           WHERE hr.video_id <> ''
@@ -3986,15 +4090,38 @@ def metadata_queue_count(
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
         ),
+        known_channel_sources AS (
+          SELECT MIN(ref.video_id) AS video_id,
+                 0 AS source_priority
+          FROM channels ch
+          JOIN all_channel_refs ref ON ref.channel_id = ch.channel_id
+          WHERE ch.channel_id <> ''
+            AND (
+              COALESCE(ch.url, '') = ''
+              OR COALESCE(ch.thumbnail_path, '') = ''
+            )
+          GROUP BY ref.channel_id
+        ),
+        discovered_channel_sources AS (
+          SELECT MIN(ref.video_id) AS video_id,
+                 1 AS source_priority
+          FROM all_channel_refs ref
+          LEFT JOIN channels ch ON ch.channel_id = ref.channel_id
+          WHERE ch.channel_id IS NULL
+          GROUP BY ref.channel_id
+        ),
         queue_sources AS (
-          SELECT video_id, 0 AS source_priority
-          FROM channel_sources
+          SELECT video_id, source_priority
+          FROM known_channel_sources
           UNION
-          SELECT video_id, 1 AS source_priority
+          SELECT video_id, source_priority
+          FROM discovered_channel_sources
+          UNION
+          SELECT video_id, 2 AS source_priority
           FROM playlist_videos
           WHERE video_id <> ''
           UNION
-          SELECT video_id, 2 AS source_priority
+          SELECT video_id, 3 AS source_priority
           FROM history_reconciled
           WHERE video_id <> ''
         ),
@@ -4354,7 +4481,7 @@ class MetadataWorker:
                         "Metadata worker started",
                     ),
                 )
-                log_worker_event(conn, run_id, "info", f"Queued {len(rows)} videos")
+                log_worker_event(conn, run_id, "info", f"Queued {len(rows)} metadata items")
 
             processed = 0
             found = 0
@@ -4374,6 +4501,8 @@ class MetadataWorker:
                     return
                 video_id = row["video_id"]
                 metadata_source = row["metadata_source"] if "metadata_source" in row.keys() else "history"
+                queued_channel_id = row["channel_id"] if "channel_id" in row.keys() else ""
+                queued_channel_title = row["channel_title"] if "channel_title" in row.keys() else ""
                 status = "ok"
                 error = ""
                 metadata: dict[str, str] = {
@@ -4393,9 +4522,18 @@ class MetadataWorker:
                     "yt_status": "",
                 }
                 try:
-                    metadata = fetch_watch_metadata(opener, video_id, thumb_dir)
-                    if not metadata.get("title"):
-                        status = "no_metadata"
+                    if metadata_source == "channel" and queued_channel_id:
+                        metadata = fetch_channel_metadata(opener, queued_channel_id, thumb_dir)
+                        if not (
+                            metadata.get("channel")
+                            or metadata.get("channel_url")
+                            or metadata.get("channel_thumbnail_path")
+                        ):
+                            status = "no_metadata"
+                    else:
+                        metadata = fetch_watch_metadata(opener, video_id, thumb_dir)
+                        if not metadata.get("title"):
+                            status = "no_metadata"
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                     status = "error"
                     error = str(exc)
@@ -4411,54 +4549,60 @@ class MetadataWorker:
                         source="metadata",
                         updated_at=now,
                     )
-                    conn.execute(
-                        """
-                        INSERT INTO video_metadata(
-                          video_id, title, description, channel_id, duration_text, view_count,
-                          upload_date, thumbnail_url, thumbnail_path,
-                          yt_status, fetch_status, fetch_error, fetched_at, updated_at
+                    if metadata_source != "channel":
+                        conn.execute(
+                            """
+                            INSERT INTO video_metadata(
+                              video_id, title, description, channel_id, duration_text, view_count,
+                              upload_date, thumbnail_url, thumbnail_path,
+                              yt_status, fetch_status, fetch_error, fetched_at, updated_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(video_id) DO UPDATE SET
+                              title=excluded.title,
+                              description=excluded.description,
+                              channel_id=excluded.channel_id,
+                              duration_text=excluded.duration_text,
+                              view_count=excluded.view_count,
+                              upload_date=excluded.upload_date,
+                              thumbnail_url=excluded.thumbnail_url,
+                              thumbnail_path=excluded.thumbnail_path,
+                              yt_status=excluded.yt_status,
+                              fetch_status=excluded.fetch_status,
+                              fetch_error=excluded.fetch_error,
+                              fetched_at=excluded.fetched_at,
+                              updated_at=excluded.updated_at
+                            """,
+                            (
+                                video_id,
+                                metadata.get("title", ""),
+                                metadata.get("description", ""),
+                                channel_id,
+                                metadata.get("duration_text", ""),
+                                metadata.get("view_count", ""),
+                                metadata.get("upload_date", ""),
+                                metadata.get("thumbnail_url", ""),
+                                metadata.get("thumbnail_path", ""),
+                                metadata.get("yt_status", ""),
+                                status,
+                                error,
+                                now,
+                                now,
+                            ),
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(video_id) DO UPDATE SET
-                          title=excluded.title,
-                          description=excluded.description,
-                          channel_id=excluded.channel_id,
-                          duration_text=excluded.duration_text,
-                          view_count=excluded.view_count,
-                          upload_date=excluded.upload_date,
-                          thumbnail_url=excluded.thumbnail_url,
-                          thumbnail_path=excluded.thumbnail_path,
-                          yt_status=excluded.yt_status,
-                          fetch_status=excluded.fetch_status,
-                          fetch_error=excluded.fetch_error,
-                          fetched_at=excluded.fetched_at,
-                          updated_at=excluded.updated_at
-                        """,
-                        (
-                            video_id,
-                            metadata.get("title", ""),
-                            metadata.get("description", ""),
-                            channel_id,
-                            metadata.get("duration_text", ""),
-                            metadata.get("view_count", ""),
-                            metadata.get("upload_date", ""),
-                            metadata.get("thumbnail_url", ""),
-                            metadata.get("thumbnail_path", ""),
-                            metadata.get("yt_status", ""),
-                            status,
-                            error,
-                            now,
-                            now,
-                        ),
-                    )
                     processed += 1
+                    channel_label = metadata.get("channel") or queued_channel_title or queued_channel_id or video_id
                     if status == "error":
                         failed += 1
-                        log_worker_event(conn, run_id, f"{metadata_source} error", error, video_id)
+                        subject_id = channel_label if metadata_source == "channel" else video_id
+                        log_worker_event(conn, run_id, f"{metadata_source} error", error, subject_id)
                     else:
                         found += 1
                         title = metadata.get("title") or video_id
-                        log_worker_event(conn, run_id, metadata_source, f"{status}: {title}", video_id)
+                        if metadata_source == "channel":
+                            log_worker_event(conn, run_id, metadata_source, f"{status}: {channel_label} (via {title})", channel_label)
+                        else:
+                            log_worker_event(conn, run_id, metadata_source, f"{status}: {title}", video_id)
                     conn.execute(
                         """
                         UPDATE metadata_worker_runs
@@ -7011,6 +7155,8 @@ ADMIN_HTML = """<!doctype html>
     label.checkbox input { width: auto; }
     button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 9px 12px; font: inherit; cursor: pointer; }
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.danger { background: #b91c1c; border-color: #dc2626; color: #fff; }
+    button.danger:hover { background: #dc2626; color: #fff; }
     button:hover { background: var(--accent-soft); color: var(--ink); }
     .status { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 14px; }
     .badge { border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; }
@@ -7108,7 +7254,7 @@ ADMIN_HTML = """<!doctype html>
           <div class="panel queue-panel">
             <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
             <table>
-              <thead><tr><th>Video</th><th>Source</th><th>Title</th></tr></thead>
+              <thead><tr><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
               <tbody id="metadataQueueRows"></tbody>
             </table>
           </div>
@@ -7151,7 +7297,7 @@ ADMIN_HTML = """<!doctype html>
           <col class="video-col">
           <col>
         </colgroup>
-        <thead><tr><th>Time</th><th>Level</th><th>Video</th><th>Message</th></tr></thead>
+        <thead><tr><th>Time</th><th>Level</th><th>Subject</th><th>Message</th></tr></thead>
         <tbody id="logs"></tbody>
       </table>
     </section>
@@ -7185,6 +7331,10 @@ ADMIN_HTML = """<!doctype html>
       metadataRunStatus: document.getElementById('metadataRunStatus'),
       liveHistoryRunStatus: document.getElementById('liveHistoryRunStatus'),
       placeholderRunStatus: document.getElementById('placeholderRunStatus'),
+      stopPlaylists: document.getElementById('stopPlaylists'),
+      stopMetadata: document.getElementById('stopMetadata'),
+      stopLiveHistory: document.getElementById('stopLiveHistory'),
+      stopPlaceholders: document.getElementById('stopPlaceholders'),
       playlistQueueRows: document.getElementById('playlistQueueRows'),
       metadataQueueRows: document.getElementById('metadataQueueRows'),
       placeholderQueueRows: document.getElementById('placeholderQueueRows'),
@@ -7221,6 +7371,10 @@ ADMIN_HTML = """<!doctype html>
       fields.liveHistoryWorkerState.className = `value ${data.liveHistoryRunning ? 'running' : ''}`;
       fields.placeholderWorkerState.textContent = data.placeholderRecoveryRunning ? 'running' : 'idle';
       fields.placeholderWorkerState.className = `value ${data.placeholderRecoveryRunning ? 'running' : ''}`;
+      fields.stopPlaylists.classList.toggle('danger', Boolean(data.playlistScanRunning));
+      fields.stopMetadata.classList.toggle('danger', Boolean(data.metadataRunning));
+      fields.stopLiveHistory.classList.toggle('danger', Boolean(data.liveHistoryRunning));
+      fields.stopPlaceholders.classList.toggle('danger', Boolean(data.placeholderRecoveryRunning));
 
       function runHtml(run, label) {
         return run ? `
@@ -7268,9 +7422,9 @@ ADMIN_HTML = """<!doctype html>
         row => `${row.video_count || 0}/${row.video_count_text || '?'}`
       ], 'No playlists queued.');
       renderQueue(fields.metadataQueueRows, metadataQueue, [
-        row => row.video_id,
+        row => row.metadata_source === 'channel' ? (row.channel_title || row.channel_id || row.video_id) : row.video_id,
         row => row.metadata_source || '',
-        row => row.current_title || ''
+        row => row.metadata_source === 'channel' ? `via ${row.current_title || row.video_id}` : (row.current_title || '')
       ], 'No metadata queued.');
       renderQueue(fields.placeholderQueueRows, placeholderQueue, [
         row => row.video_id,
