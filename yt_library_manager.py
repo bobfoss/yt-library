@@ -3783,7 +3783,8 @@ def metadata_queue_rows(
         where.append(
             """
             (
-              vm.video_id IS NULL
+              q.source_priority = 0
+              OR vm.video_id IS NULL
               OR vm.fetch_status = 'error'
               OR (vm.channel_id <> '' AND COALESCE(ch.url, '') = '')
               OR (vm.channel_id <> '' AND COALESCE(ch.thumbnail_path, '') = '')
@@ -3793,7 +3794,7 @@ def metadata_queue_rows(
         )
         params.append(stale_before)
     sql = f"""
-        WITH queue_sources AS (
+        WITH channel_sources AS (
           SELECT vm.video_id,
                  0 AS source_priority,
                  0 AS playlist_count,
@@ -3808,6 +3809,61 @@ def metadata_queue_rows(
               COALESCE(ch.url, '') = ''
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
+          UNION ALL
+          SELECT pv.video_id,
+                 0 AS source_priority,
+                 COUNT(DISTINCT pv.playlist_id) AS playlist_count,
+                 MIN(pv.title) AS current_title,
+                 MAX(MAX(COALESCE(ps.scanned_at, 0), COALESCE(p.updated_at, 0), COALESCE(pv.updated_at, 0))) AS playlist_sort,
+                 '' AS history_sort
+          FROM playlist_videos pv
+          JOIN playlists p ON p.playlist_id = pv.playlist_id
+          LEFT JOIN playlist_scans ps ON ps.playlist_id = pv.playlist_id
+          LEFT JOIN channels ch ON ch.channel_id = pv.channel_id
+          WHERE pv.video_id <> ''
+            AND pv.channel_id <> ''
+            AND (
+              COALESCE(ch.url, '') = ''
+              OR COALESCE(ch.thumbnail_path, '') = ''
+            )
+          GROUP BY pv.video_id
+          UNION ALL
+          SELECT pvr.video_id,
+                 0 AS source_priority,
+                 COUNT(DISTINCT pvr.playlist_id) AS playlist_count,
+                 MIN(pvr.title) AS current_title,
+                 MAX(MAX(COALESCE(ps.scanned_at, 0), COALESCE(p.updated_at, 0), COALESCE(pvr.updated_at, 0))) AS playlist_sort,
+                 '' AS history_sort
+          FROM playlist_video_reconciled pvr
+          JOIN playlists p ON p.playlist_id = pvr.playlist_id
+          LEFT JOIN playlist_scans ps ON ps.playlist_id = pvr.playlist_id
+          LEFT JOIN channels ch ON ch.channel_id = pvr.channel_id
+          WHERE pvr.video_id <> ''
+            AND pvr.channel_id <> ''
+            AND (
+              COALESCE(ch.url, '') = ''
+              OR COALESCE(ch.thumbnail_path, '') = ''
+            )
+          GROUP BY pvr.video_id
+          UNION ALL
+          SELECT hr.video_id,
+                 0 AS source_priority,
+                 0 AS playlist_count,
+                 MIN(hr.title) AS current_title,
+                 0 AS playlist_sort,
+                 MAX(hr.best_watch_time) AS history_sort
+          FROM history_reconciled hr
+          LEFT JOIN channels ch ON ch.channel_id = hr.channel_id
+          WHERE hr.video_id <> ''
+            AND hr.channel_id <> ''
+            AND (
+              COALESCE(ch.url, '') = ''
+              OR COALESCE(ch.thumbnail_path, '') = ''
+            )
+          GROUP BY hr.video_id
+        ),
+        queue_sources AS (
+          SELECT * FROM channel_sources
           UNION ALL
           SELECT pv.video_id,
                  1 AS source_priority,
@@ -3877,7 +3933,8 @@ def metadata_queue_count(
         where.append(
             """
             (
-              vm.video_id IS NULL
+              q.source_priority = 0
+              OR vm.video_id IS NULL
               OR vm.fetch_status = 'error'
               OR (vm.channel_id <> '' AND COALESCE(ch.url, '') = '')
               OR (vm.channel_id <> '' AND COALESCE(ch.thumbnail_path, '') = '')
@@ -3888,7 +3945,7 @@ def metadata_queue_count(
         params.append(stale_before)
     row = conn.execute(
         f"""
-        WITH q AS (
+        WITH channel_sources AS (
           SELECT vm.video_id
           FROM video_metadata vm
           LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
@@ -3899,13 +3956,53 @@ def metadata_queue_count(
               OR COALESCE(ch.thumbnail_path, '') = ''
             )
           UNION
-          SELECT video_id
+          SELECT pv.video_id
+          FROM playlist_videos pv
+          LEFT JOIN channels ch ON ch.channel_id = pv.channel_id
+          WHERE pv.video_id <> ''
+            AND pv.channel_id <> ''
+            AND (
+              COALESCE(ch.url, '') = ''
+              OR COALESCE(ch.thumbnail_path, '') = ''
+            )
+          UNION
+          SELECT pvr.video_id
+          FROM playlist_video_reconciled pvr
+          LEFT JOIN channels ch ON ch.channel_id = pvr.channel_id
+          WHERE pvr.video_id <> ''
+            AND pvr.channel_id <> ''
+            AND (
+              COALESCE(ch.url, '') = ''
+              OR COALESCE(ch.thumbnail_path, '') = ''
+            )
+          UNION
+          SELECT hr.video_id
+          FROM history_reconciled hr
+          LEFT JOIN channels ch ON ch.channel_id = hr.channel_id
+          WHERE hr.video_id <> ''
+            AND hr.channel_id <> ''
+            AND (
+              COALESCE(ch.url, '') = ''
+              OR COALESCE(ch.thumbnail_path, '') = ''
+            )
+        ),
+        queue_sources AS (
+          SELECT video_id, 0 AS source_priority
+          FROM channel_sources
+          UNION
+          SELECT video_id, 1 AS source_priority
           FROM playlist_videos
           WHERE video_id <> ''
           UNION
-          SELECT video_id
+          SELECT video_id, 2 AS source_priority
           FROM history_reconciled
           WHERE video_id <> ''
+        ),
+        q AS (
+          SELECT video_id,
+                 MIN(source_priority) AS source_priority
+          FROM queue_sources
+          GROUP BY video_id
         )
         SELECT COUNT(*) AS count
         FROM q
