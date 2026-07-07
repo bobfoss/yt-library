@@ -4196,6 +4196,19 @@ def admin_status(
                 """
             )
         ]
+        channel_counts = dict(
+            conn.execute(
+                """
+                SELECT
+                  COUNT(*) AS total,
+                  SUM(CASE WHEN COALESCE(thumbnail_path, '') <> '' THEN 1 ELSE 0 END) AS thumbnail_cached,
+                  SUM(CASE WHEN COALESCE(thumbnail_path, '') = '' THEN 1 ELSE 0 END) AS thumbnail_missing,
+                  SUM(CASE WHEN COALESCE(url, '') = '' THEN 1 ELSE 0 END) AS url_missing
+                FROM channels
+                WHERE channel_id <> ''
+                """
+            ).fetchone()
+        )
         metadata_queue_count_value = metadata_queue_count(conn, force=False, stale_days=30)
         playlist_queue_count = len(playlist_scan_queue_rows(conn, force=False, stale_days=7))
         placeholder_recovery_queue_count = playlist_placeholder_recovery_count(conn, force=False)
@@ -4299,6 +4312,7 @@ def admin_status(
         "liveHistoryCounts": live_history_counts,
         "playlistCounts": playlist_counts,
         "metadataCounts": metadata_counts,
+        "channelCounts": channel_counts,
             "queueCount": metadata_queue_count_value,
             "metadataQueueCount": metadata_queue_count_value,
         "playlistScanQueueCount": playlist_queue_count,
@@ -7190,6 +7204,35 @@ ADMIN_HTML = """<!doctype html>
     <section class="workstreams">
       <section class="workstream">
         <div class="workstream-header">
+          <h2>Metadata</h2>
+          <div id="metadataRunStatus" class="status"></div>
+        </div>
+        <div class="grid">
+          <div class="panel"><div class="metric">Metadata queue</div><div id="metadataQueueCount" class="value">0</div></div>
+          <div class="panel"><div class="metric">Metadata worker</div><div id="metadataWorkerState" class="value">idle</div></div>
+        </div>
+        <div class="grid" id="metadataCounts"></div>
+        <div class="controls">
+          <label>Limit<input id="metadataLimit" type="number" min="0" step="1" value="10"></label>
+          <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
+          <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
+          <label class="checkbox"><input id="metadataForce" type="checkbox">Refresh already fetched</label>
+          <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
+          <button id="stopMetadata" type="button">Stop metadata</button>
+        </div>
+        <div class="queue-grid">
+          <div class="panel queue-panel">
+            <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
+            <table>
+              <thead><tr><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
+              <tbody id="metadataQueueRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="workstream">
+        <div class="workstream-header">
           <h2>Playlists</h2>
           <div id="playlistRunStatus" class="status"></div>
         </div>
@@ -7222,38 +7265,21 @@ ADMIN_HTML = """<!doctype html>
 
       <section class="workstream">
         <div class="workstream-header">
-          <h2>Metadata</h2>
-          <div class="status">
-            <div id="metadataRunStatus" class="status"></div>
-            <div id="placeholderRunStatus" class="status"></div>
-          </div>
+          <h2>Placeholder Recovery</h2>
+          <div id="placeholderRunStatus" class="status"></div>
         </div>
         <div class="grid">
-          <div class="panel"><div class="metric">Metadata queue</div><div id="metadataQueueCount" class="value">0</div></div>
-          <div class="panel"><div class="metric">Metadata worker</div><div id="metadataWorkerState" class="value">idle</div></div>
           <div class="panel"><div class="metric">Placeholder recovery queue</div><div id="placeholderQueueCount" class="value">0</div></div>
           <div class="panel"><div class="metric">Placeholder recovery</div><div id="placeholderWorkerState" class="value">idle</div></div>
         </div>
-        <div class="grid" id="metadataCounts"></div>
         <div class="controls">
-          <label>Limit<input id="metadataLimit" type="number" min="0" step="1" value="10"></label>
-          <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
+          <label>Limit<input id="placeholderLimit" type="number" min="0" step="1" value="10"></label>
           <label>Recovery delay<input id="recoveryDelay" type="number" min="1" step="1" value="3"></label>
-          <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
-          <label class="checkbox"><input id="metadataForce" type="checkbox">Refresh already fetched</label>
-          <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
-          <button id="recoverPlaceholders" type="button">Recover deleted playlist videos</button>
-          <button id="stopMetadata" type="button">Stop metadata</button>
+          <label class="checkbox"><input id="placeholderForce" type="checkbox">Refresh already fetched</label>
+          <button id="recoverPlaceholders" class="primary" type="button">Recover deleted playlist videos</button>
           <button id="stopPlaceholders" type="button">Stop placeholder recovery</button>
         </div>
         <div class="queue-grid">
-          <div class="panel queue-panel">
-            <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
-            <table>
-              <thead><tr><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
-              <tbody id="metadataQueueRows"></tbody>
-            </table>
-          </div>
           <div class="panel queue-panel">
             <div class="queue-title"><h2>Recovery queue</h2><span id="placeholderQueueShown">0 shown</span></div>
             <table>
@@ -7309,6 +7335,7 @@ ADMIN_HTML = """<!doctype html>
       logs: document.getElementById('logs'),
       playlistLimit: document.getElementById('playlistLimit'),
       metadataLimit: document.getElementById('metadataLimit'),
+      placeholderLimit: document.getElementById('placeholderLimit'),
       playlistDelay: document.getElementById('playlistDelay'),
       metadataDelay: document.getElementById('metadataDelay'),
       recoveryDelay: document.getElementById('recoveryDelay'),
@@ -7316,6 +7343,7 @@ ADMIN_HTML = """<!doctype html>
       metadataStaleDays: document.getElementById('metadataStaleDays'),
       playlistForce: document.getElementById('playlistForce'),
       metadataForce: document.getElementById('metadataForce'),
+      placeholderForce: document.getElementById('placeholderForce'),
       playlistQueueCount: document.getElementById('playlistQueueCount'),
       metadataQueueCount: document.getElementById('metadataQueueCount'),
       placeholderQueueCount: document.getElementById('placeholderQueueCount'),
@@ -7389,10 +7417,21 @@ ADMIN_HTML = """<!doctype html>
       fields.liveHistoryRunStatus.innerHTML = runHtml(data.latestLiveHistoryRun, 'History');
       fields.placeholderRunStatus.innerHTML = runHtml(data.latestPlaceholderRecoveryRun, 'Placeholder recovery');
 
-      fields.metadataCounts.replaceChildren(...(data.metadataCounts || []).map(row => {
+      const channelCounts = data.channelCounts || {};
+      const channelCards = [
+        { label: 'Channels', count: channelCounts.total || 0 },
+        { label: 'Channel thumbs cached', count: channelCounts.thumbnail_cached || 0 },
+        { label: 'Channel thumbs missing', count: channelCounts.thumbnail_missing || 0 },
+        { label: 'Channel URLs missing', count: channelCounts.url_missing || 0 },
+      ];
+      const videoMetadataCards = (data.metadataCounts || []).map(row => ({
+        label: `Video metadata: ${row.fetch_status || 'blank'}`,
+        count: row.count,
+      }));
+      fields.metadataCounts.replaceChildren(...[...channelCards, ...videoMetadataCards].map(row => {
         const div = document.createElement('div');
         div.className = 'panel';
-        div.innerHTML = `<div class="metric">${escapeHtml(row.fetch_status || 'blank')}</div><div class="value">${row.count}</div>`;
+        div.innerHTML = `<div class="metric">${escapeHtml(row.label)}</div><div class="value">${row.count}</div>`;
         return div;
       }));
 
@@ -7495,9 +7534,9 @@ ADMIN_HTML = """<!doctype html>
       post('/api/admin/playlists/reconcile').catch(error => alert(error.message));
     });
     document.getElementById('recoverPlaceholders').addEventListener('click', () => post('/api/admin/placeholders/start', {
-      limit: fields.metadataLimit.value,
+      limit: fields.placeholderLimit.value,
       delay: fields.recoveryDelay.value,
-      force: fields.metadataForce.checked ? '1' : '0',
+      force: fields.placeholderForce.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
     document.getElementById('stopPlaylists').addEventListener('click', () => post('/api/admin/playlists/stop').catch(error => alert(error.message)));
     document.getElementById('stopMetadata').addEventListener('click', () => post('/api/admin/metadata/stop').catch(error => alert(error.message)));
