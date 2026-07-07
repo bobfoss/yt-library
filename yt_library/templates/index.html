@@ -64,6 +64,8 @@
     .external-link:hover { background: var(--accent-soft); }
     .external-link svg { width: 15px; height: 15px; }
     .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .badge-lines { display: grid; gap: 2px; justify-items: start; }
+    .badge-lines .badge { display: block; }
     .channel-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; vertical-align: middle; flex: 0 0 auto; }
     .creator-link { color: var(--muted); text-decoration: none; }
     .creator-link:hover { color: var(--accent); text-decoration: underline; }
@@ -702,37 +704,76 @@
       return article;
     }
 
-    function playlistVideoCardFor(video) {
+    function detailRowHtml(items, className = 'details') {
+      const filtered = items.filter(Boolean);
+      return filtered.length ? `<div class="${className}">${filtered.join('')}</div>` : '';
+    }
+
+    function badgeRowsHtml(badges) {
+      return detailRowHtml(
+        badges
+          .filter(badge => badge && badge.label)
+          .map(badge => {
+            const title = badge.title ? ` title="${escapeHtml(badge.title)}"` : '';
+            return `<span class="badge"${title}>${escapeHtml(badge.label)}</span>`;
+          }),
+        'details badge-lines'
+      );
+    }
+
+    function videoCardFor(options) {
       const article = document.createElement('article');
       article.className = 'card';
-      if (video.metadata_thumbnail_path) {
-        article.append(thumbnailWithProgress(video.metadata_thumbnail_path, video));
+      if (options.thumbnailPath) {
+        article.append(thumbnailWithProgress(options.thumbnailPath, options.progressVideo || {}));
       }
       const body = document.createElement('div');
       body.className = 'body';
-      const watchUrl = video.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}&list=${encodeURIComponent(video.playlist_id)}` : '';
-      const channelName = displayVideoChannel(video);
-      const channelUrl = displayVideoChannelUrl(video);
+      const titleHtml = options.watchUrl
+        ? `<a class="playlist-title" href="${escapeHtml(options.watchUrl)}" target="_blank" rel="noreferrer">${escapeHtml(options.title)}</a>`
+        : `<div class="video-title">${escapeHtml(options.title)}</div>`;
       body.innerHTML = `
-        <div class="position">#${video.position}</div>
-        ${watchUrl
-          ? `<a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayVideoTitle(video))}</a>`
-          : `<div class="video-title">${escapeHtml(displayVideoTitle(video))}</div>`}
-        <div class="details">
-          ${unavailableLabel(video) ? `<span class="badge">${escapeHtml(unavailableLabel(video))}</span>` : ''}
-          ${reactionLabel(video) ? `<span class="badge">${escapeHtml(reactionLabel(video))}</span>` : ''}
-          ${archivarixStatusLabel(video) ? `<span class="badge">${escapeHtml(archivarixStatusLabel(video))}</span>` : ''}
-          ${matchTypeLabel(video) ? `<span class="badge" title="${escapeHtml(video.match_note)}">${escapeHtml(matchTypeLabel(video))}</span>` : ''}
-          ${displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : ''}
-          ${creatorHtml(video.metadata_channel_thumbnail_path, channelName, channelUrl)}
-          ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
-          ${archivarixLinkHtml(video)}
-        </div>
-        ${watchedLineHtml(video)}
-        ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : ''}
+        ${options.resultKind ? `<div class="result-kind">${escapeHtml(options.resultKind)}</div>` : ''}
+        ${options.position ? `<div class="position">#${escapeHtml(options.position)}</div>` : ''}
+        ${titleHtml}
+        ${badgeRowsHtml(options.badges || [])}
+        ${options.channelHtml ? `<div class="details">${options.channelHtml}</div>` : ''}
+        ${detailRowHtml(options.details || [])}
+        ${options.watchedHtml || ''}
+        ${options.description ? `<div class="description">${escapeHtml(options.description)}</div>` : ''}
+        ${detailRowHtml(options.sources || [])}
       `;
       article.append(body);
       return article;
+    }
+
+    function playlistVideoCardFor(video, options = {}) {
+      const watchUrl = video.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}&list=${encodeURIComponent(video.playlist_id)}` : '';
+      const channelName = displayVideoChannel(video);
+      const channelUrl = displayVideoChannelUrl(video);
+      return videoCardFor({
+        thumbnailPath: video.metadata_thumbnail_path,
+        progressVideo: video,
+        resultKind: options.resultKind,
+        position: video.position,
+        title: displayVideoTitle(video),
+        watchUrl,
+        badges: [
+          { label: unavailableLabel(video) },
+          { label: reactionLabel(video) },
+          { label: archivarixStatusLabel(video) },
+          { label: matchTypeLabel(video), title: video.match_note },
+        ],
+        details: [
+          displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : '',
+          video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
+          archivarixLinkHtml(video),
+        ],
+        channelHtml: creatorHtml(video.metadata_channel_thumbnail_path, channelName, channelUrl),
+        sources: options.sources || [],
+        watchedHtml: watchedLineHtml(video),
+        description: video.metadata_description,
+      });
     }
 
     function searchResultCardFor(result) {
@@ -743,22 +784,13 @@
         return channelCardFor(result.item);
       }
       if (result.kind === 'missing') {
-        return snapshotMissingCardFor(result.item);
+        return snapshotMissingCardFor(result.item, { resultKind: 'Video' });
       }
       const video = result.item;
-      const article = playlistVideoCardFor(video);
-      const body = article.querySelector('.body');
-      if (body) {
-        const kind = document.createElement('div');
-        kind.className = 'result-kind';
-        kind.textContent = result.matchedDescription ? 'Description match' : 'Video';
-        body.prepend(kind);
-        const source = document.createElement('div');
-        source.className = 'details';
-        source.innerHTML = `<a class="playlist-link" href="${localPlaylistHref(video.playlist_id)}">${escapeHtml(video.playlist_title)}</a>`;
-        body.append(source);
-      }
-      return article;
+      return playlistVideoCardFor(video, {
+        resultKind: result.matchedDescription ? 'Description match' : 'Video',
+        sources: [`<a class="playlist-link" href="${localPlaylistHref(video.playlist_id)}">${escapeHtml(video.playlist_title)}</a>`],
+      });
     }
 
     function channelCardFor(channel) {
@@ -804,24 +836,18 @@
     }
 
     function hiddenVideoCardFor(video) {
-      const article = document.createElement('article');
-      article.className = 'card';
-      const body = document.createElement('div');
-      body.className = 'body';
-      body.innerHTML = `
-        <div class="position">#${video.position}</div>
-        <div class="video-title">${escapeHtml(video.title)}</div>
-        <div class="details">
-          ${video.availability ? `<span class="badge">${escapeHtml(video.availability)}</span>` : ''}
-          ${video.channel ? `<span>${escapeHtml(video.channel)}</span>` : ''}
-          ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
-        </div>
-        <div class="details">
-          <a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>
-        </div>
-      `;
-      article.append(body);
-      return article;
+      return videoCardFor({
+        position: video.position,
+        title: video.title,
+        badges: [{ label: video.availability }],
+        details: [
+          video.channel ? `<span>${escapeHtml(video.channel)}</span>` : '',
+          video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
+        ],
+        sources: [
+          `<a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>`,
+        ],
+      });
     }
 
     function candidateCardFor(video) {
@@ -875,42 +901,33 @@
       return article;
     }
 
-    function snapshotMissingCardFor(video) {
-      const article = document.createElement('article');
-      article.className = 'card';
-      if (video.recovered_thumbnail_path) {
-        const img = document.createElement('img');
-        img.className = 'thumb';
-        img.loading = 'lazy';
-        img.alt = '';
-        img.src = `/${video.recovered_thumbnail_path}`;
-        article.append(img);
-      }
-      const body = document.createElement('div');
-      body.className = 'body';
+    function snapshotMissingCardFor(video, options = {}) {
       const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`;
       const archivarixUrl = `https://tube.archivarix.net/?q=${encodeURIComponent(video.video_id)}`;
       const displayTitle = video.recovered_title || video.video_id;
-      body.innerHTML = `
-        <div class="position">#${video.position}</div>
-        <a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayTitle)}</a>
-        <div class="details">
-          ${recoveredAvailabilityLabel(video) ? `<span class="badge">${escapeHtml(recoveredAvailabilityLabel(video))}</span>` : ''}
-          ${video.recovered_status ? `<span class="badge">${escapeHtml(video.recovered_status)}</span>` : ''}
-          ${video.recovered_duration ? `<span>${escapeHtml(video.recovered_duration)}</span>` : ''}
-          ${video.recovered_upload_date ? `<span>${escapeHtml(video.recovered_upload_date)}</span>` : ''}
-          ${creatorHtml(video.recovered_channel_thumbnail_path, video.recovered_channel, video.recovered_channel_url)}
-          ${video.added_at ? `<span>Added ${escapeHtml(video.added_at.slice(0, 10))}</span>` : ''}
-          <span>${escapeHtml(video.video_id)}</span>
-          <a class="playlist-link" href="${archivarixUrl}" target="_blank" rel="noreferrer">Archivarix</a>
-        </div>
-        ${video.recovered_description ? `<div class="description">${escapeHtml(video.recovered_description)}</div>` : ''}
-        <div class="details">
-          <a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.current_title || video.playlist_title)}</a>
-        </div>
-      `;
-      article.append(body);
-      return article;
+      return videoCardFor({
+        thumbnailPath: video.recovered_thumbnail_path,
+        resultKind: options.resultKind,
+        position: video.position,
+        title: displayTitle,
+        watchUrl,
+        badges: [
+          { label: recoveredAvailabilityLabel(video) },
+          { label: video.recovered_status },
+        ],
+        details: [
+          video.recovered_duration ? `<span>${escapeHtml(video.recovered_duration)}</span>` : '',
+          video.recovered_upload_date ? `<span>${escapeHtml(video.recovered_upload_date)}</span>` : '',
+          video.added_at ? `<span>Added ${escapeHtml(video.added_at.slice(0, 10))}</span>` : '',
+          video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
+          `<a class="playlist-link" href="${archivarixUrl}" target="_blank" rel="noreferrer">Archivarix</a>`,
+        ],
+        channelHtml: creatorHtml(video.recovered_channel_thumbnail_path, video.recovered_channel, video.recovered_channel_url),
+        description: video.recovered_description,
+        sources: [
+          `<a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.current_title || video.playlist_title)}</a>`,
+        ],
+      });
     }
 
     function escapeHtml(value) {
