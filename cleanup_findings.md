@@ -4,10 +4,12 @@ This document tracks code and schema cleanup opportunities that match the recent
 
 ## Playlist Availability Display
 
+Status: completed.
+
 - `playlist_videos.availability` and `playlist_video_reconciled.availability` should represent actual video availability only.
 - Blank means availability cannot be determined, usually because there is no video ID.
-- `yt_library/templates/index.html` still has at least one path that renders blank raw availability as `Hidden`.
-- Cleanup: render only actual availability there, and use match/recovery badges for explanatory context.
+- `yt_library/templates/index.html` now renders blank availability as no availability badge.
+- Match/recovery badges remain responsible for explanatory context.
 
 ## History Reconciliation Semantics
 

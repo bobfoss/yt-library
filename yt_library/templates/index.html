@@ -804,7 +804,7 @@
         <div class="position">#${video.position}</div>
         <div class="video-title">${escapeHtml(video.title)}</div>
         <div class="details">
-          ${video.availability ? `<span class="badge">${escapeHtml(video.availability)}</span>` : '<span class="badge">Hidden</span>'}
+          ${video.availability ? `<span class="badge">${escapeHtml(video.availability)}</span>` : ''}
           ${video.channel ? `<span>${escapeHtml(video.channel)}</span>` : ''}
           ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
         </div>
