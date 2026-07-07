@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from yt_library import core
-from yt_library.queries import history_search_data
+from yt_library.queries import fetch_app_data, history_search_data
 
 
 class HistorySearchTests(unittest.TestCase):
@@ -66,6 +66,60 @@ class HistorySearchTests(unittest.TestCase):
         self.assertEqual(data["limit"], 1)
         self.assertEqual(data["offset"], 0)
         self.assertEqual(len(data["watch"]), 1)
+
+    def test_likely_hidden_excludes_live_recovered_snapshot_rows(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO playlists(playlist_id, title)
+            VALUES ('pl1', 'Snapshot Playlist')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO snapshots(snapshot_key, label)
+            VALUES ('snap1', 'Snapshot')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO playlist_scans(playlist_id, video_count, hidden_count, scan_status)
+            VALUES ('pl1', 10, 2, 'ok')
+            """
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO snapshot_videos(
+              snapshot_key, playlist_id, position, video_id, playlist_title
+            )
+            VALUES ('snap1', 'pl1', ?, ?, 'Snapshot Playlist')
+            """,
+            [
+                (1, "live123"),
+                (2, "deleted123"),
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO snapshot_video_recovery(snapshot_key, video_id, title, status, search_status)
+            VALUES ('snap1', ?, ?, ?, 'found')
+            """,
+            [
+                ("live123", "Live but removed", "LIVE"),
+                ("deleted123", "Deleted and hidden", "DELETED_FULL_META"),
+            ],
+        )
+        self.conn.commit()
+
+        data = fetch_app_data(self.conn)
+
+        self.assertEqual(
+            {row["video_id"] for row in data["snapshotMissing"]},
+            {"live123", "deleted123"},
+        )
+        self.assertEqual(
+            [row["video_id"] for row in data["snapshotLikelyHidden"]],
+            ["deleted123"],
+        )
 
 
 if __name__ == "__main__":

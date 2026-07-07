@@ -173,6 +173,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             "SELECT hidden_count FROM playlist_scans WHERE playlist_id = ? AND hidden_count > 0",
             (row["playlist_id"],),
         ).fetchone()
+        and (row["recovered_status"] or "").upper() != "LIVE"
     ]
     history_summary = dict(
         conn.execute(
@@ -302,4 +303,3 @@ def history_search_data(
         "watch": watch_rows,
         "totals": {**total, "filtered_watch_rows": filtered_watch_rows},
     }
-
