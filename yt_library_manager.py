@@ -7156,6 +7156,12 @@ ADMIN_HTML = """<!doctype html>
     .workstream-header { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin-bottom: 12px; }
     .workstream-header h2 { font-size: 20px; margin: 0; }
     .workstream-header .status { justify-content: flex-end; }
+    .fold-toggle { border: 0; background: transparent; color: var(--ink); font-size: 20px; font-weight: 700; padding: 0; }
+    .fold-toggle:hover { background: transparent; color: var(--accent); }
+    .fold-toggle::before { content: ">"; color: var(--accent); display: inline-block; margin-right: 8px; }
+    .fold-toggle[aria-expanded="true"]::before { content: "v"; }
+    .fold-panel { border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, 0.02); margin: 12px 0; padding: 0 12px 12px; }
+    .fold-panel[hidden] { display: none; }
     .metric { color: var(--muted); font-size: 13px; }
     .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
     .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0 18px; }
@@ -7204,7 +7210,7 @@ ADMIN_HTML = """<!doctype html>
     <section class="workstreams">
       <section class="workstream">
         <div class="workstream-header">
-          <h2>Metadata</h2>
+          <h2><button class="fold-toggle" type="button" aria-expanded="false" aria-controls="metadataFold">Metadata</button></h2>
           <div id="metadataRunStatus" class="status"></div>
         </div>
         <div class="grid">
@@ -7212,28 +7218,30 @@ ADMIN_HTML = """<!doctype html>
           <div class="panel"><div class="metric">Metadata worker</div><div id="metadataWorkerState" class="value">idle</div></div>
         </div>
         <div class="grid" id="metadataCounts"></div>
-        <div class="controls">
-          <label>Limit<input id="metadataLimit" type="number" min="0" step="1" value="10"></label>
-          <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
-          <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
-          <label class="checkbox"><input id="metadataForce" type="checkbox">Refresh already fetched</label>
-          <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
-          <button id="stopMetadata" type="button">Stop metadata</button>
-        </div>
-        <div class="queue-grid">
-          <div class="panel queue-panel">
-            <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
-            <table>
-              <thead><tr><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
-              <tbody id="metadataQueueRows"></tbody>
-            </table>
+        <div id="metadataFold" class="fold-panel" hidden>
+          <div class="controls">
+            <label>Limit<input id="metadataLimit" type="number" min="0" step="1" value="10"></label>
+            <label>Metadata delay<input id="metadataDelay" type="number" min="1" step="1" value="12"></label>
+            <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
+            <label class="checkbox"><input id="metadataForce" type="checkbox">Refresh already fetched</label>
+            <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
+            <button id="stopMetadata" type="button">Stop metadata</button>
+          </div>
+          <div class="queue-grid">
+            <div class="panel queue-panel">
+              <div class="queue-title"><h2>Metadata queue</h2><span id="metadataQueueShown">0 shown</span></div>
+              <table>
+                <thead><tr><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
+                <tbody id="metadataQueueRows"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>
 
       <section class="workstream">
         <div class="workstream-header">
-          <h2>Playlists</h2>
+          <h2><button class="fold-toggle" type="button" aria-expanded="false" aria-controls="playlistFold">Playlists</button></h2>
           <div id="playlistRunStatus" class="status"></div>
         </div>
         <div class="grid">
@@ -7242,57 +7250,61 @@ ADMIN_HTML = """<!doctype html>
           <div class="panel"><div class="metric">Playlist scan queue</div><div id="playlistQueueCount" class="value">0</div></div>
           <div class="panel"><div class="metric">Playlist scanner</div><div id="playlistWorkerState" class="value">idle</div></div>
         </div>
-        <div class="controls">
-          <label>Limit<input id="playlistLimit" type="number" min="0" step="1" value="10"></label>
-          <label>Playlist delay<input id="playlistDelay" type="number" min="1" step="1" value="3"></label>
-          <label>Playlist stale days<input id="playlistStaleDays" type="number" min="0" step="1" value="7"></label>
-          <label class="checkbox"><input id="playlistForce" type="checkbox">Refresh already fetched</label>
-          <button id="scanPlaylists" class="primary" type="button">Scan playlists</button>
-          <button id="reconcilePlaylists" type="button">Reconcile playlists</button>
-          <button id="stopPlaylists" type="button">Stop playlist scan</button>
-          <button id="refresh" type="button">Refresh status</button>
-        </div>
-        <div class="queue-grid">
-          <div class="panel queue-panel">
-            <div class="queue-title"><h2>Playlist queue</h2><span id="playlistQueueShown">0 shown</span></div>
-            <table>
-              <thead><tr><th>Playlist</th><th>Status</th><th>Videos</th></tr></thead>
-              <tbody id="playlistQueueRows"></tbody>
-            </table>
+        <div id="playlistFold" class="fold-panel" hidden>
+          <div class="controls">
+            <label>Limit<input id="playlistLimit" type="number" min="0" step="1" value="10"></label>
+            <label>Playlist delay<input id="playlistDelay" type="number" min="1" step="1" value="3"></label>
+            <label>Playlist stale days<input id="playlistStaleDays" type="number" min="0" step="1" value="7"></label>
+            <label class="checkbox"><input id="playlistForce" type="checkbox">Refresh already fetched</label>
+            <button id="scanPlaylists" class="primary" type="button">Scan playlists</button>
+            <button id="reconcilePlaylists" type="button">Reconcile playlists</button>
+            <button id="stopPlaylists" type="button">Stop playlist scan</button>
+            <button id="refresh" type="button">Refresh status</button>
+          </div>
+          <div class="queue-grid">
+            <div class="panel queue-panel">
+              <div class="queue-title"><h2>Playlist queue</h2><span id="playlistQueueShown">0 shown</span></div>
+              <table>
+                <thead><tr><th>Playlist</th><th>Status</th><th>Videos</th></tr></thead>
+                <tbody id="playlistQueueRows"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>
 
       <section class="workstream">
         <div class="workstream-header">
-          <h2>Placeholder Recovery</h2>
+          <h2><button class="fold-toggle" type="button" aria-expanded="false" aria-controls="placeholderFold">Placeholder Recovery</button></h2>
           <div id="placeholderRunStatus" class="status"></div>
         </div>
         <div class="grid">
           <div class="panel"><div class="metric">Placeholder recovery queue</div><div id="placeholderQueueCount" class="value">0</div></div>
           <div class="panel"><div class="metric">Placeholder recovery</div><div id="placeholderWorkerState" class="value">idle</div></div>
         </div>
-        <div class="controls">
-          <label>Limit<input id="placeholderLimit" type="number" min="0" step="1" value="10"></label>
-          <label>Recovery delay<input id="recoveryDelay" type="number" min="1" step="1" value="3"></label>
-          <label class="checkbox"><input id="placeholderForce" type="checkbox">Refresh already fetched</label>
-          <button id="recoverPlaceholders" class="primary" type="button">Recover deleted playlist videos</button>
-          <button id="stopPlaceholders" type="button">Stop placeholder recovery</button>
-        </div>
-        <div class="queue-grid">
-          <div class="panel queue-panel">
-            <div class="queue-title"><h2>Recovery queue</h2><span id="placeholderQueueShown">0 shown</span></div>
-            <table>
-              <thead><tr><th>Video</th><th>Playlist</th><th>Previous</th></tr></thead>
-              <tbody id="placeholderQueueRows"></tbody>
-            </table>
+        <div id="placeholderFold" class="fold-panel" hidden>
+          <div class="controls">
+            <label>Limit<input id="placeholderLimit" type="number" min="0" step="1" value="10"></label>
+            <label>Recovery delay<input id="recoveryDelay" type="number" min="1" step="1" value="3"></label>
+            <label class="checkbox"><input id="placeholderForce" type="checkbox">Refresh already fetched</label>
+            <button id="recoverPlaceholders" class="primary" type="button">Recover deleted playlist videos</button>
+            <button id="stopPlaceholders" type="button">Stop placeholder recovery</button>
+          </div>
+          <div class="queue-grid">
+            <div class="panel queue-panel">
+              <div class="queue-title"><h2>Recovery queue</h2><span id="placeholderQueueShown">0 shown</span></div>
+              <table>
+                <thead><tr><th>Video</th><th>Playlist</th><th>Previous</th></tr></thead>
+                <tbody id="placeholderQueueRows"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>
 
       <section class="workstream">
         <div class="workstream-header">
-          <h2>History</h2>
+          <h2><button class="fold-toggle" type="button" aria-expanded="false" aria-controls="historyFold">History</button></h2>
           <div id="liveHistoryRunStatus" class="status"></div>
         </div>
         <div class="grid">
@@ -7301,12 +7313,14 @@ ADMIN_HTML = """<!doctype html>
           <div class="panel"><div class="metric">Fetched history rows</div><div id="liveHistoryRows" class="value">0</div></div>
           <div class="panel"><div class="metric">History fetch</div><div id="liveHistoryWorkerState" class="value">idle</div></div>
         </div>
-        <div class="controls">
-          <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
-          <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
-          <button id="importTakeoutHistory" type="button">Import Takeout history</button>
-          <button id="reconcileHistory" type="button">Reconcile history</button>
-          <button id="stopLiveHistory" type="button">Stop history fetch</button>
+        <div id="historyFold" class="fold-panel" hidden>
+          <div class="controls">
+            <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
+            <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
+            <button id="importTakeoutHistory" type="button">Import Takeout history</button>
+            <button id="reconcileHistory" type="button">Reconcile history</button>
+            <button id="stopLiveHistory" type="button">Stop history fetch</button>
+          </div>
         </div>
       </section>
     </section>
@@ -7543,6 +7557,14 @@ ADMIN_HTML = """<!doctype html>
     document.getElementById('stopLiveHistory').addEventListener('click', () => post('/api/admin/live-history/stop').catch(error => alert(error.message)));
     document.getElementById('stopPlaceholders').addEventListener('click', () => post('/api/admin/placeholders/stop').catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus().catch(error => alert(error.message)));
+    document.querySelectorAll('.fold-toggle').forEach(button => {
+      const panel = document.getElementById(button.getAttribute('aria-controls'));
+      button.addEventListener('click', () => {
+        const expanded = button.getAttribute('aria-expanded') === 'true';
+        button.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        if (panel) panel.hidden = expanded;
+      });
+    });
     loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
     setInterval(() => {
       loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
