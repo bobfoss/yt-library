@@ -424,6 +424,68 @@ class SchemaTests(unittest.TestCase):
             finally:
                 core.ROOT = original_root
 
+    def test_save_playlist_scan_updates_playlist_metadata(self) -> None:
+        original_root = core.ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core.ROOT = Path(temp_dir)
+            try:
+                conn = core.connect(Path(temp_dir) / "library.sqlite3")
+                try:
+                    with conn:
+                        conn.execute(
+                            """
+                            INSERT INTO playlists(
+                              playlist_id, title, description, owner, video_count_text,
+                              thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
+                            )
+                            VALUES (
+                              'PLrename', 'Old name', 'Old description', 'Old owner', '1 video',
+                              'https://example.test/old.jpg', 'thumbs/PLrename.jpg',
+                              'https://www.youtube.com/playlist?list=PLrename', 'ok', '', 1
+                            )
+                            """
+                        )
+                        core.save_playlist_scan(
+                            conn,
+                            "PLrename",
+                            [
+                                {
+                                    "playlist_id": "PLrename",
+                                    "position": 1,
+                                    "video_id": "abc12345678",
+                                    "title": "Video",
+                                    "channel_id": "",
+                                    "channel": "",
+                                    "duration_text": "1:00",
+                                    "is_playable": 1,
+                                    "availability": "LIVE",
+                                    "url": "https://www.youtube.com/watch?v=abc12345678",
+                                }
+                            ],
+                            "ok",
+                            "",
+                            playlist_metadata={
+                                "title": "New name",
+                                "description": "New description",
+                                "owner": "New owner",
+                                "video_count_text": "1 video",
+                                "thumbnail_url": "https://example.test/new.jpg",
+                                "url": "https://www.youtube.com/playlist?list=PLrename",
+                            },
+                        )
+                    row = conn.execute(
+                        "SELECT title, description, owner, thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLrename'"
+                    ).fetchone()
+                    self.assertEqual(row["title"], "New name")
+                    self.assertEqual(row["description"], "New description")
+                    self.assertEqual(row["owner"], "New owner")
+                    self.assertEqual(row["thumbnail_url"], "https://example.test/new.jpg")
+                    self.assertEqual(row["thumbnail_path"], "thumbs/PLrename.jpg")
+                finally:
+                    conn.close()
+            finally:
+                core.ROOT = original_root
+
     def test_recovered_live_playlist_row_is_playable(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:

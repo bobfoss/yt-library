@@ -3356,6 +3356,35 @@ def scan_playlist_videos_ytdlp(
     playlist_id: str,
     cookie_file: Path,
 ) -> list[dict[str, Any]]:
+    videos, _metadata = scan_playlist_ytdlp(playlist_id, cookie_file)
+    return videos
+
+
+def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) -> dict[str, str]:
+    title = str(info.get("title") or info.get("playlist_title") or "").strip()
+    description = str(info.get("description") or "").strip()
+    owner = str(info.get("uploader") or info.get("channel") or "").strip()
+    playlist_count = info.get("playlist_count") or info.get("n_entries")
+    video_count_text = f"{playlist_count} videos" if playlist_count else ""
+    thumbnail_url = str(info.get("thumbnail") or "").strip()
+    webpage_url = str(info.get("webpage_url") or info.get("original_url") or "").strip()
+    if not webpage_url:
+        webpage_url = f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}"
+    return {
+        "playlist_id": playlist_id,
+        "title": title or playlist_id,
+        "description": description,
+        "owner": owner,
+        "video_count_text": video_count_text,
+        "thumbnail_url": thumbnail_url,
+        "url": webpage_url,
+    }
+
+
+def scan_playlist_ytdlp(
+    playlist_id: str,
+    cookie_file: Path,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     try:
         import yt_dlp  # type: ignore
     except ImportError as exc:
@@ -3388,6 +3417,7 @@ def scan_playlist_videos_ytdlp(
     if not info:
         text = "\n".join(messages).strip()
         raise RuntimeError(text or "yt-dlp returned no playlist data")
+    metadata = playlist_metadata_from_ytdlp_info(info, playlist_id)
     entries = [entry for entry in info.get("entries") or [] if isinstance(entry, dict)]
     videos: list[dict[str, Any]] = []
     for position, entry in enumerate(entries, start=1):
@@ -3421,7 +3451,7 @@ def scan_playlist_videos_ytdlp(
                 "url": webpage_url,
             }
         )
-    return videos
+    return videos, metadata
 
 
 def fetch_youtube_history_ytdlp(cookie_file: Path, limit: int = 100, start: int = 1) -> list[dict[str, Any]]:
@@ -4377,6 +4407,7 @@ def save_playlist_scan(
     videos: list[dict[str, Any]],
     status: str,
     error: str,
+    playlist_metadata: dict[str, Any] | None = None,
 ) -> tuple[int, int]:
     deduped_videos: list[dict[str, Any]] = []
     seen_video_ids: set[str] = set()
@@ -4439,6 +4470,52 @@ def save_playlist_scan(
         """,
         (playlist_id, now, len(videos), hidden_count, status, error),
     )
+    if playlist_metadata:
+        metadata = {
+            key: str(playlist_metadata.get(key) or "").strip()
+            for key in (
+                "title",
+                "description",
+                "owner",
+                "video_count_text",
+                "thumbnail_url",
+                "thumbnail_path",
+                "url",
+            )
+        }
+        conn.execute(
+            """
+            INSERT INTO playlists(
+              playlist_id, title, description, owner, video_count_text,
+              thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(playlist_id) DO UPDATE SET
+              title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
+              description=COALESCE(NULLIF(excluded.description, ''), playlists.description),
+              owner=COALESCE(NULLIF(excluded.owner, ''), playlists.owner),
+              video_count_text=COALESCE(NULLIF(excluded.video_count_text, ''), playlists.video_count_text),
+              thumbnail_url=COALESCE(NULLIF(excluded.thumbnail_url, ''), playlists.thumbnail_url),
+              thumbnail_path=COALESCE(NULLIF(excluded.thumbnail_path, ''), playlists.thumbnail_path),
+              url=COALESCE(NULLIF(excluded.url, ''), playlists.url),
+              fetch_status=excluded.fetch_status,
+              fetch_error=excluded.fetch_error,
+              updated_at=excluded.updated_at
+            """,
+            (
+                playlist_id,
+                metadata["title"],
+                metadata["description"],
+                metadata["owner"],
+                metadata["video_count_text"],
+                metadata["thumbnail_url"],
+                metadata["thumbnail_path"],
+                metadata["url"],
+                status,
+                error,
+                now,
+            ),
+        )
     rebuild_playlist_reconciliation(conn, playlist_id)
     return len(videos), hidden_count
 

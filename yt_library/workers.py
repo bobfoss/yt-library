@@ -479,8 +479,9 @@ class PlaylistScanWorker:
                 backend = "web"
                 ytdlp_error = ""
                 videos: list[dict[str, Any]] = []
+                playlist_metadata: dict[str, Any] = {}
                 try:
-                    videos = scan_playlist_videos_ytdlp(playlist_id, cookie_file)
+                    videos, playlist_metadata = scan_playlist_ytdlp(playlist_id, cookie_file)
                     backend = "yt-dlp"
                 except Exception as exc:
                     ytdlp_error = str(exc)
@@ -502,6 +503,7 @@ class PlaylistScanWorker:
                         videos,
                         status,
                         error,
+                        playlist_metadata=playlist_metadata,
                     )
                     processed += 1
                     if status == "error":
