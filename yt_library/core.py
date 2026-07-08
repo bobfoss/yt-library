@@ -2432,6 +2432,13 @@ def extract_reaction_from_initial_data(initial_data: dict[str, Any]) -> str:
     for node in walk(initial_data):
         if not isinstance(node, dict):
             continue
+        like_status = node.get("likeStatusEntity")
+        if isinstance(like_status, dict):
+            status = str(like_status.get("likeStatus") or "").strip().upper()
+            if status == "LIKE":
+                return "L"
+            if status == "DISLIKE":
+                return "D"
         if node.get("isToggled") is True or node.get("isToggledButton") is True:
             reaction = reaction_from_button_node(node)
             if reaction:

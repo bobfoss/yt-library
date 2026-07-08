@@ -82,6 +82,10 @@
     .video-detail .thumb-wrap { border-radius: 6px; overflow: hidden; }
     .video-detail .thumb { border-radius: 6px; }
     .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
+    .reaction-line { color: var(--muted); display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+    .reaction-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+    .reaction-icon.active { color: var(--accent); fill: currentColor; stroke: currentColor; }
+    .reaction-icon.dislike { transform: rotate(180deg); }
     .badge { color: var(--warn); font-weight: 650; }
     .refresh { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
     .refresh:hover { background: var(--accent-soft); }
@@ -325,6 +329,25 @@
       if (reaction === 'L') return 'Liked';
       if (reaction === 'D') return 'Disliked';
       return '';
+    }
+
+    function thumbIconHtml(kind, active) {
+      const classes = `reaction-icon ${kind}${active ? ' active' : ''}`;
+      return `
+        <svg class="${classes}" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 10v11H3V10h4Zm4.8 11H19c.9 0 1.7-.6 1.9-1.5l1.1-6.2c.2-1.2-.7-2.3-1.9-2.3h-5.4l.8-3.8c.1-.6 0-1.2-.4-1.6L14.2 4 8.7 9.5c-.5.5-.7 1.1-.7 1.8V19c0 1.1.9 2 2 2h1.8Z"></path>
+        </svg>
+      `;
+    }
+
+    function reactionIconsHtml(video) {
+      const reaction = String(video.reaction || '').trim().toUpperCase();
+      return `
+        <div class="reaction-line" title="${escapeHtml(reactionLabel(video) || 'No like/dislike captured')}">
+          ${thumbIconHtml('like', reaction === 'L')}
+          ${thumbIconHtml('dislike', reaction === 'D')}
+        </div>
+      `;
     }
 
     function likedVideos() {
@@ -621,7 +644,6 @@
             </div>
             ${badgeRowsHtml([
               { label: unavailableLabel(video) },
-              { label: reactionLabel(video) },
               { label: archivarixStatusLabel(video) },
               { label: wasRemovedFromPlaylist(video) ? 'Removed' : '' },
               { label: matchTypeLabel(video), title: video.match_note },
@@ -634,6 +656,7 @@
               archivarixLinkHtml(video),
             ])}
             ${watchedLineHtml(video)}
+            ${reactionIconsHtml(video)}
             ${playlistSourceLinksHtml(video)}
             ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : '<div class="empty">No description captured for this video.</div>'}
           </div>
@@ -912,6 +935,7 @@
         ${options.channelHtml ? `<div class="details">${options.channelHtml}</div>` : ''}
         ${detailRowHtml(options.details || [])}
         ${options.watchedHtml || ''}
+        ${options.reactionHtml || ''}
         ${options.description ? `<div class="description">${escapeHtml(options.description)}</div>` : ''}
         ${detailRowHtml(options.sources || [])}
         ${options.playlistSourcesHtml || ''}
@@ -934,7 +958,6 @@
         externalUrl: watchUrl,
         badges: [
           { label: unavailableLabel(video) },
-          { label: reactionLabel(video) },
           { label: archivarixStatusLabel(video) },
           { label: wasRemovedFromPlaylist(video) ? 'Removed' : '' },
           { label: matchTypeLabel(video), title: video.match_note },
@@ -948,6 +971,7 @@
         sources: options.sources || [],
         playlistSourcesHtml: options.playlistSourcesHtml === undefined ? playlistSourceLinksHtml(video) : options.playlistSourcesHtml,
         watchedHtml: watchedLineHtml(video),
+        reactionHtml: reactionIconsHtml(video),
         description: video.metadata_description,
       });
     }
@@ -1022,6 +1046,7 @@
           video.channel ? `<span>${escapeHtml(video.channel)}</span>` : '',
           video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
         ],
+        reactionHtml: reactionIconsHtml(video),
         sources: [
           `<a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>`,
         ],
@@ -1051,6 +1076,7 @@
           ${video.channel ? `<span>${escapeHtml(video.channel)}</span>` : ''}
           <span>${escapeHtml(video.video_id)}</span>
         </div>
+        ${reactionIconsHtml(video)}
         <div class="details">
           <a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>
         </div>
@@ -1105,6 +1131,7 @@
           `<a class="playlist-link" href="${archivarixUrl}" target="_blank" rel="noreferrer">Archivarix</a>`,
         ],
         channelHtml: creatorHtml(video.recovered_channel_thumbnail_path, video.recovered_channel, video.recovered_channel_url),
+        reactionHtml: reactionIconsHtml(video),
         description: video.recovered_description,
         sources: [
           `<a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.current_title || video.playlist_title)}</a>`,

@@ -99,6 +99,39 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(core.extract_reaction_from_initial_data(disliked), "D")
         self.assertEqual(core.extract_reaction_from_initial_data({"isToggled": False}), "")
 
+    def test_extract_reaction_from_like_status_entity(self) -> None:
+        liked = {
+            "segmentedLikeDislikeButtonViewModel": {
+                "likeButtonViewModel": {
+                    "likeButtonViewModel": {
+                        "likeStatusEntity": {"likeStatus": "LIKE"}
+                    }
+                }
+            }
+        }
+        disliked = {
+            "segmentedLikeDislikeButtonViewModel": {
+                "likeButtonViewModel": {
+                    "likeButtonViewModel": {
+                        "likeStatusEntity": {"likeStatus": "DISLIKE"}
+                    }
+                }
+            }
+        }
+        indifferent = {
+            "segmentedLikeDislikeButtonViewModel": {
+                "likeButtonViewModel": {
+                    "likeButtonViewModel": {
+                        "likeStatusEntity": {"likeStatus": "INDIFFERENT"}
+                    }
+                }
+            }
+        }
+
+        self.assertEqual(core.extract_reaction_from_initial_data(liked), "L")
+        self.assertEqual(core.extract_reaction_from_initial_data(disliked), "D")
+        self.assertEqual(core.extract_reaction_from_initial_data(indifferent), "")
+
     def test_extract_channel_handle_aliases_from_browse_endpoints(self) -> None:
         initial_data = {
             "tabs": [

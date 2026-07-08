@@ -66,6 +66,10 @@
     .creator-name { min-width: 0; overflow-wrap: anywhere; }
     .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
     .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
+    .reaction-line { color: var(--muted); display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+    .reaction-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+    .reaction-icon.active { color: var(--accent); fill: currentColor; stroke: currentColor; }
+    .reaction-icon.dislike { transform: rotate(180deg); }
     .badge { color: var(--warn); font-weight: 650; }
     .empty { color: var(--muted); padding: 36px 0; }
     @media (max-width: 720px) {
@@ -164,6 +168,25 @@
       return '';
     }
 
+    function thumbIconHtml(kind, active) {
+      const classes = `reaction-icon ${kind}${active ? ' active' : ''}`;
+      return `
+        <svg class="${classes}" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 10v11H3V10h4Zm4.8 11H19c.9 0 1.7-.6 1.9-1.5l1.1-6.2c.2-1.2-.7-2.3-1.9-2.3h-5.4l.8-3.8c.1-.6 0-1.2-.4-1.6L14.2 4 8.7 9.5c-.5.5-.7 1.1-.7 1.8V19c0 1.1.9 2 2 2h1.8Z"></path>
+        </svg>
+      `;
+    }
+
+    function reactionIconsHtml(row) {
+      const reaction = String(row.reaction || '').trim().toUpperCase();
+      return `
+        <div class="reaction-line" title="${escapeHtml(reactionLabel(row) || 'No like/dislike captured')}">
+          ${thumbIconHtml('like', reaction === 'L')}
+          ${thumbIconHtml('dislike', reaction === 'D')}
+        </div>
+      `;
+    }
+
     function thumbnailWithProgress(path, row) {
       const wrap = document.createElement('div');
       wrap.className = 'thumb-wrap';
@@ -199,12 +222,12 @@
         <div class="details">
           ${row.watched_at ? `<span>${escapeHtml(row.watched_at)}</span>` : ''}
           ${(row.history_badges || []).map(label => `<span class="badge">${escapeHtml(label)}</span>`).join('')}
-          ${reactionLabel(row) ? `<span class="badge">${escapeHtml(reactionLabel(row))}</span>` : ''}
           ${creatorHtml(row.metadata_channel_thumbnail_path, channelName, channelUrl)}
           ${row.video_id ? `<span>${escapeHtml(row.video_id)}</span>` : ''}
           ${row.metadata_fetch_status === 'error' ? '<span class="badge">metadata error</span>' : ''}
         </div>
         ${watchedLineHtml(row)}
+        ${reactionIconsHtml(row)}
         ${row.metadata_description ? `<div class="description">${escapeHtml(row.metadata_description)}</div>` : ''}
       `;
       article.append(body);
