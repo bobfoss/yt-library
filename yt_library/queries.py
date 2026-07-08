@@ -90,6 +90,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                    COALESCE(NULLIF(vm.watch_progress_percent, 0), latest_history.watch_progress_percent, 0) AS watch_progress_percent,
                    COALESCE(NULLIF(vm.watch_resume_seconds, 0), latest_history.watch_resume_seconds, 0) AS watch_resume_seconds,
                    COALESCE(latest_history.watch_count, 0) AS watch_count,
+                   COALESCE(latest_history.watch_dates, '') AS watch_dates_text,
                    COALESCE(r.status, '') AS recovered_status
             FROM playlist_video_reconciled v
             JOIN playlists p ON p.playlist_id = v.playlist_id
@@ -103,7 +104,8 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                 SELECT hr.video_id,
                        MAX(hr.watch_progress_percent) AS watch_progress_percent,
                        MAX(hr.watch_resume_seconds) AS watch_resume_seconds,
-                       COUNT(*) AS watch_count
+                       COUNT(*) AS watch_count,
+                       GROUP_CONCAT(COALESCE(NULLIF(hr.watch_date, ''), substr(hr.best_watch_time, 1, 10)), '|') AS watch_dates
                 FROM history_reconciled hr
                 WHERE hr.video_id <> ''
                 GROUP BY hr.video_id
@@ -115,6 +117,11 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
     for video in playlist_videos:
         video["match_label"] = playlist_match_type_label(video.get("match_type", ""))
         video["match_note"] = playlist_match_type_note(video.get("match_type", ""))
+        video["watch_dates"] = [
+            value
+            for value in str(video.pop("watch_dates_text", "") or "").split("|")
+            if value
+        ]
     playlist_links_by_video: dict[str, list[dict[str, str]]] = {}
     seen_playlist_links: set[tuple[str, str]] = set()
     for video in playlist_videos:
@@ -326,13 +333,16 @@ def history_search_data(
                    COALESCE(NULLIF(hr.watch_progress_percent, 0), vm.watch_progress_percent, 0) AS watch_progress_percent,
                    COALESCE(NULLIF(hr.watch_resume_seconds, 0), vm.watch_resume_seconds, 0) AS watch_resume_seconds,
                    COALESCE(history_counts.watch_count, 0) AS watch_count,
+                   COALESCE(history_counts.watch_dates, '') AS watch_dates_text,
                    COALESCE(vm.fetch_status, '') AS metadata_fetch_status
             FROM history_reconciled hr
             LEFT JOIN video_metadata vm ON vm.video_id = hr.video_id
             LEFT JOIN channels vmc ON vmc.channel_id = vm.channel_id
             LEFT JOIN channels hc ON hc.channel_id = hr.channel_id
             LEFT JOIN (
-                SELECT video_id, COUNT(*) AS watch_count
+                SELECT video_id,
+                       COUNT(*) AS watch_count,
+                       GROUP_CONCAT(COALESCE(NULLIF(watch_date, ''), substr(best_watch_time, 1, 10)), '|') AS watch_dates
                 FROM history_reconciled
                 WHERE video_id <> ''
                 GROUP BY video_id
@@ -354,6 +364,11 @@ def history_search_data(
         row["source_label"] = source_label
         row["time_quality_label"] = time_label
         row["match_label"] = match_label
+        row["watch_dates"] = [
+            value
+            for value in str(row.pop("watch_dates_text", "") or "").split("|")
+            if value
+        ]
         row["time_quality_note"] = history_time_quality_note(row.get("time_quality", ""))
         labels = [label for label in (source_label, time_label, match_label) if label]
         row["history_badges"] = labels

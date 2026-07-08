@@ -76,12 +76,16 @@
     .creator-chip { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
     .creator-name { min-width: 0; overflow-wrap: anywhere; }
     .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
-    .video-detail { grid-column: 1 / -1; max-width: 960px; }
+    .video-detail { grid-column: 1 / -1; max-width: 1180px; }
     .video-detail .detail-layout { display: grid; grid-template-columns: minmax(220px, 360px) 1fr; gap: 18px; align-items: start; }
     .video-detail .description { max-height: none; white-space: pre-wrap; }
     .video-detail .thumb-wrap { border-radius: 6px; overflow: hidden; }
     .video-detail .thumb { border-radius: 6px; }
     .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
+    .watch-sparkline { display: block; width: 86px; height: 14px; margin-top: 5px; color: var(--muted); overflow: visible; }
+    .watch-sparkline .spark-dot { fill: currentColor; opacity: .52; }
+    .watch-sparkline .spark-dot.latest { fill: var(--accent); opacity: 1; }
+    .video-detail .watch-sparkline { width: min(260px, 100%); height: 18px; margin-top: 7px; }
     .reaction-line { color: var(--muted); display: flex; gap: 8px; align-items: center; margin-top: 6px; }
     .reaction-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
     .reaction-icon.active { color: var(--accent); fill: currentColor; stroke: currentColor; }
@@ -322,6 +326,47 @@
       if (!progress && !countText) return '';
       const progressText = progress ? ` ${progress}%` : '';
       return `<div class="watched-line">Watched${progressText}${countText}</div>`;
+    }
+
+    function watchDates(video) {
+      return (Array.isArray(video.watch_dates) ? video.watch_dates : [])
+        .map(value => String(value || '').slice(0, 10))
+        .filter(value => /^\d{4}-\d{2}-\d{2}$/.test(value))
+        .sort();
+    }
+
+    function watchSparklineHtml(video, detail = false) {
+      const dates = watchDates(video);
+      if (!dates.length) return '';
+      const times = dates.map(date => Date.parse(`${date}T00:00:00Z`)).filter(Number.isFinite);
+      if (!times.length) return '';
+      const min = Math.min(...times);
+      const max = Math.max(...times);
+      const span = Math.max(1, max - min);
+      const bucketCount = Math.min(detail ? 36 : 18, Math.max(1, Math.ceil(Math.sqrt(times.length) * (detail ? 2.2 : 1.4))));
+      const buckets = new Map();
+      for (const time of times) {
+        const index = span === 1 ? 0 : Math.min(bucketCount - 1, Math.floor(((time - min) / span) * bucketCount));
+        const bucket = buckets.get(index) || { count: 0, time };
+        bucket.count += 1;
+        bucket.time = Math.max(bucket.time, time);
+        buckets.set(index, bucket);
+      }
+      const width = detail ? 260 : 86;
+      const height = detail ? 18 : 14;
+      const padding = detail ? 8 : 5;
+      const latestIndex = [...buckets.entries()].sort((a, b) => b[1].time - a[1].time)[0]?.[0];
+      const maxCount = Math.max(...[...buckets.values()].map(bucket => bucket.count));
+      const dots = [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([index, bucket]) => {
+        const x = bucketCount === 1
+          ? width - padding
+          : padding + (index / (bucketCount - 1)) * (width - padding * 2);
+        const radius = Math.min(detail ? 5.5 : 4.2, (detail ? 2.2 : 1.8) + Math.sqrt(bucket.count / maxCount) * (detail ? 3.3 : 2.4));
+        const latest = index === latestIndex ? ' latest' : '';
+        return `<circle class="spark-dot${latest}" cx="${x.toFixed(1)}" cy="${(height / 2).toFixed(1)}" r="${radius.toFixed(1)}"></circle>`;
+      }).join('');
+      const title = `${times.length} ${times.length === 1 ? 'watch' : 'watches'} from ${dates[0]} to ${dates[dates.length - 1]}`;
+      return `<svg class="watch-sparkline${detail ? ' detail' : ''}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(title)}"><title>${escapeHtml(title)}</title>${dots}</svg>`;
     }
 
     function reactionLabel(video) {
@@ -656,6 +701,7 @@
               archivarixLinkHtml(video),
             ])}
             ${watchedLineHtml(video)}
+            ${watchSparklineHtml(video, true)}
             ${reactionIconsHtml(video)}
             ${playlistSourceLinksHtml(video)}
             ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : '<div class="empty">No description captured for this video.</div>'}
@@ -935,6 +981,7 @@
         ${options.channelHtml ? `<div class="details">${options.channelHtml}</div>` : ''}
         ${detailRowHtml(options.details || [])}
         ${options.watchedHtml || ''}
+        ${options.sparklineHtml || ''}
         ${options.reactionHtml || ''}
         ${options.description ? `<div class="description">${escapeHtml(options.description)}</div>` : ''}
         ${detailRowHtml(options.sources || [])}
@@ -971,6 +1018,7 @@
         sources: options.sources || [],
         playlistSourcesHtml: options.playlistSourcesHtml === undefined ? playlistSourceLinksHtml(video) : options.playlistSourcesHtml,
         watchedHtml: watchedLineHtml(video),
+        sparklineHtml: watchSparklineHtml(video),
         reactionHtml: reactionIconsHtml(video),
         description: video.metadata_description,
       });
@@ -1047,6 +1095,7 @@
           video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
         ],
         reactionHtml: reactionIconsHtml(video),
+        sparklineHtml: watchSparklineHtml(video),
         sources: [
           `<a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>`,
         ],
@@ -1076,6 +1125,7 @@
           ${video.channel ? `<span>${escapeHtml(video.channel)}</span>` : ''}
           <span>${escapeHtml(video.video_id)}</span>
         </div>
+        ${watchSparklineHtml(video)}
         ${reactionIconsHtml(video)}
         <div class="details">
           <a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>
@@ -1131,6 +1181,7 @@
           `<a class="playlist-link" href="${archivarixUrl}" target="_blank" rel="noreferrer">Archivarix</a>`,
         ],
         channelHtml: creatorHtml(video.recovered_channel_thumbnail_path, video.recovered_channel, video.recovered_channel_url),
+        sparklineHtml: watchSparklineHtml(video),
         reactionHtml: reactionIconsHtml(video),
         description: video.recovered_description,
         sources: [

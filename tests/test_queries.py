@@ -186,6 +186,7 @@ class HistorySearchTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         for row in rows:
             self.assertEqual(row["watch_count"], 2)
+            self.assertEqual(row["watch_dates"], ["2026-07-01", "2026-07-02"])
             self.assertEqual(
                 row["playlist_links"],
                 [
