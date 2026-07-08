@@ -51,6 +51,8 @@
     .title-link { color: var(--ink); text-decoration: none; }
     .title-link:hover { color: var(--accent); text-decoration: none; }
     .meta { color: var(--muted); font-size: 14px; }
+    .meta-filter { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; }
+    .meta-filter input { accent-color: var(--accent); }
     .results-scroll { min-height: 0; overflow: auto; padding-right: 4px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
     .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
@@ -161,6 +163,8 @@
     let playlistVideos = new Map();
 
     let selected = '';
+    let playlistVisibility = { videos: true, hidden: true };
+    let playlistVisibilityPlaylistId = '';
     const search = document.getElementById('search');
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
@@ -248,6 +252,7 @@
       if (value.startsWith('__playlist__:')) {
         search.value = '';
         const playlistId = value.slice('__playlist__:'.length);
+        resetPlaylistVisibilityFor(playlistId);
         if (window.location.hash !== localPlaylistHref(playlistId)) {
           window.location.hash = localPlaylistHref(playlistId);
           return;
@@ -271,6 +276,12 @@
       }
       renderGroups();
       render();
+    }
+
+    function resetPlaylistVisibilityFor(playlistId) {
+      if (playlistVisibilityPlaylistId === playlistId) return;
+      playlistVisibilityPlaylistId = playlistId;
+      playlistVisibility = { videos: true, hidden: true };
     }
 
     function groupCount(groupKey) {
@@ -463,6 +474,10 @@
 
     function wasRemovedFromPlaylist(video) {
       return video.source_quality === 'takeout' && video.match_type === 'ambiguous_hidden_candidate';
+    }
+
+    function isHiddenPlaylistVideo(video) {
+      return !Number(video.is_playable || 0);
     }
 
     function playlistSourceLinksHtml(video) {
@@ -869,6 +884,7 @@
       }
       if (selected.startsWith('__playlist__:')) {
         const playlistId = selected.slice('__playlist__:'.length);
+        resetPlaylistVisibilityFor(playlistId);
         const playlist = playlists.get(playlistId);
         if (!playlist) {
           title.textContent = 'Playlist not found';
@@ -877,17 +893,23 @@
           empty.hidden = false;
           return;
         }
-        const rows = (playlistVideos.get(playlistId) || []).filter(video => {
+        const allRows = (playlistVideos.get(playlistId) || []).filter(video => {
           const haystack = `${video.title} ${video.channel} ${video.availability} ${video.video_id}`.toLowerCase();
           return !query || haystack.includes(query);
+        });
+        const videoCount = allRows.filter(video => !isHiddenPlaylistVideo(video)).length;
+        const hiddenCount = allRows.length - videoCount;
+        const rows = allRows.filter(video => {
+          const hidden = isHiddenPlaylistVideo(video);
+          return hidden ? playlistVisibility.hidden : playlistVisibility.videos;
         });
         title.innerHTML = playlist.url
           ? `<a class="title-link" href="${escapeHtml(playlist.url)}" target="_blank" rel="noreferrer">${escapeHtml(playlist.title)}</a>`
           : escapeHtml(playlist.title);
         meta.innerHTML = `
           <a class="playlist-link" href="${playlist.url}" target="_blank" rel="noreferrer">YouTube</a>
-          <span>${rows.length} videos</span>
-          ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} hidden</span>` : ''}
+          <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} hidden</span></label>
         `;
         grid.replaceChildren(...rows.map(playlistVideoCardFor));
         empty.hidden = rows.length !== 0;
@@ -1315,6 +1337,14 @@
     }
 
     search.addEventListener('input', render);
+    meta.addEventListener('change', event => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      const filter = target.dataset.playlistFilter;
+      if (!filter) return;
+      playlistVisibility[filter] = target.checked;
+      render();
+    });
     if (channelsFilter) {
       channelsFilter.addEventListener('change', () => {
         channelsFilter.indeterminate = false;
@@ -1335,6 +1365,7 @@
     syncChannelParentFilter();
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
+      if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
       if (selected.startsWith('__playlist__:') || selected.startsWith('__video__:') || selected.startsWith('__channel__:')) search.value = '';
       renderGroups();
       render();
