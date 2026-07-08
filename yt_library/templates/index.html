@@ -395,7 +395,6 @@
       const filters = activeSearchFilters();
       const results = [];
       const seenVideoKeys = new Set();
-      const seenPlaylistVideoKeys = new Set();
       if (filters.has('playlists')) {
         for (const playlist of data.playlists) {
           const haystack = `${playlist.title} ${playlist.owner} ${playlist.description} ${playlist.playlist_id}`;
@@ -421,10 +420,9 @@
           const descriptionHit = filters.has('descriptions') && includesQuery(video.metadata_description, query);
           const hiddenHit = filters.has('hidden') && !video.is_playable && includesQuery(`${displayVideoTitle(video)} ${video.availability} ${video.match_label} ${video.match_note} ${video.video_id} ${video.playlist_title}`, query);
           if (titleHit || descriptionHit || hiddenHit) {
-            const key = `${video.playlist_id}:${video.position}:${video.video_id}`;
+            const key = video.video_id ? `video:${video.video_id}` : `playlist-row:${video.playlist_id}:${video.position}`;
             if (!seenVideoKeys.has(key)) {
               seenVideoKeys.add(key);
-              seenPlaylistVideoKeys.add(`${video.playlist_id}:${video.video_id}`);
               results.push({ kind: 'video', score: titleHit ? 1 : 3, item: video, matchedDescription: descriptionHit && !titleHit });
             }
           }
@@ -432,9 +430,11 @@
       }
       if (filters.has('hidden')) {
         for (const video of data.snapshotMissing || []) {
-          if (seenPlaylistVideoKeys.has(`${video.playlist_id}:${video.video_id}`)) continue;
+          const key = video.video_id ? `video:${video.video_id}` : `snapshot-row:${video.playlist_id}:${video.position}`;
+          if (seenVideoKeys.has(key)) continue;
           const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.recovered_title} ${video.recovered_description} ${video.recovered_channel} ${video.recovered_status}`;
           if (includesQuery(haystack, query)) {
+            seenVideoKeys.add(key);
             results.push({ kind: 'missing', score: 4, item: video });
           }
         }
