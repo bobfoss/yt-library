@@ -490,21 +490,26 @@ class PlaylistScanWorker:
                     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as web_exc:
                         status = "error"
                         error = str(web_exc)
-                expected_count = expected_video_count(row["video_count_text"] if "video_count_text" in row.keys() else "")
-                if status == "ok" and not videos and expected_count > 0:
+                metadata_expected_count = expected_video_count(playlist_metadata.get("video_count_text", ""))
+                row_expected_count = expected_video_count(row["video_count_text"] if "video_count_text" in row.keys() else "")
+                expected_count = metadata_expected_count or row_expected_count
+                if status == "ok" and expected_count > 0 and len(videos) < expected_count:
                     status = "error"
-                    error = f"Parsed 0 videos, but playlist metadata says {expected_count} videos"
+                    error = f"Parsed {len(videos)} videos, but playlist metadata says {expected_count} videos"
                     if ytdlp_error:
                         error += f"; yt-dlp failed: {ytdlp_error[:500]}"
                 with conn:
-                    video_count, hidden_count = save_playlist_scan(
-                        conn,
-                        playlist_id,
-                        videos,
-                        status,
-                        error,
-                        playlist_metadata=playlist_metadata,
-                    )
+                    if status == "error":
+                        video_count, hidden_count = save_playlist_scan_error(conn, playlist_id, error)
+                    else:
+                        video_count, hidden_count = save_playlist_scan(
+                            conn,
+                            playlist_id,
+                            videos,
+                            status,
+                            error,
+                            playlist_metadata=playlist_metadata,
+                        )
                     processed += 1
                     if status == "error":
                         failed += 1

@@ -47,6 +47,10 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(core.format_duration(3661), "1:01:01")
         self.assertEqual(core.bounded_int("140"), 100)
         self.assertEqual(core.bounded_int("-5"), 0)
+        self.assertTrue(core.playlist_entry_is_unavailable("[Deleted video]"))
+        self.assertTrue(core.playlist_entry_is_unavailable("Private video"))
+        self.assertTrue(core.playlist_entry_is_unavailable("Regular title", "needs_auth"))
+        self.assertFalse(core.playlist_entry_is_unavailable("Regular title", "public"))
 
     def test_parse_takeout_watch_history_json(self) -> None:
         rows = core.parse_takeout_watch_history_text(
@@ -481,6 +485,54 @@ class SchemaTests(unittest.TestCase):
                     self.assertEqual(row["owner"], "New owner")
                     self.assertEqual(row["thumbnail_url"], "https://example.test/new.jpg")
                     self.assertEqual(row["thumbnail_path"], "thumbs/PLrename.jpg")
+                finally:
+                    conn.close()
+            finally:
+                core.ROOT = original_root
+
+    def test_save_playlist_scan_error_preserves_existing_counts(self) -> None:
+        original_root = core.ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core.ROOT = Path(temp_dir)
+            try:
+                conn = core.connect(Path(temp_dir) / "library.sqlite3")
+                try:
+                    with conn:
+                        conn.execute(
+                            "INSERT INTO playlists(playlist_id, title) VALUES ('PLpartial', 'Partial scan')"
+                        )
+                        core.save_playlist_scan(
+                            conn,
+                            "PLpartial",
+                            [
+                                {
+                                    "playlist_id": "PLpartial",
+                                    "position": 1,
+                                    "video_id": "abc12345678",
+                                    "title": "Video",
+                                    "channel_id": "",
+                                    "channel": "",
+                                    "duration_text": "1:00",
+                                    "is_playable": 1,
+                                    "availability": "LIVE",
+                                    "url": "https://www.youtube.com/watch?v=abc12345678",
+                                }
+                            ],
+                            "ok",
+                            "",
+                        )
+                        core.save_playlist_scan_error(conn, "PLpartial", "Parsed 1 videos, but playlist metadata says 2 videos")
+                    row = conn.execute(
+                        "SELECT video_count, hidden_count, scan_status, scan_error FROM playlist_scans WHERE playlist_id = 'PLpartial'"
+                    ).fetchone()
+                    self.assertEqual(row["video_count"], 1)
+                    self.assertEqual(row["hidden_count"], 0)
+                    self.assertEqual(row["scan_status"], "error")
+                    self.assertIn("metadata says 2", row["scan_error"])
+                    self.assertEqual(
+                        conn.execute("SELECT COUNT(*) FROM playlist_videos WHERE playlist_id = 'PLpartial'").fetchone()[0],
+                        1,
+                    )
                 finally:
                     conn.close()
             finally:

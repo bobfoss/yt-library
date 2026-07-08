@@ -392,6 +392,20 @@ def normalize_video_availability(
     return ""
 
 
+def playlist_entry_is_unavailable(title: str, availability: str = "") -> bool:
+    normalized_title = (title or "").strip().lower().strip("[]() ")
+    if normalized_title in {"deleted video", "private video", "unavailable video"}:
+        return True
+    return (availability or "").strip().lower() in {
+        "private",
+        "needs_auth",
+        "premium_only",
+        "subscriber_only",
+        "unavailable",
+        "deleted",
+    }
+
+
 def reconciled_video_availability(
     video_id: str,
     current_availability: str = "",
@@ -3435,7 +3449,9 @@ def scan_playlist_ytdlp(
         if not webpage_url:
             webpage_url = f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}"
         availability = str(entry.get("availability") or "").strip()
-        hidden = availability.lower() in {"private", "needs_auth", "premium_only", "subscriber_only"}
+        hidden = playlist_entry_is_unavailable(title, availability)
+        if hidden and not availability:
+            availability = "unavailable"
         availability = normalize_video_availability(video_id, availability, not hidden)
         videos.append(
             {
@@ -4518,6 +4534,40 @@ def save_playlist_scan(
         )
     rebuild_playlist_reconciliation(conn, playlist_id)
     return len(videos), hidden_count
+
+
+def save_playlist_scan_error(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    error: str,
+) -> tuple[int, int]:
+    now = int(time.time())
+    previous = conn.execute(
+        """
+        SELECT video_count, hidden_count
+        FROM playlist_scans
+        WHERE playlist_id = ?
+        """,
+        (playlist_id,),
+    ).fetchone()
+    video_count = int(previous["video_count"] or 0) if previous else 0
+    hidden_count = int(previous["hidden_count"] or 0) if previous else 0
+    conn.execute(
+        """
+        INSERT INTO playlist_scans(
+          playlist_id, scanned_at, video_count, hidden_count, scan_status, scan_error
+        )
+        VALUES (?, ?, ?, ?, 'error', ?)
+        ON CONFLICT(playlist_id) DO UPDATE SET
+          scanned_at=excluded.scanned_at,
+          video_count=playlist_scans.video_count,
+          hidden_count=playlist_scans.hidden_count,
+          scan_status=excluded.scan_status,
+          scan_error=excluded.scan_error
+        """,
+        (playlist_id, now, video_count, hidden_count, error),
+    )
+    return video_count, hidden_count
 
 
 def latest_snapshot_key_for_playlist(conn: sqlite3.Connection, playlist_id: str) -> str:
