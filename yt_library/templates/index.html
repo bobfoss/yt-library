@@ -81,6 +81,11 @@
     .video-detail .description { max-height: none; white-space: pre-wrap; }
     .video-detail .thumb-wrap { border-radius: 6px; overflow: hidden; }
     .video-detail .thumb { border-radius: 6px; }
+    .channel-detail { grid-column: 1 / -1; max-width: 1180px; }
+    .channel-detail .detail-layout { display: grid; grid-template-columns: 140px 1fr; gap: 18px; align-items: start; }
+    .channel-detail .channel-avatar-large { width: 128px; height: 128px; border-radius: 50%; object-fit: cover; background: linear-gradient(135deg, #24424a, #d98948); }
+    .channel-detail .description { max-height: none; white-space: pre-wrap; }
+    .section-heading { grid-column: 1 / -1; color: var(--muted); font-size: 13px; margin: 8px 0 -4px; text-transform: uppercase; }
     .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
     .watch-sparkline { display: block; width: 86px; height: 14px; margin-top: 5px; color: var(--muted); overflow: visible; }
     .watch-sparkline .spark-dot { fill: currentColor; opacity: .52; }
@@ -112,6 +117,7 @@
       .toolbar { display: block; }
       .title { font-size: 24px; margin-bottom: 6px; }
       .video-detail .detail-layout { grid-template-columns: 1fr; }
+      .channel-detail .detail-layout { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -204,12 +210,20 @@
       return `__video__:${videoId}`;
     }
 
+    function channelSelection(channelId) {
+      return `__channel__:${channelId}`;
+    }
+
     function localPlaylistHref(playlistId) {
       return `#playlist=${encodeURIComponent(playlistId)}`;
     }
 
     function localVideoHref(videoId) {
       return `#video=${encodeURIComponent(videoId)}`;
+    }
+
+    function localChannelHref(channelId) {
+      return `#channel=${encodeURIComponent(channelId)}`;
     }
 
     function selectionFromHash() {
@@ -222,7 +236,11 @@
         const videoId = decodeURIComponent(hash.slice('#video='.length));
         if (videoId) return videoSelection(videoId);
       }
-      return selected.startsWith('__playlist__:') || selected.startsWith('__video__:') ? '' : selected;
+      if (hash.startsWith('#channel=')) {
+        const channelId = decodeURIComponent(hash.slice('#channel='.length));
+        if (channelId) return channelSelection(channelId);
+      }
+      return selected.startsWith('__playlist__:') || selected.startsWith('__video__:') || selected.startsWith('__channel__:') ? '' : selected;
     }
 
     function setSelected(value) {
@@ -239,6 +257,13 @@
         const videoId = value.slice('__video__:'.length);
         if (window.location.hash !== localVideoHref(videoId)) {
           window.location.hash = localVideoHref(videoId);
+          return;
+        }
+      } else if (value.startsWith('__channel__:')) {
+        search.value = '';
+        const channelId = value.slice('__channel__:'.length);
+        if (window.location.hash !== localChannelHref(channelId)) {
+          window.location.hash = localChannelHref(channelId);
           return;
         }
       } else if (window.location.hash) {
@@ -301,6 +326,11 @@
 
     function displayVideoChannelUrl(video) {
       return video.metadata_channel_url || '';
+    }
+
+    function displayVideoChannelLocalUrl(video) {
+      const channelId = video.metadata_channel_id || video.channel_id || video.recovered_channel_id || '';
+      return channelId ? localChannelHref(channelId) : displayVideoChannelUrl(video);
     }
 
     function displayVideoDuration(video) {
@@ -489,8 +519,9 @@
       if (!name) return '';
       const avatar = path ? `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">` : '';
       const content = `${avatar}<span class="creator-name">${escapeHtml(name)}</span>`;
+      const attrs = String(url || '').startsWith('#') ? '' : ' target="_blank" rel="noreferrer"';
       return url
-        ? `<a class="creator-link creator-chip" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${content}</a>`
+        ? `<a class="creator-link creator-chip" href="${escapeHtml(url)}"${attrs}>${content}</a>`
         : `<span class="creator-chip">${content}</span>`;
     }
 
@@ -637,6 +668,23 @@
       return (data.snapshotMissing || []).filter(video => video.video_id === videoId);
     }
 
+    function channelById(channelId) {
+      return (data.channels || []).find(channel => channel.channel_id === channelId) || null;
+    }
+
+    function channelVideoRows(channelId) {
+      const byVideo = new Map();
+      for (const video of data.playlistVideos || []) {
+        if (!video.video_id) continue;
+        const matchesChannel = video.metadata_channel_id === channelId || video.channel_id === channelId || video.metadata_channel_url?.includes(channelId);
+        if (!matchesChannel) continue;
+        if (!byVideo.has(video.video_id)) byVideo.set(video.video_id, video);
+      }
+      return [...byVideo.values()].sort((a, b) =>
+        displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' })
+      );
+    }
+
     function primaryVideoForDetail(videoId) {
       const playlistRows = videoRowsById(videoId);
       if (playlistRows.length) {
@@ -653,6 +701,7 @@
           metadata_channel: row.recovered_channel || '',
           metadata_channel_url: row.recovered_channel_url || '',
           metadata_channel_thumbnail_path: row.recovered_channel_thumbnail_path || '',
+          metadata_channel_id: row.recovered_channel_id || '',
           metadata_duration: row.recovered_duration || '',
           metadata_upload_date: row.recovered_upload_date || '',
           metadata_thumbnail_path: row.recovered_thumbnail_path || '',
@@ -673,7 +722,7 @@
       const titleText = displayVideoTitle(video);
       const watchUrl = youtubeWatchUrl(video);
       const channelName = displayVideoChannel(video);
-      const channelUrl = displayVideoChannelUrl(video);
+      const channelUrl = displayVideoChannelLocalUrl(video);
       const thumbnail = video.metadata_thumbnail_path
         ? thumbnailWithProgress(video.metadata_thumbnail_path, video)
         : document.createElement('div');
@@ -713,6 +762,47 @@
       return article;
     }
 
+    function channelDetailCardFor(channel) {
+      const article = document.createElement('article');
+      article.className = 'card channel-detail';
+      const youtubeUrl = channel.url || (channel.channel_id ? `https://www.youtube.com/channel/${encodeURIComponent(channel.channel_id)}` : '');
+      const archivarixUrl = channel.channel_id ? `https://tube.archivarix.net/?q=${encodeURIComponent(channel.channel_id)}` : '';
+      const status = String(channel.status || '').toLowerCase();
+      const subscribedLabel = isSubscribedChannel(channel) ? 'Subscribed' : 'Non-subscribed';
+      const titleText = channel.title || channel.channel_id;
+      const avatar = channel.thumbnail_path
+        ? `<img class="channel-avatar-large" src="/${escapeHtml(channel.thumbnail_path)}" alt="">`
+        : '<div class="channel-avatar-large"></div>';
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.innerHTML = `
+        <div class="detail-layout">
+          <div>${avatar}</div>
+          <div>
+            <div class="title-row">
+              <div class="video-title">${escapeHtml(titleText)}</div>
+              ${youtubeUrl ? `<a class="external-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
+            </div>
+            <div class="details">
+              <span>${subscribedLabel}</span>
+              ${status ? `<span class="badge">${escapeHtml(status)}</span>` : ''}
+              ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
+              ${channel.archivarix_channel_id ? `<span>Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
+            </div>
+            ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
+            ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
+            <div class="details">
+              ${youtubeUrl ? `<a class="playlist-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">YouTube</a>` : ''}
+              ${archivarixUrl ? `<a class="playlist-link" href="${escapeHtml(archivarixUrl)}" target="_blank" rel="noreferrer">Archivarix</a>` : ''}
+            </div>
+            ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : '<div class="empty">No channel description captured.</div>'}
+          </div>
+        </div>
+      `;
+      article.append(body);
+      return article;
+    }
+
     function render() {
       if (!data) {
         title.textContent = 'Loading';
@@ -741,6 +831,30 @@
           ${video.watch_count ? `<span>${escapeHtml(video.watch_count)} ${Number(video.watch_count) === 1 ? 'watch' : 'watches'}</span>` : ''}
         `;
         grid.replaceChildren(videoDetailCardFor(video));
+        empty.hidden = true;
+        return;
+      }
+      if (selected.startsWith('__channel__:')) {
+        const channelId = selected.slice('__channel__:'.length);
+        const channel = channelById(channelId);
+        if (!channel) {
+          title.textContent = 'Channel not found';
+          meta.textContent = channelId;
+          grid.replaceChildren();
+          empty.hidden = false;
+          empty.textContent = 'No local metadata is available for this channel.';
+          return;
+        }
+        const rows = channelVideoRows(channelId);
+        title.textContent = channel.title || channel.channel_id;
+        meta.innerHTML = `
+          ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
+          <span>${rows.length} videos</span>
+        `;
+        const heading = document.createElement('div');
+        heading.className = 'section-heading';
+        heading.textContent = 'Videos';
+        grid.replaceChildren(channelDetailCardFor(channel), heading, ...rows.map(playlistVideoCardFor));
         empty.hidden = true;
         return;
       }
@@ -994,7 +1108,7 @@
     function playlistVideoCardFor(video, options = {}) {
       const watchUrl = youtubeWatchUrl(video);
       const channelName = displayVideoChannel(video);
-      const channelUrl = displayVideoChannelUrl(video);
+      const channelUrl = displayVideoChannelLocalUrl(video);
       return videoCardFor({
         thumbnailPath: video.metadata_thumbnail_path,
         progressVideo: video,
@@ -1057,9 +1171,13 @@
       const archivarixUrl = channel.channel_id ? `https://tube.archivarix.net/?q=${encodeURIComponent(channel.channel_id)}` : '';
       const status = String(channel.status || '').toLowerCase();
       const subscribedLabel = isSubscribedChannel(channel) ? 'Subscribed' : 'Non-subscribed';
+      const titleText = channel.title || channel.channel_id;
       body.innerHTML = `
         <div class="result-kind">Channel</div>
-        <a class="playlist-title" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">${escapeHtml(channel.title || channel.channel_id)}</a>
+        <div class="title-row">
+          ${channel.channel_id ? `<a class="playlist-title" href="${localChannelHref(channel.channel_id)}">${escapeHtml(titleText)}</a>` : `<div class="video-title">${escapeHtml(titleText)}</div>`}
+          ${youtubeUrl ? `<a class="external-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
+        </div>
         <div class="details">
           <span>${subscribedLabel}</span>
           ${status ? `<span class="badge">${escapeHtml(status)}</span>` : ''}
@@ -1091,7 +1209,7 @@
         externalUrl: watchUrl,
         badges: [{ label: video.availability }],
         details: [
-          video.channel ? `<span>${escapeHtml(video.channel)}</span>` : '',
+          video.channel ? creatorHtml('', video.channel, video.channel_id ? localChannelHref(video.channel_id) : '') : '',
           video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
         ],
         reactionHtml: reactionIconsHtml(video),
@@ -1122,7 +1240,7 @@
           <span class="badge">${escapeHtml(video.status)}</span>
           ${video.duration_text ? `<span>${escapeHtml(video.duration_text)}</span>` : ''}
           ${video.upload_date ? `<span>${escapeHtml(video.upload_date)}</span>` : ''}
-          ${video.channel ? `<span>${escapeHtml(video.channel)}</span>` : ''}
+          ${video.channel ? creatorHtml('', video.channel, video.channel_id ? localChannelHref(video.channel_id) : '') : ''}
           <span>${escapeHtml(video.video_id)}</span>
         </div>
         ${watchSparklineHtml(video)}
@@ -1180,7 +1298,7 @@
           video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
           `<a class="playlist-link" href="${archivarixUrl}" target="_blank" rel="noreferrer">Archivarix</a>`,
         ],
-        channelHtml: creatorHtml(video.recovered_channel_thumbnail_path, video.recovered_channel, video.recovered_channel_url),
+        channelHtml: creatorHtml(video.recovered_channel_thumbnail_path, video.recovered_channel, video.recovered_channel_id ? localChannelHref(video.recovered_channel_id) : video.recovered_channel_url),
         sparklineHtml: watchSparklineHtml(video),
         reactionHtml: reactionIconsHtml(video),
         description: video.recovered_description,
@@ -1217,7 +1335,7 @@
     syncChannelParentFilter();
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
-      if (selected.startsWith('__playlist__:') || selected.startsWith('__video__:')) search.value = '';
+      if (selected.startsWith('__playlist__:') || selected.startsWith('__video__:') || selected.startsWith('__channel__:')) search.value = '';
       renderGroups();
       render();
     });
