@@ -145,6 +145,44 @@ class HistorySearchTests(unittest.TestCase):
             ["deleted123"],
         )
 
+    def test_playlist_videos_include_all_playlist_links_for_same_video(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO playlists(playlist_id, title)
+            VALUES (?, ?)
+            """,
+            [
+                ("pl1", "First Playlist"),
+                ("pl2", "Second Playlist"),
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO playlist_video_reconciled(
+              playlist_id, display_position, video_id, title, source_quality, match_type
+            )
+            VALUES (?, ?, 'same123', 'Same Video', ?, ?)
+            """,
+            [
+                ("pl1", 1, "current", ""),
+                ("pl2", 2, "takeout", "ambiguous_hidden_candidate"),
+            ],
+        )
+        self.conn.commit()
+
+        data = fetch_app_data(self.conn)
+        rows = [row for row in data["playlistVideos"] if row["video_id"] == "same123"]
+
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual(
+                row["playlist_links"],
+                [
+                    {"playlist_id": "pl1", "title": "First Playlist", "removed": False},
+                    {"playlist_id": "pl2", "title": "Second Playlist", "removed": True},
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

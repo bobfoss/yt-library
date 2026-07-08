@@ -67,6 +67,7 @@
     .external-link:hover { background: var(--accent-soft); }
     .external-link svg { width: 15px; height: 15px; }
     .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .playlist-sources { display: grid; gap: 3px; justify-items: start; }
     .badge-lines { display: grid; gap: 2px; justify-items: start; }
     .badge-lines .badge { display: block; }
     .channel-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; vertical-align: middle; flex: 0 0 auto; }
@@ -331,11 +332,17 @@
       return video.source_quality === 'takeout' && video.match_type === 'ambiguous_hidden_candidate';
     }
 
-    function playlistSourceLinkHtml(video) {
-      const title = video.playlist_title || '';
-      if (!title) return '';
-      const removed = wasRemovedFromPlaylist(video) ? ' <span class="badge">(Removed)</span>' : '';
-      return `<a class="playlist-link" href="${localPlaylistHref(video.playlist_id)}">${escapeHtml(title)}</a>${removed}`;
+    function playlistSourceLinksHtml(video) {
+      const links = Array.isArray(video.playlist_links) && video.playlist_links.length
+        ? video.playlist_links
+        : [{ playlist_id: video.playlist_id, title: video.playlist_title, removed: wasRemovedFromPlaylist(video) }];
+      const rows = links
+        .filter(link => link && link.playlist_id && link.title)
+        .map(link => {
+          const removed = link.removed ? ' <span class="badge">(Removed)</span>' : '';
+          return `<div><a class="playlist-link" href="${localPlaylistHref(link.playlist_id)}">${escapeHtml(link.title)}</a>${removed}</div>`;
+        });
+      return rows.length ? `<div class="details playlist-sources">${rows.join('')}</div>` : '';
     }
 
     function unavailableLabel(video) {
@@ -763,6 +770,7 @@
         ${options.watchedHtml || ''}
         ${options.description ? `<div class="description">${escapeHtml(options.description)}</div>` : ''}
         ${detailRowHtml(options.sources || [])}
+        ${options.playlistSourcesHtml || ''}
       `;
       article.append(body);
       return article;
@@ -793,6 +801,7 @@
         ],
         channelHtml: creatorHtml(video.metadata_channel_thumbnail_path, channelName, channelUrl),
         sources: options.sources || [],
+        playlistSourcesHtml: options.playlistSourcesHtml === undefined ? playlistSourceLinksHtml(video) : options.playlistSourcesHtml,
         watchedHtml: watchedLineHtml(video),
         description: video.metadata_description,
       });
@@ -811,7 +820,6 @@
       const video = result.item;
       return playlistVideoCardFor(video, {
         resultKind: result.matchedDescription ? 'Description match' : 'Video',
-        sources: [playlistSourceLinkHtml(video)],
       });
     }
 

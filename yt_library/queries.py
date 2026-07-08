@@ -113,6 +113,42 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
     for video in playlist_videos:
         video["match_label"] = playlist_match_type_label(video.get("match_type", ""))
         video["match_note"] = playlist_match_type_note(video.get("match_type", ""))
+    playlist_links_by_video: dict[str, list[dict[str, str]]] = {}
+    seen_playlist_links: set[tuple[str, str]] = set()
+    for video in playlist_videos:
+        video_id = video.get("video_id", "")
+        playlist_id = video.get("playlist_id", "")
+        if not video_id or not playlist_id:
+            continue
+        key = (video_id, playlist_id)
+        if key in seen_playlist_links:
+            continue
+        seen_playlist_links.add(key)
+        playlist_links_by_video.setdefault(video_id, []).append(
+            {
+                "playlist_id": playlist_id,
+                "title": video.get("playlist_title", "") or playlist_id,
+                "removed": bool(
+                    video.get("source_quality") == "takeout"
+                    and video.get("match_type") == "ambiguous_hidden_candidate"
+                ),
+            }
+        )
+    for video in playlist_videos:
+        video_id = video.get("video_id", "")
+        playlist_links = playlist_links_by_video.get(video_id, []) if video_id else []
+        if not playlist_links and video.get("playlist_id"):
+            playlist_links = [
+                {
+                    "playlist_id": video.get("playlist_id", ""),
+                    "title": video.get("playlist_title", "") or video.get("playlist_id", ""),
+                    "removed": bool(
+                        video.get("source_quality") == "takeout"
+                        and video.get("match_type") == "ambiguous_hidden_candidate"
+                    ),
+                }
+            ]
+        video["playlist_links"] = playlist_links
     archivarix_candidates = [
         dict(row)
         for row in conn.execute(
