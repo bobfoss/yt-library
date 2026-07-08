@@ -53,6 +53,19 @@
     .meta { color: var(--muted); font-size: 14px; }
     .meta-filter { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; }
     .meta-filter input { accent-color: var(--accent); }
+    .view-sort { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
+    .view-sort select { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
+    .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+    .pager.bottom { margin: 18px 0 0; }
+    .pager button, .pager select { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
+    .pager button { cursor: pointer; }
+    .pager button:hover:not(:disabled) { background: var(--accent-soft); }
+    .pager button:disabled { opacity: .45; cursor: default; }
+    .pager button.current { background: var(--accent-soft); color: var(--ink); font-weight: 650; }
+    .pager .page-jumps { display: inline-flex; align-items: center; gap: 8px; }
+    .pager .page-jumps button, .pager .ellipsis, .pager .page-placeholder { min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; }
+    .pager .ellipsis { color: var(--muted); border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
+    .pager .page-placeholder { visibility: hidden; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
     .results-scroll { min-height: 0; overflow: auto; padding-right: 4px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
     .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
@@ -153,6 +166,7 @@
         <section id="grid" class="grid"></section>
         <div id="empty" class="empty" hidden>No playlists match.</div>
       </div>
+      <div id="bottom-pager" class="pager bottom" hidden></div>
     </main>
   </div>
   <script>
@@ -165,6 +179,9 @@
     let selected = '';
     let playlistVisibility = { videos: true, hidden: true };
     let playlistVisibilityPlaylistId = '';
+    let allVideosSort = 'newest_added';
+    let allVideosPage = 1;
+    let allVideosPageSize = '100';
     const search = document.getElementById('search');
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
@@ -175,6 +192,8 @@
     const empty = document.getElementById('empty');
     const title = document.getElementById('view-title');
     const meta = document.getElementById('view-meta');
+    const bottomPager = document.getElementById('bottom-pager');
+    const resultsScroll = document.querySelector('.results-scroll');
 
     async function loadData() {
       refresh.disabled = true;
@@ -249,6 +268,7 @@
 
     function setSelected(value) {
       selected = value;
+      if (value === '__all_videos__') allVideosPage = 1;
       if (value.startsWith('__playlist__:')) {
         search.value = '';
         const playlistId = value.slice('__playlist__:'.length);
@@ -480,6 +500,171 @@
       return !Number(video.is_playable || 0);
     }
 
+    function metadataCompletenessScore(video) {
+      return (video.metadata_thumbnail_path ? 12 : 0)
+        + (usefulMetadataTitle(video) ? 8 : 0)
+        + (displayVideoChannel(video) ? 5 : 0)
+        + (video.metadata_description ? 4 : 0)
+        + (Number(video.is_playable || 0) ? 2 : 0);
+    }
+
+    function allPlaylistVideos() {
+      const byVideo = new Map();
+      const rowOnly = [];
+      for (const video of data.playlistVideos || []) {
+        if (!video.video_id) {
+          rowOnly.push(video);
+          continue;
+        }
+        const existing = byVideo.get(video.video_id);
+        if (!existing || metadataCompletenessScore(video) > metadataCompletenessScore(existing)) {
+          byVideo.set(video.video_id, video);
+        }
+      }
+      return [...byVideo.values(), ...rowOnly];
+    }
+
+    function sortableVideoDate(video) {
+      const value = video.added_at || video.metadata_published_at || video.published_at || '';
+      const time = Date.parse(value);
+      return Number.isFinite(time) ? time : 0;
+    }
+
+    function playlistOrderKey(video) {
+      return `${video.playlist_title || ''}\u0000${String(video.position || '').padStart(8, '0')}\u0000${video.video_id || ''}`;
+    }
+
+    function sortedAllPlaylistVideos(rows) {
+      const sorted = [...rows];
+      if (allVideosSort === 'newest_added') {
+        sorted.sort((a, b) => sortableVideoDate(b) - sortableVideoDate(a) || displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
+      } else if (allVideosSort === 'oldest_added') {
+        sorted.sort((a, b) => sortableVideoDate(a) - sortableVideoDate(b) || displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
+      } else if (allVideosSort === 'most_watched') {
+        sorted.sort((a, b) => Number(b.watch_count || 0) - Number(a.watch_count || 0) || displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
+      } else if (allVideosSort === 'playlist_order') {
+        sorted.sort((a, b) => playlistOrderKey(a).localeCompare(playlistOrderKey(b), undefined, { sensitivity: 'base' }));
+      } else {
+        sorted.sort((a, b) => displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
+      }
+      return sorted;
+    }
+
+    function allVideosPageSizeNumber() {
+      if (allVideosPageSize === 'all') return Infinity;
+      const value = Number(allVideosPageSize || 100);
+      return Number.isFinite(value) && value > 0 ? value : 100;
+    }
+
+    function allVideosPageSlice(rows) {
+      const pageSize = allVideosPageSizeNumber();
+      if (!Number.isFinite(pageSize)) {
+        allVideosPage = 1;
+        return { pageRows: rows, page: 1, pageCount: 1, start: rows.length ? 1 : 0, end: rows.length, total: rows.length };
+      }
+      const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+      allVideosPage = Math.min(Math.max(1, allVideosPage), pageCount);
+      const startIndex = (allVideosPage - 1) * pageSize;
+      const endIndex = Math.min(rows.length, startIndex + pageSize);
+      return {
+        pageRows: rows.slice(startIndex, endIndex),
+        page: allVideosPage,
+        pageCount,
+        start: rows.length ? startIndex + 1 : 0,
+        end: endIndex,
+        total: rows.length,
+      };
+    }
+
+    function pageJumpItems(pageInfo) {
+      if (pageInfo.pageCount <= 1) return [];
+      if (pageInfo.pageCount <= 7) {
+        const items = Array.from({ length: pageInfo.pageCount }, (_, index) => index + 1);
+        while (items.length < 7) items.push('placeholder');
+        return items;
+      }
+      const page = pageInfo.page;
+      const last = pageInfo.pageCount;
+      if (page <= 3) {
+        const leading = Array.from({ length: 4 - page }, () => 'placeholder');
+        const pages = Array.from({ length: Math.min(page + 1, last) }, (_, index) => index + 1);
+        const items = [...leading, ...pages, 'ellipsis', last];
+        while (items.length < 7) items.push('placeholder');
+        return items.slice(0, 7);
+      }
+      if (page >= last - 2) {
+        const firstPage = Math.max(1, page - 1);
+        const pages = Array.from({ length: last - firstPage + 1 }, (_, index) => firstPage + index);
+        const trailing = Array.from({ length: Math.max(0, 7 - 2 - pages.length) }, () => 'placeholder');
+        const items = [1, 'ellipsis', ...pages, ...trailing];
+        while (items.length < 7) items.push('placeholder');
+        return items.slice(0, 7);
+      }
+      return [1, 'ellipsis', page - 1, page, page + 1, 'ellipsis', last];
+    }
+
+    function pageJumpHtml(pageInfo) {
+      const items = pageJumpItems(pageInfo);
+      if (!items.length) return '';
+      return `
+        <span class="page-jumps">
+          ${items.map(item => {
+            if (item === 'ellipsis') return '<span class="ellipsis">...</span>';
+            if (item === 'placeholder') return '<span class="page-placeholder">&nbsp;</span>';
+            return `<button type="button" class="${item === pageInfo.page ? 'current' : ''}" data-all-videos-page="${item}" ${item === pageInfo.page ? 'disabled' : ''}>${item}</button>`;
+          }).join('')}
+        </span>
+      `;
+    }
+
+    function allVideosPagerHtml(pageInfo, includePageSize = false) {
+      if (!pageInfo.total) return '';
+      const pageSizes = ['50', '100', '250', '500', 'all'];
+      const sizeHtml = includePageSize ? `
+        <label>Page size
+          <select data-all-videos-page-size>
+            ${pageSizes.map(value => `<option value="${value}" ${allVideosPageSize === value ? 'selected' : ''}>${value === 'all' ? 'All' : value}</option>`).join('')}
+          </select>
+        </label>
+      ` : '';
+      return `
+        ${sizeHtml}
+        <span>Showing ${pageInfo.start}-${pageInfo.end} of ${pageInfo.total}</span>
+        ${pageJumpHtml(pageInfo)}
+      `;
+    }
+
+    function renderAllVideosPagers(pageInfo) {
+      bottomPager.hidden = !pageInfo.total;
+      bottomPager.innerHTML = allVideosPagerHtml(pageInfo, true);
+    }
+
+    function hideAllVideosPagers() {
+      bottomPager.hidden = true;
+      bottomPager.replaceChildren();
+    }
+
+    function scrollResultsToTop() {
+      if (resultsScroll) resultsScroll.scrollTop = 0;
+    }
+
+    function allVideosSortHtml() {
+      const options = [
+        ['newest_added', 'Recently added'],
+        ['title', 'Title A-Z'],
+        ['oldest_added', 'Oldest added'],
+        ['most_watched', 'Most watched'],
+        ['playlist_order', 'Playlist order'],
+      ];
+      return `
+        <label class="view-sort">Sort
+          <select data-all-videos-sort>
+            ${options.map(([value, label]) => `<option value="${value}" ${allVideosSort === value ? 'selected' : ''}>${label}</option>`).join('')}
+          </select>
+        </label>
+      `;
+    }
+
     function playlistSourceLinksHtml(video) {
       const links = Array.isArray(video.playlist_links) && video.playlist_links.length
         ? video.playlist_links
@@ -609,6 +794,13 @@
       all.innerHTML = `<span>All playlists</span><span class="count">${data.playlists.length}</span>`;
       all.addEventListener('click', () => setSelected(''));
       groupsEl.appendChild(all);
+      const allVideoRows = allPlaylistVideos();
+      const allVideos = document.createElement('button');
+      allVideos.className = 'group';
+      allVideos.dataset.key = '__all_videos__';
+      allVideos.innerHTML = `<span>All videos</span><span class="count">${allVideoRows.length}</span>`;
+      allVideos.addEventListener('click', () => setSelected('__all_videos__'));
+      groupsEl.appendChild(allVideos);
       const likedRows = likedVideos();
       const liked = document.createElement('button');
       liked.className = 'group';
@@ -826,6 +1018,7 @@
       }
       const query = search.value.trim().toLowerCase();
       empty.textContent = 'No playlists match.';
+      hideAllVideosPagers();
       for (const button of groupsEl.querySelectorAll('.group')) {
         button.classList.toggle('active', button.dataset.key === selected);
       }
@@ -914,6 +1107,28 @@
         grid.replaceChildren(...rows.map(playlistVideoCardFor));
         empty.hidden = rows.length !== 0;
         empty.textContent = playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.';
+        return;
+      }
+      if (selected === '__all_videos__') {
+        resetPlaylistVisibilityFor('__all_videos__');
+        const allRows = allPlaylistVideos();
+        const videoCount = allRows.filter(video => !isHiddenPlaylistVideo(video)).length;
+        const hiddenCount = allRows.length - videoCount;
+        const rows = sortedAllPlaylistVideos(allRows.filter(video => {
+          const hidden = isHiddenPlaylistVideo(video);
+          return hidden ? playlistVisibility.hidden : playlistVisibility.videos;
+        }));
+        const pageInfo = allVideosPageSlice(rows);
+        title.textContent = 'All videos';
+        meta.innerHTML = `
+          <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} hidden</span></label>
+          ${allVideosSortHtml()}
+        `;
+        renderAllVideosPagers(pageInfo);
+        grid.replaceChildren(...pageInfo.pageRows.map(playlistVideoCardFor));
+        empty.hidden = pageInfo.pageRows.length !== 0;
+        empty.textContent = 'No playlist videos match.';
         return;
       }
       if (selected === '__hidden__') {
@@ -1339,12 +1554,41 @@
     search.addEventListener('input', render);
     meta.addEventListener('change', event => {
       const target = event.target;
+      if (target instanceof HTMLSelectElement && target.dataset.allVideosSort !== undefined) {
+        allVideosSort = target.value || 'newest_added';
+        allVideosPage = 1;
+        scrollResultsToTop();
+        render();
+        return;
+      }
       if (!(target instanceof HTMLInputElement)) return;
       const filter = target.dataset.playlistFilter;
       if (!filter) return;
       playlistVisibility[filter] = target.checked;
+      if (selected === '__all_videos__') allVideosPage = 1;
       render();
     });
+    function handleAllVideosPagerClick(event) {
+      const target = event.target;
+      if (!(target instanceof HTMLButtonElement)) return;
+      const direction = target.dataset.allVideosPage;
+      if (!direction) return;
+      const page = Number(direction);
+      if (Number.isFinite(page) && page > 0) allVideosPage = page;
+      scrollResultsToTop();
+      render();
+    }
+    function handleAllVideosPagerChange(event) {
+      const target = event.target;
+      if (!(target instanceof HTMLSelectElement)) return;
+      if (target.dataset.allVideosPageSize === undefined) return;
+      allVideosPageSize = target.value || '100';
+      allVideosPage = 1;
+      scrollResultsToTop();
+      render();
+    }
+    bottomPager.addEventListener('click', handleAllVideosPagerClick);
+    bottomPager.addEventListener('change', handleAllVideosPagerChange);
     if (channelsFilter) {
       channelsFilter.addEventListener('change', () => {
         channelsFilter.indeterminate = false;
