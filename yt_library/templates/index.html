@@ -66,7 +66,7 @@
     .pager .page-jumps button, .pager .ellipsis, .pager .page-placeholder { min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; }
     .pager .ellipsis { color: var(--muted); border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
     .pager .page-placeholder { visibility: hidden; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
-    .results-scroll { min-height: 0; overflow: auto; padding-right: 4px; }
+    .results-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
     .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
     .thumb-link { display: block; }
@@ -128,7 +128,7 @@
       .app { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
       aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
       main { padding: 18px 14px; }
-      .results-scroll { overflow: visible; padding-right: 0; }
+      .results-scroll { flex: none; overflow: visible; padding-right: 0; }
       .toolbar { display: block; }
       .title { font-size: 24px; margin-bottom: 6px; }
       .video-detail .detail-layout { grid-template-columns: 1fr; }
@@ -180,8 +180,8 @@
     let playlistVisibility = { videos: true, hidden: true };
     let playlistVisibilityPlaylistId = '';
     let allVideosSort = 'newest_added';
-    let allVideosPage = 1;
-    let allVideosPageSize = '100';
+    let currentPage = 1;
+    let pageSize = '100';
     const search = document.getElementById('search');
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
@@ -268,7 +268,7 @@
 
     function setSelected(value) {
       selected = value;
-      if (value === '__all_videos__') allVideosPage = 1;
+      currentPage = 1;
       if (value.startsWith('__playlist__:')) {
         search.value = '';
         const playlistId = value.slice('__playlist__:'.length);
@@ -550,25 +550,25 @@
       return sorted;
     }
 
-    function allVideosPageSizeNumber() {
-      if (allVideosPageSize === 'all') return Infinity;
-      const value = Number(allVideosPageSize || 100);
+    function pageSizeNumber() {
+      if (pageSize === 'all') return Infinity;
+      const value = Number(pageSize || 100);
       return Number.isFinite(value) && value > 0 ? value : 100;
     }
 
-    function allVideosPageSlice(rows) {
-      const pageSize = allVideosPageSizeNumber();
-      if (!Number.isFinite(pageSize)) {
-        allVideosPage = 1;
+    function pageSlice(rows) {
+      const size = pageSizeNumber();
+      if (!Number.isFinite(size)) {
+        currentPage = 1;
         return { pageRows: rows, page: 1, pageCount: 1, start: rows.length ? 1 : 0, end: rows.length, total: rows.length };
       }
-      const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
-      allVideosPage = Math.min(Math.max(1, allVideosPage), pageCount);
-      const startIndex = (allVideosPage - 1) * pageSize;
-      const endIndex = Math.min(rows.length, startIndex + pageSize);
+      const pageCount = Math.max(1, Math.ceil(rows.length / size));
+      currentPage = Math.min(Math.max(1, currentPage), pageCount);
+      const startIndex = (currentPage - 1) * size;
+      const endIndex = Math.min(rows.length, startIndex + size);
       return {
         pageRows: rows.slice(startIndex, endIndex),
-        page: allVideosPage,
+        page: currentPage,
         pageCount,
         start: rows.length ? startIndex + 1 : 0,
         end: endIndex,
@@ -611,19 +611,19 @@
           ${items.map(item => {
             if (item === 'ellipsis') return '<span class="ellipsis">...</span>';
             if (item === 'placeholder') return '<span class="page-placeholder">&nbsp;</span>';
-            return `<button type="button" class="${item === pageInfo.page ? 'current' : ''}" data-all-videos-page="${item}" ${item === pageInfo.page ? 'disabled' : ''}>${item}</button>`;
+            return `<button type="button" class="${item === pageInfo.page ? 'current' : ''}" data-page="${item}" ${item === pageInfo.page ? 'disabled' : ''}>${item}</button>`;
           }).join('')}
         </span>
       `;
     }
 
-    function allVideosPagerHtml(pageInfo, includePageSize = false) {
+    function pagerHtml(pageInfo, includePageSize = false) {
       if (!pageInfo.total) return '';
       const pageSizes = ['50', '100', '250', '500', 'all'];
       const sizeHtml = includePageSize ? `
         <label>Page size
-          <select data-all-videos-page-size>
-            ${pageSizes.map(value => `<option value="${value}" ${allVideosPageSize === value ? 'selected' : ''}>${value === 'all' ? 'All' : value}</option>`).join('')}
+          <select data-page-size>
+            ${pageSizes.map(value => `<option value="${value}" ${pageSize === value ? 'selected' : ''}>${value === 'all' ? 'All' : value}</option>`).join('')}
           </select>
         </label>
       ` : '';
@@ -634,14 +634,28 @@
       `;
     }
 
-    function renderAllVideosPagers(pageInfo) {
+    function renderPager(pageInfo) {
       bottomPager.hidden = !pageInfo.total;
-      bottomPager.innerHTML = allVideosPagerHtml(pageInfo, true);
+      bottomPager.innerHTML = pagerHtml(pageInfo, true);
     }
 
-    function hideAllVideosPagers() {
+    function hidePager() {
       bottomPager.hidden = true;
       bottomPager.replaceChildren();
+    }
+
+    function pagedRows(rows) {
+      const pageInfo = pageSlice(rows);
+      renderPager(pageInfo);
+      return pageInfo;
+    }
+
+    function renderPagedGrid(rows, cardFn, emptyText) {
+      const pageInfo = pagedRows(rows);
+      grid.replaceChildren(...pageInfo.pageRows.map(cardFn));
+      empty.hidden = pageInfo.pageRows.length !== 0;
+      empty.textContent = emptyText;
+      return pageInfo;
     }
 
     function scrollResultsToTop() {
@@ -1018,7 +1032,7 @@
       }
       const query = search.value.trim().toLowerCase();
       empty.textContent = 'No playlists match.';
-      hideAllVideosPagers();
+      hidePager();
       for (const button of groupsEl.querySelectorAll('.group')) {
         button.classList.toggle('active', button.dataset.key === selected);
       }
@@ -1054,6 +1068,7 @@
           return;
         }
         const rows = channelVideoRows(channelId);
+        const pageInfo = pagedRows(rows);
         title.textContent = channel.title || channel.channel_id;
         meta.innerHTML = `
           ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
@@ -1062,7 +1077,7 @@
         const heading = document.createElement('div');
         heading.className = 'section-heading';
         heading.textContent = 'Videos';
-        grid.replaceChildren(channelDetailCardFor(channel), heading, ...rows.map(playlistVideoCardFor));
+        grid.replaceChildren(channelDetailCardFor(channel), heading, ...pageInfo.pageRows.map(playlistVideoCardFor));
         empty.hidden = true;
         return;
       }
@@ -1070,9 +1085,7 @@
         const rows = buildOmniResults(query);
         title.textContent = 'Search results';
         meta.textContent = `${rows.length} shown`;
-        grid.replaceChildren(...rows.map(searchResultCardFor));
-        empty.textContent = 'No results match.';
-        empty.hidden = rows.length !== 0;
+        renderPagedGrid(rows, searchResultCardFor, 'No results match.');
         return;
       }
       if (selected.startsWith('__playlist__:')) {
@@ -1104,9 +1117,7 @@
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} hidden</span></label>
         `;
-        grid.replaceChildren(...rows.map(playlistVideoCardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.';
+        renderPagedGrid(rows, playlistVideoCardFor, playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.');
         return;
       }
       if (selected === '__all_videos__') {
@@ -1118,17 +1129,13 @@
           const hidden = isHiddenPlaylistVideo(video);
           return hidden ? playlistVisibility.hidden : playlistVisibility.videos;
         }));
-        const pageInfo = allVideosPageSlice(rows);
         title.textContent = 'All videos';
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} hidden</span></label>
           ${allVideosSortHtml()}
         `;
-        renderAllVideosPagers(pageInfo);
-        grid.replaceChildren(...pageInfo.pageRows.map(playlistVideoCardFor));
-        empty.hidden = pageInfo.pageRows.length !== 0;
-        empty.textContent = 'No playlist videos match.';
+        renderPagedGrid(rows, playlistVideoCardFor, 'No playlist videos match.');
         return;
       }
       if (selected === '__hidden__') {
@@ -1138,8 +1145,7 @@
           return !query || haystack.includes(query);
         });
         meta.textContent = `${rows.length} shown`;
-        grid.replaceChildren(...rows.map(hiddenVideoCardFor));
-        empty.hidden = rows.length !== 0;
+        renderPagedGrid(rows, hiddenVideoCardFor, 'No hidden videos match.');
         return;
       }
       if (selected === '__liked__') {
@@ -1149,9 +1155,7 @@
           return !query || haystack.includes(query);
         });
         meta.textContent = `${rows.length} videos`;
-        grid.replaceChildren(...rows.map(playlistVideoCardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = 'No liked videos have been captured yet.';
+        renderPagedGrid(rows, playlistVideoCardFor, 'No liked videos have been captured yet.');
         return;
       }
       if (selected === '__channels__') {
@@ -1161,9 +1165,7 @@
           return !query || haystack.includes(query);
         });
         meta.textContent = `${rows.length} channels`;
-        grid.replaceChildren(...rows.map(channelCardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = 'No channels match.';
+        renderPagedGrid(rows, channelCardFor, 'No channels match.');
         return;
       }
       if (selected === '__subscribed_channels__') {
@@ -1175,9 +1177,7 @@
             return !query || haystack.includes(query);
           });
         meta.textContent = `${rows.length} channels`;
-        grid.replaceChildren(...rows.map(channelCardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = 'No subscribed channels match.';
+        renderPagedGrid(rows, channelCardFor, 'No subscribed channels match.');
         return;
       }
       if (selected === '__terminated_channels__') {
@@ -1189,8 +1189,7 @@
             return !query || haystack.includes(query);
           });
         meta.textContent = `${rows.length} channels`;
-        grid.replaceChildren(...rows.map(channelCardFor));
-        empty.hidden = rows.length !== 0;
+        renderPagedGrid(rows, channelCardFor, 'No terminated channels match.');
         return;
       }
       if (selected === '__hidden_playlists__') {
@@ -1206,8 +1205,7 @@
             || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
           );
         meta.textContent = `${rows.length} playlists`;
-        grid.replaceChildren(...rows.map(cardFor));
-        empty.hidden = rows.length !== 0;
+        renderPagedGrid(rows, cardFor, 'No playlists with hidden videos match.');
         return;
       }
       if (selected === '__snapshot__') {
@@ -1218,8 +1216,7 @@
           return !query || haystack.includes(query);
         });
         meta.textContent = `${rows.length} playlists`;
-        grid.replaceChildren(...rows.map(snapshotPlaylistCardFor));
-        empty.hidden = rows.length !== 0;
+        renderPagedGrid(rows, snapshotPlaylistCardFor, 'No snapshot playlists match.');
         return;
       }
       if (selected === '__snapshot_missing__') {
@@ -1229,8 +1226,7 @@
           return !query || haystack.includes(query);
         });
         meta.textContent = `${rows.length} video IDs`;
-        grid.replaceChildren(...rows.map(snapshotMissingCardFor));
-        empty.hidden = rows.length !== 0;
+        renderPagedGrid(rows, snapshotMissingCardFor, 'No snapshot missing videos match.');
         return;
       }
       if (selected === '__snapshot_likely_hidden__') {
@@ -1240,8 +1236,7 @@
           return !query || haystack.includes(query);
         });
         meta.textContent = `${rows.length} video IDs`;
-        grid.replaceChildren(...rows.map(snapshotMissingCardFor));
-        empty.hidden = rows.length !== 0;
+        renderPagedGrid(rows, snapshotMissingCardFor, 'No likely hidden videos match.');
         return;
       }
       const group = data.groups.find(g => g.group_key === selected);
@@ -1252,8 +1247,7 @@
         return !query || haystack.includes(query);
       });
       meta.textContent = `${rows.length} shown`;
-      grid.replaceChildren(...rows.map(cardFor));
-      empty.hidden = rows.length !== 0;
+      renderPagedGrid(rows, cardFor, 'No playlists match.');
     }
 
     function cardFor(playlist) {
@@ -1551,12 +1545,15 @@
       }[ch]));
     }
 
-    search.addEventListener('input', render);
+    search.addEventListener('input', () => {
+      currentPage = 1;
+      render();
+    });
     meta.addEventListener('change', event => {
       const target = event.target;
       if (target instanceof HTMLSelectElement && target.dataset.allVideosSort !== undefined) {
         allVideosSort = target.value || 'newest_added';
-        allVideosPage = 1;
+        currentPage = 1;
         scrollResultsToTop();
         render();
         return;
@@ -1565,50 +1562,56 @@
       const filter = target.dataset.playlistFilter;
       if (!filter) return;
       playlistVisibility[filter] = target.checked;
-      if (selected === '__all_videos__') allVideosPage = 1;
+      currentPage = 1;
       render();
     });
-    function handleAllVideosPagerClick(event) {
+    function handlePagerClick(event) {
       const target = event.target;
       if (!(target instanceof HTMLButtonElement)) return;
-      const direction = target.dataset.allVideosPage;
+      const direction = target.dataset.page;
       if (!direction) return;
       const page = Number(direction);
-      if (Number.isFinite(page) && page > 0) allVideosPage = page;
+      if (Number.isFinite(page) && page > 0) currentPage = page;
       scrollResultsToTop();
       render();
     }
-    function handleAllVideosPagerChange(event) {
+    function handlePagerChange(event) {
       const target = event.target;
       if (!(target instanceof HTMLSelectElement)) return;
-      if (target.dataset.allVideosPageSize === undefined) return;
-      allVideosPageSize = target.value || '100';
-      allVideosPage = 1;
+      if (target.dataset.pageSize === undefined) return;
+      pageSize = target.value || '100';
+      currentPage = 1;
       scrollResultsToTop();
       render();
     }
-    bottomPager.addEventListener('click', handleAllVideosPagerClick);
-    bottomPager.addEventListener('change', handleAllVideosPagerChange);
+    bottomPager.addEventListener('click', handlePagerClick);
+    bottomPager.addEventListener('change', handlePagerChange);
     if (channelsFilter) {
       channelsFilter.addEventListener('change', () => {
         channelsFilter.indeterminate = false;
         for (const child of channelChildFilters) child.checked = channelsFilter.checked;
+        currentPage = 1;
         render();
       });
     }
     for (const input of channelChildFilters) {
       input.addEventListener('change', () => {
         syncChannelParentFilter();
+        currentPage = 1;
         render();
       });
     }
     for (const input of searchFilters) {
       if (input === channelsFilter || channelChildFilters.includes(input)) continue;
-      input.addEventListener('change', render);
+      input.addEventListener('change', () => {
+        currentPage = 1;
+        render();
+      });
     }
     syncChannelParentFilter();
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
+      currentPage = 1;
       if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
       if (selected.startsWith('__playlist__:') || selected.startsWith('__video__:') || selected.startsWith('__channel__:')) search.value = '';
       renderGroups();

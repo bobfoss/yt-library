@@ -42,14 +42,20 @@
     button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 0 14px; font: inherit; cursor: pointer; }
     button:hover { background: var(--accent-soft); }
     .meta { color: var(--muted); font-size: 14px; margin-bottom: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
-    .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 14px; color: var(--muted); font-size: 14px; }
-    .pager-controls { display: flex; gap: 8px; }
-    .pager button { min-height: 36px; }
+    .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; color: var(--muted); font-size: 14px; margin: 18px 0 0; }
+    .pager button, .pager select { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
+    .pager button { cursor: pointer; min-height: 32px; }
+    .pager button:hover:not(:disabled) { background: var(--accent-soft); }
     .pager button:disabled { cursor: default; opacity: .5; background: var(--panel); }
+    .pager button.current { background: var(--accent-soft); color: var(--ink); font-weight: 650; }
+    .pager .page-jumps { display: inline-flex; align-items: center; gap: 8px; }
+    .pager .page-jumps button, .pager .ellipsis, .pager .page-placeholder { min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; }
+    .pager .ellipsis { color: var(--muted); border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
+    .pager .page-placeholder { visibility: hidden; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
     .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
     .tab { padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); cursor: pointer; }
     .tab.active { background: var(--accent-soft); color: var(--ink); }
-    .results-scroll { min-height: 0; overflow: auto; padding-right: 4px; }
+    .results-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
     .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
     .card.no-thumb .body { grid-column: 1 / -1; }
@@ -81,8 +87,8 @@
       header, .searchbar { display: block; }
       nav { margin-top: 10px; }
       button { margin-top: 8px; height: 40px; }
-      .pager { align-items: flex-start; flex-direction: column; }
-      .results-scroll { overflow: visible; padding-right: 0; }
+      .pager { align-items: flex-start; justify-content: flex-start; }
+      .results-scroll { flex: none; overflow: visible; padding-right: 0; }
       .card { grid-template-columns: 1fr; }
       .thumb-wrap { height: auto; }
       .thumb { height: auto; min-height: 0; }
@@ -103,30 +109,22 @@
       <button id="refresh" type="button">Search</button>
     </div>
     <div id="meta" class="meta"></div>
-    <div class="pager">
-      <div id="pageInfo"></div>
-      <div class="pager-controls">
-        <button id="prevPage" type="button">Previous</button>
-        <button id="nextPage" type="button">Next</button>
-      </div>
-    </div>
     <div class="results-scroll">
       <section id="results" class="grid"></section>
       <div id="empty" class="empty" hidden>No history matches.</div>
     </div>
+    <div id="bottomPager" class="pager" hidden></div>
   </div>
   <script>
     const input = document.getElementById('search');
     const refresh = document.getElementById('refresh');
     const meta = document.getElementById('meta');
-    const pageInfo = document.getElementById('pageInfo');
-    const prevPage = document.getElementById('prevPage');
-    const nextPage = document.getElementById('nextPage');
+    const bottomPager = document.getElementById('bottomPager');
     const results = document.getElementById('results');
     const empty = document.getElementById('empty');
     let latest = { watch: [], totals: {} };
-    const pageSize = 250;
-    let offset = 0;
+    let pageSize = '250';
+    let currentPage = 1;
     let timer = null;
     let requestId = 0;
 
@@ -229,6 +227,76 @@
       `;
     }
 
+    function pageSizeNumber() {
+      if (pageSize === 'all') return Infinity;
+      const value = Number(pageSize || 250);
+      return Number.isFinite(value) && value > 0 ? value : 250;
+    }
+
+    function pageJumpItems(pageInfo) {
+      if (pageInfo.pageCount <= 1) return [];
+      if (pageInfo.pageCount <= 7) {
+        const items = Array.from({ length: pageInfo.pageCount }, (_, index) => index + 1);
+        while (items.length < 7) items.push('placeholder');
+        return items;
+      }
+      const page = pageInfo.page;
+      const last = pageInfo.pageCount;
+      if (page <= 3) {
+        const leading = Array.from({ length: 4 - page }, () => 'placeholder');
+        const pages = Array.from({ length: Math.min(page + 1, last) }, (_, index) => index + 1);
+        const items = [...leading, ...pages, 'ellipsis', last];
+        while (items.length < 7) items.push('placeholder');
+        return items.slice(0, 7);
+      }
+      if (page >= last - 2) {
+        const firstPage = Math.max(1, page - 1);
+        const pages = Array.from({ length: last - firstPage + 1 }, (_, index) => firstPage + index);
+        const trailing = Array.from({ length: Math.max(0, 7 - 2 - pages.length) }, () => 'placeholder');
+        const items = [1, 'ellipsis', ...pages, ...trailing];
+        while (items.length < 7) items.push('placeholder');
+        return items.slice(0, 7);
+      }
+      return [1, 'ellipsis', page - 1, page, page + 1, 'ellipsis', last];
+    }
+
+    function pageJumpHtml(pageInfo) {
+      const items = pageJumpItems(pageInfo);
+      if (!items.length) return '';
+      return `
+        <span class="page-jumps">
+          ${items.map(item => {
+            if (item === 'ellipsis') return '<span class="ellipsis">...</span>';
+            if (item === 'placeholder') return '<span class="page-placeholder">&nbsp;</span>';
+            return `<button type="button" class="${item === pageInfo.page ? 'current' : ''}" data-page="${item}" ${item === pageInfo.page ? 'disabled' : ''}>${item}</button>`;
+          }).join('')}
+        </span>
+      `;
+    }
+
+    function pagerHtml(pageInfo) {
+      if (!pageInfo.total) return '';
+      const pageSizes = ['50', '100', '250', '500', 'all'];
+      return `
+        <label>Page size
+          <select data-page-size>
+            ${pageSizes.map(value => `<option value="${value}" ${pageSize === value ? 'selected' : ''}>${value === 'all' ? 'All' : value}</option>`).join('')}
+          </select>
+        </label>
+        <span>Showing ${pageInfo.start}-${pageInfo.end} of ${pageInfo.total}</span>
+        ${pageJumpHtml(pageInfo)}
+      `;
+    }
+
+    function renderPager(pageInfo) {
+      bottomPager.hidden = !pageInfo.total;
+      bottomPager.innerHTML = pagerHtml(pageInfo);
+    }
+
+    function scrollResultsToTop() {
+      document.querySelector('.results-scroll')?.scrollTo({ top: 0 });
+    }
+
     function thumbnailWithProgress(path, row) {
       const wrap = document.createElement('div');
       wrap.className = 'thumb-wrap';
@@ -292,20 +360,20 @@
         <span>${totals.watch_rows || 0} watch rows</span>
         <span>${totals.distinct_watch_videos || 0} distinct videos</span>
       `;
-      pageInfo.textContent = filtered ? `${start}-${end} of ${filtered}` : '0 results';
-      prevPage.disabled = (latest.offset || 0) <= 0;
-      nextPage.disabled = ((latest.offset || 0) + rows.length) >= filtered;
+      const size = pageSizeNumber();
+      const pageCount = Number.isFinite(size) ? Math.max(1, Math.ceil(filtered / size)) : 1;
+      currentPage = Number.isFinite(size) ? Math.min(Math.max(1, currentPage), pageCount) : 1;
+      renderPager({ page: currentPage, pageCount, start, end, total: filtered });
     }
 
     async function load() {
       const myRequest = ++requestId;
       refresh.disabled = true;
       refresh.textContent = 'Searching';
-      const params = new URLSearchParams({
-        q: input.value.trim(),
-        limit: String(pageSize),
-        offset: String(offset)
-      });
+      const size = pageSizeNumber();
+      const limit = Number.isFinite(size) ? size : Math.max(latest.totals?.filtered_watch_rows || latest.totals?.watch_rows || 1000000, 1);
+      const offset = Number.isFinite(size) ? (currentPage - 1) * size : 0;
+      const params = new URLSearchParams({ q: input.value.trim(), limit: String(limit), offset: String(offset) });
       const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
       if (!response.ok) throw new Error(`History search failed: ${response.status}`);
       const payload = await response.json();
@@ -319,7 +387,7 @@
 
     function schedule() {
       clearTimeout(timer);
-      offset = 0;
+      currentPage = 1;
       timer = setTimeout(() => load().catch(error => {
         meta.textContent = error.message;
         refresh.disabled = false;
@@ -329,15 +397,24 @@
 
     input.addEventListener('input', schedule);
     refresh.addEventListener('click', () => {
-      offset = 0;
+      currentPage = 1;
       load().catch(error => meta.textContent = error.message);
     });
-    prevPage.addEventListener('click', () => {
-      offset = Math.max(0, offset - pageSize);
+    bottomPager.addEventListener('click', event => {
+      const target = event.target;
+      if (!(target instanceof HTMLButtonElement)) return;
+      const page = Number(target.dataset.page || 0);
+      if (!Number.isFinite(page) || page <= 0) return;
+      currentPage = page;
+      scrollResultsToTop();
       load().catch(error => meta.textContent = error.message);
     });
-    nextPage.addEventListener('click', () => {
-      offset += pageSize;
+    bottomPager.addEventListener('change', event => {
+      const target = event.target;
+      if (!(target instanceof HTMLSelectElement) || target.dataset.pageSize === undefined) return;
+      pageSize = target.value || '250';
+      currentPage = 1;
+      scrollResultsToTop();
       load().catch(error => meta.textContent = error.message);
     });
     load().catch(error => {
