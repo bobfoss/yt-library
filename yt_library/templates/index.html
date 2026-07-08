@@ -282,7 +282,11 @@
 
     function watchedLineHtml(video) {
       const progress = watchProgressPercent(video);
-      return progress ? `<div class="watched-line">Watched ${progress}%</div>` : '';
+      const count = Number(video.watch_count || 0);
+      const countText = Number.isFinite(count) && count > 0 ? ` · ${count} ${count === 1 ? 'watch' : 'watches'}` : '';
+      if (!progress && !countText) return '';
+      const progressText = progress ? ` ${progress}%` : '';
+      return `<div class="watched-line">Watched${progressText}${countText}</div>`;
     }
 
     function reactionLabel(video) {

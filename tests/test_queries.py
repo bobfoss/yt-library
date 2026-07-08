@@ -168,6 +168,16 @@ class HistorySearchTests(unittest.TestCase):
                 ("pl2", 2, "takeout", "ambiguous_hidden_candidate"),
             ],
         )
+        self.conn.executemany(
+            """
+            INSERT INTO history_reconciled(reconciled_id, video_id, title, best_watch_time, watch_date)
+            VALUES (?, 'same123', 'Same Video', ?, ?)
+            """,
+            [
+                ("watch1", "2026-07-01T09:00:00-07:00", "2026-07-01"),
+                ("watch2", "2026-07-02T09:00:00-07:00", "2026-07-02"),
+            ],
+        )
         self.conn.commit()
 
         data = fetch_app_data(self.conn)
@@ -175,6 +185,7 @@ class HistorySearchTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 2)
         for row in rows:
+            self.assertEqual(row["watch_count"], 2)
             self.assertEqual(
                 row["playlist_links"],
                 [

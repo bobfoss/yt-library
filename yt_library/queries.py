@@ -89,6 +89,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                    COALESCE(vm.reaction, '') AS reaction,
                    COALESCE(NULLIF(vm.watch_progress_percent, 0), latest_history.watch_progress_percent, 0) AS watch_progress_percent,
                    COALESCE(NULLIF(vm.watch_resume_seconds, 0), latest_history.watch_resume_seconds, 0) AS watch_resume_seconds,
+                   COALESCE(latest_history.watch_count, 0) AS watch_count,
                    COALESCE(r.status, '') AS recovered_status
             FROM playlist_video_reconciled v
             JOIN playlists p ON p.playlist_id = v.playlist_id
@@ -101,7 +102,8 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             LEFT JOIN (
                 SELECT hr.video_id,
                        MAX(hr.watch_progress_percent) AS watch_progress_percent,
-                       MAX(hr.watch_resume_seconds) AS watch_resume_seconds
+                       MAX(hr.watch_resume_seconds) AS watch_resume_seconds,
+                       COUNT(*) AS watch_count
                 FROM history_reconciled hr
                 WHERE hr.video_id <> ''
                 GROUP BY hr.video_id
@@ -323,11 +325,18 @@ def history_search_data(
                    COALESCE(vm.reaction, '') AS reaction,
                    COALESCE(NULLIF(hr.watch_progress_percent, 0), vm.watch_progress_percent, 0) AS watch_progress_percent,
                    COALESCE(NULLIF(hr.watch_resume_seconds, 0), vm.watch_resume_seconds, 0) AS watch_resume_seconds,
+                   COALESCE(history_counts.watch_count, 0) AS watch_count,
                    COALESCE(vm.fetch_status, '') AS metadata_fetch_status
             FROM history_reconciled hr
             LEFT JOIN video_metadata vm ON vm.video_id = hr.video_id
             LEFT JOIN channels vmc ON vmc.channel_id = vm.channel_id
             LEFT JOIN channels hc ON hc.channel_id = hr.channel_id
+            LEFT JOIN (
+                SELECT video_id, COUNT(*) AS watch_count
+                FROM history_reconciled
+                WHERE video_id <> ''
+                GROUP BY video_id
+            ) history_counts ON history_counts.video_id = hr.video_id
             {watch_where}
             ORDER BY CASE WHEN hr.best_watch_time = '' THEN 1 ELSE 0 END,
                      hr.best_watch_time DESC,
