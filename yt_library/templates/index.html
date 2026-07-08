@@ -76,6 +76,10 @@
     .creator-chip { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
     .creator-name { min-width: 0; overflow-wrap: anywhere; }
     .description { color: var(--muted); font-size: 13px; line-height: 1.35; margin-top: 8px; max-height: 5.4em; overflow: hidden; }
+    .video-detail { grid-column: 1 / -1; max-width: 960px; }
+    .video-detail .detail-layout { display: grid; grid-template-columns: minmax(220px, 360px) 1fr; gap: 18px; align-items: start; }
+    .video-detail .description { max-height: none; white-space: pre-wrap; }
+    .video-detail .thumb { border-radius: 6px; }
     .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
     .badge { color: var(--warn); font-weight: 650; }
     .refresh { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
@@ -98,6 +102,7 @@
       .results-scroll { overflow: visible; padding-right: 0; }
       .toolbar { display: block; }
       .title { font-size: 24px; margin-bottom: 6px; }
+      .video-detail .detail-layout { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -186,8 +191,16 @@
       return `__playlist__:${playlistId}`;
     }
 
+    function videoSelection(videoId) {
+      return `__video__:${videoId}`;
+    }
+
     function localPlaylistHref(playlistId) {
       return `#playlist=${encodeURIComponent(playlistId)}`;
+    }
+
+    function localVideoHref(videoId) {
+      return `#video=${encodeURIComponent(videoId)}`;
     }
 
     function selectionFromHash() {
@@ -196,7 +209,11 @@
         const playlistId = decodeURIComponent(hash.slice('#playlist='.length));
         if (playlistId) return playlistSelection(playlistId);
       }
-      return selected.startsWith('__playlist__:') ? '' : selected;
+      if (hash.startsWith('#video=')) {
+        const videoId = decodeURIComponent(hash.slice('#video='.length));
+        if (videoId) return videoSelection(videoId);
+      }
+      return selected.startsWith('__playlist__:') || selected.startsWith('__video__:') ? '' : selected;
     }
 
     function setSelected(value) {
@@ -206,6 +223,13 @@
         const playlistId = value.slice('__playlist__:'.length);
         if (window.location.hash !== localPlaylistHref(playlistId)) {
           window.location.hash = localPlaylistHref(playlistId);
+          return;
+        }
+      } else if (value.startsWith('__video__:')) {
+        search.value = '';
+        const videoId = value.slice('__video__:'.length);
+        if (window.location.hash !== localVideoHref(videoId)) {
+          window.location.hash = localVideoHref(videoId);
           return;
         }
       } else if (window.location.hash) {
@@ -272,6 +296,12 @@
 
     function displayVideoDuration(video) {
       return video.metadata_duration || video.duration_text || '';
+    }
+
+    function youtubeWatchUrl(video) {
+      if (!video.video_id) return '';
+      const list = video.playlist_id ? `&list=${encodeURIComponent(video.playlist_id)}` : '';
+      return `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}${list}`;
     }
 
     function watchProgressPercent(video) {
@@ -530,6 +560,88 @@
       }
     }
 
+    function videoRowsById(videoId) {
+      return (data.playlistVideos || []).filter(video => video.video_id === videoId);
+    }
+
+    function snapshotRowsById(videoId) {
+      return (data.snapshotMissing || []).filter(video => video.video_id === videoId);
+    }
+
+    function primaryVideoForDetail(videoId) {
+      const playlistRows = videoRowsById(videoId);
+      if (playlistRows.length) {
+        return playlistRows.find(video => video.metadata_description) || playlistRows[0];
+      }
+      const snapshotRows = snapshotRowsById(videoId);
+      if (snapshotRows.length) {
+        const row = snapshotRows.find(video => video.recovered_description) || snapshotRows[0];
+        return {
+          ...row,
+          title: row.current_title || row.recovered_title || row.video_id,
+          metadata_title: row.recovered_title || row.current_title || '',
+          metadata_description: row.recovered_description || '',
+          metadata_channel: row.recovered_channel || '',
+          metadata_channel_url: row.recovered_channel_url || '',
+          metadata_channel_thumbnail_path: row.recovered_channel_thumbnail_path || '',
+          metadata_duration: row.recovered_duration || '',
+          metadata_upload_date: row.recovered_upload_date || '',
+          metadata_thumbnail_path: row.recovered_thumbnail_path || '',
+          recovered_status: row.recovered_status || '',
+          playlist_links: [{
+            playlist_id: row.playlist_id,
+            title: row.current_title || row.playlist_title || row.playlist_id,
+            removed: false,
+          }],
+        };
+      }
+      return null;
+    }
+
+    function videoDetailCardFor(video) {
+      const article = document.createElement('article');
+      article.className = 'card video-detail';
+      const titleText = displayVideoTitle(video);
+      const watchUrl = youtubeWatchUrl(video);
+      const channelName = displayVideoChannel(video);
+      const channelUrl = displayVideoChannelUrl(video);
+      const thumbnail = video.metadata_thumbnail_path
+        ? `<img class="thumb" src="/${escapeHtml(video.metadata_thumbnail_path)}" alt="">`
+        : '';
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.innerHTML = `
+        <div class="detail-layout">
+          <div>${thumbnail}</div>
+          <div>
+            <div class="title-row">
+              <div class="video-title">${escapeHtml(titleText)}</div>
+              ${watchUrl ? `<a class="external-link" href="${escapeHtml(watchUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
+            </div>
+            ${badgeRowsHtml([
+              { label: unavailableLabel(video) },
+              { label: reactionLabel(video) },
+              { label: archivarixStatusLabel(video) },
+              { label: wasRemovedFromPlaylist(video) ? 'Removed' : '' },
+              { label: matchTypeLabel(video), title: video.match_note },
+            ])}
+            ${channelName ? `<div class="details">${creatorHtml(video.metadata_channel_thumbnail_path, channelName, channelUrl)}</div>` : ''}
+            ${detailRowHtml([
+              displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : '',
+              video.metadata_upload_date ? `<span>${escapeHtml(video.metadata_upload_date)}</span>` : '',
+              video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
+              archivarixLinkHtml(video),
+            ])}
+            ${watchedLineHtml(video)}
+            ${playlistSourceLinksHtml(video)}
+            ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : '<div class="empty">No description captured for this video.</div>'}
+          </div>
+        </div>
+      `;
+      article.append(body);
+      return article;
+    }
+
     function render() {
       if (!data) {
         title.textContent = 'Loading';
@@ -540,6 +652,26 @@
       empty.textContent = 'No playlists match.';
       for (const button of groupsEl.querySelectorAll('.group')) {
         button.classList.toggle('active', button.dataset.key === selected);
+      }
+      if (selected.startsWith('__video__:')) {
+        const videoId = selected.slice('__video__:'.length);
+        const video = primaryVideoForDetail(videoId);
+        if (!video) {
+          title.textContent = 'Video not found';
+          meta.textContent = videoId;
+          grid.replaceChildren();
+          empty.hidden = false;
+          empty.textContent = 'No local metadata is available for this video.';
+          return;
+        }
+        title.textContent = displayVideoTitle(video);
+        meta.innerHTML = `
+          ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
+          ${video.watch_count ? `<span>${escapeHtml(video.watch_count)} ${Number(video.watch_count) === 1 ? 'watch' : 'watches'}</span>` : ''}
+        `;
+        grid.replaceChildren(videoDetailCardFor(video));
+        empty.hidden = true;
+        return;
       }
       if (query) {
         const rows = buildOmniResults(query);
@@ -761,8 +893,14 @@
       }
       const body = document.createElement('div');
       body.className = 'body';
-      const titleHtml = options.watchUrl
-        ? `<a class="playlist-title" href="${escapeHtml(options.watchUrl)}" target="_blank" rel="noreferrer">${escapeHtml(options.title)}</a>`
+      const localTitleHtml = options.localUrl
+        ? `<a class="playlist-title" href="${escapeHtml(options.localUrl)}">${escapeHtml(options.title)}</a>`
+        : '';
+      const externalTitleHtml = options.externalUrl
+        ? `<a class="external-link" href="${escapeHtml(options.externalUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(options.title)} on YouTube">${externalLinkSvg()}</a>`
+        : '';
+      const titleHtml = (localTitleHtml || externalTitleHtml)
+        ? `<div class="title-row">${localTitleHtml || `<div class="video-title">${escapeHtml(options.title)}</div>`}${externalTitleHtml}</div>`
         : `<div class="video-title">${escapeHtml(options.title)}</div>`;
       body.innerHTML = `
         ${options.resultKind ? `<div class="result-kind">${escapeHtml(options.resultKind)}</div>` : ''}
@@ -781,7 +919,7 @@
     }
 
     function playlistVideoCardFor(video, options = {}) {
-      const watchUrl = video.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}&list=${encodeURIComponent(video.playlist_id)}` : '';
+      const watchUrl = youtubeWatchUrl(video);
       const channelName = displayVideoChannel(video);
       const channelUrl = displayVideoChannelUrl(video);
       return videoCardFor({
@@ -790,7 +928,8 @@
         resultKind: options.resultKind,
         position: video.position,
         title: displayVideoTitle(video),
-        watchUrl,
+        localUrl: video.video_id ? localVideoHref(video.video_id) : '',
+        externalUrl: watchUrl,
         badges: [
           { label: unavailableLabel(video) },
           { label: reactionLabel(video) },
@@ -870,9 +1009,12 @@
     }
 
     function hiddenVideoCardFor(video) {
+      const watchUrl = youtubeWatchUrl(video);
       return videoCardFor({
         position: video.position,
         title: video.title,
+        localUrl: video.video_id ? localVideoHref(video.video_id) : '',
+        externalUrl: watchUrl,
         badges: [{ label: video.availability }],
         details: [
           video.channel ? `<span>${escapeHtml(video.channel)}</span>` : '',
@@ -896,7 +1038,10 @@
       body.className = 'body';
       const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`;
       body.innerHTML = `
-        <a class="playlist-title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(video.title)}</a>
+        <div class="title-row">
+          <a class="playlist-title" href="${localVideoHref(video.video_id)}">${escapeHtml(video.title)}</a>
+          <a class="external-link" href="${watchUrl}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(video.title)} on YouTube">${externalLinkSvg()}</a>
+        </div>
         <div class="details">
           <span class="badge">${escapeHtml(video.status)}</span>
           ${video.duration_text ? `<span>${escapeHtml(video.duration_text)}</span>` : ''}
@@ -944,7 +1089,8 @@
         resultKind: options.resultKind,
         position: video.position,
         title: displayTitle,
-        watchUrl,
+        localUrl: video.video_id ? localVideoHref(video.video_id) : '',
+        externalUrl: watchUrl,
         badges: [
           { label: recoveredAvailabilityLabel(video) },
           { label: video.recovered_status },
@@ -991,7 +1137,7 @@
     syncChannelParentFilter();
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
-      if (selected.startsWith('__playlist__:')) search.value = '';
+      if (selected.startsWith('__playlist__:') || selected.startsWith('__video__:')) search.value = '';
       renderGroups();
       render();
     });
