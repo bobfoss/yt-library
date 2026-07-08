@@ -171,6 +171,15 @@ def connect(db_path: Path) -> sqlite3.Connection:
         "metadata_queue",
         {"source_key": "TEXT NOT NULL DEFAULT ''"},
     )
+    ensure_columns(
+        conn,
+        "worker_queue",
+        {
+            "worker_type": "TEXT NOT NULL DEFAULT ''",
+            "task_type": "TEXT NOT NULL DEFAULT ''",
+            "playlist_id": "TEXT NOT NULL DEFAULT ''",
+        },
+    )
     ensure_youtube_history_schema(conn)
     ensure_takeout_history_schema(conn)
     ensure_history_reconciled_schema(conn)
@@ -181,6 +190,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     backfill_playlist_channel_ids_by_name(conn)
     sync_takeout_subscriptions(conn, ROOT)
     drop_deprecated_channel_columns(conn)
+    migrate_metadata_queue_to_worker_queue(conn)
     normalize_metadata_queue_targets(conn)
     reconciled_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_video_reconciled").fetchone()["count"]
     raw_playlist_count = conn.execute("SELECT COUNT(*) AS count FROM playlist_videos").fetchone()["count"]
@@ -3915,6 +3925,7 @@ def playlist_placeholder_recovery_rows(
     limit: int = 0,
     offset: int = 0,
     force: bool = False,
+    playlist_id: str = "",
 ) -> list[sqlite3.Row]:
     where = [
         "v.video_id <> ''",
@@ -3931,6 +3942,10 @@ def playlist_placeholder_recovery_rows(
     ]
     if not force:
         where.append("(r.video_id IS NULL OR r.search_status = 'error')")
+    params: list[Any] = []
+    if playlist_id:
+        where.append("v.playlist_id = ?")
+        params.append(playlist_id)
     sql = f"""
         SELECT v.snapshot_key,
                v.video_id,
@@ -3947,7 +3962,6 @@ def playlist_placeholder_recovery_rows(
         GROUP BY v.snapshot_key, v.video_id, COALESCE(r.search_status, '')
         ORDER BY MIN(p.title) COLLATE NOCASE, MIN(v.display_position), v.video_id
     """
-    params: list[Any] = []
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
@@ -3957,8 +3971,12 @@ def playlist_placeholder_recovery_rows(
     return conn.execute(sql, params).fetchall()
 
 
-def playlist_placeholder_recovery_count(conn: sqlite3.Connection, force: bool = False) -> int:
-    return len(playlist_placeholder_recovery_rows(conn, limit=0, force=force))
+def playlist_placeholder_recovery_count(
+    conn: sqlite3.Connection,
+    force: bool = False,
+    playlist_id: str = "",
+) -> int:
+    return len(playlist_placeholder_recovery_rows(conn, limit=0, force=force, playlist_id=playlist_id))
 
 
 def save_snapshot_video_recovery(
@@ -4626,7 +4644,7 @@ def rebuild_playlist_reconciliation(
     return {"playlists": len(playlist_ids), "rows": total_rows, "inferred": inferred, "ambiguous": ambiguous}
 
 
-def playlist_scan_queue_rows(
+def playlist_scan_candidate_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
     offset: int = 0,
@@ -4674,6 +4692,233 @@ def playlist_scan_queue_rows(
             sql += " OFFSET ?"
             params.append(max(0, offset))
     return conn.execute(sql, params).fetchall()
+
+
+def worker_queue_rows(
+    conn: sqlite3.Connection,
+    limit: int = 0,
+    offset: int = 0,
+) -> list[sqlite3.Row]:
+    sql = """
+        SELECT w.queue_id,
+               w.subject_key,
+               w.worker_type,
+               w.task_type,
+               w.video_id,
+               w.channel_id,
+               w.playlist_id,
+               w.channel_title,
+               w.current_title,
+               w.source_key,
+               w.playlist_count,
+               w.priority,
+               w.manual,
+               w.created_at,
+               w.updated_at,
+               p.title AS playlist_title,
+               p.video_count_text,
+               COALESCE(ps.scan_status, '') AS scan_status,
+               COALESCE(ps.video_count, 0) AS video_count,
+               COALESCE(ps.hidden_count, 0) AS hidden_count
+        FROM worker_queue w
+        LEFT JOIN playlists p ON p.playlist_id = w.playlist_id
+        LEFT JOIN playlist_scans ps ON ps.playlist_id = w.playlist_id
+        ORDER BY w.priority, w.queue_id
+    """
+    params: list[Any] = []
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+        if offset:
+            sql += " OFFSET ?"
+            params.append(max(0, offset))
+    return conn.execute(sql, params).fetchall()
+
+
+def worker_queue_count(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) AS count FROM worker_queue").fetchone()
+    return int(row["count"] or 0)
+
+
+def clear_worker_queue(conn: sqlite3.Connection) -> int:
+    count = worker_queue_count(conn)
+    conn.execute("DELETE FROM worker_queue")
+    return count
+
+
+def remove_worker_queue_entry(conn: sqlite3.Connection, queue_id: int) -> bool:
+    cursor = conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
+    return cursor.rowcount > 0
+
+
+def enqueue_history_task(conn: sqlite3.Connection, mode: str, *, priority: int = 100, manual: bool = True) -> str:
+    mode = (mode or "recent").strip() or "recent"
+    now = int(time.time())
+    subject_key = f"history:{mode}"
+    conn.execute(
+        """
+        INSERT INTO worker_queue(
+          subject_key, worker_type, task_type, video_id, channel_id, playlist_id,
+          channel_title, current_title, source_key, playlist_count, priority, manual, created_at, updated_at
+        )
+        VALUES (?, 'history', ?, '', '', '', '', ?, '', 0, ?, ?, ?, ?)
+        ON CONFLICT(subject_key) DO UPDATE SET
+          worker_type='history',
+          task_type=excluded.task_type,
+          current_title=excluded.current_title,
+          priority=MIN(worker_queue.priority, excluded.priority),
+          manual=MAX(worker_queue.manual, excluded.manual),
+          updated_at=excluded.updated_at
+        """,
+        (
+            subject_key,
+            mode,
+            "Verify history" if mode == "verify" else "Fetch history",
+            int(priority),
+            1 if manual else 0,
+            now,
+            now,
+        ),
+    )
+    return subject_key
+
+
+def enqueue_playlist_scan_target_from_text(conn: sqlite3.Connection, target: str) -> dict[str, str]:
+    target = (target or "").strip()
+    if extract_video_id(target):
+        raise ValueError("Playlist queue only accepts playlist URLs or playlist IDs.")
+    playlist_id = extract_playlist_id(target) or target
+    playlist_id = playlist_id.strip()
+    if not playlist_id or not (playlist_id.startswith("PL") or playlist_id.startswith("OLAK")):
+        raise ValueError("Enter a YouTube playlist URL or playlist ID.")
+    subject_key = enqueue_playlist_scan_item(conn, playlist_id, priority=0, manual=True)
+    return {"subject_key": subject_key, "playlist_id": playlist_id, "worker_type": "playlist"}
+
+
+def enqueue_playlist_scan_item(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    *,
+    title: str = "",
+    video_count_text: str = "",
+    priority: int = 100,
+    manual: bool = False,
+) -> str:
+    now = int(time.time())
+    playlist_id = (playlist_id or "").strip()
+    if not playlist_id:
+        raise ValueError("Playlist queue item needs a playlist ID")
+    if not title or not video_count_text:
+        row = conn.execute(
+            "SELECT title, video_count_text FROM playlists WHERE playlist_id = ?",
+            (playlist_id,),
+        ).fetchone()
+        if row:
+            title = title or row["title"] or ""
+            video_count_text = video_count_text or row["video_count_text"] or ""
+    subject_key = playlist_queue_subject_key(playlist_id)
+    conn.execute(
+        """
+        INSERT INTO worker_queue(
+          subject_key, worker_type, task_type, video_id, channel_id, playlist_id,
+          channel_title, current_title, source_key, playlist_count, priority, manual, created_at, updated_at
+        )
+        VALUES (?, 'playlist', 'scan', '', '', ?, '', ?, ?, 0, ?, ?, ?, ?)
+        ON CONFLICT(subject_key) DO UPDATE SET
+          worker_type='playlist',
+          task_type='scan',
+          playlist_id=excluded.playlist_id,
+          current_title=COALESCE(NULLIF(excluded.current_title, ''), worker_queue.current_title),
+          source_key=COALESCE(NULLIF(excluded.source_key, ''), worker_queue.source_key),
+          priority=MIN(worker_queue.priority, excluded.priority),
+          manual=MAX(worker_queue.manual, excluded.manual),
+          updated_at=excluded.updated_at
+        """,
+        (
+            subject_key,
+            playlist_id,
+            title or playlist_id,
+            video_count_text or "",
+            int(priority),
+            1 if manual else 0,
+            now,
+            now,
+        ),
+    )
+    return subject_key
+
+
+def playlist_scan_queue_rows(
+    conn: sqlite3.Connection,
+    limit: int = 0,
+    offset: int = 0,
+    force: bool = False,
+    stale_days: int = 7,
+) -> list[sqlite3.Row]:
+    del force, stale_days
+    sql = """
+        SELECT w.queue_id,
+               w.subject_key,
+               w.playlist_id,
+               COALESCE(NULLIF(w.current_title, ''), p.title, w.playlist_id) AS title,
+               COALESCE(NULLIF(w.source_key, ''), p.video_count_text, '') AS video_count_text,
+               COALESCE(ps.scanned_at, 0) AS scanned_at,
+               COALESCE(ps.scan_status, '') AS scan_status,
+               COALESCE(ps.video_count, 0) AS video_count,
+               COALESCE(ps.hidden_count, 0) AS hidden_count,
+               w.priority,
+               w.manual,
+               w.created_at,
+               w.updated_at
+        FROM worker_queue w
+        LEFT JOIN playlists p ON p.playlist_id = w.playlist_id
+        LEFT JOIN playlist_scans ps ON ps.playlist_id = w.playlist_id
+        WHERE w.worker_type = 'playlist'
+        ORDER BY w.priority, w.queue_id
+    """
+    params: list[Any] = []
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+        if offset:
+            sql += " OFFSET ?"
+            params.append(max(0, offset))
+    return conn.execute(sql, params).fetchall()
+
+
+def playlist_scan_queue_count(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM worker_queue WHERE worker_type = 'playlist'"
+    ).fetchone()
+    return int(row["count"] or 0)
+
+
+def clear_playlist_scan_queue(conn: sqlite3.Connection) -> int:
+    count = playlist_scan_queue_count(conn)
+    conn.execute("DELETE FROM worker_queue WHERE worker_type = 'playlist'")
+    return count
+
+
+def rebuild_playlist_scan_queue(
+    conn: sqlite3.Connection,
+    *,
+    force: bool = False,
+    stale_days: int = 7,
+) -> dict[str, int]:
+    rows = playlist_scan_candidate_rows(conn, force=force, stale_days=stale_days)
+    cleared = clear_playlist_scan_queue(conn)
+    inserted = 0
+    for index, row in enumerate(rows, start=1):
+        enqueue_playlist_scan_item(
+            conn,
+            row["playlist_id"] or "",
+            title=row["title"] or "",
+            video_count_text=row["video_count_text"] or "",
+            priority=index,
+            manual=False,
+        )
+        inserted += 1
+    return {"cleared": cleared, "inserted": inserted, "queued": playlist_scan_queue_count(conn)}
 
 
 def metadata_queue_candidate_rows(
@@ -5067,11 +5312,46 @@ def metadata_queue_subject_key(video_id: str, channel_id: str, metadata_source: 
     metadata_source = (metadata_source or "").strip() or "history"
     channel_id = (channel_id or "").strip()
     video_id = (video_id or "").strip()
-    if metadata_source == "playlist_scan":
-        return f"playlist:{video_id or channel_id}"
     if metadata_source == "channel":
-        return f"channel:{channel_id or video_id}"
-    return f"video:{video_id}"
+        return f"metadata:channel:{channel_id or video_id}"
+    return f"metadata:video:{video_id}"
+
+
+def playlist_queue_subject_key(playlist_id: str) -> str:
+    return f"playlist:scan:{(playlist_id or '').strip()}"
+
+
+def migrate_metadata_queue_to_worker_queue(conn: sqlite3.Connection) -> None:
+    if "metadata_queue" not in {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }:
+        return
+    if "worker_queue" not in {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }:
+        return
+    rows = conn.execute(
+        """
+        SELECT subject_key, video_id, channel_id, channel_title, current_title,
+               metadata_source, source_key, playlist_count, priority, manual, created_at, updated_at
+        FROM metadata_queue
+        """
+    ).fetchall()
+    for row in rows:
+        enqueue_metadata_item(
+            conn,
+            video_id=row["video_id"] or "",
+            channel_id=row["channel_id"] or "",
+            channel_title=row["channel_title"] or "",
+            current_title=row["current_title"] or "",
+            metadata_source=row["metadata_source"] or "history",
+            source_key=row["source_key"] or "",
+            playlist_count=int(row["playlist_count"] or 0),
+            priority=int(row["priority"] or 100),
+            manual=bool(row["manual"]),
+        )
+    if rows:
+        conn.execute("DELETE FROM metadata_queue")
 
 
 def metadata_queue_rows(
@@ -5090,13 +5370,14 @@ def metadata_queue_rows(
                channel_title,
                playlist_count,
                current_title,
-               metadata_source,
+               task_type AS metadata_source,
                source_key,
                priority,
                manual,
                created_at,
                updated_at
-        FROM metadata_queue
+        FROM worker_queue
+        WHERE worker_type = 'metadata'
         ORDER BY priority, queue_id
     """
     params: list[Any] = []
@@ -5115,31 +5396,42 @@ def metadata_queue_count(
     stale_days: int = 30,
 ) -> int:
     del force, stale_days
-    row = conn.execute("SELECT COUNT(*) AS count FROM metadata_queue").fetchone()
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM worker_queue WHERE worker_type = 'metadata'"
+    ).fetchone()
     return int(row["count"] or 0)
 
 
 def clear_metadata_queue(conn: sqlite3.Connection) -> int:
-    row = conn.execute("SELECT COUNT(*) AS count FROM metadata_queue").fetchone()
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM worker_queue WHERE worker_type = 'metadata'"
+    ).fetchone()
     count = int(row["count"] or 0)
-    conn.execute("DELETE FROM metadata_queue")
+    conn.execute("DELETE FROM worker_queue WHERE worker_type = 'metadata'")
     return count
 
 
 def remove_metadata_queue_entry(conn: sqlite3.Connection, queue_id: int) -> bool:
-    cursor = conn.execute("DELETE FROM metadata_queue WHERE queue_id = ?", (queue_id,))
+    cursor = conn.execute(
+        "DELETE FROM worker_queue WHERE queue_id = ? AND worker_type = 'metadata'",
+        (queue_id,),
+    )
     return cursor.rowcount > 0
 
 
 def normalize_metadata_queue_targets(conn: sqlite3.Connection) -> None:
-    if "metadata_queue" not in {
+    if "worker_queue" not in {
         row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }:
         return
     rows = conn.execute(
         """
         SELECT queue_id, video_id, channel_id, channel_title, metadata_source, priority, manual
-        FROM metadata_queue
+        FROM (
+          SELECT queue_id, video_id, channel_id, channel_title, task_type AS metadata_source, priority, manual
+          FROM worker_queue
+          WHERE worker_type = 'metadata'
+        )
         WHERE metadata_source = 'channel'
           AND (channel_id LIKE 'http://%' OR channel_id LIKE 'https://%')
         """
@@ -5148,7 +5440,7 @@ def normalize_metadata_queue_targets(conn: sqlite3.Connection) -> None:
         channel_ref = youtube_channel_ref_from_url(row["channel_id"])
         if not channel_ref:
             continue
-        conn.execute("DELETE FROM metadata_queue WHERE queue_id = ?", (row["queue_id"],))
+        conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (row["queue_id"],))
         enqueue_metadata_item(
             conn,
             video_id=channel_ref,
@@ -5182,30 +5474,31 @@ def enqueue_metadata_item(
         raise ValueError("Metadata queue item needs a video ID or channel ID")
     conn.execute(
         """
-        INSERT INTO metadata_queue(
-          subject_key, video_id, channel_id, channel_title, current_title,
-          metadata_source, source_key, playlist_count, priority, manual, created_at, updated_at
+        INSERT INTO worker_queue(
+          subject_key, worker_type, task_type, video_id, channel_id, playlist_id,
+          channel_title, current_title, source_key, playlist_count, priority, manual, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, 'metadata', ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(subject_key) DO UPDATE SET
+          worker_type='metadata',
+          task_type=excluded.task_type,
           video_id=excluded.video_id,
           channel_id=excluded.channel_id,
-          channel_title=COALESCE(NULLIF(excluded.channel_title, ''), metadata_queue.channel_title),
-          current_title=COALESCE(NULLIF(excluded.current_title, ''), metadata_queue.current_title),
-          metadata_source=excluded.metadata_source,
-          source_key=COALESCE(NULLIF(excluded.source_key, ''), metadata_queue.source_key),
-          playlist_count=MAX(metadata_queue.playlist_count, excluded.playlist_count),
-          priority=MIN(metadata_queue.priority, excluded.priority),
-          manual=MAX(metadata_queue.manual, excluded.manual),
+          channel_title=COALESCE(NULLIF(excluded.channel_title, ''), worker_queue.channel_title),
+          current_title=COALESCE(NULLIF(excluded.current_title, ''), worker_queue.current_title),
+          source_key=COALESCE(NULLIF(excluded.source_key, ''), worker_queue.source_key),
+          playlist_count=MAX(worker_queue.playlist_count, excluded.playlist_count),
+          priority=MIN(worker_queue.priority, excluded.priority),
+          manual=MAX(worker_queue.manual, excluded.manual),
           updated_at=excluded.updated_at
         """,
         (
             subject_key,
+            metadata_source,
             video_id,
             channel_id,
             channel_title or "",
             current_title or "",
-            metadata_source,
             source_key or "",
             max(0, int(playlist_count or 0)),
             int(priority),
@@ -5253,8 +5546,6 @@ def enqueue_provided_metadata_target(conn: sqlite3.Connection, target: str) -> d
     source = "provided"
     playlist_id = extract_playlist_id(target) or ""
     if playlist_id and not extract_video_id(target):
-        if "youtube.com/" in target or "youtu.be/" in target:
-            return enqueue_playlist_scan_target(conn, playlist_id)
         return enqueue_playlist_metadata_targets(conn, playlist_id)
     if target.startswith("@"):
         channel_id = target
@@ -5284,37 +5575,6 @@ def enqueue_provided_metadata_target(conn: sqlite3.Connection, target: str) -> d
         "video_id": video_id or channel_id,
         "channel_id": channel_id,
         "metadata_source": source,
-    }
-
-
-def enqueue_playlist_scan_target(conn: sqlite3.Connection, playlist_id: str) -> dict[str, str]:
-    playlist_id = (playlist_id or "").strip()
-    if not playlist_id:
-        raise ValueError("Enter a YouTube playlist URL or playlist ID.")
-    title_row = conn.execute(
-        """
-        SELECT title
-        FROM playlists
-        WHERE playlist_id = ?
-        """,
-        (playlist_id,),
-    ).fetchone()
-    subject_key = enqueue_metadata_item(
-        conn,
-        video_id=playlist_id,
-        current_title=title_row["title"] if title_row else playlist_id,
-        metadata_source="playlist_scan",
-        source_key=playlist_id,
-        priority=0,
-        manual=True,
-    )
-    return {
-        "subject_key": subject_key,
-        "video_id": "",
-        "channel_id": "",
-        "metadata_source": "playlist",
-        "playlist_id": playlist_id,
-        "queued_count": "1",
     }
 
 
@@ -5377,6 +5637,7 @@ def admin_status(
     playlist_worker: "PlaylistScanWorker | None" = None,
     live_history_worker: "LiveHistoryWorker | None" = None,
     placeholder_recovery_worker: "PlaceholderRecoveryWorker | None" = None,
+    queue_dispatcher: "WorkerQueueDispatcher | None" = None,
 ) -> dict[str, Any]:
     reconcile_worker_runs(db_path, metadata_worker, playlist_worker, live_history_worker, placeholder_recovery_worker)
     conn = connect(db_path)
@@ -5444,8 +5705,13 @@ def admin_status(
             ).fetchone()
         )
         metadata_queue_count_value = metadata_queue_count(conn, force=False, stale_days=30)
-        playlist_queue_count = len(playlist_scan_queue_rows(conn, force=False, stale_days=7))
+        playlist_queue_count = playlist_scan_queue_count(conn)
+        worker_queue_count_value = worker_queue_count(conn)
         placeholder_recovery_queue_count = playlist_placeholder_recovery_count(conn, force=False)
+        worker_queue_preview_rows = [
+            dict(row)
+            for row in worker_queue_rows(conn, limit=20)
+        ]
         playlist_queue_rows = [
             dict(row)
             for row in playlist_scan_queue_rows(conn, limit=20, force=False, stale_days=7)
@@ -5541,18 +5807,21 @@ def admin_status(
         "metadataRunning": metadata_worker.is_running() if metadata_worker else False,
         "playlistScanRunning": playlist_worker.is_running() if playlist_worker else False,
         "liveHistoryRunning": live_history_worker.is_running() if live_history_worker else False,
+        "workerQueueRunning": queue_dispatcher.is_running() if queue_dispatcher else False,
         "placeholderRecoveryRunning": placeholder_recovery_worker.is_running() if placeholder_recovery_worker else False,
         "counts": counts,
         "liveHistoryCounts": live_history_counts,
         "playlistCounts": playlist_counts,
         "metadataCounts": metadata_counts,
         "channelCounts": channel_counts,
-            "queueCount": metadata_queue_count_value,
-            "metadataQueueCount": metadata_queue_count_value,
+        "queueCount": metadata_queue_count_value,
+        "metadataQueueCount": metadata_queue_count_value,
+        "workerQueueCount": worker_queue_count_value,
         "playlistScanQueueCount": playlist_queue_count,
         "placeholderRecoveryQueueCount": placeholder_recovery_queue_count,
         "playlistScanQueue": playlist_queue_rows,
         "metadataQueue": metadata_queue_preview_rows,
+        "workerQueue": worker_queue_preview_rows,
         "placeholderRecoveryQueue": placeholder_recovery_queue_rows,
         "latestRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestMetadataRun": dict(latest_metadata_run) if latest_metadata_run else None,

@@ -21,6 +21,7 @@ from .workers import (
     METADATA_WORKER,
     PLACEHOLDER_RECOVERY_WORKER,
     PLAYLIST_SCAN_WORKER,
+    WORKER_QUEUE_DISPATCHER,
 )
 
 
@@ -108,6 +109,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     PLAYLIST_SCAN_WORKER,
                     LIVE_HISTORY_WORKER,
                     PLACEHOLDER_RECOVERY_WORKER,
+                    WORKER_QUEUE_DISPATCHER,
                 )
             )
             return
@@ -129,8 +131,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     total = metadata_queue_count(conn, force=False, stale_days=30) if include_total else 0
                     rows = metadata_queue_rows(conn, limit=limit, offset=offset, force=False, stale_days=30)
                 elif queue_type == "playlists":
-                    total = len(playlist_scan_queue_rows(conn, force=False, stale_days=7)) if include_total else 0
+                    total = playlist_scan_queue_count(conn) if include_total else 0
                     rows = playlist_scan_queue_rows(conn, limit=limit, offset=offset, force=False, stale_days=7)
+                elif queue_type == "worker":
+                    total = worker_queue_count(conn) if include_total else 0
+                    rows = worker_queue_rows(conn, limit=limit, offset=offset)
                 elif queue_type == "placeholders":
                     total = playlist_placeholder_recovery_count(conn, force=False) if include_total else 0
                     rows = playlist_placeholder_recovery_rows(conn, limit=limit, offset=offset, force=False)
@@ -155,20 +160,23 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
         if parsed.path in {"/api/admin/worker/start", "/api/admin/metadata/start"}:
-            limit = 0
-            delay = 1.0
             stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
             force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
-            result = METADATA_WORKER.start(
-                self.db_path,
-                self.cookie_file,
-                self.video_thumbs,
-                delay=delay,
-                limit=limit,
-                force=force,
-                stale_days=stale_days,
-            )
-            self.send_json(result)
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    if metadata_queue_count(conn, force=False, stale_days=stale_days) == 0:
+                        queue_stats = rebuild_metadata_queue(conn, force=force, stale_days=stale_days)
+                    else:
+                        queue_stats = {
+                            "cleared": 0,
+                            "inserted": 0,
+                            "queued": metadata_queue_count(conn, force=False, stale_days=stale_days),
+                        }
+            finally:
+                conn.close()
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
+            self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/metadata/fetch-provided":
             target = (params.get("target") or [""])[0]
@@ -180,9 +188,106 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     except ValueError as exc:
                         self.send_json({"error": str(exc)}, status=400)
                         return
-                self.send_json({"ok": True, "message": "Queued provided metadata target", **result})
+                self.send_json({
+                    "ok": True,
+                    "message": "Queued provided metadata target",
+                    **result,
+                })
             finally:
                 conn.close()
+            return
+        if parsed.path == "/api/admin/queue/add-playlist":
+            target = (params.get("target") or [""])[0]
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    try:
+                        result = enqueue_playlist_scan_target_from_text(conn, target)
+                    except ValueError as exc:
+                        self.send_json({"error": str(exc)}, status=400)
+                        return
+                self.send_json({"ok": True, **result})
+            finally:
+                conn.close()
+            return
+        if parsed.path == "/api/admin/queue/add-history":
+            mode = (params.get("mode") or ["recent"])[0]
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    subject_key = enqueue_history_task(conn, mode, priority=0, manual=True)
+                self.send_json({"ok": True, "subject_key": subject_key, "worker_type": "history", "mode": mode})
+            finally:
+                conn.close()
+            return
+        if parsed.path == "/api/admin/queue/rebuild":
+            if (
+                WORKER_QUEUE_DISPATCHER.is_running()
+                or METADATA_WORKER.is_running()
+                or PLAYLIST_SCAN_WORKER.is_running()
+                or LIVE_HISTORY_WORKER.is_running()
+                or PLACEHOLDER_RECOVERY_WORKER.is_running()
+            ):
+                self.send_json({"error": "Stop active workers before rebuilding the queue"}, status=409)
+                return
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    cleared = clear_worker_queue(conn)
+                    metadata = rebuild_metadata_queue(conn, force=False, stale_days=30)
+                    playlists = rebuild_playlist_scan_queue(conn, force=False, stale_days=7)
+                    enqueue_history_task(conn, "recent", priority=0, manual=False)
+                self.send_json({"ok": True, "cleared": cleared, "metadata": metadata, "playlists": playlists, "history": 1})
+            finally:
+                conn.close()
+            return
+        if parsed.path == "/api/admin/queue/clear":
+            if (
+                WORKER_QUEUE_DISPATCHER.is_running()
+                or METADATA_WORKER.is_running()
+                or PLAYLIST_SCAN_WORKER.is_running()
+                or LIVE_HISTORY_WORKER.is_running()
+                or PLACEHOLDER_RECOVERY_WORKER.is_running()
+            ):
+                self.send_json({"error": "Stop active workers before clearing the queue"}, status=409)
+                return
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    cleared = clear_worker_queue(conn)
+            finally:
+                conn.close()
+            self.send_json({"ok": True, "cleared": cleared})
+            return
+        if parsed.path == "/api/admin/queue/remove":
+            try:
+                queue_id = int((params.get("queue_id") or ["0"])[0] or 0)
+            except ValueError:
+                queue_id = 0
+            if not queue_id:
+                self.send_json({"error": "Missing queue_id"}, status=400)
+                return
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    removed = remove_worker_queue_entry(conn, queue_id)
+            finally:
+                conn.close()
+            self.send_json({"ok": removed, "removed": removed})
+            return
+        if parsed.path == "/api/admin/queue/start":
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
+            self.send_json({"ok": True, "dispatcher": dispatcher})
+            return
+        if parsed.path == "/api/admin/queue/stop":
+            result = {
+                "dispatcher": WORKER_QUEUE_DISPATCHER.stop(),
+                "metadata": METADATA_WORKER.stop(),
+                "playlists": PLAYLIST_SCAN_WORKER.stop(),
+                "history": LIVE_HISTORY_WORKER.stop(),
+                "placeholders": PLACEHOLDER_RECOVERY_WORKER.stop(),
+            }
+            self.send_json({"ok": True, **result})
             return
         if parsed.path == "/api/admin/metadata/rebuild-queue":
             if METADATA_WORKER.is_running():
@@ -230,22 +335,24 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": removed, "removed": removed})
             return
         if parsed.path in {"/api/admin/worker/stop", "/api/admin/metadata/stop"}:
-            self.send_json(METADATA_WORKER.stop())
+            self.send_json(WORKER_QUEUE_DISPATCHER.stop())
             return
         if parsed.path == "/api/admin/playlists/start":
-            limit = max(0, int((params.get("limit") or ["25"])[0] or 0))
-            delay = max(1.0, float((params.get("delay") or ["3"])[0] or 3))
-            stale_days = max(0, int((params.get("stale_days") or ["7"])[0] or 7))
-            force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
-            result = PLAYLIST_SCAN_WORKER.start(
-                self.db_path,
-                self.cookie_file,
-                delay=delay,
-                limit=limit,
-                force=force,
-                stale_days=stale_days,
-            )
-            self.send_json(result)
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    if playlist_scan_queue_count(conn) == 0:
+                        queue_stats = rebuild_playlist_scan_queue(conn, force=True, stale_days=7)
+                    else:
+                        queue_stats = {
+                            "cleared": 0,
+                            "inserted": 0,
+                            "queued": playlist_scan_queue_count(conn),
+                        }
+            finally:
+                conn.close()
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
+            self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/playlists/stop":
             self.send_json(PLAYLIST_SCAN_WORKER.stop())
@@ -315,23 +422,27 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "run_id": run_id, **stats})
             return
         if parsed.path == "/api/admin/live-history/start":
-            result = LIVE_HISTORY_WORKER.start(
-                self.db_path,
-                self.cookie_file,
-                mode="recent",
-            )
-            self.send_json(result)
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    enqueue_history_task(conn, "recent", priority=0, manual=True)
+            finally:
+                conn.close()
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
+            self.send_json({"dispatcher": dispatcher})
             return
         if parsed.path in {"/api/admin/live-history/verify", "/api/admin/live-history/rebuild"}:
-            result = LIVE_HISTORY_WORKER.start(
-                self.db_path,
-                self.cookie_file,
-                mode="verify",
-            )
-            self.send_json(result)
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    enqueue_history_task(conn, "verify", priority=0, manual=True)
+            finally:
+                conn.close()
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
+            self.send_json({"dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/live-history/stop":
-            self.send_json(LIVE_HISTORY_WORKER.stop())
+            self.send_json(WORKER_QUEUE_DISPATCHER.stop())
             return
         if parsed.path == "/api/admin/history/import-takeout":
             import_history(

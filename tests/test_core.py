@@ -261,6 +261,7 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("channels", tables)
         self.assertIn("history_reconciled", tables)
         self.assertIn("metadata_queue", tables)
+        self.assertIn("worker_queue", tables)
         self.assertIn("metadata_worker_runs", tables)
         self.assertIn("reaction", columns)
         self.assertIn("match_type", reconciled_columns)
@@ -323,24 +324,17 @@ class SchemaTests(unittest.TestCase):
                             "https://www.youtube.com/playlist?list=PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
                         )
                     self.assertEqual(queued_playlist["metadata_source"], "playlist")
-                    self.assertEqual(queued_playlist["queued_count"], "1")
-                    playlist_queue_rows = [
-                        row
-                        for row in core.metadata_queue_rows(conn, limit=10)
-                        if row["metadata_source"] == "playlist_scan"
-                    ]
-                    self.assertEqual(len(playlist_queue_rows), 1)
-                    self.assertEqual(
-                        {row["source_key"] for row in playlist_queue_rows},
-                        {"PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4"},
-                    )
+                    self.assertEqual(queued_playlist["queued_count"], "2")
                     with conn:
-                        queued_playlist_id = core.enqueue_provided_metadata_target(
+                        queued_scan = core.enqueue_playlist_scan_target_from_text(
                             conn,
                             "PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
                         )
-                    self.assertEqual(queued_playlist_id["metadata_source"], "playlist")
-                    self.assertEqual(queued_playlist_id["queued_count"], "2")
+                    self.assertEqual(queued_scan["worker_type"], "playlist")
+                    playlist_queue_rows = core.playlist_scan_queue_rows(conn, limit=10)
+                    self.assertEqual([row["playlist_id"] for row in playlist_queue_rows], ["PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4"])
+                    with self.assertRaises(ValueError):
+                        core.enqueue_playlist_scan_target_from_text(conn, "https://www.youtube.com/watch?v=abc12345678")
                     playlist_video_rows = [
                         row
                         for row in core.metadata_queue_rows(conn, limit=10)
