@@ -160,8 +160,49 @@ class MetadataWorker:
                             status = "no_metadata"
                     else:
                         metadata = fetch_watch_metadata(opener, video_id, thumb_dir)
-                        if not metadata.get("title"):
+                        if not useful_video_metadata(metadata):
                             status = "no_metadata"
+                            try:
+                                archivarix_opener = load_cookie_opener(ARCHIVARIX_COOKIE_FILE)
+                                video, thumbnail_url, thumbnail_path, arch_status, arch_error = recover_archivarix_video(
+                                    video_id,
+                                    thumb_dir,
+                                    archivarix_opener,
+                                    refresh_metadata=True,
+                                    channel_cache={},
+                                )
+                            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+                                video = None
+                                thumbnail_url = ""
+                                thumbnail_path = ""
+                                arch_status = "error"
+                                arch_error = "Archivarix fallback failed"
+                            if video:
+                                channel_id = str(video.get("channelExternalId") or "")
+                                enrich_archivarix_video_channel(video, channel_id, archivarix_opener)
+                                if video.get("channelThumbnailUrl") and not video.get("channelThumbnailPath"):
+                                    video["channelThumbnailPath"] = cache_channel_thumbnail(
+                                        archivarix_opener,
+                                        channel_id or video_id,
+                                        str(video.get("channelThumbnailUrl") or ""),
+                                        thumb_dir,
+                                    )
+                                metadata = metadata_from_archivarix_video(video_id, video, thumbnail_url, thumbnail_path)
+                                status = "ok" if useful_video_metadata(metadata) else "no_metadata"
+                                for snapshot in conn.execute(
+                                    "SELECT DISTINCT snapshot_key FROM snapshot_videos WHERE video_id = ?",
+                                    (video_id,),
+                                ).fetchall():
+                                    save_snapshot_video_recovery(
+                                        conn,
+                                        snapshot["snapshot_key"],
+                                        video_id,
+                                        video,
+                                        thumbnail_url,
+                                        thumbnail_path,
+                                        arch_status,
+                                        arch_error,
+                                    )
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                     status = "error"
                     error = str(exc)

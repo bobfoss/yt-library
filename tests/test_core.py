@@ -185,6 +185,16 @@ class CoreHelperTests(unittest.TestCase):
                 }
             )
         )
+        self.assertTrue(
+            core.useful_video_metadata(
+                {
+                    "title": "",
+                    "yt_status": "DELETED_ID_ONLY",
+                    "channel_id": "UCWglcpI-xTAXb_QYecQ2O4g",
+                    "thumbnail_path": "video_thumbs/aeXIgKuX_zY.jpg",
+                }
+            )
+        )
 
     def test_unavailable_watch_metadata_does_not_keep_header_channel(self) -> None:
         html = """

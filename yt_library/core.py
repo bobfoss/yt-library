@@ -3193,9 +3193,14 @@ def store_video_metadata(
 def useful_video_metadata(metadata: dict[str, str]) -> bool:
     title = (metadata.get("title") or "").strip()
     yt_status = (metadata.get("yt_status") or "").strip().upper()
+    has_recovered_fields = bool(
+        metadata.get("channel_id")
+        or metadata.get("channel")
+        or metadata.get("thumbnail_path")
+    )
     if title in {"", "YouTube", "- YouTube"}:
-        return False
-    if yt_status.startswith("ERROR") and not metadata.get("channel_id"):
+        return has_recovered_fields
+    if yt_status.startswith("ERROR") and not has_recovered_fields:
         return False
     return True
 
