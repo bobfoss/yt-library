@@ -79,6 +79,7 @@
     .video-detail { grid-column: 1 / -1; max-width: 960px; }
     .video-detail .detail-layout { display: grid; grid-template-columns: minmax(220px, 360px) 1fr; gap: 18px; align-items: start; }
     .video-detail .description { max-height: none; white-space: pre-wrap; }
+    .video-detail .thumb-wrap { border-radius: 6px; overflow: hidden; }
     .video-detail .thumb { border-radius: 6px; }
     .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
     .badge { color: var(--warn); font-weight: 650; }
@@ -606,13 +607,13 @@
       const channelName = displayVideoChannel(video);
       const channelUrl = displayVideoChannelUrl(video);
       const thumbnail = video.metadata_thumbnail_path
-        ? `<img class="thumb" src="/${escapeHtml(video.metadata_thumbnail_path)}" alt="">`
-        : '';
+        ? thumbnailWithProgress(video.metadata_thumbnail_path, video)
+        : document.createElement('div');
       const body = document.createElement('div');
       body.className = 'body';
       body.innerHTML = `
         <div class="detail-layout">
-          <div>${thumbnail}</div>
+          <div class="detail-thumb"></div>
           <div>
             <div class="title-row">
               <div class="video-title">${escapeHtml(titleText)}</div>
@@ -638,6 +639,7 @@
           </div>
         </div>
       `;
+      body.querySelector('.detail-thumb')?.append(thumbnail);
       article.append(body);
       return article;
     }
