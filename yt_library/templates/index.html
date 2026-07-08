@@ -323,7 +323,19 @@
     }
 
     function matchTypeLabel(video) {
+      if (video.match_type === 'ambiguous_hidden_candidate') return '';
       return video.match_label || '';
+    }
+
+    function wasRemovedFromPlaylist(video) {
+      return video.source_quality === 'takeout' && video.match_type === 'ambiguous_hidden_candidate';
+    }
+
+    function playlistSourceLinkHtml(video) {
+      const title = video.playlist_title || '';
+      if (!title) return '';
+      const removed = wasRemovedFromPlaylist(video) ? ' <span class="badge">(Removed)</span>' : '';
+      return `<a class="playlist-link" href="${localPlaylistHref(video.playlist_id)}">${escapeHtml(title)}</a>${removed}`;
     }
 
     function unavailableLabel(video) {
@@ -771,6 +783,7 @@
           { label: unavailableLabel(video) },
           { label: reactionLabel(video) },
           { label: archivarixStatusLabel(video) },
+          { label: wasRemovedFromPlaylist(video) ? 'Removed' : '' },
           { label: matchTypeLabel(video), title: video.match_note },
         ],
         details: [
@@ -798,7 +811,7 @@
       const video = result.item;
       return playlistVideoCardFor(video, {
         resultKind: result.matchedDescription ? 'Description match' : 'Video',
-        sources: [`<a class="playlist-link" href="${localPlaylistHref(video.playlist_id)}">${escapeHtml(video.playlist_title)}</a>`],
+        sources: [playlistSourceLinkHtml(video)],
       });
     }
 

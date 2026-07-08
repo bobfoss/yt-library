@@ -149,6 +149,34 @@ class CoreHelperTests(unittest.TestCase):
             )
         )
 
+    def test_unavailable_watch_metadata_does_not_keep_header_channel(self) -> None:
+        html = """
+        <html><head><title>- YouTube</title></head><body>
+        <script>
+        var ytInitialPlayerResponse = {
+          "playabilityStatus": {"status": "ERROR", "reason": {"simpleText": "Video unavailable"}},
+          "videoDetails": {},
+          "microformat": {"playerMicroformatRenderer": {}}
+        };
+        var ytInitialData = {
+          "metadata": {"channelMetadataRenderer": {
+            "externalId": "UCnUc4Kc09vNJ3yBu6-MJHTQ",
+            "title": "Gir Bot",
+            "ownerUrls": ["https://www.youtube.com/channel/UCnUc4Kc09vNJ3yBu6-MJHTQ"]
+          }}
+        };
+        </script>
+        </body></html>
+        """
+
+        metadata = core.extract_watch_metadata(html, "vy_t101tY1I")
+
+        self.assertEqual(metadata["yt_status"], "ERROR: Video unavailable")
+        self.assertEqual(metadata["channel_id"], "")
+        self.assertEqual(metadata["channel"], "")
+        self.assertEqual(metadata["channel_url"], "")
+        self.assertEqual(metadata["channel_thumbnail_url"], "")
+
     def test_metadata_from_archivarix_video_includes_channel_metadata(self) -> None:
         metadata = core.metadata_from_archivarix_video(
             "Ax8Yn8DPZe0",
@@ -197,8 +225,9 @@ class CoreHelperTests(unittest.TestCase):
         )
         self.assertEqual(
             core.reconciled_video_availability("Ax8Yn8DPZe0", "", "LIVE"),
-            "live",
+            "LIVE",
         )
+        self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "live", ""), "LIVE")
         self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "", "", 1), "public")
         self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "subscriber_only", "", 0), "subscriber_only")
         self.assertEqual(core.reconciled_video_availability("", "private", "LIVE"), "")
@@ -357,6 +386,47 @@ class SchemaTests(unittest.TestCase):
                     )
                     remaining = core.metadata_queue_candidate_rows(conn, limit=10, stale_days=30)
                     self.assertNotIn("UCvmGOqGlxOgpZDoszBbWxmA", [row["video_id"] for row in remaining])
+                finally:
+                    conn.close()
+            finally:
+                core.ROOT = original_root
+
+    def test_recovered_live_playlist_row_is_playable(self) -> None:
+        original_root = core.ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core.ROOT = Path(temp_dir)
+            try:
+                conn = core.connect(Path(temp_dir) / "library.sqlite3")
+                try:
+                    with conn:
+                        conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('pl1', 'Playlist')")
+                        conn.execute("INSERT INTO snapshots(snapshot_key, label) VALUES ('snap1', 'Snapshot')")
+                        conn.execute(
+                            """
+                            INSERT INTO snapshot_videos(snapshot_key, playlist_id, position, video_id, playlist_title)
+                            VALUES ('snap1', 'pl1', 1, 'KRhofr57Na8', 'Playlist')
+                            """
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO snapshot_video_recovery(snapshot_key, video_id, title, status, search_status)
+                            VALUES ('snap1', 'KRhofr57Na8', 'Can You Safely Drink Your Own Pee?', 'LIVE', 'found')
+                            """
+                        )
+                        core.rebuild_playlist_reconciliation(conn, "pl1")
+
+                    row = conn.execute(
+                        """
+                        SELECT is_playable, availability, source_quality, match_type
+                        FROM playlist_video_reconciled
+                        WHERE playlist_id = 'pl1' AND video_id = 'KRhofr57Na8'
+                        """
+                    ).fetchone()
+                    self.assertIsNotNone(row)
+                    self.assertEqual(row["is_playable"], 1)
+                    self.assertEqual(row["availability"], "LIVE")
+                    self.assertEqual(row["source_quality"], "takeout")
+                    self.assertEqual(row["match_type"], "ambiguous_hidden_candidate")
                 finally:
                     conn.close()
             finally:

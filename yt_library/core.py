@@ -352,10 +352,14 @@ def video_availability_from_recovery_status(status: str) -> str:
     status = (status or "").strip()
     status_upper = status.upper()
     if status_upper == "LIVE":
-        return "live"
+        return "LIVE"
     if status_upper == "NOT_FOUND" or status_upper.startswith("DELETED_"):
         return "unavailable"
     return ""
+
+
+def is_playable_from_recovery_status(status: str) -> int:
+    return 1 if (status or "").strip().upper() == "LIVE" else 0
 
 
 def normalize_video_availability(
@@ -376,6 +380,8 @@ def normalize_video_availability(
     lowered = availability.lower()
     if lowered == "unavailable video is hidden":
         return "unavailable"
+    if lowered == "live":
+        return "LIVE"
     if availability:
         return availability
     recovered_availability = video_availability_from_recovery_status(recovered_status)
@@ -2978,12 +2984,18 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     reason = text_from_runs(playability.get("reason")).strip()
     if reason and status and reason not in status:
         status = f"{status}: {reason}"
+    channel = str(details.get("author") or "").strip()
+    if status.upper().startswith("ERROR") and title in {"", "YouTube", "- YouTube"}:
+        channel_id = ""
+        channel = ""
+        channel_url = ""
+        channel_thumbnail_url = ""
     return {
         "video_id": video_id,
         "title": title,
         "description": str(details.get("shortDescription") or "").strip(),
         "channel_id": channel_id,
-        "channel": str(details.get("author") or "").strip(),
+        "channel": channel,
         "channel_url": channel_url,
         "duration_text": format_duration(details.get("lengthSeconds")),
         "view_count": str(details.get("viewCount") or ""),
@@ -4522,10 +4534,11 @@ def rebuild_playlist_reconciliation(
                 channel = channel_title_for_id(conn, channel_id)
                 duration = recovery["duration_text"] if recovery else ""
                 recovered_status = recovery["status"] if recovery else ""
+                is_playable = is_playable_from_recovery_status(recovered_status)
                 source_quality = "takeout"
                 match_type = "inferred_hidden_slot"
                 match_confidence = "count_equal_ordered"
-                availability = reconciled_video_availability(assigned["video_id"], "", recovered_status, 0)
+                availability = reconciled_video_availability(assigned["video_id"], "", recovered_status, is_playable)
                 inferred += 1
                 video_id = assigned["video_id"]
                 snapshot_position = assigned["position"]
@@ -4576,7 +4589,7 @@ def rebuild_playlist_reconciliation(
                     channel_id,
                     channel,
                     duration,
-                    current["is_playable"],
+                    is_playable if assigned else current["is_playable"],
                     availability,
                     current["url"] or (f"https://www.youtube.com/watch?v={video_id}&list={pid}" if video_id else ""),
                     source_quality,
@@ -4609,6 +4622,7 @@ def rebuild_playlist_reconciliation(
                 channel = channel_title_for_id(conn, channel_id)
                 duration = recovery["duration_text"] if recovery else ""
                 recovered_status = recovery["status"] if recovery else ""
+                is_playable = is_playable_from_recovery_status(recovered_status)
                 conn.execute(
                     """
                     INSERT INTO playlist_video_reconciled(
@@ -4616,7 +4630,7 @@ def rebuild_playlist_reconciliation(
                       video_id, title, channel_id, channel, duration_text, is_playable, availability, url,
                       source_quality, match_type, match_confidence, snapshot_key, added_at, updated_at
                     )
-                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         pid,
@@ -4627,7 +4641,8 @@ def rebuild_playlist_reconciliation(
                         channel_id,
                         channel,
                         duration,
-                        reconciled_video_availability(snap["video_id"], "", recovered_status, 0),
+                        is_playable,
+                        reconciled_video_availability(snap["video_id"], "", recovered_status, is_playable),
                         f"https://www.youtube.com/watch?v={snap['video_id']}&list={pid}",
                         "takeout",
                         "ambiguous_hidden_candidate",
