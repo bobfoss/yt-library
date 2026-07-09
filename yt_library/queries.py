@@ -269,14 +269,19 @@ def history_search_data(
     query: str,
     limit: int = 200,
     offset: int = 0,
+    channel_id: str = "",
 ) -> dict[str, Any]:
     query = query.strip()
+    channel_id = channel_id.strip()
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
     like = f"%{query.lower()}%"
+    watch_conditions: list[str] = []
+    watch_params: list[Any] = []
     if query:
-        watch_where = """
-            WHERE lower(
+        watch_conditions.append(
+            """
+            lower(
               hr.title || ' ' ||
               hr.channel || ' ' ||
               hr.video_id || ' ' ||
@@ -286,11 +291,13 @@ def history_search_data(
               COALESCE(vm.upload_date, '') || ' ' ||
               COALESCE(vm.description, '')
             ) LIKE ?
-        """
-        watch_params: list[Any] = [like]
-    else:
-        watch_where = ""
-        watch_params = []
+            """
+        )
+        watch_params.append(like)
+    if channel_id:
+        watch_conditions.append("(hr.channel_id = ? OR vm.channel_id = ?)")
+        watch_params.extend([channel_id, channel_id])
+    watch_where = f"WHERE {' AND '.join(watch_conditions)}" if watch_conditions else ""
     filtered_watch_rows = int(
         conn.execute(
             f"""
@@ -425,6 +432,7 @@ def history_search_data(
     )
     return {
         "query": query,
+        "channel_id": channel_id,
         "limit": limit,
         "offset": offset,
         "watch": watch_rows,

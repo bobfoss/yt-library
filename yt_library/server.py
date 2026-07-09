@@ -86,6 +86,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/history/search":
             params = urllib.parse.parse_qs(parsed.query)
             query = (params.get("q") or [""])[0]
+            channel_id = (params.get("channel_id") or [""])[0]
             try:
                 limit = max(1, int((params.get("limit") or ["200"])[0] or 200))
             except ValueError:
@@ -96,7 +97,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 offset = 0
             conn = connect(self.db_path)
             try:
-                data = history_search_data(conn, query, limit=limit, offset=offset)
+                data = history_search_data(conn, query, limit=limit, offset=offset, channel_id=channel_id)
             finally:
                 conn.close()
             self.send_json(data)

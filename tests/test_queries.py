@@ -91,6 +91,31 @@ class HistorySearchTests(unittest.TestCase):
         self.assertEqual(data["offset"], 0)
         self.assertEqual(len(data["watch"]), 1)
 
+    def test_history_search_filters_by_channel_id_from_history_or_metadata(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO history_reconciled(
+              reconciled_id, video_id, title, channel_id, best_watch_time, watch_date
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("history-channel", "history123", "History Channel Video", "UC_history", "2026-07-01T09:00:00-07:00", "2026-07-01"),
+                ("metadata-channel", "metadata123", "Metadata Channel Video", "", "2026-07-02T09:00:00-07:00", "2026-07-02"),
+            ],
+        )
+        self.conn.execute(
+            "INSERT INTO video_metadata(video_id, channel_id) VALUES (?, ?)",
+            ("metadata123", "UC_metadata"),
+        )
+        self.conn.commit()
+
+        history_rows = history_search_data(self.conn, "", channel_id="UC_history")
+        metadata_rows = history_search_data(self.conn, "", channel_id="UC_metadata")
+
+        self.assertEqual([row["video_id"] for row in history_rows["watch"]], ["history123"])
+        self.assertEqual([row["video_id"] for row in metadata_rows["watch"]], ["metadata123"])
+
     def test_likely_hidden_excludes_live_recovered_snapshot_rows(self) -> None:
         self.conn.execute(
             """

@@ -70,6 +70,8 @@
     .pager .page-jumps button, .pager .ellipsis, .pager .page-placeholder { min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; }
     .pager .ellipsis { color: var(--muted); border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
     .pager .page-placeholder { visibility: hidden; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
+    .view-context { flex: 0 0 auto; min-height: 0; margin-bottom: 14px; }
+    .view-context[hidden] { display: none; }
     .results-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
     .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
@@ -100,10 +102,15 @@
     .video-detail .description { max-height: none; white-space: pre-wrap; }
     .video-detail .thumb-wrap { border-radius: 6px; overflow: hidden; }
     .video-detail .thumb { border-radius: 6px; }
-    .channel-detail { grid-column: 1 / -1; max-width: 1180px; }
+    .channel-detail { grid-column: 1 / -1; }
     .channel-detail .detail-layout { display: grid; grid-template-columns: 140px 1fr; gap: 18px; align-items: start; }
     .channel-detail .channel-avatar-large { width: 128px; height: 128px; border-radius: 50%; object-fit: cover; background: linear-gradient(135deg, #24424a, #d98948); }
     .channel-detail .description { max-height: none; white-space: pre-wrap; }
+    .channel-detail .title-row .video-title { flex: 1 1 auto; min-width: 0; }
+    .channel-external-links { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+    .channel-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-top: 12px; }
+    .channel-tab { border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--muted); padding: 8px 12px; font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; }
+    .channel-tab:hover, .channel-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
     .section-heading { grid-column: 1 / -1; color: var(--muted); font-size: 13px; margin: 8px 0 -4px; text-transform: uppercase; }
     .watched-line { color: var(--muted); font-size: 13px; margin-top: 7px; }
     .watch-sparkline { display: block; width: 86px; height: 14px; margin-top: 5px; color: var(--muted); overflow: visible; }
@@ -178,6 +185,7 @@
           <div id="view-meta" class="meta"></div>
         </div>
       </div>
+      <section id="view-context" class="view-context" hidden></section>
       <div class="results-scroll">
         <section id="grid" class="grid"></section>
         <div id="empty" class="empty" hidden>No playlists match.</div>
@@ -202,6 +210,8 @@
     let pageSize = '100';
     let historyPageState = { key: '', loading: false, data: null };
     let historySearchState = { key: '', loading: false, data: null };
+    let channelHistoryCounts = new Map();
+    let channelDetailTab = 'playlists';
     let channelsManuallyDisabled = false;
     const search = document.getElementById('search');
     const refresh = document.getElementById('refresh');
@@ -221,6 +231,7 @@
     const meta = document.getElementById('view-meta');
     const bottomPager = document.getElementById('bottom-pager');
     const resultsScroll = document.querySelector('.results-scroll');
+    const viewContext = document.getElementById('view-context');
 
     async function loadData() {
       refresh.disabled = true;
@@ -230,6 +241,7 @@
       data = await response.json();
       historyPageState = { key: '', loading: false, data: null };
       historySearchState = { key: '', loading: false, data: null };
+      channelHistoryCounts = new Map();
       playlists = new Map(data.playlists.map(p => [p.playlist_id, p]));
       playlistVideos = new Map();
       for (const video of data.playlistVideos || []) {
@@ -787,21 +799,55 @@
       return { pageRows: [], page: currentPage, pageCount, start, end, total };
     }
 
-    async function fetchHistoryPage() {
+    async function fetchHistoryPage(channelId = '') {
       const size = pageSizeNumber();
       const limit = Number.isFinite(size) ? size : 1000;
       const offset = (currentPage - 1) * limit;
-      const key = `${limit}:${offset}`;
+      const key = `${channelId}:${limit}:${offset}`;
       if (historyPageState.key === key && historyPageState.data) return historyPageState.data;
       historyPageState = { key, loading: true, data: historyPageState.key === key ? historyPageState.data : null };
       const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+      if (channelId) params.set('channel_id', channelId);
       const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
       if (!response.ok) throw new Error(`History fetch failed: ${response.status}`);
       const payload = await response.json();
+      if (channelId) {
+        channelHistoryCounts.set(
+          channelId,
+          Number(payload.totals?.filtered_watch_rows || payload.totals?.watch_rows || 0),
+        );
+      }
       if (historyPageState.key === key) {
         historyPageState = { key, loading: false, data: payload };
       }
       return payload;
+    }
+
+    function cachedChannelHistoryCount(channelId) {
+      const value = channelHistoryCounts.get(channelId);
+      return typeof value === 'number' ? value : null;
+    }
+
+    async function fetchChannelHistoryCount(channelId) {
+      const cached = channelHistoryCounts.get(channelId);
+      if (typeof cached === 'number') return cached;
+      if (cached) return cached;
+      const request = fetch(`/api/history/search?${new URLSearchParams({ channel_id: channelId, limit: '1' })}`, { cache: 'no-store' })
+        .then(response => {
+          if (!response.ok) throw new Error(`Channel history fetch failed: ${response.status}`);
+          return response.json();
+        })
+        .then(payload => {
+          const total = Number(payload.totals?.filtered_watch_rows || payload.totals?.watch_rows || 0);
+          channelHistoryCounts.set(channelId, total);
+          return total;
+        })
+        .catch(error => {
+          channelHistoryCounts.delete(channelId);
+          throw error;
+        });
+      channelHistoryCounts.set(channelId, request);
+      return request;
     }
 
     async function renderHistoryView() {
@@ -1195,7 +1241,10 @@
           <div>
             <div class="title-row">
               <div class="video-title">${escapeHtml(titleText)}</div>
-              ${youtubeUrl ? `<a class="external-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
+              <div class="channel-external-links">
+                ${youtubeUrl ? `<a class="playlist-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">YouTube</a><a class="external-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
+                ${archivarixUrl ? `<a class="playlist-link" href="${escapeHtml(archivarixUrl)}" target="_blank" rel="noreferrer">Archivarix</a><a class="external-link" href="${escapeHtml(archivarixUrl)}" target="_blank" rel="noreferrer" title="Open on Archivarix" aria-label="Open ${escapeHtml(titleText)} on Archivarix">${externalLinkSvg()}</a>` : ''}
+              </div>
             </div>
             <div class="details">
               <span>${subscribedLabel}</span>
@@ -1205,16 +1254,32 @@
             </div>
             ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
             ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
-            <div class="details">
-              ${youtubeUrl ? `<a class="playlist-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">YouTube</a>` : ''}
-              ${archivarixUrl ? `<a class="playlist-link" href="${escapeHtml(archivarixUrl)}" target="_blank" rel="noreferrer">Archivarix</a>` : ''}
-            </div>
             ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : '<div class="empty">No channel description captured.</div>'}
           </div>
         </div>
       `;
       article.append(body);
       return article;
+    }
+
+    function channelTabsFor(activeTab, playlistCount, historyCount) {
+      const tabs = document.createElement('div');
+      tabs.className = 'channel-tabs';
+      tabs.setAttribute('role', 'tablist');
+      for (const [key, label, count] of [
+        ['playlists', 'Playlists', playlistCount],
+        ['history', 'History', historyCount],
+      ]) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `channel-tab${key === activeTab ? ' active' : ''}`;
+        button.dataset.channelTab = key;
+        button.setAttribute('role', 'tab');
+        button.setAttribute('aria-selected', String(key === activeTab));
+        button.textContent = `${label} (${count === null ? '...' : Number(count || 0).toLocaleString()})`;
+        tabs.append(button);
+      }
+      return tabs;
     }
 
     async function render() {
@@ -1226,6 +1291,8 @@
       const query = search.value.trim().toLowerCase();
       empty.textContent = 'No playlists match.';
       hidePager();
+      viewContext.replaceChildren();
+      viewContext.hidden = true;
       for (const button of groupsEl.querySelectorAll('.group')) {
         button.classList.toggle('active', button.dataset.key === selected);
       }
@@ -1260,18 +1327,38 @@
           empty.textContent = 'No local metadata is available for this channel.';
           return;
         }
-        const rows = channelVideoRows(channelId);
-        const pageInfo = pagedRows(rows);
         title.textContent = channel.title || channel.channel_id;
-        meta.innerHTML = `
-          ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
-          <span>${rows.length} videos</span>
-        `;
-        const heading = document.createElement('div');
-        heading.className = 'section-heading';
-        heading.textContent = 'Videos';
-        grid.replaceChildren(channelDetailCardFor(channel), heading, ...pageInfo.pageRows.map(playlistVideoCardFor));
-        empty.hidden = true;
+        const playlistRows = channelVideoRows(channelId);
+        const historyCount = cachedChannelHistoryCount(channelId);
+        viewContext.hidden = false;
+        viewContext.replaceChildren(channelDetailCardFor(channel), channelTabsFor(channelDetailTab, playlistRows.length, historyCount));
+        grid.className = channelDetailTab === 'history' ? 'history-list' : 'grid';
+        if (channelDetailTab === 'history') {
+          meta.textContent = 'Loading channel history...';
+          grid.replaceChildren();
+          empty.hidden = true;
+          const payload = await fetchHistoryPage(channelId);
+          const rows = payload.watch || [];
+          const total = Number(payload.totals?.filtered_watch_rows || payload.totals?.watch_rows || rows.length);
+          viewContext.replaceChildren(channelDetailCardFor(channel), channelTabsFor('history', playlistRows.length, total));
+          const pageInfo = remotePageInfo(total, rows.length);
+          meta.textContent = '';
+          renderPager(pageInfo);
+          grid.replaceChildren(...rows.map(historyRowCardFor));
+          empty.hidden = rows.length !== 0;
+          empty.textContent = 'No history rows match this channel.';
+        } else {
+          const pageInfo = pagedRows(playlistRows);
+          meta.textContent = '';
+          grid.replaceChildren(...pageInfo.pageRows.map(playlistVideoCardFor));
+          empty.hidden = playlistRows.length !== 0;
+          empty.textContent = 'No playlist videos match this channel.';
+          if (historyCount === null) {
+            void fetchChannelHistoryCount(channelId).then(() => {
+              if (selected === channelSelection(channelId) && channelDetailTab === 'playlists') render();
+            }).catch(() => {});
+          }
+        }
         return;
       }
       if (query) {
@@ -1788,6 +1875,14 @@
       currentPage = 1;
       render();
     });
+    viewContext.addEventListener('click', event => {
+      const target = event.target.closest('[data-channel-tab]');
+      if (!(target instanceof HTMLButtonElement)) return;
+      channelDetailTab = target.dataset.channelTab || 'playlists';
+      currentPage = 1;
+      scrollResultsToTop();
+      render();
+    });
     meta.addEventListener('change', event => {
       const target = event.target;
       if (target instanceof HTMLSelectElement && target.dataset.videoSort !== undefined) {
@@ -1909,6 +2004,7 @@
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
       currentPage = 1;
+      channelDetailTab = 'playlists';
       if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
       search.value = '';
       renderGroups();
