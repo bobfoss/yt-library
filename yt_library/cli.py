@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     discover_parser.add_argument("--include-system", action="store_true")
     discover_parser.set_defaults(func=discover_current_playlists)
 
-    scan_parser = subparsers.add_parser("scan-hidden", help="Scan playlists for hidden videos")
+    scan_parser = subparsers.add_parser("scan-hidden", help="Scan playlists for unavailable videos")
     scan_parser.add_argument("--db", default=str(DEFAULT_DB))
     scan_parser.add_argument("--cookies", default=str(COOKIE_FILE))
     scan_parser.add_argument("--limit", type=int, default=0, help="Scan only the first N playlists")
@@ -107,5 +107,4 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.func(args)
     return 0
-
 

@@ -561,7 +561,7 @@ class PlaylistScanWorker:
                             conn,
                             run_id,
                             "info",
-                            f"{title}: {video_count} videos, {hidden_count} hidden ({backend})",
+                            f"{title}: {video_count} videos, {hidden_count} unavailable ({backend})",
                             playlist_id,
                         )
                         if queue_id:

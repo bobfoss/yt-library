@@ -46,7 +46,7 @@ Status: completed.
 
 Status: completed for active library video cards.
 
-- `yt_library/templates/index.html` now routes playlist/search videos, raw hidden videos, and snapshot missing / likely hidden videos through a shared `videoCardFor()` renderer.
+- `yt_library/templates/index.html` now routes playlist/search videos, raw unavailable videos, and snapshot missing / likely unavailable videos through a shared `videoCardFor()` renderer.
 - Badges are rendered as their own vertical block, and creator/channel chips render on their own line.
 - Remaining cleanup: share this same video-card concept with the history page so watch-history results do not drift from library video cards.
 
@@ -69,8 +69,15 @@ Status: completed for active library video cards.
 - The richer snapshot and playlist video card paths now cover the active recovered-video display needs.
 - Cleanup: remove `candidateCardFor()` and then review whether the `archivarixCandidates` API payload and table path are still useful.
 
+## Hidden Naming Cleanup
+
+- User-facing playlist/video-row language is moving from `hidden` to `Unavailable`.
+- Internal schema and API names still use terms such as `hidden_count`, `hiddenVideos`, `snapshotLikelyHidden`, and `__hidden_playlists__`.
+- Cleanup: when convenient, migrate internal names to `unavailable` equivalents while preserving existing data and backwards-compatible hash aliases.
+
 ## Suggested Order
 
 1. Share the video-card renderer with `history.html`.
 2. Remove the unused Archivarix candidate card path.
-3. Revisit collection/entity card duplication only if playlist, snapshot playlist, and channel cards continue to drift.
+3. Revisit hidden/unavailable internal naming.
+4. Revisit collection/entity card duplication only if playlist, snapshot playlist, and channel cards continue to drift.

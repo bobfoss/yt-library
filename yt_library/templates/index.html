@@ -153,7 +153,7 @@
         <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_unsubscribed" checked> Non-subscribed</label>
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="videos" checked> Video titles</label>
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="descriptions" checked> Descriptions</label>
-        <label class="filter"><input class="search-filter" type="checkbox" data-filter="hidden" checked> Hidden/missing</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="hidden" checked> Unavailable/removed</label>
       </div>
       <nav id="groups"></nav>
     </aside>
@@ -256,15 +256,17 @@
       ['', 'all-playlists'],
       ['__all_videos__', 'all-videos'],
       ['__liked__', 'liked-videos'],
-      ['__hidden_playlists__', 'playlists-with-hidden'],
+      ['__hidden_playlists__', 'playlists-with-unavailable'],
       ['__channels__', 'channels'],
       ['__subscribed_channels__', 'subscribed-channels'],
       ['__terminated_channels__', 'terminated-channels'],
       ['__snapshot__', 'takeout-snapshot'],
       ['__snapshot_missing__', 'snapshot-missing'],
-      ['__snapshot_likely_hidden__', 'likely-hidden-ids'],
+      ['__snapshot_likely_hidden__', 'likely-unavailable-ids'],
     ]);
     const selectionByViewHash = new Map([...viewHashBySelection].map(([selection, hash]) => [hash, selection]));
+    selectionByViewHash.set('playlists-with-hidden', '__hidden_playlists__');
+    selectionByViewHash.set('likely-hidden-ids', '__snapshot_likely_hidden__');
 
     function localViewHref(value) {
       const viewHash = viewHashBySelection.get(value);
@@ -881,10 +883,10 @@
       channelSection.appendChild(navButton('__terminated_channels__', 'Terminated channels', terminatedChannels.length));
 
       const metaSection = sectionFor('Meta');
-      metaSection.appendChild(navButton('__hidden_playlists__', 'Playlists with hidden', hiddenPlaylists.length));
+      metaSection.appendChild(navButton('__hidden_playlists__', 'Playlists with unavailable', hiddenPlaylists.length));
       metaSection.appendChild(navButton('__snapshot__', 'Takeout snapshot', data.snapshotPlaylists.length));
       metaSection.appendChild(navButton('__snapshot_missing__', 'Snapshot missing', data.snapshotMissing.length));
-      metaSection.appendChild(navButton('__snapshot_likely_hidden__', 'Likely hidden IDs', data.snapshotLikelyHidden.length));
+      metaSection.appendChild(navButton('__snapshot_likely_hidden__', 'Likely unavailable IDs', data.snapshotLikelyHidden.length));
 
       const pocketTubeSection = sectionFor('PocketTube');
       pocketTubeSection.appendChild(navButton('', 'All playlists', data.playlists.length));
@@ -1130,7 +1132,7 @@
         meta.innerHTML = `
           <a class="playlist-link" href="${playlist.url}" target="_blank" rel="noreferrer">YouTube</a>
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} hidden</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
         `;
         renderPagedGrid(rows, playlistVideoCardFor, playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.');
         return;
@@ -1147,20 +1149,20 @@
         title.textContent = 'All videos';
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} hidden</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
           ${allVideosSortHtml()}
         `;
         renderPagedGrid(rows, playlistVideoCardFor, 'No playlist videos match.');
         return;
       }
       if (selected === '__hidden__') {
-        title.textContent = 'Hidden videos';
+        title.textContent = 'Unavailable videos';
         const rows = data.hiddenVideos.filter(video => {
           const haystack = `${video.title} ${video.channel} ${video.availability} ${video.playlist_title} ${video.video_id}`.toLowerCase();
           return !query || haystack.includes(query);
         });
         meta.textContent = `${rows.length} shown`;
-        renderPagedGrid(rows, hiddenVideoCardFor, 'No hidden videos match.');
+        renderPagedGrid(rows, hiddenVideoCardFor, 'No unavailable videos match.');
         return;
       }
       if (selected === '__liked__') {
@@ -1208,7 +1210,7 @@
         return;
       }
       if (selected === '__hidden_playlists__') {
-        title.textContent = 'Playlists with hidden videos';
+        title.textContent = 'Playlists with unavailable videos';
         const rows = data.playlists
           .filter(playlist => (playlist.hidden_count || 0) > 0)
           .filter(playlist => {
@@ -1220,7 +1222,7 @@
             || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
           );
         meta.textContent = `${rows.length} playlists`;
-        renderPagedGrid(rows, cardFor, 'No playlists with hidden videos match.');
+        renderPagedGrid(rows, cardFor, 'No playlists with unavailable videos match.');
         return;
       }
       if (selected === '__snapshot__') {
@@ -1245,13 +1247,13 @@
         return;
       }
       if (selected === '__snapshot_likely_hidden__') {
-        title.textContent = 'Likely hidden IDs';
+        title.textContent = 'Likely unavailable IDs';
         const rows = data.snapshotLikelyHidden.filter(video => {
           const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.added_at} ${video.recovered_title}`.toLowerCase();
           return !query || haystack.includes(query);
         });
         meta.textContent = `${rows.length} video IDs`;
-        renderPagedGrid(rows, snapshotMissingCardFor, 'No likely hidden videos match.');
+        renderPagedGrid(rows, snapshotMissingCardFor, 'No likely unavailable videos match.');
         return;
       }
       const group = data.groups.find(g => g.group_key === selected);
@@ -1290,7 +1292,7 @@
         <div class="details">
           ${playlist.video_count_text ? `<span>${escapeHtml(playlist.video_count_text)}</span>` : ''}
           ${playlist.scanned_video_count ? `<span>${playlist.scanned_video_count} scanned</span>` : ''}
-          ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} hidden</span>` : ''}
+          ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} unavailable</span>` : ''}
           ${playlist.owner ? `<span>${escapeHtml(playlist.owner)}</span>` : ''}
           ${playlist.fetch_status === 'error' ? '<span class="status">Fetch failed</span>' : ''}
         </div>
@@ -1510,7 +1512,7 @@
         <div class="details">
           <span>${playlist.video_count} videos</span>
           ${playlist.current_video_count ? `<span>${playlist.current_video_count} current</span>` : ''}
-          ${playlist.current_hidden_count ? `<span class="badge">${playlist.current_hidden_count} hidden now</span>` : ''}
+          ${playlist.current_hidden_count ? `<span class="badge">${playlist.current_hidden_count} unavailable now</span>` : ''}
           ${playlist.visibility ? `<span>${escapeHtml(playlist.visibility)}</span>` : ''}
         </div>
         <div class="details">

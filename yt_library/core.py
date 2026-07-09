@@ -6081,7 +6081,7 @@ def scan_hidden(args: argparse.Namespace) -> None:
     ).fetchall()
     if args.limit:
         rows = rows[: args.limit]
-    print(f"Scanning {len(rows)} playlists for hidden videos...")
+    print(f"Scanning {len(rows)} playlists for unavailable videos...")
     total_hidden = 0
     for index, row in enumerate(rows, start=1):
         playlist_id = row["playlist_id"]
@@ -6144,11 +6144,11 @@ def scan_hidden(args: argparse.Namespace) -> None:
                 """,
                 (playlist_id, now, len(videos), hidden_count, status, error),
             )
-        suffix = f"{hidden_count} hidden / {len(videos)} videos"
+        suffix = f"{hidden_count} unavailable / {len(videos)} videos"
         if status != "ok":
             suffix = f"ERROR {error}"
         print(f"[{index:03d}/{len(rows):03d}] {suffix} - {title}")
-    print(f"Found {total_hidden} hidden videos.")
+    print(f"Found {total_hidden} unavailable videos.")
 
 
 def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
@@ -6699,7 +6699,7 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
         ]
     if args.limit:
         rows = rows[: args.limit]
-    scope = "likely hidden" if args.likely_hidden_only else "missing snapshot"
+    scope = "likely unavailable" if args.likely_hidden_only else "missing snapshot"
     print(f"Recovering Archivarix thumbnails for {len(rows)} {scope} video IDs...")
     found = 0
     cached = 0
