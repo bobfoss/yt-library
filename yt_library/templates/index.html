@@ -151,9 +151,9 @@
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="channels" checked> Channels</label>
         <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_subscribed" checked> Subscribed</label>
         <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_unsubscribed" checked> Non-subscribed</label>
-        <label class="filter"><input class="search-filter" type="checkbox" data-filter="videos" checked> Video titles</label>
-        <label class="filter"><input class="search-filter" type="checkbox" data-filter="descriptions" checked> Descriptions</label>
-        <label class="filter"><input class="search-filter" type="checkbox" data-filter="hidden" checked> Unavailable/removed</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="video_fields" checked> Videos</label>
+        <label class="filter child"><input class="search-filter video-child-filter" type="checkbox" data-filter="videos" checked> Titles</label>
+        <label class="filter child"><input class="search-filter video-child-filter" type="checkbox" data-filter="descriptions" checked> Descriptions</label>
       </div>
       <nav id="groups"></nav>
     </aside>
@@ -181,6 +181,7 @@
 
     let selected = '';
     let playlistVisibility = { videos: true, hidden: true };
+    let searchResultVisibility = { hidden: true };
     let playlistVisibilityPlaylistId = '';
     let allVideosSort = 'newest_added';
     let currentPage = 1;
@@ -191,6 +192,8 @@
     const searchFilters = [...document.querySelectorAll('.search-filter')];
     const channelsFilter = document.querySelector('[data-filter="channels"]');
     const channelChildFilters = [...document.querySelectorAll('.channel-child-filter')];
+    const videosFilter = document.querySelector('[data-filter="video_fields"]');
+    const videoChildFilters = [...document.querySelectorAll('.video-child-filter')];
     const grid = document.getElementById('grid');
     const empty = document.getElementById('empty');
     const title = document.getElementById('view-title');
@@ -359,7 +362,11 @@
     }
 
     function activeSearchFilters() {
-      return new Set(searchFilters.filter(input => input.checked).map(input => input.dataset.filter));
+      return new Set(
+        searchFilters
+          .filter(input => input.checked && input.dataset.filter !== 'video_fields')
+          .map(input => input.dataset.filter)
+      );
     }
 
     function syncChannelParentFilter() {
@@ -367,6 +374,13 @@
       const checkedCount = channelChildFilters.filter(input => input.checked).length;
       channelsFilter.checked = checkedCount === channelChildFilters.length;
       channelsFilter.indeterminate = checkedCount > 0 && checkedCount < channelChildFilters.length;
+    }
+
+    function syncVideosParentFilter() {
+      if (!videosFilter || !videoChildFilters.length) return;
+      const checkedCount = videoChildFilters.filter(input => input.checked).length;
+      videosFilter.checked = checkedCount === videoChildFilters.length;
+      videosFilter.indeterminate = checkedCount > 0 && checkedCount < videoChildFilters.length;
     }
 
     function isSubscribedChannel(channel) {
@@ -808,12 +822,11 @@
           }
         }
       }
-      if (filters.has('videos') || filters.has('descriptions') || filters.has('hidden')) {
+      if (filters.has('videos') || filters.has('descriptions')) {
         for (const video of data.playlistVideos || []) {
           const titleHit = filters.has('videos') && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.match_label} ${video.match_note} ${video.video_id} ${video.playlist_title}`, query);
           const descriptionHit = filters.has('descriptions') && includesQuery(video.metadata_description, query);
-          const hiddenHit = filters.has('hidden') && !video.is_playable && includesQuery(`${displayVideoTitle(video)} ${video.availability} ${video.match_label} ${video.match_note} ${video.video_id} ${video.playlist_title}`, query);
-          if (titleHit || descriptionHit || hiddenHit) {
+          if (titleHit || descriptionHit) {
             const key = video.video_id ? `video:${video.video_id}` : `playlist-row:${video.playlist_id}:${video.position}`;
             if (!seenVideoKeys.has(key)) {
               seenVideoKeys.add(key);
@@ -822,18 +835,40 @@
           }
         }
       }
-      if (filters.has('hidden')) {
+      if (filters.has('videos') || filters.has('descriptions')) {
         for (const video of data.snapshotMissing || []) {
           const key = video.video_id ? `video:${video.video_id}` : `snapshot-row:${video.playlist_id}:${video.position}`;
           if (seenVideoKeys.has(key)) continue;
-          const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.recovered_title} ${video.recovered_description} ${video.recovered_channel} ${video.recovered_status}`;
-          if (includesQuery(haystack, query)) {
+          const titleHit = filters.has('videos') && includesQuery(`${video.video_id} ${video.playlist_title} ${video.current_title} ${video.recovered_title} ${video.recovered_channel} ${video.recovered_status}`, query);
+          const descriptionHit = filters.has('descriptions') && includesQuery(video.recovered_description, query);
+          if (titleHit || descriptionHit) {
             seenVideoKeys.add(key);
-            results.push({ kind: 'missing', score: 4, item: video });
+            results.push({ kind: 'missing', score: titleHit ? 4 : 5, item: video });
           }
         }
       }
       return results.sort((a, b) => a.score - b.score).slice(0, 500);
+    }
+
+    function resultIsUnavailable(result) {
+      if (result.kind === 'missing') {
+        const status = String(result.item?.recovered_status || '').toUpperCase();
+        return status !== 'LIVE';
+      }
+      if (result.kind !== 'video') return false;
+      return isHiddenPlaylistVideo(result.item);
+    }
+
+    function resultUsesVideoAvailabilityFilter(result) {
+      return result.kind === 'video' || result.kind === 'missing';
+    }
+
+    function filterSearchResultsByAvailability(rows) {
+      return rows.filter(result => {
+        if (!resultUsesVideoAvailabilityFilter(result)) return true;
+        const unavailable = resultIsUnavailable(result);
+        return unavailable ? searchResultVisibility.hidden : true;
+      });
     }
 
     function buttonFor(group, child=false) {
@@ -1099,9 +1134,14 @@
         return;
       }
       if (query) {
-        const rows = buildOmniResults(query);
+        const allRows = buildOmniResults(query);
+        const unavailableCount = allRows.filter(resultIsUnavailable).length;
+        const rows = filterSearchResultsByAvailability(allRows);
         title.textContent = 'Search results';
-        meta.textContent = `${rows.length} shown`;
+        meta.innerHTML = `
+          <span>${rows.length} shown</span>
+          <label class="meta-filter"><input type="checkbox" data-search-result-filter="hidden" ${searchResultVisibility.hidden ? 'checked' : ''}> <span class="badge">${unavailableCount} unavailable</span></label>
+        `;
         renderPagedGrid(rows, searchResultCardFor, 'No results match.');
         return;
       }
@@ -1576,6 +1616,13 @@
         return;
       }
       if (!(target instanceof HTMLInputElement)) return;
+      const searchResultFilter = target.dataset.searchResultFilter;
+      if (searchResultFilter) {
+        searchResultVisibility[searchResultFilter] = target.checked;
+        currentPage = 1;
+        render();
+        return;
+      }
       const filter = target.dataset.playlistFilter;
       if (!filter) return;
       playlistVisibility[filter] = target.checked;
@@ -1611,6 +1658,14 @@
         render();
       });
     }
+    if (videosFilter) {
+      videosFilter.addEventListener('change', () => {
+        videosFilter.indeterminate = false;
+        for (const child of videoChildFilters) child.checked = videosFilter.checked;
+        currentPage = 1;
+        render();
+      });
+    }
     for (const input of channelChildFilters) {
       input.addEventListener('change', () => {
         syncChannelParentFilter();
@@ -1618,14 +1673,22 @@
         render();
       });
     }
+    for (const input of videoChildFilters) {
+      input.addEventListener('change', () => {
+        syncVideosParentFilter();
+        currentPage = 1;
+        render();
+      });
+    }
     for (const input of searchFilters) {
-      if (input === channelsFilter || channelChildFilters.includes(input)) continue;
+      if (input === channelsFilter || input === videosFilter || channelChildFilters.includes(input) || videoChildFilters.includes(input)) continue;
       input.addEventListener('change', () => {
         currentPage = 1;
         render();
       });
     }
     syncChannelParentFilter();
+    syncVideosParentFilter();
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
       currentPage = 1;
