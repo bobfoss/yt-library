@@ -15,9 +15,12 @@ YT cookies.txt
 archivarix.net cookies.txt
 
 # Personal exports and snapshots
+*.zip
 youtube_playlist_manager_*.json
 YouTube and YouTube Music/
 
 # Codex/local workspace metadata
 .codex/
 .agents/
+.codex-remote-attachments/
+runtime_logs/

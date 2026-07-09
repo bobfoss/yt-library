@@ -196,6 +196,20 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             finally:
                 conn.close()
             return
+        if parsed.path == "/api/admin/queue/add-target":
+            target = (params.get("target") or [""])[0]
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    try:
+                        result = enqueue_worker_queue_target(conn, target)
+                    except ValueError as exc:
+                        self.send_json({"error": str(exc)}, status=400)
+                        return
+                self.send_json({"ok": True, **result})
+            finally:
+                conn.close()
+            return
         if parsed.path == "/api/admin/queue/add-playlist":
             target = (params.get("target") or [""])[0]
             conn = connect(self.db_path)

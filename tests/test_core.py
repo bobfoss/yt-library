@@ -43,6 +43,14 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(core.youtube_channel_ref_from_url("https://www.youtube.com/@ESSIGI"), "@ESSIGI")
         self.assertEqual(core.youtube_channel_url("@ESSIGI"), "https://www.youtube.com/@ESSIGI")
         self.assertEqual(core.youtube_channel_url("c/Example"), "https://www.youtube.com/c/Example")
+        self.assertEqual(
+            core.local_queue_target_from_url("http://127.0.0.1:8765/#playlist=PLexample"),
+            ("playlist", "PLexample"),
+        )
+        self.assertEqual(
+            core.local_queue_target_from_url("http://127.0.0.1:8765/#video=abc12345678"),
+            ("video", "abc12345678"),
+        )
         self.assertEqual(core.format_duration(65), "1:05")
         self.assertEqual(core.format_duration(3661), "1:01:01")
         self.assertEqual(core.bounded_int("140"), 100)
@@ -411,6 +419,21 @@ class SchemaTests(unittest.TestCase):
                     self.assertEqual([row["playlist_id"] for row in playlist_queue_rows], ["PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4"])
                     with self.assertRaises(ValueError):
                         core.enqueue_playlist_scan_target_from_text(conn, "https://www.youtube.com/watch?v=abc12345678")
+                    with conn:
+                        unified_youtube_playlist = core.enqueue_worker_queue_target(
+                            conn,
+                            "https://www.youtube.com/playlist?list=PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
+                        )
+                    self.assertEqual(unified_youtube_playlist["worker_type"], "playlist")
+                    self.assertEqual(unified_youtube_playlist["source"], "youtube")
+                    with conn:
+                        unified_local_playlist = core.enqueue_worker_queue_target(
+                            conn,
+                            "http://127.0.0.1:8765/#playlist=PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
+                        )
+                    self.assertEqual(unified_local_playlist["worker_type"], "metadata")
+                    self.assertEqual(unified_local_playlist["source"], "local")
+                    self.assertEqual(unified_local_playlist["queued_count"], "2")
                     playlist_video_rows = [
                         row
                         for row in core.metadata_queue_rows(conn, limit=10)

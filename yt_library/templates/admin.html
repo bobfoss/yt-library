@@ -103,10 +103,6 @@
           <label class="checkbox"><input id="metadataForce" type="checkbox">Refresh already fetched</label>
           <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
         </div>
-        <div class="controls">
-          <label>URL/video/channel ID<input id="providedMetadataTarget" class="wide-input" type="text" placeholder="https://www.youtube.com/watch?v=..."></label>
-          <button id="fetchProvidedMetadata" class="primary" type="button">Add to queue</button>
-        </div>
         <div class="grid" id="metadataCounts"></div>
       </section>
 
@@ -122,8 +118,6 @@
         </div>
         <div class="controls">
           <button id="scanPlaylists" class="primary" type="button">Scan all playlists</button>
-          <label>Playlist URL or ID<input id="providedPlaylistTarget" class="wide-input" type="text" placeholder="https://www.youtube.com/playlist?list=..."></label>
-          <button id="queuePlaylist" class="primary" type="button">Add to queue</button>
           <button id="reconcilePlaylists" type="button">Reconcile playlists</button>
         </div>
       </section>
@@ -173,6 +167,10 @@
         <div class="panel"><div class="metric">Worker</div><div id="commonWorkerState" class="value">idle</div></div>
       </div>
       <div class="controls">
+        <label>URL/video/channel/playlist ID<input id="providedQueueTarget" class="wide-input" type="text" placeholder="YouTube URL, local URL, video ID, channel ID, @handle, or playlist ID"></label>
+        <button id="queueProvidedTarget" class="primary" type="button">Add to queue</button>
+      </div>
+      <div class="controls">
         <button id="startWorkerQueue" class="primary" type="button">Start queue</button>
         <button id="rebuildWorkerQueue" type="button">Rebuild queue</button>
         <button id="clearWorkerQueue" type="button">Clear queue</button>
@@ -216,8 +214,7 @@
       liveHistoryRows: document.getElementById('liveHistoryRows'),
       metadataCounts: document.getElementById('metadataCounts'),
       logs: document.getElementById('logs'),
-      providedMetadataTarget: document.getElementById('providedMetadataTarget'),
-      providedPlaylistTarget: document.getElementById('providedPlaylistTarget'),
+      providedQueueTarget: document.getElementById('providedQueueTarget'),
       placeholderLimit: document.getElementById('placeholderLimit'),
       recoveryDelay: document.getElementById('recoveryDelay'),
       metadataStaleDays: document.getElementById('metadataStaleDays'),
@@ -515,26 +512,14 @@
       stale_days: fields.metadataStaleDays.value,
       force: fields.metadataForce.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
-    document.getElementById('fetchProvidedMetadata').addEventListener('click', async () => {
-      const target = fields.providedMetadataTarget.value.trim();
+    document.getElementById('queueProvidedTarget').addEventListener('click', async () => {
+      const target = fields.providedQueueTarget.value.trim();
       if (!target) {
-        alert('Enter a YouTube URL, video ID, channel ID, or @handle.');
+        alert('Enter a YouTube URL, local URL, video ID, channel ID, @handle, or playlist ID.');
         return;
       }
       try {
-        await post('/api/admin/metadata/fetch-provided', { target });
-      } catch (error) {
-        alert(error.message);
-      }
-    });
-    document.getElementById('queuePlaylist').addEventListener('click', async () => {
-      const target = fields.providedPlaylistTarget.value.trim();
-      if (!target) {
-        alert('Enter a YouTube playlist URL or playlist ID.');
-        return;
-      }
-      try {
-        await post('/api/admin/queue/add-playlist', { target });
+        await post('/api/admin/queue/add-target', { target });
       } catch (error) {
         alert(error.message);
       }

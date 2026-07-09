@@ -4945,7 +4945,13 @@ def enqueue_playlist_scan_target_from_text(conn: sqlite3.Connection, target: str
     playlist_id = playlist_id.strip()
     if not playlist_id or not (playlist_id.startswith("PL") or playlist_id.startswith("OLAK")):
         raise ValueError("Enter a YouTube playlist URL or playlist ID.")
-    subject_key = enqueue_playlist_scan_item(conn, playlist_id, priority=0, manual=True)
+    subject_key = enqueue_playlist_scan_item(
+        conn,
+        playlist_id,
+        source_key=target if target.startswith(("http://", "https://")) else playlist_id,
+        priority=0,
+        manual=True,
+    )
     return {"subject_key": subject_key, "playlist_id": playlist_id, "worker_type": "playlist"}
 
 
@@ -4955,6 +4961,7 @@ def enqueue_playlist_scan_item(
     *,
     title: str = "",
     video_count_text: str = "",
+    source_key: str = "",
     priority: int = 100,
     manual: bool = False,
 ) -> str:
@@ -4992,7 +4999,7 @@ def enqueue_playlist_scan_item(
             subject_key,
             playlist_id,
             title or playlist_id,
-            video_count_text or "",
+            source_key or (playlist_id if manual else ""),
             int(priority),
             1 if manual else 0,
             now,
@@ -5782,6 +5789,161 @@ def enqueue_playlist_metadata_targets(conn: sqlite3.Connection, playlist_id: str
         "metadata_source": "playlist",
         "playlist_id": playlist_id,
         "queued_count": str(len(rows)),
+    }
+
+
+def local_queue_target_from_url(target: str) -> tuple[str, str]:
+    parsed = urllib.parse.urlparse(target)
+    if not parsed.scheme and not parsed.netloc:
+        return "", ""
+    host = (parsed.hostname or "").lower()
+    if host.endswith("youtube.com") or host == "youtu.be":
+        return "", ""
+
+    fragment_params = urllib.parse.parse_qs(parsed.fragment)
+    for key, kind in (("playlist", "playlist"), ("video", "video"), ("channel", "channel")):
+        value = (fragment_params.get(key) or [""])[0]
+        if value:
+            return kind, urllib.parse.unquote(value).strip()
+
+    query_params = urllib.parse.parse_qs(parsed.query)
+    if (query_params.get("list") or [""])[0]:
+        return "playlist", (query_params.get("list") or [""])[0].strip()
+    if (query_params.get("v") or [""])[0]:
+        return "video", (query_params.get("v") or [""])[0].strip()
+
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) >= 2 and parts[0] in {"playlist", "video", "channel"}:
+        return parts[0], urllib.parse.unquote(parts[1]).strip()
+    return "", ""
+
+
+def enqueue_worker_queue_target(conn: sqlite3.Connection, target: str) -> dict[str, str]:
+    target = (target or "").strip()
+    if not target:
+        raise ValueError("Enter a YouTube URL, local URL, video ID, channel ID, @handle, or playlist ID.")
+
+    parsed = urllib.parse.urlparse(target)
+    host = (parsed.hostname or "").lower()
+    is_youtube_url = parsed.scheme in {"http", "https"} and (
+        host.endswith("youtube.com") or host == "youtu.be"
+    )
+
+    if is_youtube_url:
+        video_id = extract_video_id(target)
+        playlist_id = extract_playlist_id(target) or ""
+        channel_id = "" if video_id else youtube_channel_ref_from_url(target)
+        if playlist_id and not video_id:
+            subject_key = enqueue_playlist_scan_item(
+                conn,
+                playlist_id,
+                source_key=target,
+                priority=0,
+                manual=True,
+            )
+            return {
+                "subject_key": subject_key,
+                "worker_type": "playlist",
+                "playlist_id": playlist_id,
+                "source": "youtube",
+            }
+        if channel_id:
+            subject_key = enqueue_metadata_item(
+                conn,
+                video_id=channel_id,
+                channel_id=channel_id,
+                channel_title=target,
+                metadata_source="channel",
+                source_key=target,
+                priority=0,
+                manual=True,
+            )
+            return {
+                "subject_key": subject_key,
+                "worker_type": "metadata",
+                "channel_id": channel_id,
+                "metadata_source": "channel",
+                "source": "youtube",
+            }
+        if video_id:
+            subject_key = enqueue_metadata_item(
+                conn,
+                video_id=video_id,
+                current_title=target,
+                metadata_source="provided",
+                source_key=target,
+                priority=0,
+                manual=True,
+            )
+            return {
+                "subject_key": subject_key,
+                "worker_type": "metadata",
+                "video_id": video_id,
+                "metadata_source": "provided",
+                "source": "youtube",
+            }
+        raise ValueError("Could not identify a YouTube video, channel, or playlist from that URL.")
+
+    local_kind, local_value = local_queue_target_from_url(target)
+    if local_kind:
+        target = local_value
+
+    playlist_id = extract_playlist_id(target) or ""
+    if local_kind == "playlist" or (not local_kind and playlist_id):
+        playlist_id = playlist_id or target.strip()
+        result = enqueue_playlist_metadata_targets(conn, playlist_id)
+        return {
+            **result,
+            "worker_type": "metadata",
+            "source": "local",
+        }
+
+    channel_ref = ""
+    if local_kind == "channel":
+        channel_ref = target.strip()
+    elif target.startswith(("@", "channel/", "c/", "user/")):
+        channel_ref = youtube_channel_ref_from_url(target) or target.removeprefix("channel/")
+    elif target.startswith(("UC", "HC")) and len(target) >= 20:
+        channel_ref = target
+    if channel_ref:
+        subject_key = enqueue_metadata_item(
+            conn,
+            video_id=channel_ref,
+            channel_id=channel_ref,
+            channel_title=target,
+            metadata_source="channel",
+            source_key="local",
+            priority=0,
+            manual=True,
+        )
+        return {
+            "subject_key": subject_key,
+            "worker_type": "metadata",
+            "channel_id": channel_ref,
+            "metadata_source": "channel",
+            "source": "local",
+        }
+
+    video_id = extract_video_id(target) or target.strip()
+    if local_kind and local_kind != "video":
+        raise ValueError("Could not identify a video, channel, or playlist from that local URL.")
+    if not video_id:
+        raise ValueError("Enter a video ID, channel ID, @handle, playlist ID, or URL.")
+    subject_key = enqueue_metadata_item(
+        conn,
+        video_id=video_id,
+        current_title=video_id,
+        metadata_source="provided",
+        source_key="local",
+        priority=0,
+        manual=True,
+    )
+    return {
+        "subject_key": subject_key,
+        "worker_type": "metadata",
+        "video_id": video_id,
+        "metadata_source": "provided",
+        "source": "local",
     }
 
 

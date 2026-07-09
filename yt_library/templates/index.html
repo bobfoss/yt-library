@@ -197,6 +197,7 @@
     let searchResultVisibility = { hidden: true };
     let playlistVisibilityPlaylistId = '';
     let allVideosSort = 'newest_added';
+    let playlistViewSort = 'playlist_order';
     let currentPage = 1;
     let pageSize = '100';
     let historyPageState = { key: '', loading: false, data: null };
@@ -651,15 +652,15 @@
       return `${video.playlist_title || ''}\u0000${String(video.position || '').padStart(8, '0')}\u0000${video.video_id || ''}`;
     }
 
-    function sortedAllPlaylistVideos(rows) {
+    function sortedPlaylistVideos(rows, sortValue) {
       const sorted = [...rows];
-      if (allVideosSort === 'newest_added') {
+      if (sortValue === 'newest_added') {
         sorted.sort((a, b) => sortableVideoDate(b) - sortableVideoDate(a) || displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
-      } else if (allVideosSort === 'oldest_added') {
+      } else if (sortValue === 'oldest_added') {
         sorted.sort((a, b) => sortableVideoDate(a) - sortableVideoDate(b) || displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
-      } else if (allVideosSort === 'most_watched') {
+      } else if (sortValue === 'most_watched') {
         sorted.sort((a, b) => Number(b.watch_count || 0) - Number(a.watch_count || 0) || displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
-      } else if (allVideosSort === 'playlist_order') {
+      } else if (sortValue === 'playlist_order') {
         sorted.sort((a, b) => playlistOrderKey(a).localeCompare(playlistOrderKey(b), undefined, { sensitivity: 'base' }));
       } else {
         sorted.sort((a, b) => displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
@@ -823,7 +824,7 @@
       if (resultsScroll) resultsScroll.scrollTop = 0;
     }
 
-    function allVideosSortHtml() {
+    function videoSortHtml(value, scope) {
       const options = [
         ['newest_added', 'Recently added'],
         ['title', 'Title A-Z'],
@@ -833,8 +834,8 @@
       ];
       return `
         <label class="view-sort">Sort
-          <select data-all-videos-sort>
-            ${options.map(([value, label]) => `<option value="${value}" ${allVideosSort === value ? 'selected' : ''}>${label}</option>`).join('')}
+          <select data-video-sort="${escapeHtml(scope)}">
+            ${options.map(([optionValue, label]) => `<option value="${optionValue}" ${value === optionValue ? 'selected' : ''}>${label}</option>`).join('')}
           </select>
         </label>
       `;
@@ -1300,10 +1301,10 @@
         });
         const videoCount = allRows.filter(video => !isHiddenPlaylistVideo(video)).length;
         const hiddenCount = allRows.length - videoCount;
-        const rows = allRows.filter(video => {
+        const rows = sortedPlaylistVideos(allRows.filter(video => {
           const hidden = isHiddenPlaylistVideo(video);
           return hidden ? playlistVisibility.hidden : playlistVisibility.videos;
-        });
+        }), playlistViewSort);
         title.innerHTML = playlist.url
           ? `<a class="title-link" href="${escapeHtml(playlist.url)}" target="_blank" rel="noreferrer">${escapeHtml(playlist.title)}</a>`
           : escapeHtml(playlist.title);
@@ -1311,6 +1312,7 @@
           <a class="playlist-link" href="${playlist.url}" target="_blank" rel="noreferrer">YouTube</a>
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
+          ${videoSortHtml(playlistViewSort, 'playlist')}
         `;
         renderPagedGrid(rows, playlistVideoCardFor, playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.');
         return;
@@ -1320,15 +1322,15 @@
         const allRows = allPlaylistVideos().filter(video => isHiddenPlaylistVideo(video) || hasActivePlaylistLink(video));
         const hiddenCount = allRows.filter(isHiddenPlaylistVideo).length;
         const videoCount = allRows.length - hiddenCount;
-        const rows = sortedAllPlaylistVideos(allRows.filter(video => {
+        const rows = sortedPlaylistVideos(allRows.filter(video => {
           const hidden = isHiddenPlaylistVideo(video);
           return hidden ? playlistVisibility.hidden : playlistVisibility.videos;
-        }));
+        }), allVideosSort);
         title.textContent = 'Playlist videos';
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
-          ${allVideosSortHtml()}
+          ${videoSortHtml(allVideosSort, 'all')}
         `;
         renderPagedGrid(rows, playlistVideoCardFor, 'No playlist videos match.');
         return;
@@ -1788,8 +1790,12 @@
     });
     meta.addEventListener('change', event => {
       const target = event.target;
-      if (target instanceof HTMLSelectElement && target.dataset.allVideosSort !== undefined) {
-        allVideosSort = target.value || 'newest_added';
+      if (target instanceof HTMLSelectElement && target.dataset.videoSort !== undefined) {
+        if (target.dataset.videoSort === 'playlist') {
+          playlistViewSort = target.value || 'playlist_order';
+        } else {
+          allVideosSort = target.value || 'newest_added';
+        }
         currentPage = 1;
         scrollResultsToTop();
         render();
