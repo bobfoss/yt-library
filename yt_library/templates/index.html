@@ -256,7 +256,6 @@
       ['', 'all-playlists'],
       ['__all_videos__', 'all-videos'],
       ['__liked__', 'liked-videos'],
-      ['__hidden__', 'hidden-videos'],
       ['__hidden_playlists__', 'playlists-with-hidden'],
       ['__channels__', 'channels'],
       ['__subscribed_channels__', 'subscribed-channels'],
@@ -862,9 +861,7 @@
       videoSection.appendChild(navButton('__all_videos__', 'All videos', allVideoRows.length));
       const likedRows = likedVideos();
       videoSection.appendChild(navButton('__liked__', 'Liked videos', likedRows.length));
-      videoSection.appendChild(navButton('__hidden__', 'Hidden videos', data.hiddenVideos.length));
       const hiddenPlaylists = data.playlists.filter(playlist => (playlist.hidden_count || 0) > 0);
-      videoSection.appendChild(navButton('__hidden_playlists__', 'Playlists with hidden', hiddenPlaylists.length));
 
       const channelSection = sectionFor('Channels');
       channelSection.appendChild(navButton('__channels__', 'Channels', (data.channels || []).length));
@@ -874,6 +871,7 @@
       channelSection.appendChild(navButton('__terminated_channels__', 'Terminated channels', terminatedChannels.length));
 
       const metaSection = sectionFor('Meta');
+      metaSection.appendChild(navButton('__hidden_playlists__', 'Playlists with hidden', hiddenPlaylists.length));
       metaSection.appendChild(navButton('__snapshot__', 'Takeout snapshot', data.snapshotPlaylists.length));
       metaSection.appendChild(navButton('__snapshot_missing__', 'Snapshot missing', data.snapshotMissing.length));
       metaSection.appendChild(navButton('__snapshot_likely_hidden__', 'Likely hidden IDs', data.snapshotLikelyHidden.length));
