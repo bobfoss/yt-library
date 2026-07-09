@@ -142,6 +142,8 @@
     .position { color: var(--muted); font-size: 12px; text-transform: uppercase; }
     .status { color: var(--warn); }
     .empty { color: var(--muted); padding: 36px 0; }
+    .searching-status { display: inline-flex; min-width: 8em; }
+    .searching-dots { display: inline-block; width: 1.4em; text-align: left; }
     @media (max-width: 760px) {
       body { overflow: auto; }
       .app { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
@@ -188,7 +190,7 @@
       <section id="view-context" class="view-context" hidden></section>
       <div class="results-scroll">
         <section id="grid" class="grid"></section>
-        <div id="empty" class="empty" hidden>No playlists match.</div>
+        <div id="empty" class="empty" hidden aria-live="polite">No playlists match.</div>
       </div>
       <div id="bottom-pager" class="pager bottom" hidden></div>
     </main>
@@ -213,6 +215,8 @@
     let channelHistoryCounts = new Map();
     let channelDetailTab = 'playlists';
     let channelsManuallyDisabled = false;
+    let renderGeneration = 0;
+    let searchProgressTimer = null;
     const search = document.getElementById('search');
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
@@ -789,6 +793,33 @@
       return pageInfo;
     }
 
+    function stopSearchProgress() {
+      if (searchProgressTimer !== null) {
+        clearInterval(searchProgressTimer);
+        searchProgressTimer = null;
+      }
+      empty.classList.remove('searching-status');
+    }
+
+    function showSearchProgress() {
+      stopSearchProgress();
+      grid.className = 'grid';
+      grid.replaceChildren();
+      empty.hidden = false;
+      empty.classList.add('searching-status');
+      const label = document.createElement('span');
+      label.textContent = 'Searching';
+      const dots = document.createElement('span');
+      dots.className = 'searching-dots';
+      dots.textContent = '.';
+      empty.replaceChildren(label, dots);
+      let dotCount = 1;
+      searchProgressTimer = setInterval(() => {
+        dotCount = dotCount === 3 ? 1 : dotCount + 1;
+        dots.textContent = '.'.repeat(dotCount);
+      }, 280);
+    }
+
     function remotePageInfo(total, rowsLength) {
       const size = pageSizeNumber();
       const effectiveSize = Number.isFinite(size) ? size : 1000;
@@ -1283,12 +1314,14 @@
     }
 
     async function render() {
+      const generation = ++renderGeneration;
       if (!data) {
         title.textContent = 'Loading';
         meta.textContent = '';
         return;
       }
       const query = search.value.trim().toLowerCase();
+      stopSearchProgress();
       empty.textContent = 'No playlists match.';
       hidePager();
       viewContext.replaceChildren();
@@ -1362,7 +1395,24 @@
         return;
       }
       if (query) {
-        const allRows = await buildOmniResults(query);
+        title.textContent = 'Searching';
+        meta.textContent = '';
+        showSearchProgress();
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        if (generation !== renderGeneration) return;
+        let allRows;
+        try {
+          allRows = await buildOmniResults(query);
+        } catch (error) {
+          if (generation !== renderGeneration) return;
+          stopSearchProgress();
+          title.textContent = 'Search unavailable';
+          empty.hidden = false;
+          empty.textContent = error.message;
+          return;
+        }
+        if (generation !== renderGeneration) return;
+        stopSearchProgress();
         const rows = allRows;
         title.textContent = 'Search results';
         meta.innerHTML = `
