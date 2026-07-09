@@ -75,9 +75,17 @@ Status: completed for active library video cards.
 - Internal schema and API names still use terms such as `hidden_count`, `hiddenVideos`, `snapshotLikelyHidden`, and `__hidden_playlists__`.
 - Cleanup: when convenient, migrate internal names to `unavailable` equivalents while preserving existing data and backwards-compatible hash aliases.
 
+## Unified Server-Side Omni Search
+
+- The integrated omni-search currently uses a hybrid model: playlists, channels, playlist videos, and snapshot/unavailable candidates are searched client-side from `/api/data`, while history matches are fetched from `/api/history/search`.
+- Dedicated History pagination is correct because it is server-paged, but omni-search pagination is only correct over the merged client-side result window. History contribution is currently capped before merging.
+- Cleanup: add a unified `/api/search` endpoint that applies search fields, source filters, unavailable inclusion, history dedupe, counts, ranking, and pagination on the server.
+- The browser should then render returned rows instead of merging partially complete client/server result sets.
+
 ## Suggested Order
 
-1. Share the video-card renderer with `history.html`.
-2. Remove the unused Archivarix candidate card path.
-3. Revisit hidden/unavailable internal naming.
-4. Revisit collection/entity card duplication only if playlist, snapshot playlist, and channel cards continue to drift.
+1. Add unified server-side omni-search with correct pagination.
+2. Share the video-card renderer with `history.html`.
+3. Remove the unused Archivarix candidate card path.
+4. Revisit hidden/unavailable internal naming.
+5. Revisit collection/entity card duplication only if playlist, snapshot playlist, and channel cards continue to drift.

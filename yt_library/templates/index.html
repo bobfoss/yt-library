@@ -201,6 +201,7 @@
     let pageSize = '100';
     let historyPageState = { key: '', loading: false, data: null };
     let historySearchState = { key: '', loading: false, data: null };
+    let channelsManuallyDisabled = false;
     const search = document.getElementById('search');
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
@@ -387,7 +388,12 @@
     function activeSearchFilters() {
       return new Set(
         searchFilters
-          .filter(input => input.checked && !['videos_root', 'video_fields', 'video_sources'].includes(input.dataset.filter))
+          .filter(input => {
+            if (!input.checked) return false;
+            if (['videos_root', 'video_fields', 'video_sources'].includes(input.dataset.filter)) return false;
+            if (input.classList.contains('channel-child-filter') && !channelsFilter.checked) return false;
+            return true;
+          })
           .map(input => input.dataset.filter)
       );
     }
@@ -395,8 +401,14 @@
     function syncChannelParentFilter() {
       if (!channelsFilter || !channelChildFilters.length) return;
       const checkedCount = channelChildFilters.filter(input => input.checked).length;
-      channelsFilter.checked = checkedCount === channelChildFilters.length;
-      channelsFilter.indeterminate = checkedCount > 0 && checkedCount < channelChildFilters.length;
+      if (channelsManuallyDisabled) {
+        channelsFilter.checked = false;
+        channelsFilter.indeterminate = false;
+      } else {
+        channelsFilter.checked = checkedCount > 0;
+        channelsFilter.indeterminate = checkedCount > 0 && checkedCount < channelChildFilters.length;
+      }
+      setFilterDimmed(channelChildFilters, !channelsFilter.checked);
     }
 
     function syncVideosParentFilter() {
@@ -1051,7 +1063,7 @@
       metaSection.appendChild(navButton('__snapshot_missing__', 'Snapshot missing', data.snapshotMissing.length));
       metaSection.appendChild(navButton('__snapshot_likely_hidden__', 'Likely unavailable IDs', data.snapshotLikelyHidden.length));
 
-      const pocketTubeSection = sectionFor('PocketTube');
+      const pocketTubeSection = sectionFor('Playlists');
       pocketTubeSection.appendChild(navButton('', 'All playlists', data.playlists.length));
       for (const group of children.get('') || []) {
         pocketTubeSection.appendChild(buttonFor(group));
@@ -1821,8 +1833,12 @@
     if (channelsFilter) {
       channelsFilter.addEventListener('change', () => {
         channelsFilter.indeterminate = false;
-        for (const child of channelChildFilters) child.checked = channelsFilter.checked;
+        channelsManuallyDisabled = !channelsFilter.checked;
+        if (channelsFilter.checked && !channelChildFilters.some(child => child.checked)) {
+          for (const child of channelChildFilters) child.checked = true;
+        }
         currentPage = 1;
+        syncChannelParentFilter();
         render();
       });
     }
@@ -1855,6 +1871,7 @@
     }
     for (const input of channelChildFilters) {
       input.addEventListener('change', () => {
+        channelsManuallyDisabled = false;
         syncChannelParentFilter();
         currentPage = 1;
         render();
