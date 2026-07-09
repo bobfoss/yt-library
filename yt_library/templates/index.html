@@ -531,7 +531,18 @@
     }
 
     function isHiddenPlaylistVideo(video) {
-      return !Number(video.is_playable || 0);
+      return !Number(video.is_playable || 0) || Boolean(unavailableLabel(video));
+    }
+
+    function wasRemovedByMeFromPlaylist(video) {
+      return wasRemovedFromPlaylist(video) && !isHiddenPlaylistVideo(video);
+    }
+
+    function hasActivePlaylistLink(video) {
+      if (Array.isArray(video.playlist_links) && video.playlist_links.length) {
+        return video.playlist_links.some(link => link && link.playlist_id && link.title && !link.removed);
+      }
+      return Boolean(video.playlist_id && video.playlist_title && !wasRemovedByMeFromPlaylist(video));
     }
 
     function metadataCompletenessScore(video) {
@@ -716,12 +727,11 @@
     function playlistSourceLinksHtml(video) {
       const links = Array.isArray(video.playlist_links) && video.playlist_links.length
         ? video.playlist_links
-        : [{ playlist_id: video.playlist_id, title: video.playlist_title, removed: wasRemovedFromPlaylist(video) }];
+        : [{ playlist_id: video.playlist_id, title: video.playlist_title, removed: wasRemovedByMeFromPlaylist(video) }];
       const rows = links
-        .filter(link => link && link.playlist_id && link.title)
+        .filter(link => link && link.playlist_id && link.title && !link.removed)
         .map(link => {
-          const removed = link.removed ? ' <span class="badge">(Removed)</span>' : '';
-          return `<div><a class="playlist-link" href="${localPlaylistHref(link.playlist_id)}">${escapeHtml(link.title)}</a>${removed}</div>`;
+          return `<div><a class="playlist-link" href="${localPlaylistHref(link.playlist_id)}">${escapeHtml(link.title)}</a></div>`;
         });
       return rows.length ? `<div class="details playlist-sources">${rows.join('')}</div>` : '';
     }
@@ -965,7 +975,7 @@
             ${badgeRowsHtml([
               { label: unavailableLabel(video) },
               { label: archivarixStatusLabel(video) },
-              { label: wasRemovedFromPlaylist(video) ? 'Removed' : '' },
+              { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
               { label: matchTypeLabel(video), title: video.match_note },
             ])}
             ${channelName ? `<div class="details">${creatorHtml(video.metadata_channel_thumbnail_path, channelName, channelUrl)}</div>` : ''}
@@ -1127,9 +1137,9 @@
       }
       if (selected === '__all_videos__') {
         resetPlaylistVisibilityFor('__all_videos__');
-        const allRows = allPlaylistVideos();
-        const videoCount = allRows.filter(video => !isHiddenPlaylistVideo(video)).length;
-        const hiddenCount = allRows.length - videoCount;
+        const allRows = allPlaylistVideos().filter(video => isHiddenPlaylistVideo(video) || hasActivePlaylistLink(video));
+        const hiddenCount = allRows.filter(isHiddenPlaylistVideo).length;
+        const videoCount = allRows.length - hiddenCount;
         const rows = sortedAllPlaylistVideos(allRows.filter(video => {
           const hidden = isHiddenPlaylistVideo(video);
           return hidden ? playlistVisibility.hidden : playlistVisibility.videos;
@@ -1356,7 +1366,7 @@
         badges: [
           { label: unavailableLabel(video) },
           { label: archivarixStatusLabel(video) },
-          { label: wasRemovedFromPlaylist(video) ? 'Removed' : '' },
+          { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
           { label: matchTypeLabel(video), title: video.match_note },
         ],
         details: [

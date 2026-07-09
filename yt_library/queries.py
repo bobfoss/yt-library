@@ -141,6 +141,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                 "removed": bool(
                     video.get("source_quality") == "takeout"
                     and video.get("match_type") == "ambiguous_hidden_candidate"
+                    and video.get("is_playable")
                 ),
             }
         )
@@ -155,6 +156,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                     "removed": bool(
                         video.get("source_quality") == "takeout"
                         and video.get("match_type") == "ambiguous_hidden_candidate"
+                        and video.get("is_playable")
                     ),
                 }
             ]
