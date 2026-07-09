@@ -45,6 +45,9 @@
     .group { width: 100%; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin: 2px 0; border-radius: 6px; cursor: pointer; text-align: left; font: inherit; }
     .group:hover, .group.active { background: var(--accent-soft); }
     .group.child { padding-left: 28px; color: var(--muted); }
+    .group-section { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; }
+    .group-section:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+    .group-section-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding: 0 10px 4px; }
     .count { color: var(--muted); font-size: 12px; margin-left: 8px; }
     .toolbar { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
     .title { font-size: 28px; line-height: 1.1; margin: 0; }
@@ -799,84 +802,56 @@
       return button;
     }
 
+    function sectionFor(label) {
+      const section = document.createElement('section');
+      section.className = 'group-section';
+      const title = document.createElement('div');
+      title.className = 'group-section-title';
+      title.textContent = label;
+      section.appendChild(title);
+      groupsEl.appendChild(section);
+      return section;
+    }
+
+    function navButton(key, label, count) {
+      const button = document.createElement('button');
+      button.className = 'group';
+      button.dataset.key = key;
+      button.innerHTML = `<span>${escapeHtml(label)}</span><span class="count">${count}</span>`;
+      button.addEventListener('click', () => setSelected(key));
+      return button;
+    }
+
     function renderGroups() {
       if (!data) return;
       groupsEl.replaceChildren();
-      const all = document.createElement('button');
-      all.className = 'group';
-      all.dataset.key = '';
-      all.innerHTML = `<span>All playlists</span><span class="count">${data.playlists.length}</span>`;
-      all.addEventListener('click', () => setSelected(''));
-      groupsEl.appendChild(all);
+      const videoSection = sectionFor('Videos');
       const allVideoRows = allPlaylistVideos();
-      const allVideos = document.createElement('button');
-      allVideos.className = 'group';
-      allVideos.dataset.key = '__all_videos__';
-      allVideos.innerHTML = `<span>All videos</span><span class="count">${allVideoRows.length}</span>`;
-      allVideos.addEventListener('click', () => setSelected('__all_videos__'));
-      groupsEl.appendChild(allVideos);
+      videoSection.appendChild(navButton('__all_videos__', 'All videos', allVideoRows.length));
       const likedRows = likedVideos();
-      const liked = document.createElement('button');
-      liked.className = 'group';
-      liked.dataset.key = '__liked__';
-      liked.innerHTML = `<span>Liked videos</span><span class="count">${likedRows.length}</span>`;
-      liked.addEventListener('click', () => setSelected('__liked__'));
-      groupsEl.appendChild(liked);
-      const hidden = document.createElement('button');
-      hidden.className = 'group';
-      hidden.dataset.key = '__hidden__';
-      hidden.innerHTML = `<span>Hidden videos</span><span class="count">${data.hiddenVideos.length}</span>`;
-      hidden.addEventListener('click', () => setSelected('__hidden__'));
-      groupsEl.appendChild(hidden);
-      const channels = document.createElement('button');
-      channels.className = 'group';
-      channels.dataset.key = '__channels__';
-      channels.innerHTML = `<span>Channels</span><span class="count">${(data.channels || []).length}</span>`;
-      channels.addEventListener('click', () => setSelected('__channels__'));
-      groupsEl.appendChild(channels);
-      const subscribedChannels = (data.channels || []).filter(isSubscribedChannel);
-      const subscribedChannelsButton = document.createElement('button');
-      subscribedChannelsButton.className = 'group';
-      subscribedChannelsButton.dataset.key = '__subscribed_channels__';
-      subscribedChannelsButton.innerHTML = `<span>Subscribed channels</span><span class="count">${subscribedChannels.length}</span>`;
-      subscribedChannelsButton.addEventListener('click', () => setSelected('__subscribed_channels__'));
-      groupsEl.appendChild(subscribedChannelsButton);
-      const terminatedChannels = (data.channels || []).filter(channel => ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase()));
-      const terminatedChannelsButton = document.createElement('button');
-      terminatedChannelsButton.className = 'group';
-      terminatedChannelsButton.dataset.key = '__terminated_channels__';
-      terminatedChannelsButton.innerHTML = `<span>Terminated channels</span><span class="count">${terminatedChannels.length}</span>`;
-      terminatedChannelsButton.addEventListener('click', () => setSelected('__terminated_channels__'));
-      groupsEl.appendChild(terminatedChannelsButton);
+      videoSection.appendChild(navButton('__liked__', 'Liked videos', likedRows.length));
+      videoSection.appendChild(navButton('__hidden__', 'Hidden videos', data.hiddenVideos.length));
       const hiddenPlaylists = data.playlists.filter(playlist => (playlist.hidden_count || 0) > 0);
-      const hiddenPlaylistButton = document.createElement('button');
-      hiddenPlaylistButton.className = 'group';
-      hiddenPlaylistButton.dataset.key = '__hidden_playlists__';
-      hiddenPlaylistButton.innerHTML = `<span>Playlists with hidden</span><span class="count">${hiddenPlaylists.length}</span>`;
-      hiddenPlaylistButton.addEventListener('click', () => setSelected('__hidden_playlists__'));
-      groupsEl.appendChild(hiddenPlaylistButton);
-      const snapshot = document.createElement('button');
-      snapshot.className = 'group';
-      snapshot.dataset.key = '__snapshot__';
-      snapshot.innerHTML = `<span>Takeout snapshot</span><span class="count">${data.snapshotPlaylists.length}</span>`;
-      snapshot.addEventListener('click', () => setSelected('__snapshot__'));
-      groupsEl.appendChild(snapshot);
-      const missing = document.createElement('button');
-      missing.className = 'group';
-      missing.dataset.key = '__snapshot_missing__';
-      missing.innerHTML = `<span>Snapshot missing</span><span class="count">${data.snapshotMissing.length}</span>`;
-      missing.addEventListener('click', () => setSelected('__snapshot_missing__'));
-      groupsEl.appendChild(missing);
-      const likelyHidden = document.createElement('button');
-      likelyHidden.className = 'group';
-      likelyHidden.dataset.key = '__snapshot_likely_hidden__';
-      likelyHidden.innerHTML = `<span>Likely hidden IDs</span><span class="count">${data.snapshotLikelyHidden.length}</span>`;
-      likelyHidden.addEventListener('click', () => setSelected('__snapshot_likely_hidden__'));
-      groupsEl.appendChild(likelyHidden);
+      videoSection.appendChild(navButton('__hidden_playlists__', 'Playlists with hidden', hiddenPlaylists.length));
+
+      const channelSection = sectionFor('Channels');
+      channelSection.appendChild(navButton('__channels__', 'Channels', (data.channels || []).length));
+      const subscribedChannels = (data.channels || []).filter(isSubscribedChannel);
+      channelSection.appendChild(navButton('__subscribed_channels__', 'Subscribed channels', subscribedChannels.length));
+      const terminatedChannels = (data.channels || []).filter(channel => ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase()));
+      channelSection.appendChild(navButton('__terminated_channels__', 'Terminated channels', terminatedChannels.length));
+
+      const metaSection = sectionFor('Meta');
+      metaSection.appendChild(navButton('__snapshot__', 'Takeout snapshot', data.snapshotPlaylists.length));
+      metaSection.appendChild(navButton('__snapshot_missing__', 'Snapshot missing', data.snapshotMissing.length));
+      metaSection.appendChild(navButton('__snapshot_likely_hidden__', 'Likely hidden IDs', data.snapshotLikelyHidden.length));
+
+      const pocketTubeSection = sectionFor('PocketTube');
+      pocketTubeSection.appendChild(navButton('', 'All playlists', data.playlists.length));
       for (const group of children.get('') || []) {
-        groupsEl.appendChild(buttonFor(group));
+        pocketTubeSection.appendChild(buttonFor(group));
         for (const child of children.get(group.group_key) || []) {
-          groupsEl.appendChild(buttonFor(child, true));
+          pocketTubeSection.appendChild(buttonFor(child, true));
         }
       }
     }
