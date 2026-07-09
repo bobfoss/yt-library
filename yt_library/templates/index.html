@@ -204,6 +204,7 @@
 
     let selected = '';
     let playlistVisibility = { videos: true, hidden: true };
+    let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
     let searchResultVisibility = { hidden: true };
     let playlistVisibilityPlaylistId = '';
     let allVideosSort = 'newest_added';
@@ -458,6 +459,15 @@
 
     function isSubscribedChannel(channel) {
       return Number(channel.subscribed || 0) === 1;
+    }
+
+    function isTerminatedChannel(channel) {
+      return ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase());
+    }
+
+    function channelVisibilityCategory(channel) {
+      if (isTerminatedChannel(channel)) return 'terminated';
+      return isSubscribedChannel(channel) ? 'subscribed' : 'non_subscribed';
     }
 
     function includesQuery(value, query) {
@@ -845,7 +855,7 @@
       if (channelId) {
         channelHistoryCounts.set(
           channelId,
-          Number(payload.totals?.filtered_watch_rows || payload.totals?.watch_rows || 0),
+          Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? 0),
         );
       }
       if (historyPageState.key === key) {
@@ -869,7 +879,7 @@
           return response.json();
         })
         .then(payload => {
-          const total = Number(payload.totals?.filtered_watch_rows || payload.totals?.watch_rows || 0);
+          const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? 0);
           channelHistoryCounts.set(channelId, total);
           return total;
         })
@@ -888,7 +898,7 @@
       empty.hidden = true;
       const payload = await fetchHistoryPage();
       const rows = payload.watch || [];
-      const total = Number(payload.totals?.filtered_watch_rows || payload.totals?.watch_rows || rows.length);
+      const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
       const pageInfo = remotePageInfo(total, rows.length);
       meta.textContent = `${total} watches`;
       renderPager(pageInfo);
@@ -1132,7 +1142,7 @@
       channelSection.appendChild(navButton('__channels__', 'Channels', (data.channels || []).length));
       const subscribedChannels = (data.channels || []).filter(isSubscribedChannel);
       channelSection.appendChild(navButton('__subscribed_channels__', 'Subscribed channels', subscribedChannels.length));
-      const terminatedChannels = (data.channels || []).filter(channel => ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase()));
+      const terminatedChannels = (data.channels || []).filter(isTerminatedChannel);
       channelSection.appendChild(navButton('__terminated_channels__', 'Terminated channels', terminatedChannels.length));
 
       const metaSection = sectionFor('Meta');
@@ -1372,7 +1382,7 @@
           empty.hidden = true;
           const payload = await fetchHistoryPage(channelId);
           const rows = payload.watch || [];
-          const total = Number(payload.totals?.filtered_watch_rows || payload.totals?.watch_rows || rows.length);
+          const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
           viewContext.replaceChildren(channelDetailCardFor(channel), channelTabsFor('history', playlistRows.length, total));
           const pageInfo = remotePageInfo(total, rows.length);
           meta.textContent = '';
@@ -1498,11 +1508,19 @@
       }
       if (selected === '__channels__') {
         title.textContent = 'Channels';
-        const rows = (data.channels || []).filter(channel => {
+        const allRows = (data.channels || []).filter(channel => {
           const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`.toLowerCase();
           return !query || haystack.includes(query);
         });
-        meta.textContent = `${rows.length} channels`;
+        const subscribedCount = allRows.filter(channel => channelVisibilityCategory(channel) === 'subscribed').length;
+        const nonSubscribedCount = allRows.filter(channel => channelVisibilityCategory(channel) === 'non_subscribed').length;
+        const terminatedCount = allRows.filter(channel => channelVisibilityCategory(channel) === 'terminated').length;
+        const rows = allRows.filter(channel => channelVisibility[channelVisibilityCategory(channel)]);
+        meta.innerHTML = `
+          <label class="meta-filter"><input type="checkbox" data-channel-filter="subscribed" ${channelVisibility.subscribed ? 'checked' : ''}> <span>${subscribedCount} subscribed</span></label>
+          <label class="meta-filter"><input type="checkbox" data-channel-filter="non_subscribed" ${channelVisibility.non_subscribed ? 'checked' : ''}> <span>${nonSubscribedCount} non-subscribed</span></label>
+          <label class="meta-filter"><input type="checkbox" data-channel-filter="terminated" ${channelVisibility.terminated ? 'checked' : ''}> <span class="badge">${terminatedCount} terminated</span></label>
+        `;
         renderPagedGrid(rows, channelCardFor, 'No channels match.');
         return;
       }
@@ -1521,7 +1539,7 @@
       if (selected === '__terminated_channels__') {
         title.textContent = 'Terminated channels';
         const rows = (data.channels || [])
-          .filter(channel => ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase()))
+          .filter(isTerminatedChannel)
           .filter(channel => {
             const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`.toLowerCase();
             return !query || haystack.includes(query);
@@ -1950,6 +1968,13 @@
       const searchResultFilter = target.dataset.searchResultFilter;
       if (searchResultFilter) {
         searchResultVisibility[searchResultFilter] = target.checked;
+        currentPage = 1;
+        render();
+        return;
+      }
+      const channelFilter = target.dataset.channelFilter;
+      if (channelFilter) {
+        channelVisibility[channelFilter] = target.checked;
         currentPage = 1;
         render();
         return;
