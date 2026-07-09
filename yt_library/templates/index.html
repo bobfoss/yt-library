@@ -204,11 +204,14 @@
 
     let selected = '';
     let playlistVisibility = { videos: true, hidden: true };
+    let playlistListVisibility = { private: true, public: true, unlisted: true, others: true, unknown: true };
     let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
     let searchResultVisibility = { hidden: true };
     let playlistVisibilityPlaylistId = '';
     let allVideosSort = 'newest_added';
     let playlistViewSort = 'playlist_order';
+    let allPlaylistsSort = 'title';
+    let channelViewSort = 'title';
     let currentPage = 1;
     let pageSize = '100';
     let historyPageState = { key: '', loading: false, data: null };
@@ -468,6 +471,17 @@
     function channelVisibilityCategory(channel) {
       if (isTerminatedChannel(channel)) return 'terminated';
       return isSubscribedChannel(channel) ? 'subscribed' : 'non_subscribed';
+    }
+
+    function playlistVisibilityCategory(playlist) {
+      const value = String(playlist.visibility || '').trim().toLowerCase();
+      if (['private', 'public', 'unlisted'].includes(value)) return value;
+      return String(playlist.owner || '').trim() ? 'others' : 'unknown';
+    }
+
+    function displayPlaylistVisibility(playlist) {
+      const value = playlistVisibilityCategory(playlist);
+      return value === 'unknown' ? '' : value[0].toUpperCase() + value.slice(1);
     }
 
     function includesQuery(value, query) {
@@ -928,6 +942,78 @@
       `;
     }
 
+    function sortedChannels(rows) {
+      return [...rows].sort((left, right) => {
+        const leftUpdated = Number(left.updated_at || left.fetched_at || 0);
+        const rightUpdated = Number(right.updated_at || right.fetched_at || 0);
+        if (channelViewSort === 'newest_updated' && rightUpdated !== leftUpdated) return rightUpdated - leftUpdated;
+        if (channelViewSort === 'oldest_updated' && leftUpdated !== rightUpdated) return leftUpdated - rightUpdated;
+        const titleCompare = String(left.title || left.channel_id).localeCompare(
+          String(right.title || right.channel_id),
+          undefined,
+          { sensitivity: 'base' },
+        );
+        return channelViewSort === 'title_desc' ? -titleCompare : titleCompare;
+      });
+    }
+
+    function channelSortHtml() {
+      const options = [
+        ['title', 'Name A-Z'],
+        ['title_desc', 'Name Z-A'],
+        ['newest_updated', 'Recently updated'],
+        ['oldest_updated', 'Oldest updated'],
+      ];
+      return `
+        <label class="view-sort">Sort
+          <select data-channel-sort>
+            ${options.map(([optionValue, label]) => `<option value="${optionValue}" ${channelViewSort === optionValue ? 'selected' : ''}>${label}</option>`).join('')}
+          </select>
+        </label>
+      `;
+    }
+
+    function sortedPlaylists(rows) {
+      return [...rows].sort((left, right) => {
+        const leftUpdated = Number(left.updated_at || 0);
+        const rightUpdated = Number(right.updated_at || 0);
+        if (allPlaylistsSort === 'newest_updated' && rightUpdated !== leftUpdated) return rightUpdated - leftUpdated;
+        if (allPlaylistsSort === 'oldest_updated' && leftUpdated !== rightUpdated) return leftUpdated - rightUpdated;
+        if (allPlaylistsSort === 'most_videos') {
+          const countDelta = Number(right.scanned_video_count || 0) - Number(left.scanned_video_count || 0);
+          if (countDelta) return countDelta;
+        }
+        if (allPlaylistsSort === 'most_unavailable') {
+          const countDelta = Number(right.hidden_count || 0) - Number(left.hidden_count || 0);
+          if (countDelta) return countDelta;
+        }
+        const titleCompare = String(left.title || left.playlist_id).localeCompare(
+          String(right.title || right.playlist_id),
+          undefined,
+          { sensitivity: 'base' },
+        );
+        return allPlaylistsSort === 'title_desc' ? -titleCompare : titleCompare;
+      });
+    }
+
+    function playlistSortHtml() {
+      const options = [
+        ['title', 'Name A-Z'],
+        ['title_desc', 'Name Z-A'],
+        ['newest_updated', 'Recently updated'],
+        ['oldest_updated', 'Oldest updated'],
+        ['most_videos', 'Most videos'],
+        ['most_unavailable', 'Most unavailable'],
+      ];
+      return `
+        <label class="view-sort">Sort
+          <select data-playlist-sort>
+            ${options.map(([optionValue, label]) => `<option value="${optionValue}" ${allPlaylistsSort === optionValue ? 'selected' : ''}>${label}</option>`).join('')}
+          </select>
+        </label>
+      `;
+    }
+
     function playlistSourceLinksHtml(video) {
       const links = Array.isArray(video.playlist_links) && video.playlist_links.length
         ? video.playlist_links
@@ -1012,7 +1098,7 @@
       const seenVideoKeys = new Set();
       if (filters.has('playlists')) {
         for (const playlist of data.playlists) {
-          const haystack = `${playlist.title} ${playlist.owner} ${playlist.description} ${playlist.playlist_id}`;
+          const haystack = `${playlist.title} ${playlist.owner} ${playlist.visibility} ${playlist.description} ${playlist.playlist_id}`;
           if (includesQuery(haystack, query)) {
             results.push({ kind: 'playlist', score: includesQuery(playlist.title, query) ? 0 : 2, item: playlist });
           }
@@ -1515,11 +1601,12 @@
         const subscribedCount = allRows.filter(channel => channelVisibilityCategory(channel) === 'subscribed').length;
         const nonSubscribedCount = allRows.filter(channel => channelVisibilityCategory(channel) === 'non_subscribed').length;
         const terminatedCount = allRows.filter(channel => channelVisibilityCategory(channel) === 'terminated').length;
-        const rows = allRows.filter(channel => channelVisibility[channelVisibilityCategory(channel)]);
+        const rows = sortedChannels(allRows.filter(channel => channelVisibility[channelVisibilityCategory(channel)]));
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-channel-filter="subscribed" ${channelVisibility.subscribed ? 'checked' : ''}> <span>${subscribedCount} subscribed</span></label>
           <label class="meta-filter"><input type="checkbox" data-channel-filter="non_subscribed" ${channelVisibility.non_subscribed ? 'checked' : ''}> <span>${nonSubscribedCount} non-subscribed</span></label>
           <label class="meta-filter"><input type="checkbox" data-channel-filter="terminated" ${channelVisibility.terminated ? 'checked' : ''}> <span class="badge">${terminatedCount} terminated</span></label>
+          ${channelSortHtml()}
         `;
         renderPagedGrid(rows, channelCardFor, 'No channels match.');
         return;
@@ -1553,7 +1640,7 @@
         const rows = data.playlists
           .filter(playlist => (playlist.hidden_count || 0) > 0)
           .filter(playlist => {
-            const haystack = `${playlist.title} ${playlist.owner} ${playlist.description} ${playlist.playlist_id}`.toLowerCase();
+            const haystack = `${playlist.title} ${playlist.owner} ${playlist.visibility} ${playlist.description} ${playlist.playlist_id}`.toLowerCase();
             return !query || haystack.includes(query);
           })
           .sort((a, b) =>
@@ -1595,11 +1682,31 @@
         renderPagedGrid(rows, snapshotMissingCardFor, 'No likely unavailable videos match.');
         return;
       }
+      if (selected === '') {
+        title.textContent = 'All playlists';
+        const allRows = data.playlists || [];
+        const privateCount = allRows.filter(playlist => playlistVisibilityCategory(playlist) === 'private').length;
+        const publicCount = allRows.filter(playlist => playlistVisibilityCategory(playlist) === 'public').length;
+        const unlistedCount = allRows.filter(playlist => playlistVisibilityCategory(playlist) === 'unlisted').length;
+        const othersCount = allRows.filter(playlist => playlistVisibilityCategory(playlist) === 'others').length;
+        const unknownCount = allRows.filter(playlist => playlistVisibilityCategory(playlist) === 'unknown').length;
+        const rows = sortedPlaylists(allRows.filter(playlist => playlistListVisibility[playlistVisibilityCategory(playlist)]));
+        meta.innerHTML = `
+          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="private" ${playlistListVisibility.private ? 'checked' : ''}> <span>${privateCount} private</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="public" ${playlistListVisibility.public ? 'checked' : ''}> <span>${publicCount} public</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="unlisted" ${playlistListVisibility.unlisted ? 'checked' : ''}> <span>${unlistedCount} unlisted</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="others" ${playlistListVisibility.others ? 'checked' : ''}> <span>${othersCount} others</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="unknown" ${playlistListVisibility.unknown ? 'checked' : ''}> <span>${unknownCount} unknown</span></label>
+          ${playlistSortHtml()}
+        `;
+        renderPagedGrid(rows, cardFor, 'No playlists match the selected visibility filters.');
+        return;
+      }
       const group = data.groups.find(g => g.group_key === selected);
       title.textContent = group ? group.name : 'All playlists';
       const ids = groupPlaylistIds(selected);
       const rows = ids.map(id => playlists.get(id)).filter(Boolean).filter(p => {
-        const haystack = `${p.title} ${p.owner} ${p.description} ${p.playlist_id}`.toLowerCase();
+        const haystack = `${p.title} ${p.owner} ${p.visibility} ${p.description} ${p.playlist_id}`.toLowerCase();
         return !query || haystack.includes(query);
       });
       meta.textContent = `${rows.length} shown`;
@@ -1632,6 +1739,7 @@
           ${playlist.video_count_text ? `<span>${escapeHtml(playlist.video_count_text)}</span>` : ''}
           ${playlist.scanned_video_count ? `<span>${playlist.scanned_video_count} scanned</span>` : ''}
           ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} unavailable</span>` : ''}
+          ${displayPlaylistVisibility(playlist) ? `<span>${escapeHtml(displayPlaylistVisibility(playlist))}</span>` : ''}
           ${playlist.owner ? `<span>${escapeHtml(playlist.owner)}</span>` : ''}
           ${playlist.fetch_status === 'error' ? '<span class="status">Fetch failed</span>' : ''}
         </div>
@@ -1964,6 +2072,20 @@
         render();
         return;
       }
+      if (target instanceof HTMLSelectElement && target.dataset.channelSort !== undefined) {
+        channelViewSort = target.value || 'title';
+        currentPage = 1;
+        scrollResultsToTop();
+        render();
+        return;
+      }
+      if (target instanceof HTMLSelectElement && target.dataset.playlistSort !== undefined) {
+        allPlaylistsSort = target.value || 'title';
+        currentPage = 1;
+        scrollResultsToTop();
+        render();
+        return;
+      }
       if (!(target instanceof HTMLInputElement)) return;
       const searchResultFilter = target.dataset.searchResultFilter;
       if (searchResultFilter) {
@@ -1975,6 +2097,13 @@
       const channelFilter = target.dataset.channelFilter;
       if (channelFilter) {
         channelVisibility[channelFilter] = target.checked;
+        currentPage = 1;
+        render();
+        return;
+      }
+      const playlistVisibilityFilter = target.dataset.playlistVisibilityFilter;
+      if (playlistVisibilityFilter) {
+        playlistListVisibility[playlistVisibilityFilter] = target.checked;
         currentPage = 1;
         render();
         return;

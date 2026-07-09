@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS playlists (
   title TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
   owner TEXT NOT NULL DEFAULT '',
+  visibility TEXT NOT NULL DEFAULT '',
   video_count_text TEXT NOT NULL DEFAULT '',
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',

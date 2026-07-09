@@ -103,6 +103,12 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     ensure_columns(
         conn,
+        "playlists",
+        {"visibility": "TEXT NOT NULL DEFAULT ''"},
+    )
+    migrate_playlist_owner_visibility(conn)
+    ensure_columns(
+        conn,
         "playlist_videos",
         {"channel_id": "TEXT NOT NULL DEFAULT ''"},
     )
@@ -209,6 +215,40 @@ def ensure_columns(
     for name, definition in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def normalize_playlist_visibility(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", (value or "").strip()).lower()
+    if normalized.endswith(" playlist"):
+        normalized = normalized[: -len(" playlist")].strip()
+    return normalized if normalized in {"private", "public", "unlisted"} else ""
+
+
+def split_playlist_owner_visibility(value: str) -> tuple[str, str]:
+    visibility = normalize_playlist_visibility(value)
+    return ("", visibility) if visibility else ((value or "").strip(), "")
+
+
+def assert_playlist_owner_visibility(metadata: dict[str, str]) -> None:
+    owner = (metadata.get("owner") or "").strip()
+    visibility = (metadata.get("visibility") or "").strip()
+    assert not (owner and visibility), (
+        "Playlist metadata cannot contain both an owner and a visibility value."
+    )
+
+
+def migrate_playlist_owner_visibility(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        UPDATE playlists
+        SET visibility = CASE
+              WHEN trim(visibility) = '' THEN lower(trim(owner))
+              ELSE visibility
+            END,
+            owner = ''
+        WHERE lower(trim(owner)) IN ('private', 'public', 'unlisted')
+        """
+    )
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -1637,13 +1677,13 @@ def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, str] | None:
         lockup.get("metadata", {}).get("lockupMetadataViewModel", {}).get("title")
     ).strip()
     rows = lockup_metadata_rows(lockup)
-    privacy = ""
+    visibility = ""
     video_count_text = ""
     updated_text = ""
     for parts in rows:
         joined = " • ".join(parts)
         if "Playlist" in parts and parts:
-            privacy = parts[0]
+            visibility = normalize_playlist_visibility(parts[0])
         if re.search(r"\bvideos?\b", joined, re.I):
             video_count_text = joined
         if joined.lower().startswith("updated"):
@@ -1663,7 +1703,8 @@ def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, str] | None:
         "playlist_id": playlist_id,
         "title": title or playlist_id,
         "description": updated_text,
-        "owner": privacy,
+        "owner": "",
+        "visibility": visibility,
         "video_count_text": video_count_text,
         "thumbnail_url": pick_lockup_thumbnail(lockup),
         "url": f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}",
@@ -1677,6 +1718,7 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, str
         "title": "",
         "description": "",
         "owner": "",
+        "visibility": "",
         "video_count_text": "",
         "thumbnail_url": "",
         "url": f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}",
@@ -1708,9 +1750,12 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, str
         description = text_from_runs(renderer.get("description"))
         if description and not metadata["description"]:
             metadata["description"] = description
-        owner = text_from_runs(renderer.get("ownerText") or renderer.get("subtitle"))
+        owner_text = text_from_runs(renderer.get("ownerText") or renderer.get("subtitle"))
+        owner, visibility = split_playlist_owner_visibility(owner_text)
         if owner and not metadata["owner"]:
             metadata["owner"] = owner
+        if visibility and not metadata["visibility"]:
+            metadata["visibility"] = visibility
         for key in ("numVideosText", "numVideosTextText", "videoCountText"):
             count_text = text_from_runs(renderer.get(key))
             if count_text and not metadata["video_count_text"]:
@@ -3382,7 +3427,16 @@ def scan_playlist_videos_ytdlp(
 def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) -> dict[str, str]:
     title = str(info.get("title") or info.get("playlist_title") or "").strip()
     description = str(info.get("description") or "").strip()
-    owner = str(info.get("uploader") or info.get("channel") or "").strip()
+    owner, inferred_visibility = split_playlist_owner_visibility(
+        str(info.get("uploader") or info.get("channel") or "")
+    )
+    visibility = normalize_playlist_visibility(
+        str(info.get("visibility") or info.get("privacy") or info.get("availability") or "")
+    ) or inferred_visibility
+    if owner:
+        visibility = ""
+    elif visibility:
+        owner = ""
     playlist_count = info.get("playlist_count") or info.get("n_entries")
     video_count_text = f"{playlist_count} videos" if playlist_count else ""
     thumbnail_url = str(info.get("thumbnail") or "").strip()
@@ -3394,6 +3448,7 @@ def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) ->
         "title": title or playlist_id,
         "description": description,
         "owner": owner,
+        "visibility": visibility,
         "video_count_text": video_count_text,
         "thumbnail_url": thumbnail_url,
         "url": webpage_url,
@@ -3699,6 +3754,7 @@ def import_playlists(args: argparse.Namespace) -> None:
                 "title": playlist_id,
                 "description": "",
                 "owner": "",
+                "visibility": "",
                 "video_count_text": "",
                 "thumbnail_url": "",
                 "url": url,
@@ -3710,14 +3766,15 @@ def import_playlists(args: argparse.Namespace) -> None:
             conn.execute(
                 """
                 INSERT INTO playlists(
-                  playlist_id, title, description, owner, video_count_text,
+                  playlist_id, title, description, owner, visibility, video_count_text,
                   thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(playlist_id) DO UPDATE SET
                   title=excluded.title,
                   description=excluded.description,
-                  owner=excluded.owner,
+                  owner=COALESCE(NULLIF(excluded.owner, ''), playlists.owner),
+                  visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
                   video_count_text=excluded.video_count_text,
                   thumbnail_url=excluded.thumbnail_url,
                   thumbnail_path=excluded.thumbnail_path,
@@ -3731,6 +3788,7 @@ def import_playlists(args: argparse.Namespace) -> None:
                     metadata["title"],
                     metadata["description"],
                     metadata["owner"],
+                    metadata["visibility"],
                     metadata["video_count_text"],
                     metadata["thumbnail_url"],
                     thumbnail_path,
@@ -3878,14 +3936,15 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
             conn.execute(
                 """
                 INSERT INTO playlists(
-                  playlist_id, title, description, owner, video_count_text,
+                  playlist_id, title, description, owner, visibility, video_count_text,
                   thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ok', '', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', '', ?)
                 ON CONFLICT(playlist_id) DO UPDATE SET
                   title=excluded.title,
                   description=excluded.description,
-                  owner=excluded.owner,
+                  owner=COALESCE(NULLIF(excluded.owner, ''), playlists.owner),
+                  visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
                   video_count_text=excluded.video_count_text,
                   thumbnail_url=excluded.thumbnail_url,
                   thumbnail_path=excluded.thumbnail_path,
@@ -3899,6 +3958,7 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
                     record["title"],
                     record["description"],
                     record["owner"],
+                    record["visibility"],
                     record["video_count_text"],
                     record["thumbnail_url"],
                     thumbnail_path,
@@ -4498,23 +4558,26 @@ def save_playlist_scan(
                 "title",
                 "description",
                 "owner",
+                "visibility",
                 "video_count_text",
                 "thumbnail_url",
                 "thumbnail_path",
                 "url",
             )
         }
+        assert_playlist_owner_visibility(metadata)
         conn.execute(
             """
             INSERT INTO playlists(
-              playlist_id, title, description, owner, video_count_text,
+              playlist_id, title, description, owner, visibility, video_count_text,
               thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(playlist_id) DO UPDATE SET
               title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
               description=COALESCE(NULLIF(excluded.description, ''), playlists.description),
               owner=COALESCE(NULLIF(excluded.owner, ''), playlists.owner),
+              visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
               video_count_text=COALESCE(NULLIF(excluded.video_count_text, ''), playlists.video_count_text),
               thumbnail_url=COALESCE(NULLIF(excluded.thumbnail_url, ''), playlists.thumbnail_url),
               thumbnail_path=COALESCE(NULLIF(excluded.thumbnail_path, ''), playlists.thumbnail_path),
@@ -4528,6 +4591,7 @@ def save_playlist_scan(
                 metadata["title"],
                 metadata["description"],
                 metadata["owner"],
+                metadata["visibility"],
                 metadata["video_count_text"],
                 metadata["thumbnail_url"],
                 metadata["thumbnail_path"],

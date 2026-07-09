@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import time
+import sqlite3
 import unittest
 from datetime import date
 from pathlib import Path
@@ -59,6 +60,25 @@ class CoreHelperTests(unittest.TestCase):
         self.assertTrue(core.playlist_entry_is_unavailable("Private video"))
         self.assertTrue(core.playlist_entry_is_unavailable("Regular title", "needs_auth"))
         self.assertFalse(core.playlist_entry_is_unavailable("Regular title", "public"))
+
+    def test_playlist_owner_visibility_helpers(self) -> None:
+        self.assertEqual(core.normalize_playlist_visibility(" Public playlist "), "public")
+        self.assertEqual(core.split_playlist_owner_visibility("Private"), ("", "private"))
+        self.assertEqual(core.split_playlist_owner_visibility("Gir Bot"), ("Gir Bot", ""))
+        metadata = core.playlist_metadata_from_ytdlp_info(
+            {"title": "Example", "uploader": "Gir Bot", "availability": "unlisted"},
+            "PLexample",
+        )
+        self.assertEqual(metadata["owner"], "Gir Bot")
+        self.assertEqual(metadata["visibility"], "")
+        visibility_only = core.playlist_metadata_from_ytdlp_info(
+            {"title": "Example", "availability": "unlisted"},
+            "PLexample",
+        )
+        self.assertEqual(visibility_only["owner"], "")
+        self.assertEqual(visibility_only["visibility"], "unlisted")
+        with self.assertRaises(AssertionError):
+            core.assert_playlist_owner_visibility({"owner": "Gir Bot", "visibility": "public"})
 
     def test_parse_takeout_watch_history_json(self) -> None:
         rows = core.parse_takeout_watch_history_text(
@@ -336,6 +356,9 @@ class SchemaTests(unittest.TestCase):
                         row["name"]
                         for row in conn.execute("PRAGMA table_info(snapshot_videos)")
                     }
+                    playlist_columns = {
+                        row["name"] for row in conn.execute("PRAGMA table_info(playlists)")
+                    }
                 finally:
                     conn.close()
             finally:
@@ -348,6 +371,7 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("worker_queue", tables)
         self.assertIn("metadata_worker_runs", tables)
         self.assertIn("reaction", columns)
+        self.assertIn("visibility", playlist_columns)
         self.assertIn("match_type", reconciled_columns)
         self.assertNotIn("match_notes", reconciled_columns)
         self.assertIn("source_type", history_columns)
@@ -505,23 +529,74 @@ class SchemaTests(unittest.TestCase):
                                 "title": "New name",
                                 "description": "New description",
                                 "owner": "New owner",
+                                "visibility": "",
                                 "video_count_text": "1 video",
                                 "thumbnail_url": "https://example.test/new.jpg",
                                 "url": "https://www.youtube.com/playlist?list=PLrename",
                             },
                         )
                     row = conn.execute(
-                        "SELECT title, description, owner, thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLrename'"
+                        "SELECT title, description, owner, visibility, thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLrename'"
                     ).fetchone()
                     self.assertEqual(row["title"], "New name")
                     self.assertEqual(row["description"], "New description")
                     self.assertEqual(row["owner"], "New owner")
+                    self.assertEqual(row["visibility"], "")
                     self.assertEqual(row["thumbnail_url"], "https://example.test/new.jpg")
                     self.assertEqual(row["thumbnail_path"], "thumbs/PLrename.jpg")
                 finally:
                     conn.close()
             finally:
                 core.ROOT = original_root
+
+    def test_connect_migrates_legacy_playlist_privacy_out_of_owner(self) -> None:
+        original_root = core.ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core.ROOT = Path(temp_dir)
+            try:
+                db_path = Path(temp_dir) / "library.sqlite3"
+                conn = sqlite3.connect(db_path)
+                try:
+                    conn.execute(
+                        """
+                        CREATE TABLE playlists (
+                          playlist_id TEXT PRIMARY KEY,
+                          title TEXT NOT NULL DEFAULT '',
+                          description TEXT NOT NULL DEFAULT '',
+                          owner TEXT NOT NULL DEFAULT '',
+                          video_count_text TEXT NOT NULL DEFAULT '',
+                          thumbnail_url TEXT NOT NULL DEFAULT '',
+                          thumbnail_path TEXT NOT NULL DEFAULT '',
+                          url TEXT NOT NULL DEFAULT '',
+                          fetch_status TEXT NOT NULL DEFAULT '',
+                          fetch_error TEXT NOT NULL DEFAULT '',
+                          updated_at INTEGER NOT NULL DEFAULT 0
+                        )
+                        """
+                    )
+                    conn.executemany(
+                        "INSERT INTO playlists(playlist_id, owner) VALUES (?, ?)",
+                        [("PLprivate", "Private"), ("PLowner", "Gir Bot")],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                migrated = core.connect(db_path)
+                try:
+                    rows = {
+                        row["playlist_id"]: (row["owner"], row["visibility"])
+                        for row in migrated.execute(
+                            "SELECT playlist_id, owner, visibility FROM playlists"
+                        )
+                    }
+                finally:
+                    migrated.close()
+            finally:
+                core.ROOT = original_root
+
+        self.assertEqual(rows["PLprivate"], ("", "private"))
+        self.assertEqual(rows["PLowner"], ("Gir Bot", ""))
 
     def test_save_playlist_scan_error_preserves_existing_counts(self) -> None:
         original_root = core.ROOT
