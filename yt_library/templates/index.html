@@ -42,6 +42,7 @@
     .filter-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
     .filter { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
     .filter input { accent-color: var(--accent); }
+    .filter.dimmed { opacity: .42; }
     .group { width: 100%; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin: 2px 0; border-radius: 6px; cursor: pointer; text-align: left; font: inherit; }
     .group:hover, .group.active { background: var(--accent-soft); }
     .group.child { padding-left: 28px; color: var(--muted); }
@@ -119,6 +120,14 @@
     .top-link { display: inline-block; color: var(--accent); text-decoration: none; margin: -4px 0 14px; font-size: 13px; }
     .top-link:hover { text-decoration: underline; }
     .filter.child { margin-left: 18px; font-size: 13px; }
+    .filter.grandchild { margin-left: 36px; font-size: 13px; }
+    .history-list { display: grid; gap: 8px; }
+    .history-row { display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: stretch; }
+    .history-row .thumb-wrap,
+    .history-row .thumb { height: 84px; min-height: 84px; }
+    .history-row .body { padding: 10px 12px; }
+    .history-row .description { -webkit-line-clamp: 2; }
+    .history-row .details.playlist-sources { margin-top: 5px; }
     .video-title { color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
     .playlist-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
     .playlist-link:hover { text-decoration: underline; }
@@ -143,7 +152,6 @@
   <div class="app">
     <aside>
       <h1><a class="home-title" href="/">YT Library</a></h1>
-      <a class="top-link" href="/history">History search</a>
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
       <div class="filters" aria-label="Search filters">
         <div class="filter-title">Search In</div>
@@ -151,9 +159,14 @@
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="channels" checked> Channels</label>
         <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_subscribed" checked> Subscribed</label>
         <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_unsubscribed" checked> Non-subscribed</label>
-        <label class="filter"><input class="search-filter" type="checkbox" data-filter="video_fields" checked> Videos</label>
-        <label class="filter child"><input class="search-filter video-child-filter" type="checkbox" data-filter="videos" checked> Titles</label>
-        <label class="filter child"><input class="search-filter video-child-filter" type="checkbox" data-filter="descriptions" checked> Descriptions</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="videos_root" checked> Videos</label>
+        <label class="filter child"><input class="search-filter video-group-filter" type="checkbox" data-filter="video_fields" checked> Fields</label>
+        <label class="filter grandchild"><input class="search-filter video-field-filter" type="checkbox" data-filter="videos" checked> Titles</label>
+        <label class="filter grandchild"><input class="search-filter video-field-filter" type="checkbox" data-filter="descriptions" checked> Descriptions</label>
+        <label class="filter child"><input class="search-filter video-group-filter" type="checkbox" data-filter="video_sources" checked> Sources</label>
+        <label class="filter grandchild"><input class="search-filter video-source-filter" type="checkbox" data-filter="playlist_videos" checked> Playlist videos</label>
+        <label class="filter grandchild"><input class="search-filter video-source-filter" type="checkbox" data-filter="history_videos" checked> History</label>
+        <label class="filter grandchild"><input class="search-filter video-source-filter" type="checkbox" data-filter="unavailable_videos" checked> Unavailable</label>
       </div>
       <nav id="groups"></nav>
     </aside>
@@ -186,14 +199,20 @@
     let allVideosSort = 'newest_added';
     let currentPage = 1;
     let pageSize = '100';
+    let historyPageState = { key: '', loading: false, data: null };
+    let historySearchState = { key: '', loading: false, data: null };
     const search = document.getElementById('search');
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
     const searchFilters = [...document.querySelectorAll('.search-filter')];
     const channelsFilter = document.querySelector('[data-filter="channels"]');
     const channelChildFilters = [...document.querySelectorAll('.channel-child-filter')];
-    const videosFilter = document.querySelector('[data-filter="video_fields"]');
-    const videoChildFilters = [...document.querySelectorAll('.video-child-filter')];
+    const videosFilter = document.querySelector('[data-filter="videos_root"]');
+    const videoFieldGroupFilter = document.querySelector('[data-filter="video_fields"]');
+    const videoSourceGroupFilter = document.querySelector('[data-filter="video_sources"]');
+    const videoGroupFilters = [...document.querySelectorAll('.video-group-filter')];
+    const videoFieldFilters = [...document.querySelectorAll('.video-field-filter')];
+    const videoSourceFilters = [...document.querySelectorAll('.video-source-filter')];
     const grid = document.getElementById('grid');
     const empty = document.getElementById('empty');
     const title = document.getElementById('view-title');
@@ -207,6 +226,8 @@
       const response = await fetch('/api/data', { cache: 'no-store' });
       if (!response.ok) throw new Error(`Data refresh failed: ${response.status}`);
       data = await response.json();
+      historyPageState = { key: '', loading: false, data: null };
+      historySearchState = { key: '', loading: false, data: null };
       playlists = new Map(data.playlists.map(p => [p.playlist_id, p]));
       playlistVideos = new Map();
       for (const video of data.playlistVideos || []) {
@@ -257,7 +278,8 @@
 
     const viewHashBySelection = new Map([
       ['', 'all-playlists'],
-      ['__all_videos__', 'all-videos'],
+      ['__all_videos__', 'playlist-videos'],
+      ['__history__', 'history'],
       ['__liked__', 'liked-videos'],
       ['__hidden_playlists__', 'playlists-with-unavailable'],
       ['__channels__', 'channels'],
@@ -268,6 +290,7 @@
       ['__snapshot_likely_hidden__', 'likely-unavailable-ids'],
     ]);
     const selectionByViewHash = new Map([...viewHashBySelection].map(([selection, hash]) => [hash, selection]));
+    selectionByViewHash.set('all-videos', '__all_videos__');
     selectionByViewHash.set('playlists-with-hidden', '__hidden_playlists__');
     selectionByViewHash.set('likely-hidden-ids', '__snapshot_likely_hidden__');
 
@@ -364,7 +387,7 @@
     function activeSearchFilters() {
       return new Set(
         searchFilters
-          .filter(input => input.checked && input.dataset.filter !== 'video_fields')
+          .filter(input => input.checked && !['videos_root', 'video_fields', 'video_sources'].includes(input.dataset.filter))
           .map(input => input.dataset.filter)
       );
     }
@@ -377,10 +400,31 @@
     }
 
     function syncVideosParentFilter() {
-      if (!videosFilter || !videoChildFilters.length) return;
-      const checkedCount = videoChildFilters.filter(input => input.checked).length;
-      videosFilter.checked = checkedCount === videoChildFilters.length;
-      videosFilter.indeterminate = checkedCount > 0 && checkedCount < videoChildFilters.length;
+      if (!videosFilter) return;
+      const checkedFieldCount = videoFieldFilters.filter(input => input.checked).length;
+      const checkedSourceCount = videoSourceFilters.filter(input => input.checked).length;
+      if (videoFieldGroupFilter && videoFieldFilters.length) {
+        videoFieldGroupFilter.checked = checkedFieldCount === videoFieldFilters.length;
+        videoFieldGroupFilter.indeterminate = checkedFieldCount > 0 && checkedFieldCount < videoFieldFilters.length;
+      }
+      if (videoSourceGroupFilter && videoSourceFilters.length) {
+        videoSourceGroupFilter.checked = checkedSourceCount === videoSourceFilters.length;
+        videoSourceGroupFilter.indeterminate = checkedSourceCount > 0 && checkedSourceCount < videoSourceFilters.length;
+      }
+      const children = [...videoFieldFilters, ...videoSourceFilters];
+      const checkedCount = children.filter(input => input.checked).length;
+      const canSearchVideos = checkedFieldCount > 0 && checkedSourceCount > 0;
+      videosFilter.checked = canSearchVideos && checkedCount === children.length;
+      videosFilter.indeterminate = canSearchVideos && checkedCount > 0 && checkedCount < children.length;
+      setFilterDimmed([videoSourceGroupFilter, ...videoSourceFilters], checkedFieldCount === 0);
+      setFilterDimmed([videoFieldGroupFilter, ...videoFieldFilters], checkedSourceCount === 0);
+    }
+
+    function setFilterDimmed(inputs, dimmed) {
+      for (const input of inputs) {
+        const label = input?.closest?.('.filter');
+        if (label) label.classList.toggle('dimmed', dimmed);
+      }
     }
 
     function isSubscribedChannel(channel) {
@@ -713,10 +757,54 @@
 
     function renderPagedGrid(rows, cardFn, emptyText) {
       const pageInfo = pagedRows(rows);
+      grid.className = 'grid';
       grid.replaceChildren(...pageInfo.pageRows.map(cardFn));
       empty.hidden = pageInfo.pageRows.length !== 0;
       empty.textContent = emptyText;
       return pageInfo;
+    }
+
+    function remotePageInfo(total, rowsLength) {
+      const size = pageSizeNumber();
+      const effectiveSize = Number.isFinite(size) ? size : 1000;
+      const pageCount = Math.max(1, Math.ceil(total / effectiveSize));
+      currentPage = Math.min(Math.max(1, currentPage), pageCount);
+      const start = total ? (currentPage - 1) * effectiveSize + 1 : 0;
+      const end = total ? Math.min(total, start + rowsLength - 1) : 0;
+      return { pageRows: [], page: currentPage, pageCount, start, end, total };
+    }
+
+    async function fetchHistoryPage() {
+      const size = pageSizeNumber();
+      const limit = Number.isFinite(size) ? size : 1000;
+      const offset = (currentPage - 1) * limit;
+      const key = `${limit}:${offset}`;
+      if (historyPageState.key === key && historyPageState.data) return historyPageState.data;
+      historyPageState = { key, loading: true, data: historyPageState.key === key ? historyPageState.data : null };
+      const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+      const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`History fetch failed: ${response.status}`);
+      const payload = await response.json();
+      if (historyPageState.key === key) {
+        historyPageState = { key, loading: false, data: payload };
+      }
+      return payload;
+    }
+
+    async function renderHistoryView() {
+      title.textContent = 'History';
+      meta.textContent = 'Loading history...';
+      grid.className = 'history-list';
+      empty.hidden = true;
+      const payload = await fetchHistoryPage();
+      const rows = payload.watch || [];
+      const total = Number(payload.totals?.filtered_watch_rows || payload.totals?.watch_rows || rows.length);
+      const pageInfo = remotePageInfo(total, rows.length);
+      meta.textContent = `${total} watches`;
+      renderPager(pageInfo);
+      grid.replaceChildren(...rows.map(historyRowCardFor));
+      empty.hidden = rows.length !== 0;
+      empty.textContent = 'No history rows match.';
     }
 
     function scrollResultsToTop() {
@@ -753,7 +841,7 @@
     }
 
     function unavailableLabel(video) {
-      if (!video.is_playable) return video.availability || '';
+      if (Object.prototype.hasOwnProperty.call(video, 'is_playable') && !video.is_playable) return video.availability || '';
       const status = String(video.recovered_status || '');
       if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return 'Unavailable';
       const title = String(video.title || '').trim().toLowerCase().replace(/^[\[\(]+|[\]\)]+$/g, '');
@@ -799,7 +887,26 @@
         : `<span class="creator-chip">${content}</span>`;
     }
 
-    function buildOmniResults(query) {
+    function historySearchKey(query) {
+      return `${query}\u0000${pageSize}`;
+    }
+
+    async function fetchHistorySearchRows(query) {
+      const key = historySearchKey(query);
+      if (historySearchState.key === key && historySearchState.data) return historySearchState.data.watch || [];
+      if (historySearchState.key === key && historySearchState.loading) return historySearchState.data?.watch || [];
+      historySearchState = { key, loading: true, data: historySearchState.key === key ? historySearchState.data : null };
+      const params = new URLSearchParams({ q: query, limit: '500', offset: '0' });
+      const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`History search failed: ${response.status}`);
+      const payload = await response.json();
+      if (historySearchState.key === key) {
+        historySearchState = { key, loading: false, data: payload };
+      }
+      return payload.watch || [];
+    }
+
+    async function buildOmniResults(query) {
       const filters = activeSearchFilters();
       const results = [];
       const seenVideoKeys = new Set();
@@ -822,10 +929,17 @@
           }
         }
       }
-      if (filters.has('videos') || filters.has('descriptions')) {
+      const searchTitles = filters.has('videos');
+      const searchDescriptions = filters.has('descriptions');
+      const searchVideoFields = searchTitles || searchDescriptions;
+      const searchPlaylistVideos = filters.has('playlist_videos');
+      const searchHistoryVideos = filters.has('history_videos');
+      const searchUnavailableVideos = filters.has('unavailable_videos');
+      if (searchVideoFields && searchPlaylistVideos) {
         for (const video of data.playlistVideos || []) {
-          const titleHit = filters.has('videos') && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.match_label} ${video.match_note} ${video.video_id} ${video.playlist_title}`, query);
-          const descriptionHit = filters.has('descriptions') && includesQuery(video.metadata_description, query);
+          if (isHiddenPlaylistVideo(video) && !searchUnavailableVideos) continue;
+          const titleHit = searchTitles && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.match_label} ${video.match_note} ${video.video_id} ${video.playlist_title}`, query);
+          const descriptionHit = searchDescriptions && includesQuery(video.metadata_description, query);
           if (titleHit || descriptionHit) {
             const key = video.video_id ? `video:${video.video_id}` : `playlist-row:${video.playlist_id}:${video.position}`;
             if (!seenVideoKeys.has(key)) {
@@ -835,16 +949,28 @@
           }
         }
       }
-      if (filters.has('videos') || filters.has('descriptions')) {
+      if (searchVideoFields && searchUnavailableVideos) {
         for (const video of data.snapshotMissing || []) {
           const key = video.video_id ? `video:${video.video_id}` : `snapshot-row:${video.playlist_id}:${video.position}`;
           if (seenVideoKeys.has(key)) continue;
-          const titleHit = filters.has('videos') && includesQuery(`${video.video_id} ${video.playlist_title} ${video.current_title} ${video.recovered_title} ${video.recovered_channel} ${video.recovered_status}`, query);
-          const descriptionHit = filters.has('descriptions') && includesQuery(video.recovered_description, query);
+          const titleHit = searchTitles && includesQuery(`${video.video_id} ${video.playlist_title} ${video.current_title} ${video.recovered_title} ${video.recovered_channel} ${video.recovered_status}`, query);
+          const descriptionHit = searchDescriptions && includesQuery(video.recovered_description, query);
           if (titleHit || descriptionHit) {
             seenVideoKeys.add(key);
             results.push({ kind: 'missing', score: titleHit ? 4 : 5, item: video });
           }
+        }
+      }
+      if (searchVideoFields && searchHistoryVideos) {
+        const seenHistoryKeys = new Set();
+        for (const video of await fetchHistorySearchRows(query)) {
+          const titleHit = searchTitles && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.video_id}`, query);
+          const descriptionHit = searchDescriptions && includesQuery(video.metadata_description, query);
+          if (!titleHit && !descriptionHit) continue;
+          const key = video.video_id ? `history:${video.video_id}` : `history-row:${video.reconciled_id}`;
+          if (seenHistoryKeys.has(key)) continue;
+          seenHistoryKeys.add(key);
+          results.push({ kind: 'history', score: titleHit ? 2 : 4, item: video, matchedDescription: descriptionHit && !titleHit });
         }
       }
       return results.sort((a, b) => a.score - b.score).slice(0, 500);
@@ -855,12 +981,13 @@
         const status = String(result.item?.recovered_status || '').toUpperCase();
         return status !== 'LIVE';
       }
+      if (result.kind === 'history') return false;
       if (result.kind !== 'video') return false;
       return isHiddenPlaylistVideo(result.item);
     }
 
     function resultUsesVideoAvailabilityFilter(result) {
-      return result.kind === 'video' || result.kind === 'missing';
+      return result.kind === 'video' || result.kind === 'missing' || result.kind === 'history';
     }
 
     function filterSearchResultsByAvailability(rows) {
@@ -905,7 +1032,8 @@
       groupsEl.replaceChildren();
       const videoSection = sectionFor('Videos');
       const allVideoRows = allPlaylistVideos();
-      videoSection.appendChild(navButton('__all_videos__', 'All videos', allVideoRows.length));
+      videoSection.appendChild(navButton('__all_videos__', 'Playlist videos', allVideoRows.length));
+      videoSection.appendChild(navButton('__history__', 'History', data.historySummary?.watch_rows || 0));
       const likedRows = likedVideos();
       videoSection.appendChild(navButton('__liked__', 'Liked videos', likedRows.length));
       const hiddenPlaylists = data.playlists.filter(playlist => (playlist.hidden_count || 0) > 0);
@@ -1076,7 +1204,7 @@
       return article;
     }
 
-    function render() {
+    async function render() {
       if (!data) {
         title.textContent = 'Loading';
         meta.textContent = '';
@@ -1134,13 +1262,11 @@
         return;
       }
       if (query) {
-        const allRows = buildOmniResults(query);
-        const unavailableCount = allRows.filter(resultIsUnavailable).length;
-        const rows = filterSearchResultsByAvailability(allRows);
+        const allRows = await buildOmniResults(query);
+        const rows = allRows;
         title.textContent = 'Search results';
         meta.innerHTML = `
           <span>${rows.length} shown</span>
-          <label class="meta-filter"><input type="checkbox" data-search-result-filter="hidden" ${searchResultVisibility.hidden ? 'checked' : ''}> <span class="badge">${unavailableCount} unavailable</span></label>
         `;
         renderPagedGrid(rows, searchResultCardFor, 'No results match.');
         return;
@@ -1186,13 +1312,17 @@
           const hidden = isHiddenPlaylistVideo(video);
           return hidden ? playlistVisibility.hidden : playlistVisibility.videos;
         }));
-        title.textContent = 'All videos';
+        title.textContent = 'Playlist videos';
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
           ${allVideosSortHtml()}
         `;
         renderPagedGrid(rows, playlistVideoCardFor, 'No playlist videos match.');
+        return;
+      }
+      if (selected === '__history__') {
+        await renderHistoryView();
         return;
       }
       if (selected === '__hidden__') {
@@ -1426,6 +1556,38 @@
       });
     }
 
+    function historyWatchedAtLabel(video) {
+      const value = video.watched_at || video.watch_date || '';
+      if (!value) return '';
+      const parsed = Date.parse(value);
+      if (!Number.isFinite(parsed)) return value;
+      return new Date(parsed).toLocaleString();
+    }
+
+    function historyRowCardFor(video) {
+      const article = playlistVideoCardFor(video, {
+        resultKind: 'History',
+        playlistSourcesHtml: playlistSourceLinksHtml(video),
+      });
+      article.classList.add('history-row');
+      if (!article.querySelector('.thumb-wrap')) {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'thumb-wrap';
+        article.insertBefore(placeholder, article.firstChild);
+      }
+      const body = article.querySelector('.body');
+      if (body) {
+        const watched = historyWatchedAtLabel(video);
+        if (watched) {
+          const line = document.createElement('div');
+          line.className = 'details';
+          line.innerHTML = `<span>Watched ${escapeHtml(watched)}</span>`;
+          body.insertBefore(line, body.querySelector('.watched-line') || body.querySelector('.watch-sparkline') || null);
+        }
+      }
+      return article;
+    }
+
     function searchResultCardFor(result) {
       if (result.kind === 'playlist') {
         return cardFor(result.item);
@@ -1435,6 +1597,12 @@
       }
       if (result.kind === 'missing') {
         return snapshotMissingCardFor(result.item, { resultKind: 'Video' });
+      }
+      if (result.kind === 'history') {
+        return playlistVideoCardFor(result.item, {
+          resultKind: result.matchedDescription ? 'History description match' : 'History',
+          playlistSourcesHtml: playlistSourceLinksHtml(result.item),
+        });
       }
       const video = result.item;
       return playlistVideoCardFor(video, {
@@ -1661,8 +1829,27 @@
     if (videosFilter) {
       videosFilter.addEventListener('change', () => {
         videosFilter.indeterminate = false;
-        for (const child of videoChildFilters) child.checked = videosFilter.checked;
+        for (const child of [...videoFieldFilters, ...videoSourceFilters]) child.checked = videosFilter.checked;
         currentPage = 1;
+        syncVideosParentFilter();
+        render();
+      });
+    }
+    if (videoFieldGroupFilter) {
+      videoFieldGroupFilter.addEventListener('change', () => {
+        videoFieldGroupFilter.indeterminate = false;
+        for (const child of videoFieldFilters) child.checked = videoFieldGroupFilter.checked;
+        currentPage = 1;
+        syncVideosParentFilter();
+        render();
+      });
+    }
+    if (videoSourceGroupFilter) {
+      videoSourceGroupFilter.addEventListener('change', () => {
+        videoSourceGroupFilter.indeterminate = false;
+        for (const child of videoSourceFilters) child.checked = videoSourceGroupFilter.checked;
+        currentPage = 1;
+        syncVideosParentFilter();
         render();
       });
     }
@@ -1673,7 +1860,7 @@
         render();
       });
     }
-    for (const input of videoChildFilters) {
+    for (const input of [...videoFieldFilters, ...videoSourceFilters]) {
       input.addEventListener('change', () => {
         syncVideosParentFilter();
         currentPage = 1;
@@ -1681,7 +1868,14 @@
       });
     }
     for (const input of searchFilters) {
-      if (input === channelsFilter || input === videosFilter || channelChildFilters.includes(input) || videoChildFilters.includes(input)) continue;
+      if (
+        input === channelsFilter
+        || input === videosFilter
+        || videoGroupFilters.includes(input)
+        || channelChildFilters.includes(input)
+        || videoFieldFilters.includes(input)
+        || videoSourceFilters.includes(input)
+      ) continue;
       input.addEventListener('change', () => {
         currentPage = 1;
         render();

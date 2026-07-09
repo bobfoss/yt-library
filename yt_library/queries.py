@@ -328,6 +328,7 @@ def history_search_data(
                    hr.imported_at,
                    COALESCE(vm.title, '') AS metadata_title,
                    COALESCE(vm.description, '') AS metadata_description,
+                   COALESCE(NULLIF(vm.channel_id, ''), NULLIF(hr.channel_id, ''), '') AS metadata_channel_id,
                    COALESCE(NULLIF(vmc.title, ''), NULLIF(hc.title, ''), hr.channel, '') AS metadata_channel,
                    COALESCE(NULLIF(vmc.url, ''), NULLIF(hc.url, ''), '') AS metadata_channel_url,
                    COALESCE(vm.duration_text, '') AS metadata_duration,
@@ -376,6 +377,43 @@ def history_search_data(
         row["time_quality_note"] = history_time_quality_note(row.get("time_quality", ""))
         labels = [label for label in (source_label, time_label, match_label) if label]
         row["history_badges"] = labels
+    video_ids = sorted({row.get("video_id", "") for row in watch_rows if row.get("video_id", "")})
+    playlist_links_by_video: dict[str, list[dict[str, Any]]] = {}
+    if video_ids:
+        placeholders = ",".join("?" for _ in video_ids)
+        seen_links: set[tuple[str, str]] = set()
+        for link in conn.execute(
+            f"""
+            SELECT v.video_id,
+                   v.playlist_id,
+                   p.title,
+                   v.source_quality,
+                   v.match_type,
+                   v.is_playable
+            FROM playlist_video_reconciled v
+            JOIN playlists p ON p.playlist_id = v.playlist_id
+            WHERE v.video_id IN ({placeholders})
+            ORDER BY p.title COLLATE NOCASE, v.display_position
+            """,
+            video_ids,
+        ):
+            key = (link["video_id"], link["playlist_id"])
+            if key in seen_links:
+                continue
+            seen_links.add(key)
+            playlist_links_by_video.setdefault(link["video_id"], []).append(
+                {
+                    "playlist_id": link["playlist_id"],
+                    "title": link["title"] or link["playlist_id"],
+                    "removed": bool(
+                        link["source_quality"] == "takeout"
+                        and link["match_type"] == "ambiguous_hidden_candidate"
+                        and link["is_playable"]
+                    ),
+                }
+            )
+    for row in watch_rows:
+        row["playlist_links"] = playlist_links_by_video.get(row.get("video_id", ""), [])
     total = dict(
         conn.execute(
             """
