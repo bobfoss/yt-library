@@ -91,6 +91,8 @@
     .external-link:hover { background: var(--accent-soft); }
     .external-link svg { width: 15px; height: 15px; }
     .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .visibility-label { display: inline-flex; align-items: center; gap: 4px; }
+    .visibility-label svg { width: 14px; height: 14px; flex: 0 0 auto; }
     .playlist-sources { display: grid; gap: 3px; justify-items: start; }
     .badge-lines { display: grid; gap: 2px; justify-items: start; }
     .badge-lines .badge { display: block; }
@@ -201,6 +203,7 @@
   <script>
     let data = null;
     let playlists = new Map();
+    let channels = new Map();
     let memberships = new Map();
     let children = new Map();
     let playlistVideos = new Map();
@@ -255,6 +258,7 @@
       historySearchState = { key: '', loading: false, data: null };
       channelHistoryCounts = new Map();
       playlists = new Map(data.playlists.map(p => [p.playlist_id, p]));
+      channels = new Map((data.channels || []).map(channel => [channel.channel_id, channel]));
       playlistVideos = new Map();
       for (const video of data.playlistVideos || []) {
         if (!playlistVideos.has(video.playlist_id)) playlistVideos.set(video.playlist_id, []);
@@ -489,6 +493,30 @@
     function displayPlaylistVisibility(playlist) {
       const value = playlistVisibilityCategory(playlist);
       return ['unknown', 'others'].includes(value) ? '' : value[0].toUpperCase() + value.slice(1);
+    }
+
+    function playlistVisibilityLabelHtml(playlist) {
+      const value = playlistVisibilityCategory(playlist);
+      return visibilityLabelHtml(value, displayPlaylistVisibility(playlist));
+    }
+
+    function visibilityFilterLabelHtml(value, count) {
+      return visibilityLabelHtml(value, `${count} ${value}`);
+    }
+
+    function visibilityLabelHtml(value, label) {
+      if (!label || !['private', 'public', 'unlisted'].includes(value)) return label ? escapeHtml(label) : '';
+      return `<span class="visibility-label">${visibilityIconSvg(value)}<span>${escapeHtml(label)}</span></span>`;
+    }
+
+    function visibilityIconSvg(value) {
+      if (value === 'public') {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M2 12h20"></path><path d="M12 2a15.3 15.3 0 0 1 0 20"></path><path d="M12 2a15.3 15.3 0 0 0 0 20"></path></svg>';
+      }
+      if (value === 'unlisted') {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7H7a5 5 0 0 0 0 10h2"></path><path d="M15 7h2a5 5 0 0 1 0 10h-2"></path><path d="M8 12h8"></path><path d="M3 3l18 18"></path></svg>';
+      }
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>';
     }
 
     function includesQuery(value, query) {
@@ -1714,9 +1742,9 @@
         const unknownCount = allRows.filter(playlist => playlistVisibilityCategory(playlist) === 'unknown').length;
         const rows = sortedPlaylists(allRows.filter(playlist => playlistListVisibility[playlistVisibilityCategory(playlist)]));
         meta.innerHTML = `
-          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="private" ${playlistListVisibility.private ? 'checked' : ''}> <span>${privateCount} private</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="public" ${playlistListVisibility.public ? 'checked' : ''}> <span>${publicCount} public</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="unlisted" ${playlistListVisibility.unlisted ? 'checked' : ''}> <span>${unlistedCount} unlisted</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="private" ${playlistListVisibility.private ? 'checked' : ''}> ${visibilityFilterLabelHtml('private', privateCount)}</label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="public" ${playlistListVisibility.public ? 'checked' : ''}> ${visibilityFilterLabelHtml('public', publicCount)}</label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="unlisted" ${playlistListVisibility.unlisted ? 'checked' : ''}> ${visibilityFilterLabelHtml('unlisted', unlistedCount)}</label>
           <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="others" ${playlistListVisibility.others ? 'checked' : ''}> <span>${othersCount} others</span></label>
           <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="unknown" ${playlistListVisibility.unknown ? 'checked' : ''}> <span>${unknownCount} unknown</span></label>
           ${playlistSortHtml()}
@@ -1762,7 +1790,7 @@
         <div class="details">
           ${playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : ''}
           ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} unavailable</span>` : ''}
-          ${displayPlaylistVisibility(playlist) ? `<span>${escapeHtml(displayPlaylistVisibility(playlist))}</span>` : ''}
+          ${playlistVisibilityLabelHtml(playlist)}
           ${playlist.fetch_status === 'error' ? '<span class="status">Fetch failed</span>' : ''}
         </div>
         ${owner ? `<div class="details">${owner}</div>` : ''}
@@ -1787,12 +1815,52 @@
     }
 
     function playlistOwnerHtml(playlist) {
-      const name = cleanPlaylistOwnerName(playlist.owner_channel_title || '');
+      const owner = playlistOwnerForDisplay(playlist);
+      const name = cleanPlaylistOwnerName(owner.title || '');
       if (!name) return '';
-      const href = playlist.owner_channel_id
-        ? localChannelHref(playlist.owner_channel_id)
-        : (playlist.owner_channel_url || '');
-      return creatorHtml(playlist.owner_channel_thumbnail_path || '', name, href);
+      const href = owner.channel_id
+        ? localChannelHref(owner.channel_id)
+        : (owner.url || '');
+      return creatorHtml(owner.thumbnail_path || '', name, href);
+    }
+
+    function playlistOwnerForDisplay(playlist) {
+      const title = playlist.owner_channel_title || '';
+      if (title) {
+        return {
+          title,
+          channel_id: playlist.owner_channel_id || '',
+          url: playlist.owner_channel_url || '',
+          thumbnail_path: playlist.owner_channel_thumbnail_path || '',
+        };
+      }
+      const visibility = String(playlist.visibility || '').trim();
+      if (!visibility) return {};
+      return libraryOwnerChannelForDisplay();
+    }
+
+    function libraryOwnerChannelForDisplay() {
+      const counts = new Map();
+      for (const playlist of data.playlists || []) {
+        if (!Number(playlist.is_library_owner || 0) || !playlist.owner_channel_id) continue;
+        counts.set(playlist.owner_channel_id, (counts.get(playlist.owner_channel_id) || 0) + 1);
+      }
+      let bestId = '';
+      let bestCount = 0;
+      for (const [channelId, count] of counts.entries()) {
+        if (count > bestCount) {
+          bestId = channelId;
+          bestCount = count;
+        }
+      }
+      const channel = bestId ? channels.get(bestId) : null;
+      if (!channel) return {};
+      return {
+        title: channel.title || '',
+        channel_id: channel.channel_id || '',
+        url: channel.url || '',
+        thumbnail_path: channel.thumbnail_path || '',
+      };
     }
 
     function cleanPlaylistOwnerName(value) {
@@ -1969,10 +2037,15 @@
       const status = String(channel.status || '').toLowerCase();
       const subscribedLabel = isSubscribedChannel(channel) ? 'Subscribed' : 'Non-subscribed';
       const titleText = channel.title || channel.channel_id;
+      const titleHtml = creatorHtml(
+        channel.thumbnail_path || '',
+        titleText,
+        channel.channel_id ? localChannelHref(channel.channel_id) : ''
+      );
       body.innerHTML = `
         <div class="result-kind">Channel</div>
         <div class="title-row">
-          ${channel.channel_id ? `<a class="playlist-title" href="${localChannelHref(channel.channel_id)}">${escapeHtml(titleText)}</a>` : `<div class="video-title">${escapeHtml(titleText)}</div>`}
+          <div class="playlist-title">${titleHtml || escapeHtml(titleText)}</div>
           ${youtubeUrl ? `<a class="external-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
         </div>
         <div class="details">
@@ -2062,7 +2135,7 @@
           <span>${playlist.video_count} videos</span>
           ${playlist.current_video_count ? `<span>${playlist.current_video_count} current</span>` : ''}
           ${playlist.current_hidden_count ? `<span class="badge">${playlist.current_hidden_count} unavailable now</span>` : ''}
-          ${playlist.visibility ? `<span>${escapeHtml(playlist.visibility)}</span>` : ''}
+          ${visibilityLabelHtml(String(playlist.visibility || '').trim().toLowerCase(), playlist.visibility)}
         </div>
         <div class="details">
           <span>${escapeHtml(playlist.playlist_id)}</span>
