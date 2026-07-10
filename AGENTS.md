@@ -61,6 +61,14 @@ Metadata workers materialize their queue when a run starts. Queue priority chang
 
 YouTube creator avatars may appear in newer watch-page data under `avatarViewModel.image.sources`, not only older `videoOwnerRenderer` or `channelThumbnailWithLinkRenderer` thumbnail shapes. Keep the channel avatar extractor broad enough to handle both.
 
+### Current YouTube Playlist UI
+
+YouTube's current playlist page uses `pageHeaderRenderer.content.pageHeaderViewModel.metadata.contentMetadataViewModel.metadataRows` for header facts. The row can contain `Playlist`, the visibility label, the authoritative displayed count (for example `150 videos`), and the view count. Do not rely only on older `playlistHeaderRenderer` fields; parse this newer shape when refreshing playlist metadata or validating scan completeness.
+
+The initial playlist page commonly exposes only the first 100 `playlistVideoRenderer` entries. Its continuation surface is currently fragile: the generic JSON continuation request can be treated as logged out, while the authenticated `youtubei` request may return only a logged-in response shell with no playlist entries. Adding click-tracking context alone did not resolve that behavior. Treat the displayed header count as the completeness guard and reject an extractor result that is short of it rather than replacing a fuller existing scan.
+
+`yt-dlp` is useful but can return a different or transient playlist membership/count from the web page. It has returned a short partial list in one scan and a fuller list later for the same playlist. Compare its row count to the live page header before saving; preserve the prior raw scan on a short result. Keep the source/count evidence in worker logs so discrepancies are diagnosable.
+
 ## Coding Style & Naming Conventions
 
 Prefer Python implementations and put changes in the module that owns the behavior. Use 4-space indentation, type hints for new helper functions, and descriptive snake_case names. Keep comments rare and useful. Follow existing patterns for SQLite helpers, worker classes, API route handling, and template edits.
@@ -92,7 +100,7 @@ Video like/dislike state is stored on `video_metadata.reaction` as a compact per
 
 ## Commit & Pull Request Guidelines
 
-Git history uses concise, imperative commit subjects such as `Clean up history storage schema` and `Import Takeout history from zip archives`. Keep commits focused and avoid staging personal data artifacts. Pull requests should summarize behavior changes, schema migrations, verification commands, and UI impact. Include screenshots for visible UI changes.
+Git history uses concise, imperative commit subjects such as `Clean up history storage schema` and `Import Takeout history from zip archives`. Every commit should also include a substantive body covering behavior changes, relevant schema or operational impact, and verification performed. Keep commits focused and avoid staging personal data artifacts. Pull requests should summarize behavior changes, schema migrations, verification commands, and UI impact. Include screenshots for visible UI changes.
 
 ## Security & Configuration Tips
 
