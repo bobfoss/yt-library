@@ -213,6 +213,7 @@
     let playlistListVisibility = { private: true, public: true, unlisted: true, others: true, unknown: true };
     let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
     let searchResultVisibility = { hidden: true };
+    let searchResultsSort = 'relevance';
     let playlistVisibilityPlaylistId = '';
     let allVideosSort = 'newest_added';
     let playlistViewSort = 'playlist_order';
@@ -743,6 +744,52 @@
       return sorted;
     }
 
+    function searchResultTitle(result) {
+      const item = result.item || {};
+      if (result.kind === 'playlist') return item.title || item.playlist_id || '';
+      if (result.kind === 'channel') return item.title || item.channel_id || '';
+      if (result.kind === 'missing') return item.recovered_title || item.video_id || item.playlist_title || '';
+      return displayVideoTitle(item);
+    }
+
+    function searchResultDate(result) {
+      const item = result.item || {};
+      const value = result.kind === 'history'
+        ? (item.watched_at || item.best_watch_time || item.watch_date || item.added_at || '')
+        : result.kind === 'playlist'
+          ? (item.updated_at ? Number(item.updated_at) * 1000 : '')
+          : result.kind === 'channel'
+            ? (Number(item.updated_at || item.fetched_at || 0) * 1000)
+            : result.kind === 'missing'
+              ? (item.recovered_upload_date || item.added_at || '')
+              : (item.added_at || item.metadata_upload_date || item.metadata_published_at || item.published_at || '');
+      const time = typeof value === 'number' ? value : Date.parse(value);
+      return Number.isFinite(time) ? time : 0;
+    }
+
+    function searchResultWatchCount(result) {
+      return Number((result.item || {}).watch_count || 0);
+    }
+
+    function sortedSearchResults(rows) {
+      const sorted = [...rows];
+      const byTitle = (a, b) => searchResultTitle(a).localeCompare(searchResultTitle(b), undefined, { sensitivity: 'base' });
+      if (searchResultsSort === 'title') {
+        sorted.sort((a, b) => byTitle(a, b) || a.score - b.score);
+      } else if (searchResultsSort === 'newest') {
+        sorted.sort((a, b) => searchResultDate(b) - searchResultDate(a) || byTitle(a, b));
+      } else if (searchResultsSort === 'oldest') {
+        sorted.sort((a, b) => searchResultDate(a) - searchResultDate(b) || byTitle(a, b));
+      } else if (searchResultsSort === 'most_watched') {
+        sorted.sort((a, b) => searchResultWatchCount(b) - searchResultWatchCount(a) || byTitle(a, b));
+      } else if (searchResultsSort === 'type') {
+        sorted.sort((a, b) => a.kind.localeCompare(b.kind, undefined, { sensitivity: 'base' }) || byTitle(a, b));
+      } else {
+        sorted.sort((a, b) => a.score - b.score || byTitle(a, b));
+      }
+      return sorted;
+    }
+
     function pageSizeNumber() {
       if (pageSize === 'all') return Infinity;
       const value = Number(pageSize || 100);
@@ -977,6 +1024,24 @@
       `;
     }
 
+    function searchResultsSortHtml() {
+      const options = [
+        ['relevance', 'Relevance'],
+        ['title', 'Title A-Z'],
+        ['newest', 'Newest'],
+        ['oldest', 'Oldest'],
+        ['most_watched', 'Most watched'],
+        ['type', 'Type'],
+      ];
+      return `
+        <label class="view-sort">Sort
+          <select data-search-sort>
+            ${options.map(([optionValue, label]) => `<option value="${optionValue}" ${searchResultsSort === optionValue ? 'selected' : ''}>${label}</option>`).join('')}
+          </select>
+        </label>
+      `;
+    }
+
     function sortedChannels(rows) {
       return [...rows].sort((left, right) => {
         const leftUpdated = Number(left.updated_at || left.fetched_at || 0);
@@ -1194,7 +1259,7 @@
           results.push({ kind: 'history', score: titleHit ? 2 : 4, item: video, matchedDescription: descriptionHit && !titleHit });
         }
       }
-      return results.sort((a, b) => a.score - b.score).slice(0, 500);
+      return results;
     }
 
     function resultIsUnavailable(result) {
@@ -1544,10 +1609,11 @@
         }
         if (generation !== renderGeneration) return;
         stopSearchProgress();
-        const rows = allRows;
+        const rows = sortedSearchResults(filterSearchResultsByAvailability(allRows)).slice(0, 500);
         title.textContent = 'Search results';
         meta.innerHTML = `
           <span>${rows.length} shown</span>
+          ${searchResultsSortHtml()}
         `;
         renderPagedGrid(rows, searchResultCardFor, 'No results match.');
         return;
@@ -2218,6 +2284,13 @@
       }
       if (target instanceof HTMLSelectElement && target.dataset.playlistSort !== undefined) {
         allPlaylistsSort = target.value || 'title';
+        currentPage = 1;
+        scrollResultsToTop();
+        render();
+        return;
+      }
+      if (target instanceof HTMLSelectElement && target.dataset.searchSort !== undefined) {
+        searchResultsSort = target.value || 'relevance';
         currentPage = 1;
         scrollResultsToTop();
         render();
