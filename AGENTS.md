@@ -5,7 +5,7 @@
 This repository is a Python web app for browsing, enriching, and reconciling a personal YouTube library.
 
 - `yt_library_manager.py` is the compatibility CLI shim; keep existing commands routed through it.
-- `yt_library/core.py` contains database migrations, importers, parsers, metadata fetchers, and reconciliation logic.
+- `yt_library/core.py` contains schema bootstrap, importers, parsers, metadata fetchers, and reconciliation logic.
 - `yt_library/server.py` contains HTTP routing and local API endpoints.
 - `yt_library/workers.py` contains background worker orchestration.
 - `yt_library/queries.py` contains read models for the browser and history search.
@@ -31,7 +31,7 @@ python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout .
 ```
 
 - `py_compile` catches syntax errors without running workers.
-- `migrate` applies schema migrations and one-time data repairs. Run it deliberately before starting a server after schema changes; normal connections and requests never run migrations.
+- `migrate` initializes the current schema from `yt_library/schema.sql`. This project supports only the current local/fresh-install schema while it is in early development; stale databases from older schema eras should be rebuilt or re-imported instead of upgraded through historical migration code. Run `migrate` deliberately before starting a server after schema changes; normal connections and requests never initialize schema objects.
 - `serve` starts the local browser/admin UI and requires an already-migrated database.
 - `import-history` imports Takeout watch history zips from the selected path and rebuilds reconciliation.
 
@@ -57,7 +57,7 @@ $code | & "C:\Users\michael.keenan\.cache\codex-runtimes\codex-primary-runtime\d
 
 When using `Start-Process`, pass a single quoted argument string or otherwise verify paths with spaces remain intact; cookie files such as `"YT cookies.txt"` must not be split into separate arguments.
 
-SQLite can be held open by long-running ad hoc probes. If migrations fail with `database is locked`, inspect local `python.exe`/`pwsh.exe` processes for stale diagnostic scripts before changing application code. Stop only the stale probe, not the active server, unless a server restart is needed.
+SQLite can be held open by long-running ad hoc probes. If schema initialization or imports fail with `database is locked`, inspect local `python.exe`/`pwsh.exe` processes for stale diagnostic scripts before changing application code. Stop only the stale probe, not the active server, unless a server restart is needed.
 
 Metadata workers materialize their queue when a run starts. Queue priority changes, new source labels, or extractor fixes require stopping/restarting the metadata worker or restarting the service before the running worker will use the new ordering. A server restart interrupts active in-process workers.
 
@@ -90,9 +90,9 @@ python -m unittest discover -s tests -v
 git diff --check
 ```
 
-Current tests cover pure helpers, Takeout watch-history parsing, temporary SQLite schema bootstrap, and history search read models. Keep tests local-only: do not require real cookies, network access, personal Takeout zips, or the live `yt_library.sqlite3`.
+Current tests cover pure helpers, Takeout watch-history parsing, fresh temporary SQLite schema bootstrap, and history search read models. Keep tests local-only: do not require real cookies, network access, personal Takeout zips, or the live `yt_library.sqlite3`.
 
-For schema, import, or worker changes, also run the relevant command against a local copy of `yt_library.sqlite3` and smoke test `/api/admin/status` and `/api/history/search?limit=1`.
+For schema, import, or worker changes, also verify a fresh temporary database initializes from `schema.sql`; when using a local copy of `yt_library.sqlite3`, treat old-schema failures as rebuild/re-import work rather than migration bugs. Smoke test `/api/admin/status` and `/api/history/search?limit=1`.
 
 Restart the local service when necessary, not automatically after every action. Restart after server code, served HTML/JS, config, schema/bootstrap, or worker behavior changes so the running app picks them up. A database-only update usually does not need a restart because API requests read SQLite fresh; verify with an endpoint instead.
 
@@ -106,7 +106,7 @@ Video like/dislike state is stored on `video_metadata.reaction` as a compact per
 
 ## Commit & Pull Request Guidelines
 
-Git history uses concise, imperative commit subjects such as `Clean up history storage schema` and `Import Takeout history from zip archives`. Every commit should also include a substantive body covering behavior changes, relevant schema or operational impact, and verification performed. Keep commits focused and avoid staging personal data artifacts. Pull requests should summarize behavior changes, schema migrations, verification commands, and UI impact. Include screenshots for visible UI changes.
+Git history uses concise, imperative commit subjects such as `Clean up history storage schema` and `Import Takeout history from zip archives`. Every commit should also include a substantive body covering behavior changes, relevant schema or operational impact, and verification performed. Keep commits focused and avoid staging personal data artifacts. Pull requests should summarize behavior changes, schema changes, verification commands, and UI impact. Include screenshots for visible UI changes.
 
 ## Security & Configuration Tips
 

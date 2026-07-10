@@ -12,7 +12,15 @@ This project is still in an early alpha stage. Prefer the design that clarifies 
 
 ## System Shape
 
-The app is intentionally compact: `yt_library_manager.py` owns the HTTP server, SQLite schema and migrations, web/YouTube parsing, importers, workers, API endpoints, and embedded HTML views.
+The app is intentionally compact but no longer single-file. `yt_library_manager.py` is the compatibility CLI shim, while the application code is split across a small Python package:
+
+- `yt_library/cli.py` defines CLI commands and keeps existing command names stable.
+- `yt_library/core.py` owns schema bootstrap, importers, parsers, metadata fetchers, queue helpers, and reconciliation logic.
+- `yt_library/server.py` owns HTTP routing and local API endpoints.
+- `yt_library/workers.py` owns in-process worker orchestration.
+- `yt_library/queries.py` owns read models for browser and history views.
+- `yt_library/schema.sql` is the canonical SQLite schema for fresh local databases.
+- `yt_library/templates/` contains the browser, history, and admin HTML.
 
 Primary surfaces:
 
@@ -139,5 +147,5 @@ When evidence is uncertain, preserve that uncertainty in the UI instead of silen
 - Prefer web-interface extraction and local cookies before API usage.
 - Be polite with remote services: batch, delay, expose limits, and make workers stoppable.
 - Do not require server restarts for data-only changes; API reads should refresh from SQLite. Restart only when code, served HTML/JS, schema/bootstrap, or worker behavior changes.
-- Keep migrations defensive and idempotent because the local database evolves with the tool.
+- Treat `schema.sql` as the canonical fresh-install schema. The project is still early and supports only this local install, so historical upgrade paths should be removed instead of carried as permanent migration code; stale databases should be rebuilt or re-imported.
 - Keep personal artifacts out of Git: cookies, Takeout zips, SQLite databases, logs, and cached images.

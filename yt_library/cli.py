@@ -102,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     recover_missing_parser.add_argument("--refresh-metadata", action="store_true", help="Use Archivarix API even when a thumbnail is already cached")
     recover_missing_parser.set_defaults(func=recover_snapshot_missing)
 
-    migrate_parser = subparsers.add_parser("migrate", help="Apply database schema migrations and repairs")
+    migrate_parser = subparsers.add_parser("migrate", help="Initialize the current database schema")
     migrate_parser.add_argument("--db", default=str(DEFAULT_DB))
     migrate_parser.set_defaults(func=migrate)
 

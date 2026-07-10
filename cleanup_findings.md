@@ -1,107 +1,175 @@
 # Cleanup Findings
 
-This document tracks code and schema cleanup opportunities that match the recent `playlist_video_reconciled` pattern: store compact factual data, derive display labels in code, and avoid persisting explanatory prose or mixed-meaning fields.
+This review uses the current code as truth and ranks cleanup work by duplication
+risk. The project is still early and supports only this local/fresh-install
+schema, so historical database upgrade code should not be preserved merely for
+compatibility with earlier refactors.
 
-## Playlist Availability Display
+## Completed In This Slice
 
-Status: completed.
+Status: implemented.
 
-- `playlist_videos.availability` and `playlist_video_reconciled.availability` should represent actual video availability only.
-- Blank means availability cannot be determined, usually because there is no video ID.
-- `yt_library/templates/index.html` now renders blank availability as no availability badge.
-- Match/recovery badges remain responsible for explanatory context.
+- Collapsed `migrate_database()` to schema initialization from `yt_library/schema.sql`.
+- Removed historical upgrade helpers for old playlist owner columns, old channel denormalization, old reconciliation fields, old history tables, and old table rebuilds.
+- Moved Takeout subscription syncing out of migration and into `import-history`, where Takeout-derived data belongs.
+- Added channel-related indexes to `schema.sql` so fresh databases keep the intended query shape.
+- Updated tests to compare migrated databases against `schema.sql`, verify schema-only behavior on an existing database, and cover subscription import from a synthetic Takeout zip.
+- Updated `README.md`, `AGENTS.md`, and `design.md` to describe the modular code shape and fresh-install migration posture.
 
-## History Reconciliation Semantics
+Removed migration categories:
 
-Status: completed.
+- `*_from_legacy` conversion helpers for retired reconciliation fields.
+- Table-rebuild helpers for old history, playlist reconciliation, snapshot, metadata, and recovery schemas.
+- Deprecated column-drop/backfill routines that only existed to upgrade earlier local database shapes.
+- Legacy table cleanup for tables no longer present in the canonical schema.
 
-- `history_reconciled.source_quality` currently mixes source, match state, and time quality.
-- Current values include examples such as `matched`, `takeout_exact`, `youtube_date_only`, and `youtube_observed_only`.
-- Cleanup completed by replacing `source_quality` with compact `source_type`, `match_type`, and `time_quality` fields.
-- Derive user-facing labels from code mappings instead of rendering raw keys.
+## Review Gate For Future Removals
 
-## History Match Notes
+Remove a vestigial candidate only when all are true:
 
-Status: completed.
+- No active read/write path depends on it.
+- No API payload or template path renders it.
+- No current-schema test protects it for behavior rather than migration history.
+- No current local data operation still needs it; if it does, move that operation to an explicit importer/admin command first.
 
-- `history_reconciled.match_notes` stores generated prose, including the YouTube observed-time explanation.
-- Cleanup completed by removing `match_notes` and deriving explanatory text from `time_quality`.
-- Keep free-form notes only if we later identify truly source-authored or user-authored notes.
+## Ranked Remaining Cleanup
 
-## Raw History UI Badges
+### 1. History Video Card Duplication
 
-Status: completed.
+Status: open, highest deduplication payoff.
 
-- `yt_library/templates/history.html` renders `source_quality` directly as a badge.
-- Cleanup completed by rendering derived `history_badges` from the history search read model.
+Evidence:
 
-## Snapshot Source File Columns
+- `yt_library/templates/index.html` has shared library video-card helpers such as `videoCardFor()`, `playlistVideoCardFor()`, `creatorHtml()`, and `watchedLineHtml()`.
+- `yt_library/templates/history.html` still has separate `watchCard()`, `creatorHtml()`, and `watchedLineHtml()` helpers for the same card vocabulary: thumbnail, title, badges, channel, ID, progress, and description.
 
-Status: completed.
+Cleanup:
 
-- `snapshot_playlists.source_file` and `snapshot_videos.source_file` may be redundant now that `snapshot_key` identifies the Takeout import.
-- Cleanup completed by removing the columns and keeping snapshot identity at the snapshot level.
+- Extract shared browser-side video-card helpers into a small shared static JS/template include.
+- Adapt both library search/playlist views and history results to use the same renderer with mode options.
 
-## Shared Video Card Rendering
+Validation:
 
-Status: completed for active library video cards.
+- Smoke `/` and `/history`.
+- Verify playlist/search cards, history cards, unavailable cards, badges, channel chips, watch progress, and description matches still render.
 
-- `yt_library/templates/index.html` now routes playlist/search videos, raw unavailable videos, and snapshot missing / likely unavailable videos through a shared `videoCardFor()` renderer.
-- Badges are rendered as their own vertical block, and creator/channel chips render on their own line.
-- Remaining cleanup: share this same video-card concept with the history page so watch-history results do not drift from library video cards.
+### 2. Unified Server-Side Omni Search
 
-## History Video Card Duplication
+Status: open, correctness plus deduplication.
 
-- `yt_library/templates/history.html` still has its own `watchCard()`, `creatorHtml()`, and `watchedLineHtml()` helpers.
-- This card renders the same kind of object as the library video cards: thumbnail, title, badges, channel, video ID, watch progress, and description.
-- Cleanup: move common browser-side card helpers into a shared static JS module or shared template include, then adapt both `index.html` and `history.html` to use it.
+Evidence:
 
-## Collection Card Duplication
+- Browser omni-search merges client-side `/api/data` rows with server-paged `/api/history/search` rows.
+- The current `index.html` dedupes video-like search results client-side, but pagination/counts are still limited by the mixed source window.
 
-- Normal playlist cards, snapshot playlist cards, and channel cards all repeat a broad "card with title, details, links, and optional description/media" structure.
-- These cards differ enough that the payoff is smaller than the video-card cleanup, but they are candidates if UI drift continues.
-- Cleanup: consider a generic collection/entity card builder only after the history video-card duplication is resolved.
+Cleanup:
 
-## Unused Archivarix Candidate Card
+- Add `/api/search` that ranks, filters, dedupes, counts, and pages playlists, channels, playlist videos, missing/unavailable rows, and history rows server-side.
+- Keep `/api/history/search` for the dedicated history page.
 
-- `yt_library/templates/index.html` still defines `candidateCardFor()`, but no current UI path calls it.
-- It appears to be leftover from the earlier Archivarix candidate workflow that rendered rows from `data.archivarixCandidates` / `archivarix_candidates`.
-- The richer snapshot and playlist video card paths now cover the active recovered-video display needs.
-- Cleanup: remove `candidateCardFor()` and then review whether the `archivarixCandidates` API payload and table path are still useful.
+Validation:
 
-## Hidden Naming Cleanup
+- Unit-test ranking, dedupe, unavailable inclusion, source filters, description matches, and pagination counts.
+- Smoke browser omni-search and dedicated history search.
 
-- User-facing playlist/video-row language is moving from `hidden` to `Unavailable`.
-- Internal schema and API names still use terms such as `hidden_count`, `hiddenVideos`, `snapshotLikelyHidden`, and `__hidden_playlists__`.
-- Cleanup: when convenient, migrate internal names to `unavailable` equivalents while preserving existing data and backwards-compatible hash aliases.
+### 3. Worker Queue/Run/Log Pattern Duplication
 
-## Unified Server-Side Omni Search
+Status: open, medium/high risk because workers are operationally important.
 
-- The integrated omni-search currently uses a hybrid model: playlists, channels, playlist videos, and snapshot/unavailable candidates are searched client-side from `/api/data`, while history matches are fetched from `/api/history/search`.
-- Dedicated History pagination is correct because it is server-paged, but omni-search pagination is only correct over the merged client-side result window. History contribution is currently capped before merging.
-- Cleanup: add a unified `/api/search` endpoint that applies search fields, source filters, unavailable inclusion, history dedupe, counts, ranking, and pagination on the server.
-- The browser should then render returned rows instead of merging partially complete client/server result sets.
+Evidence:
 
-## Foreign Playlist Historical Recovery
+- Metadata, playlist scan, live history, placeholder recovery, and dispatcher classes repeat run lifecycle, stop handling, progress counters, logs, status summaries, and queue preview patterns.
+- Some duplication is intentional domain behavior; the smell is repeated lifecycle plumbing.
 
-- YouTube Takeout playlist exports currently cover playlists the account created, not saved playlists owned by others.
-- If we later obtain an older local copy or exported source for someone else's playlist, compare that historical membership to the current exposed rows and current YouTube header count.
-- This could identify memory-holed videos on foreign playlists without synthesizing unavailable rows from a count gap alone.
-- Cleanup/investigation: keep the current best-visible-row policy for foreign playlists, and add a recovery workflow only after we have a concrete fixture where historical rows exceed the current exposed rows.
+Cleanup:
 
-## Foreign Playlist Continuation Extraction
+- Introduce a narrow worker-run helper for shared status/log/progress updates.
+- Keep worker-specific fetch/parse/save logic in each worker class.
 
-- Example: `Alt Tabby 2025` (`PL0Yl36ZlaYcRi8NREnUoajhs1bwWcKdtk`) currently reports `361 videos` in the YouTube header.
-- `yt-dlp` returned 100 rows, while the web/watch-panel fallback returned 200 rows and then stopped; the saved scan logs this as `200 exposed of 361 reported`.
-- Investigation: improve extraction for foreign playlist continuations beyond the current 100/200-row limits, likely by handling the watch-panel continuation shape or using a browser-style scroller.
-- Preserve current behavior until improved: save the best exposed nonzero row set for foreign playlists, but do not synthesize unavailable rows from the header gap alone.
+Validation:
+
+- Unit-test stop behavior, failed/completed run status, queue clearing, and dispatcher summary.
+- Smoke `/api/admin/status` and queue start/stop endpoints.
+
+### 4. Archivarix Candidate Path
+
+Status: investigate before removal.
+
+Evidence:
+
+- `index.html` still defines `candidateCardFor()`.
+- `fetch_app_data()` still returns `archivarixCandidates`.
+- The active recovered-video display appears to use richer snapshot/reconciled card paths instead.
+
+Cleanup:
+
+- Trace all references to `candidateCardFor`, `archivarixCandidates`, and `archivarix_candidates`.
+- If no active UI consumes them, remove the unused card helper and decide whether the table/API payload remains useful as an admin/debug source.
+
+Validation:
+
+- Unit-test `fetch_app_data()` if the payload changes.
+- Smoke missing/unavailable snapshot views and Archivarix recovery worker output.
+
+### 5. Hidden vs Unavailable Naming
+
+Status: open, broad rename best done late.
+
+Evidence:
+
+- User-facing UI now prefers unavailable language.
+- Internal names still include `hidden_count`, `hiddenVideos`, `snapshotLikelyHidden`, and `__hidden_playlists__`.
+
+Cleanup:
+
+- Rename internal API/schema/read-model names toward `unavailable` only when touching adjacent code.
+- Avoid schema churn unless the field meaning changes; if renamed, update tests and hash aliases together.
+
+Validation:
+
+- Search all `hidden` references and classify as YouTube source language, unavailable semantics, or obsolete wording.
+- Smoke playlist unavailable views and scan logs.
+
+### 6. Collection/Entity Card Duplication
+
+Status: open, lower priority than video cards.
+
+Evidence:
+
+- Playlist cards, snapshot playlist cards, and channel cards repeat a broad card-with-title/details/links/media pattern.
+- They differ enough that premature abstraction could obscure domain-specific behavior.
+
+Cleanup:
+
+- Revisit after video-card sharing. Extract only if the card variants continue to drift.
+
+Validation:
+
+- Visual smoke on playlist, snapshot, channel, and search result views.
+
+### 7. Foreign Playlist Continuation Extraction
+
+Status: investigation, not pure cleanup.
+
+Evidence:
+
+- Example: `Alt Tabby 2025` (`PL0Yl36ZlaYcRi8NREnUoajhs1bwWcKdtk`) reported `361 videos`; prior scans exposed 100 to 200 rows.
+- Current policy correctly saves the best nonzero exposed row set and does not synthesize unavailable rows from the header gap.
+
+Cleanup:
+
+- Investigate continuation shapes or browser-style scrolling only after a concrete fixture is available.
+
+Validation:
+
+- Preserve reported/exposed count logging and never replace a fuller previous scan with a short transient result.
 
 ## Suggested Order
 
-1. Add unified server-side omni-search with correct pagination.
-2. Share the video-card renderer with `history.html`.
-3. Remove the unused Archivarix candidate card path.
-4. Improve foreign playlist continuation extraction past the current exposed-row cap.
-5. Investigate foreign playlist historical recovery once a real fixture exists.
-6. Revisit hidden/unavailable internal naming.
-7. Revisit collection/entity card duplication only if playlist, snapshot playlist, and channel cards continue to drift.
+1. Share video-card rendering between library and history.
+2. Add unified server-side omni-search.
+3. Extract worker lifecycle/log helpers.
+4. Remove or quarantine the unused Archivarix candidate UI/API path.
+5. Rename hidden/unavailable internals opportunistically.
+6. Revisit collection/entity card abstraction only after video cards settle.
+7. Investigate foreign playlist continuation extraction with a concrete fixture.

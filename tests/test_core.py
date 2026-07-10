@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import tempfile
 import time
 import sqlite3
@@ -7,6 +8,7 @@ import json
 import threading
 import urllib.error
 import unittest
+import zipfile
 from datetime import date
 from pathlib import Path
 from unittest.mock import patch
@@ -349,6 +351,68 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(rows[0]["channel"], "Example Channel")
         self.assertEqual(rows[0]["channel_id"], "UCvmGOqGlxOgpZDoszBbWxmA")
 
+    def test_import_history_syncs_takeout_subscriptions(self) -> None:
+        original_root = core.ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            core.ROOT = root
+            try:
+                db_path = root / "library.sqlite3"
+                core.migrate_database(db_path)
+                zip_path = root / "takeout-20260704T052745Z-001.zip"
+                with zipfile.ZipFile(zip_path, "w") as zf:
+                    zf.writestr(
+                        "Takeout/YouTube and YouTube Music/history/watch-history.json",
+                        json.dumps(
+                            [
+                                {
+                                    "title": "Watched Example Video",
+                                    "titleUrl": "https://www.youtube.com/watch?v=vid123",
+                                    "subtitles": [
+                                        {
+                                            "name": "Example Channel",
+                                            "url": "https://www.youtube.com/channel/UCvmGOqGlxOgpZDoszBbWxmA",
+                                        }
+                                    ],
+                                    "time": "2026-07-04T05:27:45.123Z",
+                                }
+                            ]
+                        ),
+                    )
+                    zf.writestr(
+                        "Takeout/YouTube and YouTube Music/subscriptions/subscriptions.csv",
+                        (
+                            "Channel Id,Channel Url,Channel Title\n"
+                            "UCsubscribed12345678901234,https://www.youtube.com/channel/UCsubscribed12345678901234,Subscribed Channel\n"
+                        ),
+                    )
+
+                core.import_history(
+                    argparse.Namespace(
+                        db=str(db_path),
+                        takeout=str(root),
+                        history_key="",
+                    )
+                )
+                conn = core.connect(db_path)
+                try:
+                    subscribed = conn.execute(
+                        "SELECT title, subscribed FROM channels WHERE channel_id = ?",
+                        ("UCsubscribed12345678901234",),
+                    ).fetchone()
+                    history_count = conn.execute(
+                        "SELECT COUNT(*) FROM takeout_history_occurrences"
+                    ).fetchone()[0]
+                finally:
+                    conn.close()
+            finally:
+                core.ROOT = original_root
+
+        self.assertIsNotNone(subscribed)
+        self.assertEqual(subscribed["title"], "Subscribed Channel")
+        self.assertEqual(subscribed["subscribed"], 1)
+        self.assertEqual(history_count, 1)
+
     def test_extract_reaction_from_toggled_buttons(self) -> None:
         liked = {
             "segmentedLikeDislikeButtonViewModel": {
@@ -538,13 +602,6 @@ class CoreHelperTests(unittest.TestCase):
             "missing from current playable scan; hidden slot mapping is ambiguous",
         )
         self.assertEqual(
-            core.playlist_match_type_from_legacy(
-                "current",
-                "current hidden slot has no exposed video ID",
-            ),
-            "ambiguous_hidden_slot",
-        )
-        self.assertEqual(
             core.reconciled_video_availability("Ax8Yn8DPZe0", "", "LIVE"),
             "LIVE",
         )
@@ -553,22 +610,15 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "subscriber_only", "", 0), "subscriber_only")
         self.assertEqual(core.reconciled_video_availability("", "private", "LIVE"), "")
 
-    def test_history_reconciliation_helpers_split_legacy_source_quality(self) -> None:
-        self.assertEqual(core.history_source_type_from_legacy("matched"), "takeout_youtube")
-        self.assertEqual(core.history_match_type_from_legacy("matched"), "video_id_date")
-        self.assertEqual(core.history_time_quality_from_legacy("matched"), "exact")
-        self.assertEqual(core.history_source_type_from_legacy("youtube_observed_only"), "youtube")
-        self.assertEqual(
-            core.history_match_type_from_legacy("youtube_observed_only", "observed_only"),
-            "youtube_only",
-        )
-        self.assertEqual(core.history_time_quality_from_legacy("youtube_observed_only"), "observed_only")
+    def test_history_reconciliation_labels_describe_current_fields(self) -> None:
+        self.assertEqual(core.history_source_type_label("takeout_youtube"), "Takeout + YouTube")
+        self.assertEqual(core.history_match_type_label("video_id_date"), "matched by video/date")
         self.assertEqual(core.history_time_quality_label("observed_only"), "observed time")
         self.assertIn("observed_at", core.history_time_quality_note("observed_only"))
 
 
 class SchemaTests(unittest.TestCase):
-    def test_migrate_bootstraps_expected_tables(self) -> None:
+    def test_migrate_bootstraps_exact_schema_sql_shape(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
             core.ROOT = Path(temp_dir)
@@ -584,6 +634,82 @@ class SchemaTests(unittest.TestCase):
                     conn.close()
                 self.assertEqual(before_tables, set())
                 core.migrate_database(db_path)
+                expected = sqlite3.connect(":memory:")
+                expected.row_factory = sqlite3.Row
+                expected.executescript(core.SCHEMA)
+                actual = core.connect(db_path)
+                try:
+                    expected_tables = {
+                        row["name"]
+                        for row in expected.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                        )
+                    }
+                    actual_tables = {
+                        row["name"]
+                        for row in actual.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                        )
+                    }
+                    expected_indexes = {
+                        row["name"]
+                        for row in expected.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'"
+                        )
+                    }
+                    actual_indexes = {
+                        row["name"]
+                        for row in actual.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'"
+                        )
+                    }
+                    expected_columns = {
+                        table: [
+                            row["name"]
+                            for row in expected.execute(f"PRAGMA table_info({table})")
+                        ]
+                        for table in expected_tables
+                    }
+                    actual_columns = {
+                        table: [
+                            row["name"]
+                            for row in actual.execute(f"PRAGMA table_info({table})")
+                        ]
+                        for table in actual_tables
+                    }
+                finally:
+                    expected.close()
+                    actual.close()
+            finally:
+                core.ROOT = original_root
+
+        self.assertEqual(actual_tables, expected_tables)
+        self.assertEqual(actual_columns, expected_columns)
+        self.assertEqual(actual_indexes, expected_indexes)
+        self.assertIn("idx_channels_title", actual_indexes)
+        self.assertIn("idx_history_reconciled_channel", actual_indexes)
+
+    def test_migrate_is_schema_only_for_existing_legacy_tables(self) -> None:
+        original_root = core.ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core.ROOT = Path(temp_dir)
+            try:
+                db_path = Path(temp_dir) / "library.sqlite3"
+                raw = sqlite3.connect(db_path)
+                try:
+                    raw.execute(
+                        """
+                        CREATE TABLE legacy_marker (
+                          value TEXT NOT NULL
+                        )
+                        """
+                    )
+                    raw.execute("INSERT INTO legacy_marker(value) VALUES ('kept')")
+                    raw.commit()
+                finally:
+                    raw.close()
+
+                core.migrate_database(db_path)
                 conn = core.connect(db_path)
                 try:
                     tables = {
@@ -592,54 +718,15 @@ class SchemaTests(unittest.TestCase):
                             "SELECT name FROM sqlite_master WHERE type = 'table'"
                         )
                     }
-                    columns = {
-                        row["name"]
-                        for row in conn.execute("PRAGMA table_info(video_metadata)")
-                    }
-                    reconciled_columns = {
-                        row["name"]
-                        for row in conn.execute("PRAGMA table_info(playlist_video_reconciled)")
-                    }
-                    history_columns = {
-                        row["name"]
-                        for row in conn.execute("PRAGMA table_info(history_reconciled)")
-                    }
-                    snapshot_playlist_columns = {
-                        row["name"]
-                        for row in conn.execute("PRAGMA table_info(snapshot_playlists)")
-                    }
-                    snapshot_video_columns = {
-                        row["name"]
-                        for row in conn.execute("PRAGMA table_info(snapshot_videos)")
-                    }
-                    playlist_columns = {
-                        row["name"] for row in conn.execute("PRAGMA table_info(playlists)")
-                    }
+                    marker = conn.execute("SELECT value FROM legacy_marker").fetchone()["value"]
                 finally:
                     conn.close()
             finally:
                 core.ROOT = original_root
 
         self.assertIn("playlists", tables)
-        self.assertIn("channels", tables)
-        self.assertIn("history_reconciled", tables)
-        self.assertIn("metadata_queue", tables)
-        self.assertIn("worker_queue", tables)
-        self.assertIn("metadata_worker_runs", tables)
-        self.assertIn("reaction", columns)
-        self.assertIn("visibility", playlist_columns)
-        self.assertIn("video_count", playlist_columns)
-        self.assertNotIn("video_count_text", playlist_columns)
-        self.assertIn("match_type", reconciled_columns)
-        self.assertNotIn("match_notes", reconciled_columns)
-        self.assertIn("source_type", history_columns)
-        self.assertIn("match_type", history_columns)
-        self.assertIn("time_quality", history_columns)
-        self.assertNotIn("source_quality", history_columns)
-        self.assertNotIn("match_confidence", history_columns)
-        self.assertNotIn("match_notes", history_columns)
-        self.assertNotIn("source_file", snapshot_playlist_columns)
-        self.assertNotIn("source_file", snapshot_video_columns)
+        self.assertIn("legacy_marker", tables)
+        self.assertEqual(marker, "kept")
 
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT
@@ -797,57 +884,6 @@ class SchemaTests(unittest.TestCase):
                     conn.close()
             finally:
                 core.ROOT = original_root
-
-    def test_connect_migrates_legacy_playlist_privacy_out_of_owner(self) -> None:
-        original_root = core.ROOT
-        with tempfile.TemporaryDirectory() as temp_dir:
-            core.ROOT = Path(temp_dir)
-            try:
-                db_path = Path(temp_dir) / "library.sqlite3"
-                conn = sqlite3.connect(db_path)
-                try:
-                    conn.execute(
-                        """
-                        CREATE TABLE playlists (
-                          playlist_id TEXT PRIMARY KEY,
-                          title TEXT NOT NULL DEFAULT '',
-                          description TEXT NOT NULL DEFAULT '',
-                          owner TEXT NOT NULL DEFAULT '',
-                          video_count_text TEXT NOT NULL DEFAULT '',
-                          thumbnail_url TEXT NOT NULL DEFAULT '',
-                          thumbnail_path TEXT NOT NULL DEFAULT '',
-                          url TEXT NOT NULL DEFAULT '',
-                          fetch_status TEXT NOT NULL DEFAULT '',
-                          fetch_error TEXT NOT NULL DEFAULT '',
-                          updated_at INTEGER NOT NULL DEFAULT 0
-                        )
-                        """
-                    )
-                    conn.executemany(
-                        "INSERT INTO playlists(playlist_id, owner) VALUES (?, ?)",
-                        [("PLprivate", "Private"), ("PLowner", "Gir Bot")],
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
-
-                core.migrate_database(db_path)
-                migrated = core.connect(db_path)
-                try:
-                    self.assertNotIn("owner", core.table_columns(migrated, "playlists"))
-                    rows = {
-                        row["playlist_id"]: (row["visibility"], row["video_count"])
-                        for row in migrated.execute(
-                            "SELECT playlist_id, visibility, video_count FROM playlists"
-                        )
-                    }
-                finally:
-                    migrated.close()
-            finally:
-                core.ROOT = original_root
-
-        self.assertEqual(rows["PLprivate"], ("private", 0))
-        self.assertEqual(rows["PLowner"], ("", 0))
 
     def test_save_playlist_scan_error_preserves_existing_counts(self) -> None:
         original_root = core.ROOT

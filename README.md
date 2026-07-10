@@ -15,7 +15,7 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 ## Project Layout
 
 - `yt_library_manager.py` is a compatibility CLI shim; keep using it for commands.
-- `yt_library/core.py` contains database migrations, importers, parsers, metadata fetchers, and reconciliation logic.
+- `yt_library/core.py` contains schema bootstrap, importers, parsers, metadata fetchers, and reconciliation logic.
 - `yt_library/server.py` contains HTTP routing and local API endpoints.
 - `yt_library/workers.py` contains background worker orchestration.
 - `yt_library/queries.py` contains read models for the library and history views.
@@ -41,8 +41,12 @@ python yt_library_manager.py migrate --db yt_library.sqlite3
 python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout .
 ```
 
-Run `migrate` deliberately after pulling schema changes. The server and ordinary
-requests do not run migrations automatically.
+Run `migrate` deliberately when creating a fresh local database after schema
+changes. This project is still early and supports only the current local install:
+historical database upgrades are intentionally not maintained. If a database was
+created against an older schema era, rebuild or re-import it instead of expecting
+`migrate` to repair it. The server and ordinary requests do not initialize schema
+objects automatically.
 
 Open:
 
@@ -60,15 +64,15 @@ python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout .
 git diff --check
 ```
 
-`import-history` scans the Takeout path for watch history zip files, imports watch rows, and rebuilds reconciliation.
+`import-history` scans the Takeout path for watch history zip files, imports watch rows, syncs Takeout subscription channels when present, and rebuilds reconciliation.
 
 ## Testing
 
-The test suite uses the Python standard library `unittest` runner, so there is no separate test dependency. Current coverage focuses on stable, local behavior: date/time normalization, reaction extraction, Takeout watch-history parsing, temporary SQLite schema bootstrap, and history search filtering/sorting. Tests must not use real cookies, network requests, or personal runtime databases.
+The test suite uses the Python standard library `unittest` runner, so there is no separate test dependency. Current coverage focuses on stable, local behavior: date/time normalization, reaction extraction, Takeout watch-history parsing, fresh SQLite schema bootstrap, and history search filtering/sorting. Tests must not use real cookies, network requests, or personal runtime databases.
 
 ## Data Notes
 
-Takeout history is the authoritative source for exact watch times. Live YouTube history is useful for recent observations and ordering, but it may only provide date-level data. Rows seen without a YouTube watch date are marked `youtube_observed_only` so fetch time is not mistaken for watch time.
+Takeout history is the authoritative source for exact watch times. Live YouTube history is useful for recent observations and ordering, but it may only provide date-level data. Reconciled history rows use compact `source_type`, `match_type`, and `time_quality` values so fetch time is not mistaken for watch time.
 
 ## Security
 
