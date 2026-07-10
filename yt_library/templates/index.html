@@ -54,9 +54,12 @@
     .title { font-size: 28px; line-height: 1.1; margin: 0; }
     .title-link { color: var(--ink); text-decoration: none; }
     .title-link:hover { color: var(--accent); text-decoration: none; }
+    .title-with-action { display: inline-flex; align-items: center; gap: 10px; }
+    .title-with-action .external-link { width: 30px; height: 30px; }
     .meta { color: var(--muted); font-size: 14px; }
     .meta-filter { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; }
     .meta-filter input { accent-color: var(--accent); }
+    .playlist-search { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; min-width: min(360px, 38vw); }
     .view-sort { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
     .view-sort select { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
     .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; color: var(--muted); font-size: 14px; margin: 0 0 14px; }
@@ -212,6 +215,7 @@
     let playlistViewSort = 'playlist_order';
     let allPlaylistsSort = 'title';
     let channelViewSort = 'title';
+    let playlistPageSearch = '';
     let currentPage = 1;
     let pageSize = '100';
     let historyPageState = { key: '', loading: false, data: null };
@@ -386,6 +390,7 @@
       if (playlistVisibilityPlaylistId === playlistId) return;
       playlistVisibilityPlaylistId = playlistId;
       playlistVisibility = { videos: true, hidden: true };
+      playlistPageSearch = '';
     }
 
     function groupCount(groupKey) {
@@ -483,7 +488,7 @@
 
     function displayPlaylistVisibility(playlist) {
       const value = playlistVisibilityCategory(playlist);
-      return value === 'unknown' ? '' : value[0].toUpperCase() + value.slice(1);
+      return ['unknown', 'others'].includes(value) ? '' : value[0].toUpperCase() + value.slice(1);
     }
 
     function includesQuery(value, query) {
@@ -1533,6 +1538,18 @@
         const allRows = (playlistVideos.get(playlistId) || []).filter(video => {
           const haystack = `${video.title} ${video.channel} ${video.availability} ${video.video_id}`.toLowerCase();
           return !query || haystack.includes(query);
+        }).filter(video => {
+          const playlistQuery = playlistPageSearch.trim().toLowerCase();
+          if (!playlistQuery) return true;
+          const haystack = [
+            video.title,
+            video.metadata_title,
+            video.current_title,
+            video.recovered_title,
+            video.metadata_description,
+            video.recovered_description,
+          ].join(' ').toLowerCase();
+          return haystack.includes(playlistQuery);
         });
         const videoCount = allRows.filter(video => !isHiddenPlaylistVideo(video)).length;
         const hiddenCount = allRows.length - videoCount;
@@ -1540,11 +1557,14 @@
           const hidden = isHiddenPlaylistVideo(video);
           return hidden ? playlistVisibility.hidden : playlistVisibility.videos;
         }), playlistViewSort);
-        title.innerHTML = playlist.url
-          ? `<a class="title-link" href="${escapeHtml(playlist.url)}" target="_blank" rel="noreferrer">${escapeHtml(playlist.title)}</a>`
-          : escapeHtml(playlist.title);
+        title.innerHTML = `
+          <span class="title-with-action">
+            <span>${escapeHtml(playlist.title)}</span>
+            ${playlist.url ? `<a class="external-link" href="${escapeHtml(playlist.url)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(playlist.title)} on YouTube">${externalLinkSvg()}</a>` : ''}
+          </span>
+        `;
         meta.innerHTML = `
-          <a class="playlist-link" href="${playlist.url}" target="_blank" rel="noreferrer">YouTube</a>
+          <input class="playlist-search" type="search" data-playlist-page-search placeholder="Search this playlist" autocomplete="off" value="${escapeHtml(playlistPageSearch)}">
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
           ${videoSortHtml(playlistViewSort, 'playlist')}
@@ -1743,9 +1763,9 @@
           ${playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : ''}
           ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} unavailable</span>` : ''}
           ${displayPlaylistVisibility(playlist) ? `<span>${escapeHtml(displayPlaylistVisibility(playlist))}</span>` : ''}
-          ${owner}
           ${playlist.fetch_status === 'error' ? '<span class="status">Fetch failed</span>' : ''}
         </div>
+        ${owner ? `<div class="details">${owner}</div>` : ''}
         <div class="details">
           ${playlist.playlist_id ? `<span>${escapeHtml(playlist.playlist_id)}</span>` : ''}
         </div>
@@ -2157,6 +2177,19 @@
       playlistVisibility[filter] = target.checked;
       currentPage = 1;
       render();
+    });
+    meta.addEventListener('input', event => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement) || target.dataset.playlistPageSearch === undefined) return;
+      playlistPageSearch = target.value;
+      const cursor = target.selectionStart ?? target.value.length;
+      currentPage = 1;
+      render();
+      const replacement = meta.querySelector('[data-playlist-page-search]');
+      if (replacement instanceof HTMLInputElement) {
+        replacement.focus();
+        replacement.setSelectionRange(cursor, cursor);
+      }
     });
     function handlePagerClick(event) {
       const target = event.target;
