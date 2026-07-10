@@ -67,7 +67,7 @@
     .queue-title { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 8px; }
     .queue-title h2 { font-size: 16px; margin: 0; }
     .queue-title span { color: var(--muted); font-size: 13px; }
-    .queue-scroll { max-height: 360px; overflow: auto; }
+    .queue-scroll, .log-scroll { height: 360px; min-height: 180px; overflow: auto; resize: vertical; }
     .time-col { width: 150px; }
     .level-col { width: 110px; }
     .video-col { width: 150px; }
@@ -75,7 +75,7 @@
     .worker-col { width: 90px; }
     .action-col { width: 100px; }
     .time-cell { white-space: nowrap; }
-    .logs { max-height: 430px; overflow: auto; }
+    .log-panel { margin-top: 16px; }
     .message { overflow-wrap: anywhere; white-space: pre-line; }
     @media (max-width: 700px) {
       main { padding: 16px; }
@@ -174,7 +174,7 @@
       </div>
     </section>
 
-    <section class="panel logs">
+    <section class="panel log-panel">
       <table>
         <colgroup>
           <col class="time-col">
@@ -183,8 +183,18 @@
           <col>
         </colgroup>
         <thead><tr><th>Time</th><th>Level</th><th>Subject</th><th>Message</th></tr></thead>
-        <tbody id="logs"></tbody>
       </table>
+      <div class="log-scroll">
+        <table>
+          <colgroup>
+            <col class="time-col">
+            <col class="level-col">
+            <col class="subject-col">
+            <col>
+          </colgroup>
+          <tbody id="logs"></tbody>
+        </table>
+      </div>
     </section>
   </main>
   <script>
