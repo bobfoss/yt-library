@@ -672,7 +672,9 @@
 
     function matchTypeLabel(video) {
       if (video.match_type === 'ambiguous_hidden_candidate') return '';
-      return video.match_label || '';
+      const label = video.match_label || '';
+      if (/^matched by\b/i.test(label)) return '';
+      return label;
     }
 
     function wasRemovedFromPlaylist(video) {
@@ -1284,6 +1286,83 @@
       });
     }
 
+    function isVideoSearchResult(result) {
+      return result.kind === 'video' || result.kind === 'history' || result.kind === 'missing';
+    }
+
+    function searchResultVideoId(result) {
+      return String((result.item || {}).video_id || '').trim();
+    }
+
+    function searchResultSourceRank(result) {
+      if (result.kind === 'video') return 0;
+      if (result.kind === 'history') return 1;
+      if (result.kind === 'missing') return 2;
+      return 99;
+    }
+
+    function searchResultCompleteness(result) {
+      const item = result.item || {};
+      return [
+        'metadata_title',
+        'title',
+        'recovered_title',
+        'metadata_thumbnail_path',
+        'recovered_thumbnail_path',
+        'metadata_channel',
+        'channel',
+        'recovered_channel',
+        'metadata_description',
+        'recovered_description',
+        'duration_text',
+      ].reduce((score, key) => score + (item[key] ? 1 : 0), 0);
+    }
+
+    function betterVideoSearchResult(left, right) {
+      const leftRank = searchResultSourceRank(left);
+      const rightRank = searchResultSourceRank(right);
+      if (leftRank !== rightRank) return leftRank < rightRank ? left : right;
+      const leftScore = Number(left.score ?? 99);
+      const rightScore = Number(right.score ?? 99);
+      if (leftScore !== rightScore) return leftScore <= rightScore ? left : right;
+      return searchResultCompleteness(right) > searchResultCompleteness(left) ? right : left;
+    }
+
+    function mergeVideoSearchResult(winner, loser) {
+      return {
+        ...winner,
+        matchedDescription: Boolean(winner.matchedDescription || loser.matchedDescription),
+        score: Math.min(Number(winner.score ?? 99), Number(loser.score ?? 99)),
+      };
+    }
+
+    function dedupeSearchVideoResults(rows) {
+      const output = [];
+      const videoIndexes = new Map();
+      for (const result of rows) {
+        if (!isVideoSearchResult(result)) {
+          output.push(result);
+          continue;
+        }
+        const videoId = searchResultVideoId(result);
+        if (!videoId) {
+          output.push(result);
+          continue;
+        }
+        const existingIndex = videoIndexes.get(videoId);
+        if (existingIndex === undefined) {
+          videoIndexes.set(videoId, output.length);
+          output.push(result);
+          continue;
+        }
+        const existing = output[existingIndex];
+        const better = betterVideoSearchResult(existing, result);
+        const loser = better === existing ? result : existing;
+        output[existingIndex] = mergeVideoSearchResult(better, loser);
+      }
+      return output;
+    }
+
     function buttonFor(group, child=false) {
       const button = document.createElement('button');
       button.className = `group ${child ? 'child' : ''}`;
@@ -1609,7 +1688,7 @@
         }
         if (generation !== renderGeneration) return;
         stopSearchProgress();
-        const rows = sortedSearchResults(filterSearchResultsByAvailability(allRows)).slice(0, 500);
+        const rows = sortedSearchResults(dedupeSearchVideoResults(filterSearchResultsByAvailability(allRows))).slice(0, 500);
         title.textContent = 'Search results';
         meta.innerHTML = `
           <span>${rows.length} shown</span>
@@ -1663,7 +1742,7 @@
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
           ${videoSortHtml(playlistViewSort, 'playlist')}
         `;
-        renderPagedGrid(rows, playlistVideoCardFor, playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.');
+        renderPagedGrid(rows, video => playlistVideoCardFor(video, { showPosition: true }), playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.');
         return;
       }
       if (selected === '__all_videos__') {
@@ -2006,7 +2085,7 @@
         thumbnailPath: video.metadata_thumbnail_path,
         progressVideo: video,
         resultKind: options.resultKind,
-        position: video.position,
+        position: options.showPosition ? video.position : '',
         title: displayVideoTitle(video),
         localUrl: video.video_id ? localVideoHref(video.video_id) : '',
         externalUrl: watchUrl,
@@ -2075,13 +2154,13 @@
       }
       if (result.kind === 'history') {
         return playlistVideoCardFor(result.item, {
-          resultKind: result.matchedDescription ? 'History description match' : 'History',
+          resultKind: 'Video',
           playlistSourcesHtml: playlistSourceLinksHtml(result.item),
         });
       }
       const video = result.item;
       return playlistVideoCardFor(video, {
-        resultKind: result.matchedDescription ? 'Description match' : 'Video',
+        resultKind: 'Video',
       });
     }
 
@@ -2139,7 +2218,6 @@
     function hiddenVideoCardFor(video) {
       const watchUrl = youtubeWatchUrl(video);
       return videoCardFor({
-        position: video.position,
         title: video.title,
         localUrl: video.video_id ? localVideoHref(video.video_id) : '',
         externalUrl: watchUrl,
@@ -2219,7 +2297,6 @@
       return videoCardFor({
         thumbnailPath: video.recovered_thumbnail_path,
         resultKind: options.resultKind,
-        position: video.position,
         title: displayTitle,
         localUrl: video.video_id ? localVideoHref(video.video_id) : '',
         externalUrl: watchUrl,
