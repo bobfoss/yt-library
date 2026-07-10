@@ -454,7 +454,6 @@ class PlaylistScanWorker:
                 title = row["title"] or playlist_id
                 status = "ok"
                 error = ""
-                backend = "web"
                 ytdlp_error = ""
                 videos: list[dict[str, Any]] = []
                 playlist_metadata: dict[str, Any] = {}
@@ -468,14 +467,18 @@ class PlaylistScanWorker:
                     header_metadata = {}
                 try:
                     videos, playlist_metadata = scan_playlist_ytdlp(playlist_id, cookie_file)
-                    backend = "yt-dlp"
                 except Exception as exc:
                     ytdlp_error = str(exc)
-                    try:
-                        videos = scan_playlist_videos(opener, playlist_id, cookie_file)
-                    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as web_exc:
+                    session_valid, _session_message = youtube_session_status(cookie_file, verify_remote=True)
+                    if not session_valid:
                         status = "error"
-                        error = str(web_exc)
+                        error = "skipping: YouTube login session expired"
+                    else:
+                        try:
+                            videos = scan_playlist_videos(opener, playlist_id, cookie_file)
+                        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as web_exc:
+                            status = "error"
+                            error = str(web_exc)
                 if header_metadata.get("video_count"):
                     playlist_metadata["video_count"] = header_metadata["video_count"]
                 if header_metadata.get("visibility"):
@@ -485,6 +488,17 @@ class PlaylistScanWorker:
                 metadata_expected_count = int(playlist_metadata.get("video_count") or 0)
                 row_expected_count = int(row["playlist_video_count"] or 0)
                 expected_count = header_expected_count or metadata_expected_count or row_expected_count
+                previous_scan_count = int(row["video_count"] or 0)
+                if status == "ok" and playlist_zero_result_is_suspicious(
+                    len(videos),
+                    ytdlp_error,
+                    previous_scan_count,
+                ):
+                    status = "error"
+                    error = (
+                        "Web fallback parsed 0 videos after yt-dlp failed; "
+                        f"preserving the previous scan of {previous_scan_count} videos"
+                    )
                 if status == "ok" and expected_count > 0 and len(videos) < expected_count:
                     status = "error"
                     expected_source = "YouTube playlist header" if header_expected_count else "playlist metadata"
@@ -524,7 +538,7 @@ class PlaylistScanWorker:
                             run_id,
                             "info",
                             (
-                                f"{title}: {video_count} videos, {hidden_count} unavailable ({backend})"
+                                f"{title}: {video_count} videos, {hidden_count} unavailable"
                                 + (f"; queued {metadata_queued} metadata items" if metadata_queued else "")
                                 + (f"; queued {placeholder_queued} placeholder recoveries" if placeholder_queued else "")
                             ),

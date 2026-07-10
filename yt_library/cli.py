@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import Any
 
 from .core import (
@@ -19,11 +20,17 @@ from .core import (
     import_history,
     import_playlists,
     import_takeout_snapshot,
+    migrate_database,
     recover_archivarix_thumbnails,
     recover_snapshot_missing,
     scan_hidden,
 )
 from .server import serve
+
+
+def migrate(args: argparse.Namespace) -> None:
+    migrate_database(Path(args.db))
+    print(f"Migrated {args.db}")
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Import YouTube library data and browse it locally.")
@@ -95,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
     recover_missing_parser.add_argument("--refresh-metadata", action="store_true", help="Use Archivarix API even when a thumbnail is already cached")
     recover_missing_parser.set_defaults(func=recover_snapshot_missing)
 
+    migrate_parser = subparsers.add_parser("migrate", help="Apply database schema migrations and repairs")
+    migrate_parser.add_argument("--db", default=str(DEFAULT_DB))
+    migrate_parser.set_defaults(func=migrate)
+
     serve_parser = subparsers.add_parser("serve", help="Serve the library manager")
     serve_parser.add_argument("--db", default=str(DEFAULT_DB))
     serve_parser.add_argument("--cookies", default=str(COOKIE_FILE))
@@ -105,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.set_defaults(func=serve)
 
     args = parser.parse_args(argv)
+    if args.command not in {"serve", "migrate"}:
+        migrate_database(Path(args.db))
     args.func(args)
     return 0
-

@@ -37,8 +37,12 @@ Keep a Netscape-format YouTube cookie file in the project directory or pass its 
 ## Run Locally
 
 ```powershell
+python yt_library_manager.py migrate --db yt_library.sqlite3
 python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout .
 ```
+
+Run `migrate` deliberately after pulling schema changes. The server and ordinary
+requests do not run migrations automatically.
 
 Open:
 

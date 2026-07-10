@@ -25,12 +25,14 @@ python -m pip install -r requirements.txt
 $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
 python -m py_compile @files
 python -m unittest discover -s tests -v
+python yt_library_manager.py migrate --db yt_library.sqlite3
 python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout .
 python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout .
 ```
 
 - `py_compile` catches syntax errors without running workers.
-- `serve` starts the local browser/admin UI.
+- `migrate` applies schema migrations and one-time data repairs. Run it deliberately before starting a server after schema changes; normal connections and requests never run migrations.
+- `serve` starts the local browser/admin UI and requires an already-migrated database.
 - `import-history` imports Takeout watch history zips from the selected path and rebuilds reconciliation.
 
 This repo is normally operated from PowerShell. Avoid Bash-only syntax such as `python - <<'PY'` here-docs. Prefer PowerShell-safe forms like `python -c "..."`, checked-in or temporary helper scripts when warranted, or explicit PowerShell here-strings piped intentionally. This project does not use `ENVIRONMENT.md`.

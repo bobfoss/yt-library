@@ -104,6 +104,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/admin/status":
             params = urllib.parse.parse_qs(parsed.query)
             include_logs = (params.get("include_logs") or ["1"])[0].strip().lower() not in {"0", "false", "no"}
+            try:
+                worker_queue_limit = max(0, min(10000, int((params.get("queue_limit") or ["0"])[0] or 0)))
+            except ValueError:
+                worker_queue_limit = 0
             self.send_json(
                 admin_status(
                     self.db_path,
@@ -112,6 +116,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     LIVE_HISTORY_WORKER,
                     WORKER_QUEUE_DISPATCHER,
                     include_logs,
+                    worker_queue_limit,
                 )
             )
             return
@@ -384,7 +389,14 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
 def serve(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}. Run import first.")
+        raise SystemExit(f"Database not found: {db_path}. Run migrate or import first.")
+    conn = connect(db_path)
+    try:
+        conn.execute("SELECT 1 FROM playlists LIMIT 1")
+    except sqlite3.OperationalError as exc:
+        raise SystemExit(f"Database schema is not initialized. Run migrate first: {exc}") from exc
+    finally:
+        conn.close()
     reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER)
 
     def handler(*handler_args, **handler_kwargs):

@@ -15,6 +15,11 @@ from yt_library import core
 from yt_library.workers import MetadataWorker, PlaceholderRecoveryWorker
 
 
+def migrated_connection(db_path: Path):
+    core.migrate_database(db_path)
+    return core.connect(db_path)
+
+
 class CoreHelperTests(unittest.TestCase):
     def test_archivarix_recovery_does_not_start_when_stop_is_requested(self) -> None:
         stop_event = threading.Event()
@@ -51,6 +56,44 @@ class CoreHelperTests(unittest.TestCase):
             valid, message = core.archivarix_session_status(Path("unused"), now=100)
             self.assertFalse(valid)
             self.assertIn("missing", message)
+
+    def test_youtube_session_status_requires_a_current_login_cookie(self) -> None:
+        class Cookie:
+            def __init__(self, name: str, domain: str, expires: int | None) -> None:
+                self.name = name
+                self.domain = domain
+                self.expires = expires
+
+        with patch(
+            "yt_library.core.load_cookie_jar",
+            return_value=[Cookie("SID", ".youtube.com", 200)],
+        ):
+            self.assertEqual(core.youtube_session_status(Path("unused"), now=100), (True, ""))
+        with patch(
+            "yt_library.core.load_cookie_jar",
+            return_value=[Cookie("SID", ".youtube.com", 100)],
+        ):
+            valid, message = core.youtube_session_status(Path("unused"), now=100)
+            self.assertFalse(valid)
+            self.assertIn("expired", message)
+        with patch("yt_library.core.load_cookie_jar", return_value=[]):
+            valid, message = core.youtube_session_status(Path("unused"), now=100)
+            self.assertFalse(valid)
+            self.assertIn("missing", message)
+        with (
+            patch(
+                "yt_library.core.load_cookie_jar",
+                return_value=[Cookie("SID", ".youtube.com", 200)],
+            ),
+            patch("yt_library.core.load_cookie_opener", return_value=object()),
+            patch(
+                "yt_library.core.request_text",
+                return_value="Watch history isn't viewable when signed out",
+            ),
+        ):
+            valid, message = core.youtube_session_status(Path("unused"), now=100, verify_remote=True)
+            self.assertFalse(valid)
+            self.assertIn("not accepted", message)
 
     def test_history_date_from_relative_and_month_labels(self) -> None:
         today = date(2026, 7, 6)
@@ -101,6 +144,10 @@ class CoreHelperTests(unittest.TestCase):
         self.assertTrue(core.playlist_entry_is_unavailable("Private video"))
         self.assertTrue(core.playlist_entry_is_unavailable("Regular title", "needs_auth"))
         self.assertFalse(core.playlist_entry_is_unavailable("Regular title", "public"))
+        self.assertTrue(core.playlist_zero_result_is_suspicious(0, "HTTP Error 403", 1))
+        self.assertFalse(core.playlist_zero_result_is_suspicious(1, "HTTP Error 403", 1))
+        self.assertFalse(core.playlist_zero_result_is_suspicious(0, "", 1))
+        self.assertFalse(core.playlist_zero_result_is_suspicious(0, "HTTP Error 403", 0))
 
     def test_playlist_owner_visibility_helpers(self) -> None:
         self.assertEqual(core.normalize_playlist_visibility(" Public playlist "), "public")
@@ -414,12 +461,22 @@ class CoreHelperTests(unittest.TestCase):
 
 
 class SchemaTests(unittest.TestCase):
-    def test_connect_bootstraps_expected_tables(self) -> None:
+    def test_migrate_bootstraps_expected_tables(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
             core.ROOT = Path(temp_dir)
             try:
                 db_path = Path(temp_dir) / "library.sqlite3"
+                conn = core.connect(db_path)
+                try:
+                    before_tables = {
+                        row["name"]
+                        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+                    }
+                finally:
+                    conn.close()
+                self.assertEqual(before_tables, set())
+                core.migrate_database(db_path)
                 conn = core.connect(db_path)
                 try:
                     tables = {
@@ -482,7 +539,7 @@ class SchemaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             core.ROOT = Path(temp_dir)
             try:
-                conn = core.connect(Path(temp_dir) / "library.sqlite3")
+                conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
                 try:
                     now = int(time.time())
                     core.upsert_channel(
@@ -567,7 +624,7 @@ class SchemaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             core.ROOT = Path(temp_dir)
             try:
-                conn = core.connect(Path(temp_dir) / "library.sqlite3")
+                conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
                 try:
                     with conn:
                         conn.execute(
@@ -660,6 +717,7 @@ class SchemaTests(unittest.TestCase):
                 finally:
                     conn.close()
 
+                core.migrate_database(db_path)
                 migrated = core.connect(db_path)
                 try:
                     rows = {
@@ -681,7 +739,7 @@ class SchemaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             core.ROOT = Path(temp_dir)
             try:
-                conn = core.connect(Path(temp_dir) / "library.sqlite3")
+                conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
                 try:
                     with conn:
                         conn.execute(
@@ -729,7 +787,7 @@ class SchemaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             core.ROOT = Path(temp_dir)
             try:
-                conn = core.connect(Path(temp_dir) / "library.sqlite3")
+                conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
                 try:
                     with conn:
                         conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('pl1', 'Playlist')")
@@ -769,7 +827,7 @@ class SchemaTests(unittest.TestCase):
 class WorkerQueueTests(unittest.TestCase):
     def test_placeholder_recovery_targets_use_the_common_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            conn = core.connect(Path(temp_dir) / "library.sqlite3")
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
             try:
                 with conn:
                     core.enqueue_worker_queue_target(conn, "PLearlierWork")
@@ -815,7 +873,7 @@ class WorkerQueueTests(unittest.TestCase):
     def test_stopped_placeholder_recovery_keeps_its_queue_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
-            conn = core.connect(db_path)
+            conn = migrated_connection(db_path)
             try:
                 candidate = {
                     "snapshot_key": "20260704T052745Z",
@@ -854,7 +912,7 @@ class WorkerQueueTests(unittest.TestCase):
     def test_dispatch_metadata_error_acknowledges_queue_entry_without_summary_logs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
-            conn = core.connect(db_path)
+            conn = migrated_connection(db_path)
             try:
                 with conn:
                     core.enqueue_metadata_item(

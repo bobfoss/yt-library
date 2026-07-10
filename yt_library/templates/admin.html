@@ -143,7 +143,7 @@
     </section>
 
     <section class="panel">
-      <div class="queue-title"><h2>Worker queue</h2><span id="workerQueueShown">0 shown</span></div>
+      <div class="queue-title"><h2>Worker queue</h2></div>
       <div class="grid">
         <div class="panel"><div class="metric">Queue</div><div id="commonQueueCount" class="value">0</div></div>
         <div class="panel"><div class="metric">Worker</div><div id="commonWorkerState" class="value">idle</div></div>
@@ -208,15 +208,11 @@
       stopWorkerQueue: document.getElementById('stopWorkerQueue'),
       workerQueueRows: document.getElementById('workerQueueRows'),
       workerQueuePanel: document.getElementById('workerQueuePanel'),
-      workerQueueShown: document.getElementById('workerQueueShown'),
     };
 
-    const QUEUE_BATCH_SIZE = 20;
     const queueState = {
       rows: [],
       total: 0,
-      loading: false,
-      exhausted: false,
     };
 
     function escapeHtml(value) {
@@ -247,14 +243,33 @@
       return row.current_title || row.task_type || '';
     }
 
-    function renderQueue() {
+    function queueScrollAnchor() {
+      const panelTop = fields.workerQueuePanel.getBoundingClientRect().top;
+      const row = [...fields.workerQueueRows.querySelectorAll('tr[data-queue-id]')]
+        .find(candidate => candidate.getBoundingClientRect().bottom > panelTop);
+      if (!row) return null;
+      return {
+        queueId: row.dataset.queueId,
+        offset: row.getBoundingClientRect().top - panelTop,
+      };
+    }
+
+    function restoreQueueScroll(anchor) {
+      if (!anchor) return;
+      const row = fields.workerQueueRows.querySelector(`tr[data-queue-id="${CSS.escape(anchor.queueId)}"]`);
+      if (!row) return;
+      const panelTop = fields.workerQueuePanel.getBoundingClientRect().top;
+      fields.workerQueuePanel.scrollTop += row.getBoundingClientRect().top - panelTop - anchor.offset;
+    }
+
+    function renderQueue(preserveScroll = false) {
+      const anchor = preserveScroll ? queueScrollAnchor() : null;
       if (!queueState.rows.length) {
         fields.workerQueueRows.innerHTML = '<tr><td colspan="5" class="message">No worker jobs queued.</td></tr>';
-        fields.workerQueueShown.textContent = '0 shown';
         return;
       }
       fields.workerQueueRows.innerHTML = queueState.rows.map(row => `
-        <tr>
+        <tr data-queue-id="${escapeHtml(row.queue_id || '')}">
           <td>${escapeHtml(row.worker_type || '')}</td>
           <td class="message">${escapeHtml(workerSubject(row))}</td>
           <td class="message">${escapeHtml([`${row.task_type || ''}${row.manual ? ' manual' : ''}`, row.source_key || ''].filter(Boolean).join('\n'))}</td>
@@ -262,10 +277,10 @@
           <td><button class="remove-queue-entry" type="button" data-queue-id="${escapeHtml(row.queue_id || '')}">Remove</button></td>
         </tr>
       `).join('');
-      fields.workerQueueShown.textContent = `${queueState.rows.length}/${queueState.total || queueState.rows.length} shown`;
+      restoreQueueScroll(anchor);
     }
 
-    function render(data, includeLogs = true) {
+    function render(data) {
       fields.playlistRows.textContent = data.playlistCounts.total_playlists || 0;
       fields.distinctVideos.textContent = data.counts.distinct_playlist_videos || 0;
       fields.historyRows.textContent = data.counts.history_rows || 0;
@@ -317,117 +332,37 @@
 
       hydrateQueue(data.workerQueue || [], data.workerQueueCount || 0);
 
-      if (includeLogs) {
-        const logs = [
-          ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
-          ...(data.metadataLogs || []).map(log => ({
-            ...log,
-            subject_id: log.video_id,
-            source: String(log.level || '').startsWith('placeholder ') ? 'placeholder' : 'metadata',
-            level: String(log.level || '').replace(/^placeholder\s+/, ''),
-          })),
-          ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
-        ].sort((a, b) => (b.created_at - a.created_at) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
-        fields.logs.innerHTML = logs.map(log => `
-          <tr>
-            <td class="time-cell">${fmtTime(log.created_at)}</td>
-            <td>${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
-            <td class="time-cell">${escapeHtml(log.subject_id || '')}</td>
-            <td class="message">${escapeHtml(log.message)}</td>
-          </tr>
-        `).join('');
-      }
+      const logs = [
+        ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
+        ...(data.metadataLogs || []).map(log => ({
+          ...log,
+          subject_id: log.video_id,
+          source: String(log.level || '').startsWith('placeholder ') ? 'placeholder' : 'metadata',
+          level: String(log.level || '').replace(/^placeholder\s+/, ''),
+        })),
+        ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
+      ].sort((a, b) => (b.created_at - a.created_at) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
+      fields.logs.innerHTML = logs.map(log => `
+        <tr>
+          <td class="time-cell">${fmtTime(log.created_at)}</td>
+          <td>${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
+          <td class="time-cell">${escapeHtml(log.subject_id || '')}</td>
+          <td class="message">${escapeHtml(log.message)}</td>
+        </tr>
+      `).join('');
     }
 
     let statusRequest = null;
 
     function hydrateQueue(rows, total) {
       queueState.total = total;
-      if (queueState.rows.length > QUEUE_BATCH_SIZE) {
-        queueState.exhausted = queueState.rows.length >= total;
-        renderQueue();
-        return;
-      }
       queueState.rows = rows;
-      queueState.exhausted = rows.length >= total;
-      renderQueue();
-    }
-
-    async function refreshLoadedQueue() {
-      if (queueState.loading || queueState.rows.length <= QUEUE_BATCH_SIZE) return;
-      const limit = Math.max(queueState.rows.length, QUEUE_BATCH_SIZE);
-      queueState.loading = true;
-      try {
-        const params = new URLSearchParams({ type: 'worker', offset: '0', limit: String(limit), include_total: '0' });
-        const response = await fetch(`/api/admin/queue?${params}`, { cache: 'no-store' });
-        if (!response.ok) throw new Error(`Queue refresh failed: ${response.status}`);
-        const payload = await response.json();
-        const rows = payload.rows || [];
-        const freshRowsByKey = new Map(rows.map(row => [String(row.queue_id || row.subject_key || ''), row]));
-        queueState.rows = queueState.rows
-          .map(row => freshRowsByKey.get(String(row.queue_id || row.subject_key || '')) || row)
-          .filter(row => freshRowsByKey.has(String(row.queue_id || row.subject_key || '')));
-        if (queueState.rows.length < QUEUE_BATCH_SIZE) {
-          queueState.rows = rows.slice(0, QUEUE_BATCH_SIZE);
-        }
-        queueState.exhausted = queueState.total ? queueState.rows.length >= queueState.total : rows.length < limit;
-        renderQueue();
-      } finally {
-        queueState.loading = false;
-      }
+      renderQueue(true);
     }
 
     function resetQueueState() {
       queueState.rows = [];
       queueState.total = 0;
-      queueState.loading = false;
-      queueState.exhausted = false;
-    }
-
-    async function loadMoreQueue() {
-      if (queueState.loading || queueState.exhausted) return;
-      if (queueState.total && queueState.rows.length >= queueState.total) {
-        queueState.exhausted = true;
-        return;
-      }
-      queueState.loading = true;
-      fields.workerQueueShown.textContent = queueState.total
-        ? `${queueState.rows.length}/${queueState.total} shown - loading`
-        : `${queueState.rows.length} shown - loading`;
-      try {
-        const params = new URLSearchParams({
-          type: 'worker',
-          offset: String(queueState.rows.length),
-          limit: String(QUEUE_BATCH_SIZE),
-          include_total: '0',
-        });
-        const response = await fetch(`/api/admin/queue?${params}`, { cache: 'no-store' });
-        if (!response.ok) throw new Error(`Queue load failed: ${response.status}`);
-        const payload = await response.json();
-        const rows = payload.rows || [];
-        queueState.total = payload.total || queueState.total;
-        queueState.rows.push(...rows);
-        queueState.exhausted = rows.length === 0 || rows.length < QUEUE_BATCH_SIZE || (queueState.total && queueState.rows.length >= queueState.total);
-        renderQueue();
-      } finally {
-        queueState.loading = false;
-      }
-    }
-
-    async function loadInitialQueue(force = false) {
-      if (queueState.loading) return;
-      if (!force && queueState.rows.length) return;
-      resetQueueState();
-      await loadMoreQueue();
-    }
-
-    function handleQueueScroll() {
-      const remaining = fields.workerQueuePanel.scrollHeight - fields.workerQueuePanel.scrollTop - fields.workerQueuePanel.clientHeight;
-      if (remaining < 80) {
-        loadMoreQueue().catch(error => {
-          fields.workerQueueShown.textContent = `${queueState.rows.length}/${queueState.total} shown - ${error.message}`;
-        });
-      }
     }
 
     let operationPollTimer = null;
@@ -438,7 +373,7 @@
       if (operationPollTimer !== null) return;
       const poll = () => {
         operationPollTimer = null;
-        loadStatus({ force: true, includeLogs: false })
+        loadStatus({ force: true })
           .catch(error => { fields.playlistRunStatus.textContent = error.message; })
           .finally(() => {
             operationPollsRemaining -= 1;
@@ -452,7 +387,6 @@
 
     async function loadStatus(options = {}) {
       const force = Boolean(options.force);
-      const includeLogs = options.includeLogs !== false;
       if (statusRequest && !force) return statusRequest;
       if (statusRequest && force) {
         try {
@@ -462,11 +396,10 @@
         }
       }
       statusRequest = (async () => {
-        const endpoint = includeLogs ? '/api/admin/status' : '/api/admin/status?include_logs=0';
+        const endpoint = '/api/admin/status';
         const response = await fetch(endpoint, { cache: 'no-store' });
         if (!response.ok) throw new Error(`Status failed: ${response.status}`);
-        render(await response.json(), includeLogs);
-        refreshLoadedQueue();
+        render(await response.json());
       })();
       try {
         await statusRequest;
@@ -481,7 +414,6 @@
       const payload = await response.json();
       resetQueueState();
       await loadStatus({ force: true });
-      loadInitialQueue(true);
       scheduleActionPolls();
       return payload;
     }
@@ -540,12 +472,7 @@
     });
     document.getElementById('stopWorkerQueue').addEventListener('click', () => stopWorkersNow().catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus({ force: true }).catch(error => alert(error.message)));
-    fields.workerQueuePanel.addEventListener('scroll', handleQueueScroll);
-    loadInitialQueue();
     loadStatus({ force: true })
-      .then(() => {
-        loadInitialQueue(true);
-      })
       .catch(error => { fields.playlistRunStatus.textContent = error.message; });
     setInterval(() => {
       loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });

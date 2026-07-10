@@ -94,12 +94,32 @@ class GroupNode:
     icon: str
 
 
+_DATABASE_BOOTSTRAP_LOCK = threading.Lock()
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=60)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 60000")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
+    return conn
+
+
+def migrate_database(db_path: Path) -> None:
+    """Apply schema migrations and one-time data repairs explicitly."""
+    conn = connect(db_path)
+    try:
+        with _DATABASE_BOOTSTRAP_LOCK:
+            _bootstrap_database(conn)
+    except Exception:
+        conn.close()
+        raise
+    else:
+        conn.close()
+
+
+def _bootstrap_database(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     ensure_columns(
         conn,
@@ -208,7 +228,6 @@ def connect(db_path: Path) -> sqlite3.Connection:
     if reconciled_count == 0 and raw_playlist_count:
         rebuild_playlist_reconciliation(conn)
     conn.commit()
-    return conn
 
 
 def ensure_columns(
@@ -455,6 +474,15 @@ def playlist_entry_is_unavailable(title: str, availability: str = "") -> bool:
         "unavailable",
         "deleted",
     }
+
+
+def playlist_zero_result_is_suspicious(
+    parsed_count: int,
+    ytdlp_error: str,
+    previous_scan_count: int,
+) -> bool:
+    """Avoid replacing a known playlist with an empty web fallback after yt-dlp is denied."""
+    return parsed_count == 0 and bool(ytdlp_error.strip()) and previous_scan_count > 0
 
 
 def reconciled_video_availability(
@@ -1367,6 +1395,50 @@ def archivarix_session_status(cookie_file: Path, now: float | None = None) -> tu
     session = max(sessions, key=lambda cookie: cookie.expires or float("inf"))
     if session.expires is not None and session.expires <= now:
         return False, "Archivarix login session cookie has expired"
+    return True, ""
+
+
+def youtube_session_status(
+    cookie_file: Path,
+    now: float | None = None,
+    verify_remote: bool = False,
+) -> tuple[bool, str]:
+    """Return whether local YouTube cookies are current and, optionally, accepted by YouTube."""
+    now = time.time() if now is None else now
+    try:
+        jar = load_cookie_jar(cookie_file)
+    except (OSError, http.cookiejar.LoadError):
+        return False, "YouTube cookie file could not be read"
+    auth_names = {
+        "SID",
+        "HSID",
+        "SSID",
+        "APISID",
+        "SAPISID",
+        "LOGIN_INFO",
+        "__Secure-1PSID",
+        "__Secure-3PSID",
+    }
+    sessions = [
+        cookie
+        for cookie in jar
+        if cookie.name in auth_names
+        and cookie.domain.lstrip(".").endswith(("youtube.com", "google.com"))
+    ]
+    if not sessions:
+        return False, "YouTube login cookies are missing"
+    if not any(cookie.expires is None or cookie.expires > now for cookie in sessions):
+        return False, "YouTube login cookies have expired"
+    if verify_remote:
+        try:
+            page = request_text(
+                load_cookie_opener(cookie_file),
+                "https://www.youtube.com/feed/history",
+            )
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+            return False, f"YouTube login session could not be verified: {exc}"
+        if "Watch history isn't viewable when signed out" in page:
+            return False, "YouTube login session is not accepted by YouTube"
     return True, ""
 
 
@@ -6176,8 +6248,8 @@ def admin_status(
     live_history_worker: "LiveHistoryWorker | None" = None,
     queue_dispatcher: "WorkerQueueDispatcher | None" = None,
     include_logs: bool = True,
+    worker_queue_limit: int = 0,
 ) -> dict[str, Any]:
-    reconcile_worker_runs(db_path, metadata_worker, playlist_worker, live_history_worker)
     conn = connect(db_path)
     try:
         counts = dict(
@@ -6243,9 +6315,10 @@ def admin_status(
             ).fetchone()
         )
         worker_queue_count_value = worker_queue_count(conn)
+        worker_queue_limit = max(0, min(10000, int(worker_queue_limit or 0)))
         worker_queue_preview_rows = [
             dict(row)
-            for row in worker_queue_rows(conn, limit=20)
+            for row in worker_queue_rows(conn, limit=worker_queue_limit)
         ]
         latest_metadata_run = conn.execute(
             """

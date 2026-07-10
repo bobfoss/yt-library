@@ -13,7 +13,9 @@ class HistorySearchTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.original_root = core.ROOT
         core.ROOT = Path(self.temp_dir.name)
-        self.conn = core.connect(Path(self.temp_dir.name) / "library.sqlite3")
+        db_path = Path(self.temp_dir.name) / "library.sqlite3"
+        core.migrate_database(db_path)
+        self.conn = core.connect(db_path)
         self.addCleanup(self.cleanup)
 
     def cleanup(self) -> None:
