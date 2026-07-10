@@ -955,6 +955,94 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_playlist_worker_accepts_valid_header_with_login_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLexample', 'Example')")
+                    core.enqueue_playlist_scan_item(conn, "PLexample", manual=False)
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            header = {"video_count": 1, "has_video_count": True, "visibility": "private"}
+            videos = [{"video_id": "first"}]
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.request_text", return_value="ServiceLogin header page"),
+                patch("yt_library.workers.extract_playlist_metadata", return_value=header),
+                patch("yt_library.workers.scan_playlist_ytdlp", return_value=(videos, {})) as scan_ytdlp,
+                patch("yt_library.workers.scan_playlist_videos") as scan_web,
+                patch("yt_library.workers.save_playlist_scan", return_value=(1, 0)),
+                patch("yt_library.workers.enqueue_placeholder_recovery_targets", return_value={"inserted": 0}),
+            ):
+                worker._run(
+                    "test-playlist-valid-header-with-login-marker",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            scan_ytdlp.assert_called_once()
+            scan_web.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                log = conn.execute(
+                    "SELECT level, message FROM playlist_scan_worker_log WHERE run_id = 'test-playlist-valid-header-with-login-marker'"
+                ).fetchone()
+                self.assertEqual(log["level"], "info")
+                self.assertIn("1 videos", log["message"])
+            finally:
+                conn.close()
+
+    def test_playlist_worker_reports_signed_out_header_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLexample', 'Example')")
+                    core.enqueue_playlist_scan_item(conn, "PLexample", manual=False)
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.request_text", return_value="<a href='https://accounts.google.com/ServiceLogin'>Sign in</a>"),
+                patch("yt_library.workers.extract_playlist_metadata", return_value={"video_count": 0, "has_video_count": False}),
+                patch("yt_library.workers.scan_playlist_ytdlp") as scan_ytdlp,
+                patch("yt_library.workers.scan_playlist_videos") as scan_web,
+            ):
+                worker._run(
+                    "test-playlist-signed-out-header",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            scan_ytdlp.assert_not_called()
+            scan_web.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                log = conn.execute(
+                    "SELECT level, message FROM playlist_scan_worker_log WHERE run_id = 'test-playlist-signed-out-header'"
+                ).fetchone()
+                self.assertEqual(log["level"], "error")
+                self.assertIn("login session is not accepted", log["message"])
+            finally:
+                conn.close()
+
     def test_playlist_worker_allows_foreign_playlist_short_of_reported_count(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

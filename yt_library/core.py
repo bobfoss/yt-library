@@ -1497,6 +1497,16 @@ def youtube_session_status(
     return True, ""
 
 
+def youtube_page_requires_login(html_text: str) -> bool:
+    markers = (
+        "ServiceLogin",
+        "accounts.google.com/ServiceLogin",
+        "Watch history isn't viewable when signed out",
+        "Keep track of what you watch",
+    )
+    return any(marker in (html_text or "") for marker in markers)
+
+
 def load_cookie_opener(cookie_file: Path) -> urllib.request.OpenerDirector:
     jar = load_cookie_jar(cookie_file)
     return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))

@@ -462,15 +462,19 @@ class PlaylistScanWorker:
                 videos: list[dict[str, Any]] = []
                 playlist_metadata: dict[str, Any] = {}
                 header_metadata: dict[str, Any] = {}
+                header_page_requires_login = False
                 try:
                     playlist_url = f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}"
-                    header_metadata = extract_playlist_metadata(
-                        request_text(opener, playlist_url), playlist_id
-                    )
+                    header_page = request_text(opener, playlist_url)
+                    header_page_requires_login = youtube_page_requires_login(header_page)
+                    header_metadata = extract_playlist_metadata(header_page, playlist_id)
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
                     header_metadata = {}
                 header_count_available = bool(header_metadata.get("has_video_count"))
-                if not header_count_available:
+                if not header_count_available and header_page_requires_login:
+                    status = "error"
+                    error = "skipping: YouTube login session is not accepted by YouTube"
+                elif not header_count_available:
                     status = "error"
                     error = "skipping: YouTube playlist header count unavailable"
                 else:
