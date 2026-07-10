@@ -24,7 +24,7 @@ The app is intentionally compact but no longer single-file. `yt_library_manager.
 
 Primary surfaces:
 
-- `/`: playlist library browser with PocketTube groups, local playlist pages, hidden-video views, snapshot/missing views, omni-search, thumbnails, channel avatars, and watch-progress bars.
+- `/`: playlist library browser with PocketTube groups, local playlist pages, unavailable-video views, omni-search, thumbnails, channel avatars, and watch-progress bars.
 - `/history`: single-column watch history search, sorted by descending watch date, with pagination and metadata-enhanced cards.
 - `/admin`: status dashboard and worker control plane for metadata, playlist scans, placeholder recovery, and history.
 
@@ -32,37 +32,33 @@ SQLite is the source of truth for local state. Cached thumbnails and avatars are
 
 ## Data Sources
 
-The design deliberately keeps source streams separate before combining them for display:
+Source parsers provide evidence for one best-known current state:
 
 - Current YouTube playlist web state: playlist membership, ordering, visible videos, hidden placeholders, playlist metadata, and scan status.
 - PocketTube export: group hierarchy and playlist organization.
 - YouTube live history web state: recent/history ordering, date-level labels, and account-specific thumbnail progress state.
 - Takeout history zips: authoritative exported watch timestamps.
-- Takeout playlist snapshots: historical playlist membership and add dates.
+- The newest Takeout export: current playlist membership, subscriptions, exact history timestamps, and recovery input.
 - Archivarix: recovery evidence for deleted or memory-holed videos, including thumbnails, titles, descriptions, channel evidence, archive links, and not-found/deleted status.
 - YouTube watch/channel pages and exact-ID search result cards: enriched video/channel metadata, thumbnails, channel avatars, and watch progress.
 
-Each source has different reliability. Takeout is best for exact watch timestamps, current YouTube scans are best for present playlist state, and Archivarix is best-effort recovery evidence. The UI should expose those differences rather than flattening everything into a false certainty.
+Each source has different reliability. Takeout is best for exact watch timestamps, current YouTube scans are best for present playlist and metadata state, and Archivarix is best-effort recovery evidence. Source fields are consumed during import instead of being retained as parallel metadata histories.
 
 ## Storage Model
 
-Raw source tables should preserve what was observed:
+The database models the best-known current state of YouTube. Imports and scans replace superseded metadata rather than preserving revisions. When content becomes unavailable, the last known useful state is retained so removed content remains identifiable.
 
-- `playlists`, `groups`, and `group_playlists` model the library and PocketTube organization.
-- `playlist_videos` stores the current playlist scan result.
-- `snapshot_playlists` and `snapshot_videos` store Takeout playlist snapshots.
-- `youtube_history_occurrences` stores live YouTube history observations by ordinal.
-- `takeout_history_occurrences` stores imported Takeout history rows keyed by Takeout export.
-- `snapshot_video_recovery` stores Archivarix recovery evidence.
-- `video_metadata` stores YouTube video metadata and account-specific watch status.
-- `channels` normalizes channel title, URL, avatar, and Archivarix channel IDs by YouTube channel ID.
+- `videos` owns canonical video metadata, current playability, availability, reaction, progress, and fetch state.
+- `channels` owns canonical channel metadata and subscription state.
+- `playlists`, `groups`, and `group_playlists` model the current library organization.
+- `playlist_items` links playlists to videos and retains only membership, position, unavailable-slot, and reconciliation facts.
+- `history_events` stores watch events. Exact Takeout timestamps and date-only live observations share this table without fabricating precision.
+- `video_recovery` stores only current Archivarix recovery status, capture time, media availability, and errors.
+- `app_settings` stores the browser-detected or explicitly overridden display timezone.
 
-Display overlays should combine evidence without overwriting source meaning:
+Parsers may use titles, channels, descriptions, and URLs transiently to update canonical entities, then discard those source copies. Metadata revisions and complete historical playlist snapshots are intentionally not retained.
 
-- `playlist_video_reconciled` is the playlist display layer that can restore hidden or missing video identities from Takeout and Archivarix evidence.
-- `history_reconciled` is the history display/search layer that merges live YouTube history observations with Takeout watch times.
-
-Channel information is intentionally normalized because video metadata, history, playlist rows, and Archivarix recovery repeat the same creator data. Source tables may still keep raw channel text when no stable channel ID is available.
+Unknown playlist slots use `NULL` video IDs and structured unavailable state. Stable YouTube video, playlist, and channel URLs are generated from IDs. Wayback links are generated from a video ID plus the retained capture timestamp.
 
 ## Worker Model
 
@@ -116,7 +112,7 @@ The same card also included `watchEndpoint.startTimeSeconds = 7`, but that does 
 
 Watch progress is account-specific, volatile state. It should be captured as enrichment, not treated as equivalent to history evidence.
 
-Current implementation stores progress fields in video metadata, live history rows, and reconciled history:
+Current video progress is stored on `videos`; progress observed on a particular live-history card remains on that `history_events` occurrence:
 
 - `watch_progress_percent`
 - `watch_resume_seconds`
@@ -131,16 +127,15 @@ The watch page may not expose the thumbnail progress overlay for the current vid
 
 Open question: `startTimeSeconds` may be useful, but it did not match the observed progress percentage in the first test case. Continue treating percentage as the authoritative UI signal until more examples clarify the resume semantics.
 
-## Data Principles
+## Time And Data Principles
 
-Keep raw sources separate from display overlays:
-
-- YouTube playlist scans represent the current web state.
-- Takeout rows preserve historical account export evidence.
-- Archivarix rows preserve recovery evidence for removed videos.
-- Reconciled tables or views should combine those sources for display without destroying source-specific meaning.
-
-When evidence is uncertain, preserve that uncertainty in the UI instead of silently forcing a match.
+- Store every exact instant as ISO 8601 UTC with a trailing `Z`.
+- Store date-only YouTube history as `watch_date` with `watched_at = NULL`; ordinal preserves relative feed order.
+- Detect the browser IANA timezone only when no saved value exists. Admin may override it.
+- Convert exact timestamps for display, but never timezone-shift a date-only observation.
+- Current YouTube metadata supersedes Takeout and Archivarix metadata. Empty or failed responses never erase useful values.
+- When a video becomes unavailable, update playability and availability while retaining its last useful identity.
+- When evidence is uncertain, preserve that uncertainty in membership or match fields instead of inventing an identity or timestamp.
 
 ## Operational Principles
 

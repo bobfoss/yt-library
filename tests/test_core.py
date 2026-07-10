@@ -109,14 +109,16 @@ class CoreHelperTests(unittest.TestCase):
     def test_watch_datetime_helpers_normalize_offsets(self) -> None:
         self.assertEqual(
             core.takeout_watch_datetime("July 4, 2026, 5:27:45 AM PDT"),
-            "2026-07-04T05:27:45-07:00",
+            "2026-07-04T12:27:45Z",
         )
         self.assertEqual(
             core.takeout_watch_datetime("2026-07-04T05:27:45.123Z"),
-            "2026-07-04T05:27:45+00:00",
+            "2026-07-04T05:27:45Z",
         )
-        self.assertEqual(core.youtube_watch_datetime("2026-01-15"), "2026-01-15T00:00:00-08:00")
-        self.assertEqual(core.youtube_watch_datetime("2026-07-15"), "2026-07-15T00:00:00-07:00")
+        self.assertEqual(
+            core.local_date_for_utc_instant("2026-07-04T05:27:45Z", "America/Los_Angeles"),
+            "2026-07-03",
+        )
 
     def test_id_and_numeric_helpers(self) -> None:
         self.assertEqual(core.extract_video_id("https://www.youtube.com/watch?v=abc-123_DEF"), "abc-123_DEF")
@@ -396,12 +398,37 @@ class CoreHelperTests(unittest.TestCase):
                 )
                 conn = core.connect(db_path)
                 try:
+                    with conn:
+                        core.set_setting(conn, "display_timezone", "America/Los_Angeles")
+                        conn.execute(
+                            """
+                            INSERT INTO history_events(
+                              event_id, video_id, watch_date, time_precision,
+                              source_type, match_type, youtube_ordinal, imported_at, updated_at
+                            ) VALUES (
+                              'youtube:7', 'vid123', '2026-07-03', 'date_only',
+                              'youtube', 'youtube_only', 7, '2026-07-04T06:00:00Z', '2026-07-04T06:00:00Z'
+                            )
+                            """
+                        )
+                        core.rebuild_history_reconciliation(conn)
                     subscribed = conn.execute(
                         "SELECT title, subscribed FROM channels WHERE channel_id = ?",
                         ("UCsubscribed12345678901234",),
                     ).fetchone()
                     history_count = conn.execute(
-                        "SELECT COUNT(*) FROM takeout_history_occurrences"
+                        "SELECT COUNT(*) FROM history_events WHERE takeout_history_key IS NOT NULL"
+                    ).fetchone()[0]
+                finally:
+                    conn.close()
+
+                core.import_history(
+                    argparse.Namespace(db=str(db_path), takeout=str(root), history_key="")
+                )
+                conn = core.connect(db_path)
+                try:
+                    matched_ordinal = conn.execute(
+                        "SELECT youtube_ordinal FROM history_events WHERE takeout_history_key IS NOT NULL"
                     ).fetchone()[0]
                 finally:
                     conn.close()
@@ -412,6 +439,7 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(subscribed["title"], "Subscribed Channel")
         self.assertEqual(subscribed["subscribed"], 1)
         self.assertEqual(history_count, 1)
+        self.assertEqual(matched_ordinal, 7)
 
     def test_extract_reaction_from_toggled_buttons(self) -> None:
         liked = {
@@ -582,7 +610,7 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(metadata["playability_status"], "OK")
         self.assertEqual(core.watch_playability_value(metadata), 1)
 
-    def test_watch_playability_repairs_playlist_rows_without_losing_availability(self) -> None:
+    def test_watch_playability_updates_canonical_video(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "library.sqlite3"
             conn = migrated_connection(db_path)
@@ -621,12 +649,12 @@ class CoreHelperTests(unittest.TestCase):
                 row = conn.execute(
                     """
                     SELECT is_playable, availability
-                    FROM playlist_video_reconciled
-                    WHERE playlist_id = 'PLmembers' AND video_id = 'jhtY3OsTuwk'
+                    FROM videos
+                    WHERE video_id = 'jhtY3OsTuwk'
                     """
                 ).fetchone()
                 self.assertEqual(row["is_playable"], 1)
-                self.assertEqual(row["availability"], "subscriber_only")
+                self.assertEqual(row["availability"], "public")
             finally:
                 conn.close()
 
@@ -671,18 +699,69 @@ class CoreHelperTests(unittest.TestCase):
         )
         self.assertEqual(
             core.reconciled_video_availability("Ax8Yn8DPZe0", "", "LIVE"),
-            "LIVE",
+            "public",
         )
-        self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "live", ""), "LIVE")
+        self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "live", ""), "public")
         self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "", "", 1), "public")
         self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "subscriber_only", "", 0), "subscriber_only")
-        self.assertEqual(core.reconciled_video_availability("", "private", "LIVE"), "")
+        self.assertEqual(core.reconciled_video_availability("", "private", "LIVE"), "unknown")
 
     def test_history_reconciliation_labels_describe_current_fields(self) -> None:
         self.assertEqual(core.history_source_type_label("takeout_youtube"), "Takeout + YouTube")
         self.assertEqual(core.history_match_type_label("video_id_date"), "matched by video/date")
-        self.assertEqual(core.history_time_quality_label("observed_only"), "observed time")
-        self.assertIn("observed_at", core.history_time_quality_note("observed_only"))
+        self.assertEqual(core.history_time_quality_label("unknown"), "time unknown")
+        self.assertIn("observed_at", core.history_time_quality_note("unknown"))
+
+    def test_canonical_video_prefers_current_youtube_and_retains_unavailable_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(conn, "video123", title="Takeout title", source="takeout")
+                    core.upsert_video(conn, "video123", title="Current title", source="playlist", is_playable=1)
+                    core.upsert_video(conn, "video123", title="Older export title", source="takeout")
+                    core.upsert_video(
+                        conn,
+                        "video123",
+                        title="Deleted video",
+                        source="metadata",
+                        is_playable=0,
+                        availability="deleted",
+                    )
+                row = conn.execute(
+                    "SELECT title, is_playable, availability FROM videos WHERE video_id = 'video123'"
+                ).fetchone()
+                self.assertEqual(dict(row), {"title": "Current title", "is_playable": 0, "availability": "deleted"})
+            finally:
+                conn.close()
+
+    def test_timezone_setting_requires_iana_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(conn, "video123", title="Example", source="takeout")
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watched_at, watch_date, time_precision,
+                          source_type, match_type, imported_at, updated_at
+                        ) VALUES (
+                          'takeout:one', 'video123', '2026-07-04T05:27:45Z', '2026-07-04', 'exact',
+                          'takeout', 'takeout_only', '2026-07-04T06:00:00Z', '2026-07-04T06:00:00Z'
+                        )
+                        """
+                    )
+                    core.set_setting(conn, "display_timezone", "America/Los_Angeles")
+                self.assertEqual(core.get_setting(conn, "display_timezone"), "America/Los_Angeles")
+                watch_date = conn.execute(
+                    "SELECT watch_date FROM history_events WHERE event_id = 'takeout:one'"
+                ).fetchone()[0]
+                self.assertEqual(watch_date, "2026-07-03")
+                with self.assertRaises(ValueError):
+                    core.set_setting(conn, "display_timezone", "Pacific Standard Time")
+            finally:
+                conn.close()
 
 
 class SchemaTests(unittest.TestCase):
@@ -755,7 +834,7 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(actual_columns, expected_columns)
         self.assertEqual(actual_indexes, expected_indexes)
         self.assertIn("idx_channels_title", actual_indexes)
-        self.assertIn("idx_history_reconciled_channel", actual_indexes)
+        self.assertIn("idx_history_events_video", actual_indexes)
 
     def test_migrate_is_schema_only_for_existing_legacy_tables(self) -> None:
         original_root = core.ROOT
@@ -803,7 +882,7 @@ class SchemaTests(unittest.TestCase):
             try:
                 conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
                 try:
-                    now = int(time.time())
+                    now = core.utc_now()
                     core.upsert_channel(
                         conn,
                         "UCvmGOqGlxOgpZDoszBbWxmA",
@@ -827,13 +906,14 @@ class SchemaTests(unittest.TestCase):
                             VALUES ('PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4', 'Test playlist')
                             """
                         )
-                        conn.execute(
+                        core.upsert_video(conn, "abc12345678", title="First", source="takeout")
+                        core.upsert_video(conn, "def12345678", title="Second", source="takeout")
+                        conn.executemany(
                             """
-                            INSERT INTO playlist_videos(playlist_id, position, video_id, title)
-                            VALUES
-                              ('PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4', 1, 'abc12345678', 'First'),
-                              ('PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4', 2, 'def12345678', 'Second')
-                            """
+                            INSERT INTO playlist_items(playlist_id, position, video_id)
+                            VALUES ('PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4', ?, ?)
+                            """,
+                            [(1, "abc12345678"), (2, "def12345678")],
                         )
                     with conn:
                         unified_youtube_playlist = core.enqueue_worker_queue_target(
@@ -893,12 +973,12 @@ class SchemaTests(unittest.TestCase):
                             """
                             INSERT INTO playlists(
                               playlist_id, title, description, visibility, video_count,
-                              thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
+                              thumbnail_url, thumbnail_path, fetch_status, fetch_error, updated_at
                             )
                             VALUES (
                               'PLrename', 'Old name', 'Old description', 'unlisted', 1,
                               'https://example.test/old.jpg', 'thumbs/PLrename.jpg',
-                              'https://www.youtube.com/playlist?list=PLrename', 'ok', '', 1
+                              'ok', '', '2026-07-01T00:00:00Z'
                             )
                             """
                         )
@@ -943,11 +1023,11 @@ class SchemaTests(unittest.TestCase):
                     self.assertEqual(row["thumbnail_url"], "https://example.test/new.jpg")
                     self.assertEqual(row["thumbnail_path"], "thumbs/PLrename.jpg")
                     channel = conn.execute(
-                        "SELECT title, source FROM channels WHERE channel_id = 'UCnewownerchannel123456789'"
+                        "SELECT title, metadata_source FROM channels WHERE channel_id = 'UCnewownerchannel123456789'"
                     ).fetchone()
                     self.assertIsNotNone(channel)
                     self.assertEqual(channel["title"], "New owner")
-                    self.assertEqual(channel["source"], "playlist_owner")
+                    self.assertEqual(channel["metadata_source"], "playlist_owner")
                 finally:
                     conn.close()
             finally:
@@ -986,14 +1066,14 @@ class SchemaTests(unittest.TestCase):
                         )
                         core.save_playlist_scan_error(conn, "PLpartial", "Parsed 1 videos, but playlist metadata says 2 videos")
                     row = conn.execute(
-                        "SELECT video_count, hidden_count, scan_status, scan_error FROM playlist_scans WHERE playlist_id = 'PLpartial'"
+                        "SELECT video_count, unavailable_count, scan_status, scan_error FROM playlist_scans WHERE playlist_id = 'PLpartial'"
                     ).fetchone()
                     self.assertEqual(row["video_count"], 1)
-                    self.assertEqual(row["hidden_count"], 0)
+                    self.assertEqual(row["unavailable_count"], 0)
                     self.assertEqual(row["scan_status"], "error")
                     self.assertIn("metadata says 2", row["scan_error"])
                     self.assertEqual(
-                        conn.execute("SELECT COUNT(*) FROM playlist_videos WHERE playlist_id = 'PLpartial'").fetchone()[0],
+                        conn.execute("SELECT COUNT(*) FROM playlist_items WHERE playlist_id = 'PLpartial'").fetchone()[0],
                         1,
                     )
                 finally:
@@ -1001,7 +1081,7 @@ class SchemaTests(unittest.TestCase):
             finally:
                 core.ROOT = original_root
 
-    def test_recovered_live_playlist_row_is_playable(self) -> None:
+    def test_recovered_live_video_is_playable(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
             core.ROOT = Path(temp_dir)
@@ -1010,33 +1090,31 @@ class SchemaTests(unittest.TestCase):
                 try:
                     with conn:
                         conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('pl1', 'Playlist')")
-                        conn.execute("INSERT INTO snapshots(snapshot_key, label) VALUES ('snap1', 'Snapshot')")
-                        conn.execute(
-                            """
-                            INSERT INTO snapshot_videos(snapshot_key, playlist_id, position, video_id, playlist_title)
-                            VALUES ('snap1', 'pl1', 1, 'KRhofr57Na8', 'Playlist')
-                            """
+                        core.save_video_recovery(
+                            conn,
+                            "KRhofr57Na8",
+                            {"title": "Can You Safely Drink Your Own Pee?", "status": "LIVE"},
+                            "found",
+                            "",
                         )
                         conn.execute(
                             """
-                            INSERT INTO snapshot_video_recovery(snapshot_key, video_id, title, status, search_status)
-                            VALUES ('snap1', 'KRhofr57Na8', 'Can You Safely Drink Your Own Pee?', 'LIVE', 'found')
+                            INSERT INTO playlist_items(
+                              playlist_id, position, video_id, membership_state, source_quality, match_type
+                            ) VALUES ('pl1', 1, 'KRhofr57Na8', 'retained_unavailable', 'takeout', 'ambiguous_hidden_candidate')
                             """
                         )
-                        core.rebuild_playlist_reconciliation(conn, "pl1")
 
                     row = conn.execute(
                         """
-                        SELECT is_playable, availability, source_quality, match_type
-                        FROM playlist_video_reconciled
-                        WHERE playlist_id = 'pl1' AND video_id = 'KRhofr57Na8'
+                        SELECT is_playable, availability
+                        FROM videos
+                        WHERE video_id = 'KRhofr57Na8'
                         """
                     ).fetchone()
                     self.assertIsNotNone(row)
                     self.assertEqual(row["is_playable"], 1)
-                    self.assertEqual(row["availability"], "LIVE")
-                    self.assertEqual(row["source_quality"], "takeout")
-                    self.assertEqual(row["match_type"], "ambiguous_hidden_candidate")
+                    self.assertEqual(row["availability"], "public")
                 finally:
                     conn.close()
             finally:
@@ -1279,7 +1357,6 @@ class WorkerQueueTests(unittest.TestCase):
                     core.enqueue_worker_queue_target(conn, "PLearlierWork")
                     conn.execute("UPDATE worker_queue SET priority = 25 WHERE playlist_id = 'PLearlierWork'")
                 candidate = {
-                    "snapshot_key": "20260704T052745Z",
                     "video_id": "abc12345678",
                     "title": "Unavailable example",
                     "playlist_count": 2,
@@ -1309,7 +1386,7 @@ class WorkerQueueTests(unittest.TestCase):
                         "video_id": "abc12345678",
                         "playlist_id": "PLexample",
                         "current_title": "Unavailable example",
-                        "source_key": "20260704T052745Z",
+                        "source_key": "",
                         "priority": 26,
                     },
                 )
@@ -1322,7 +1399,6 @@ class WorkerQueueTests(unittest.TestCase):
             conn = migrated_connection(db_path)
             try:
                 candidate = {
-                    "snapshot_key": "20260704T052745Z",
                     "video_id": "abc12345678",
                     "title": "Unavailable example",
                     "playlist_count": 1,

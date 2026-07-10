@@ -327,10 +327,13 @@
       const watchUrl = row.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(row.video_id)}` : row.url;
       const channelName = row.metadata_channel || row.channel || '';
       const channelUrl = row.metadata_channel_url || '';
+      const watchedLabel = row.time_quality === 'exact'
+        ? window.YTLibraryTime.format(row.watched_at)
+        : (row.watch_date || '');
       body.innerHTML = `
         <a class="title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayTitle(row))}</a>
         <div class="details">
-          ${row.watched_at ? `<span>${escapeHtml(row.watched_at)}</span>` : ''}
+          ${watchedLabel ? `<span>${escapeHtml(watchedLabel)}</span>` : ''}
           ${(row.history_badges || []).map(label => `<span class="badge">${escapeHtml(label)}</span>`).join('')}
           ${creatorHtml(row.metadata_channel_thumbnail_path, channelName, channelUrl)}
           ${row.video_id ? `<span>${escapeHtml(row.video_id)}</span>` : ''}

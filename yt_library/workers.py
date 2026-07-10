@@ -92,7 +92,7 @@ class MetadataWorker:
                     """,
                     (
                         run_id,
-                        int(time.time()),
+                        utc_now(),
                         run_total,
                         delay,
                         limit,
@@ -122,7 +122,7 @@ class MetadataWorker:
                             SET status = 'stopped', finished_at = ?, message = ?
                             WHERE run_id = ?
                             """,
-                            (int(time.time()), "Stop requested", run_id),
+                            (utc_now(), "Stop requested", run_id),
                         )
                         log_worker_event(conn, run_id, "warn", "Worker stopped by request")
                     return
@@ -197,93 +197,24 @@ class MetadataWorker:
                                     )
                                 metadata = metadata_from_archivarix_video(video_id, video, thumbnail_url, thumbnail_path)
                                 status = "ok" if useful_video_metadata(metadata) else "no_metadata"
-                                for snapshot in conn.execute(
-                                    "SELECT DISTINCT snapshot_key FROM snapshot_videos WHERE video_id = ?",
-                                    (video_id,),
-                                ).fetchall():
-                                    save_snapshot_video_recovery(
-                                        conn,
-                                        snapshot["snapshot_key"],
-                                        video_id,
-                                        video,
-                                        thumbnail_url,
-                                        thumbnail_path,
-                                        arch_status,
-                                        arch_error,
-                                    )
+                                save_video_recovery(
+                                    conn,
+                                    video_id,
+                                    video,
+                                    arch_status,
+                                    arch_error,
+                                    thumbnail_url,
+                                    thumbnail_path,
+                                )
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                     status = "error"
                     error = str(exc)
-                now = int(time.time())
+                now = utc_now()
                 with conn:
-                    channel_id = upsert_channel(
-                        conn,
-                        metadata.get("channel_id", ""),
-                        title=metadata.get("channel", ""),
-                        url=metadata.get("channel_url", ""),
-                        description=metadata.get("channel_description", ""),
-                        aliases=metadata.get("channel_aliases", ""),
-                        thumbnail_url=metadata.get("channel_thumbnail_url", ""),
-                        thumbnail_path=metadata.get("channel_thumbnail_path", ""),
-                        archivarix_channel_id=metadata.get("archivarix_channel_id", ""),
-                        status=metadata.get("channel_status", ""),
-                        status_reason=metadata.get("channel_status_reason", ""),
-                        fetch_status=status if metadata_source == "channel" else "",
-                        fetch_error=error if metadata_source == "channel" else "",
-                        fetched_at=now if metadata_source == "channel" else 0,
-                        source="metadata",
-                        updated_at=now,
-                    )
-                    if metadata_source != "channel":
-                        conn.execute(
-                            """
-                            INSERT INTO video_metadata(
-                              video_id, title, description, channel_id, duration_text, view_count,
-                              upload_date, thumbnail_url, thumbnail_path,
-                              reaction,
-                              watch_progress_percent, watch_resume_seconds,
-                              yt_status, fetch_status, fetch_error, fetched_at, updated_at
-                            )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(video_id) DO UPDATE SET
-                              title=excluded.title,
-                              description=excluded.description,
-                              channel_id=excluded.channel_id,
-                              duration_text=excluded.duration_text,
-                              view_count=excluded.view_count,
-                              upload_date=excluded.upload_date,
-                              thumbnail_url=excluded.thumbnail_url,
-                              thumbnail_path=excluded.thumbnail_path,
-                              reaction=excluded.reaction,
-                              watch_progress_percent=excluded.watch_progress_percent,
-                              watch_resume_seconds=excluded.watch_resume_seconds,
-                              yt_status=excluded.yt_status,
-                              fetch_status=excluded.fetch_status,
-                              fetch_error=excluded.fetch_error,
-                              fetched_at=excluded.fetched_at,
-                              updated_at=excluded.updated_at
-                            """,
-                            (
-                                video_id,
-                                metadata.get("title", ""),
-                                metadata.get("description", ""),
-                                channel_id,
-                                metadata.get("duration_text", ""),
-                                metadata.get("view_count", ""),
-                                metadata.get("upload_date", ""),
-                                metadata.get("thumbnail_url", ""),
-                                metadata.get("thumbnail_path", ""),
-                                metadata.get("reaction", ""),
-                                bounded_int(metadata.get("watch_progress_percent")),
-                                max(0, int(metadata.get("watch_resume_seconds") or 0)),
-                                metadata.get("yt_status", ""),
-                                status,
-                                error,
-                                now,
-                                now,
-                            ),
-                        )
-                        apply_watch_playability_to_playlist_rows(conn, video_id, metadata)
+                    if metadata_source == "channel":
+                        store_channel_metadata(conn, metadata, status, error, updated_at=now)
+                    else:
+                        store_video_metadata(conn, metadata, status, error, updated_at=now)
                     processed += 1
                     channel_label = metadata.get("channel") or queued_channel_title or queued_channel_id or video_id
                     if status == "error":
@@ -325,7 +256,7 @@ class MetadataWorker:
                     SET status = 'complete', finished_at = ?, message = ?
                     WHERE run_id = ?
                     """,
-                    (int(time.time()), f"Completed {processed} items", run_id),
+                    (utc_now(), f"Completed {processed} items", run_id),
                 )
                 if record_summary:
                     log_worker_event(conn, run_id, "info", f"Worker complete: {processed} processed")
@@ -337,7 +268,7 @@ class MetadataWorker:
                     SET status = 'error', finished_at = ?, message = ?
                     WHERE run_id = ?
                     """,
-                    (int(time.time()), str(exc), run_id),
+                    (utc_now(), str(exc), run_id),
                 )
                 log_worker_event(conn, run_id, "error", f"Worker crashed: {exc}")
         finally:
@@ -415,7 +346,7 @@ class PlaylistScanWorker:
                     """,
                     (
                         run_id,
-                        int(time.time()),
+                        utc_now(),
                         run_total,
                         delay,
                         limit,
@@ -445,7 +376,7 @@ class PlaylistScanWorker:
                             SET status = 'stopped', finished_at = ?, message = ?
                             WHERE run_id = ?
                             """,
-                            (int(time.time()), "Stop requested", run_id),
+                            (utc_now(), "Stop requested", run_id),
                         )
                         log_playlist_scan_event(conn, run_id, "warn", "Playlist scan stopped by request")
                     return
@@ -581,9 +512,9 @@ class PlaylistScanWorker:
                     metadata_queued = 0
                     placeholder_queued = 0
                     if status == "error":
-                        video_count, hidden_count = save_playlist_scan_error(conn, playlist_id, error)
+                        video_count, unavailable_count = save_playlist_scan_error(conn, playlist_id, error)
                     else:
-                        video_count, hidden_count = save_playlist_scan(
+                        video_count, unavailable_count = save_playlist_scan(
                             conn,
                             playlist_id,
                             videos,
@@ -617,7 +548,7 @@ class PlaylistScanWorker:
                             run_id,
                             "info",
                             (
-                                f"{title}: {video_count} videos, {hidden_count} unavailable"
+                                f"{title}: {video_count} videos, {unavailable_count} unavailable"
                                 + reported_note
                                 + (f"; queued {metadata_queued} metadata items" if metadata_queued else "")
                                 + (f"; queued {placeholder_queued} placeholder recoveries" if placeholder_queued else "")
@@ -652,7 +583,7 @@ class PlaylistScanWorker:
                     SET status = 'complete', finished_at = ?, message = ?
                     WHERE run_id = ?
                     """,
-                    (int(time.time()), f"Completed {processed} playlists", run_id),
+                    (utc_now(), f"Completed {processed} playlists", run_id),
                 )
                 if record_summary:
                     log_playlist_scan_event(conn, run_id, "info", f"Playlist scan complete: {processed} processed")
@@ -664,7 +595,7 @@ class PlaylistScanWorker:
                     SET status = 'error', finished_at = ?, message = ?
                     WHERE run_id = ?
                     """,
-                    (int(time.time()), str(exc), run_id),
+                    (utc_now(), str(exc), run_id),
                 )
                 log_playlist_scan_event(conn, run_id, "error", f"Playlist scan crashed: {exc}")
         finally:
@@ -735,7 +666,7 @@ class LiveHistoryWorker:
                     """,
                     (
                         run_id,
-                        int(time.time()),
+                        utc_now(),
                         HISTORY_BATCH_DELAY_SECONDS,
                         batch_size,
                         f"{label} started",
@@ -758,7 +689,7 @@ class LiveHistoryWorker:
                         SET status = 'stopped', finished_at = ?, message = ?
                         WHERE run_id = ?
                         """,
-                        (int(time.time()), "Stopped before fetch", run_id),
+                        (utc_now(), "Stopped before fetch", run_id),
                     )
                     log_live_history_event(conn, run_id, "warn", "History fetch stopped before fetch")
                 return
@@ -771,12 +702,18 @@ class LiveHistoryWorker:
             final_message = ""
             while not self._stop.is_set():
                 end = start + batch_size - 1
-                rows = fetch_youtube_history_web(cookie_file, limit=batch_size, start=start)
+                timezone_name = get_setting(conn, "display_timezone", DEFAULT_DISPLAY_TIMEZONE)
+                rows = fetch_youtube_history_web(
+                    cookie_file,
+                    limit=batch_size,
+                    start=start,
+                    timezone_name=timezone_name,
+                )
                 fetched_ids = [row.get("video_id") or "" for row in rows if row.get("video_id")]
                 with conn:
                     existing_ids = youtube_occurrence_sequence(conn, start, len(rows))
                     overlap_offset = find_feed_overlap(fetched_ids, existing_ids) if mode == "recent" else None
-                    inserted, existing, batch_last_video_id = save_youtube_history_occurrences(conn, rows, start)
+                    inserted, existing, batch_last_video_id = save_youtube_history_events(conn, rows, start)
                     reconcile_stats = rebuild_history_reconciliation(conn)
                     seen = len(rows)
                     processed += seen
@@ -831,7 +768,7 @@ class LiveHistoryWorker:
                     """,
                     (
                         status,
-                        int(time.time()),
+                        utc_now(),
                         processed,
                         processed,
                         inserted_total,
@@ -850,7 +787,7 @@ class LiveHistoryWorker:
                     SET status = 'error', finished_at = ?, message = ?
                     WHERE run_id = ?
                     """,
-                    (int(time.time()), str(exc), run_id),
+                    (utc_now(), str(exc), run_id),
                 )
                 log_live_history_event(conn, run_id, "error", f"History fetch crashed: {exc}")
         finally:
@@ -916,7 +853,6 @@ class PlaceholderRecoveryWorker:
                 return
             row = rows[0]
             queue_id = int(row["queue_id"] or 0)
-            snapshot_key = row["source_key"] or ""
             playlist_id = row["playlist_id"] or ""
             video_id = row["video_id"]
             title = row["current_title"] or video_id
@@ -939,15 +875,14 @@ class PlaceholderRecoveryWorker:
                 )
                 if self._stop.is_set():
                     return
-                save_snapshot_video_recovery(
+                save_video_recovery(
                     conn,
-                    snapshot_key,
                     video_id,
                     video,
-                    thumbnail_url,
-                    thumbnail_path,
                     status,
                     error,
+                    thumbnail_url,
+                    thumbnail_path,
                 )
                 title = (video or {}).get("title") or title
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:

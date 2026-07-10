@@ -50,6 +50,7 @@
     label { color: var(--muted); display: grid; gap: 5px; font-size: 13px; }
     input { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 8px 10px; font: inherit; width: 120px; }
     .wide-input { width: min(720px, calc(100vw - 360px)); }
+    .timezone-input { width: 260px; }
     label.checkbox { display: flex; flex-direction: row; align-items: center; gap: 7px; padding-bottom: 8px; }
     label.checkbox input { width: auto; }
     button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 9px 12px; font: inherit; cursor: pointer; }
@@ -140,6 +141,15 @@
         </div>
       </section>
 
+      <section class="workstream">
+        <div class="workstream-header"><h2>Time zone</h2></div>
+        <div class="controls">
+          <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>
+          <button id="saveTimezone" class="primary" type="button">Save</button>
+          <button id="detectTimezone" type="button">Use browser time zone</button>
+        </div>
+      </section>
+
     </section>
 
     <section class="panel">
@@ -218,7 +228,9 @@
       stopWorkerQueue: document.getElementById('stopWorkerQueue'),
       workerQueueRows: document.getElementById('workerQueueRows'),
       workerQueuePanel: document.getElementById('workerQueuePanel'),
+      displayTimezone: document.getElementById('displayTimezone'),
     };
+    fields.displayTimezone.value = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
 
     const queueState = {
       rows: [],
@@ -232,8 +244,7 @@
     }
 
     function fmtTime(value) {
-      if (!value) return '';
-      return new Date(value * 1000).toLocaleString();
+      return window.YTLibraryTime.format(value);
     }
 
     function workerSubject(row) {
@@ -292,7 +303,7 @@
 
     function render(data) {
       fields.playlistRows.textContent = data.playlistCounts.total_playlists || 0;
-      fields.distinctVideos.textContent = data.counts.distinct_playlist_videos || 0;
+      fields.distinctVideos.textContent = data.counts.distinct_playlist_item_videos || 0;
       fields.historyRows.textContent = data.counts.history_rows || 0;
       fields.historyVideos.textContent = data.counts.distinct_history_videos || 0;
       fields.liveHistoryRows.textContent = data.liveHistoryCounts?.live_rows || 0;
@@ -351,7 +362,7 @@
           level: String(log.level || '').replace(/^placeholder\s+/, ''),
         })),
         ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
-      ].sort((a, b) => (b.created_at - a.created_at) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
+      ].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
       fields.logs.innerHTML = logs.map(log => `
         <tr>
           <td class="time-cell">${fmtTime(log.created_at)}</td>
@@ -482,6 +493,16 @@
     });
     document.getElementById('stopWorkerQueue').addEventListener('click', () => stopWorkersNow().catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus({ force: true }).catch(error => alert(error.message)));
+    document.getElementById('saveTimezone').addEventListener('click', () => {
+      window.YTLibraryTime.persist(fields.displayTimezone.value.trim())
+        .then(() => loadStatus({ force: true }))
+        .catch(error => alert(error.message));
+    });
+    document.getElementById('detectTimezone').addEventListener('click', () => {
+      const detected = window.YTLibraryTime.detected();
+      fields.displayTimezone.value = detected;
+      window.YTLibraryTime.persist(detected).catch(error => alert(error.message));
+    });
     loadStatus({ force: true })
       .catch(error => { fields.playlistRunStatus.textContent = error.message; });
     setInterval(() => {

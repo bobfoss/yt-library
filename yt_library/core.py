@@ -30,6 +30,7 @@ from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .schema import load_schema
 
@@ -50,6 +51,7 @@ POCKETTUBE_EXPORT = ROOT / "youtube_playlist_manager_2026-07-02-17_13.json"
 TAKEOUT_DIR = ROOT / "YouTube and YouTube Music"
 HISTORY_BATCH_SIZE = 1000
 HISTORY_BATCH_DELAY_SECONDS = 10.0
+DEFAULT_DISPLAY_TIMEZONE = "UTC"
 
 PLAYLIST_MATCH_TYPE_NOTES = {
     "ambiguous_hidden_candidate": "missing from current playable scan; hidden slot mapping is ambiguous",
@@ -75,10 +77,20 @@ HISTORY_MATCH_TYPE_LABELS = {
 HISTORY_TIME_QUALITY_LABELS = {
     "exact": "exact time",
     "date_only": "date only",
-    "observed_only": "observed time",
+    "unknown": "time unknown",
 }
 HISTORY_TIME_QUALITY_NOTES = {
-    "observed_only": "YouTube history entry had no watch date; observed_at is fetch time",
+    "unknown": "YouTube history entry had no watch date; observed_at is fetch time",
+}
+
+VIDEO_SOURCE_PRIORITY = {
+    "": 0,
+    "archivarix": 10,
+    "takeout": 20,
+    "youtube_history": 30,
+    "playlist": 40,
+    "youtube": 50,
+    "metadata": 50,
 }
 
 
@@ -103,6 +115,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 60000")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -172,7 +185,7 @@ def video_availability_from_recovery_status(status: str) -> str:
     status = (status or "").strip()
     status_upper = status.upper()
     if status_upper == "LIVE":
-        return "LIVE"
+        return "public"
     if status_upper == "NOT_FOUND" or status_upper.startswith("DELETED_"):
         return "unavailable"
     return ""
@@ -189,7 +202,7 @@ def normalize_video_availability(
     recovered_status: str = "",
 ) -> str:
     if not video_id:
-        return ""
+        return "unknown"
     availability = (availability or "").strip()
     legacy_note_values = {
         "Takeout candidate; current hidden slot match is ambiguous",
@@ -201,15 +214,17 @@ def normalize_video_availability(
     if lowered == "unavailable video is hidden":
         return "unavailable"
     if lowered == "live":
-        return "LIVE"
+        return "public"
     if availability:
-        return availability
+        return lowered
     recovered_availability = video_availability_from_recovery_status(recovered_status)
     if recovered_availability:
         return recovered_availability
     if is_playable:
         return "public"
-    return ""
+    if is_playable is False or is_playable == 0:
+        return "unavailable"
+    return "unknown"
 
 
 def playlist_entry_is_unavailable(title: str, availability: str = "") -> bool:
@@ -247,42 +262,29 @@ def apply_watch_playability_to_playlist_rows(
     playability = watch_playability_value(metadata)
     if not video_id or playability is None:
         return 0
-    rows = conn.execute(
+    availability = "public" if playability else "unavailable"
+    result = conn.execute(
         """
-        SELECT playlist_id, availability
-        FROM playlist_videos
+        UPDATE videos
+        SET is_playable = ?, availability = ?, last_checked_at = ?,
+            last_seen_available_at = CASE WHEN ? = 1 THEN ? ELSE last_seen_available_at END,
+            updated_at = ?
         WHERE video_id = ?
+          AND (is_playable IS NOT ? OR availability <> ?)
         """,
-        (video_id,),
-    ).fetchall()
-    changed_playlists: set[str] = set()
-    for row in rows:
-        current_availability = row["availability"] if isinstance(row, sqlite3.Row) else row[1]
-        if playability:
-            availability = normalize_video_availability(video_id, current_availability, 1)
-        else:
-            availability = current_availability or "unavailable"
-        result = conn.execute(
-            """
-            UPDATE playlist_videos
-            SET is_playable = ?, availability = ?
-            WHERE playlist_id = ? AND video_id = ?
-              AND (is_playable <> ? OR availability <> ?)
-            """,
-            (
-                playability,
-                availability,
-                row["playlist_id"] if isinstance(row, sqlite3.Row) else row[0],
-                video_id,
-                playability,
-                availability,
-            ),
-        )
-        if result.rowcount:
-            changed_playlists.add(row["playlist_id"] if isinstance(row, sqlite3.Row) else row[0])
-    for playlist_id in changed_playlists:
-        rebuild_playlist_reconciliation(conn, playlist_id)
-    return len(changed_playlists)
+        (
+            playability,
+            availability,
+            utc_now(),
+            playability,
+            utc_now(),
+            utc_now(),
+            video_id,
+            playability,
+            availability,
+        ),
+    )
+    return result.rowcount
 
 
 def playlist_zero_result_is_suspicious(
@@ -347,6 +349,40 @@ def youtube_channel_url(channel_id: str) -> str:
     return f"https://www.youtube.com/channel/{channel_id}"
 
 
+def youtube_video_url(video_id: str, playlist_id: str = "") -> str:
+    video_id = (video_id or "").strip()
+    if not video_id:
+        return ""
+    url = f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}"
+    if playlist_id:
+        url += f"&list={urllib.parse.quote(playlist_id)}"
+    return url
+
+
+def youtube_playlist_url(playlist_id: str) -> str:
+    playlist_id = (playlist_id or "").strip()
+    return f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}" if playlist_id else ""
+
+
+def archivarix_search_url(video_id: str) -> str:
+    return f"https://tube.archivarix.net/?q={urllib.parse.quote(video_id)}" if video_id else ""
+
+
+def archivarix_media_url(video_id: str) -> str:
+    return (
+        f"https://web.archive.org/web/2oe_/http://wayback-fakeurl.archive.org/yt/{video_id}"
+        if video_id
+        else ""
+    )
+
+
+def wayback_video_url(video_id: str, capture_at: str | None) -> str:
+    if not video_id or not capture_at:
+        return ""
+    stamp = re.sub(r"[^0-9]", "", capture_at)[:14]
+    return f"https://web.archive.org/web/{stamp}/{youtube_video_url(video_id)}" if len(stamp) == 14 else ""
+
+
 def youtube_channel_ref_from_url(value: str) -> str:
     value = html.unescape((value or "").strip())
     channel_id = youtube_channel_id_from_url(value)
@@ -390,24 +426,22 @@ def upsert_channel(
     status_reason: str = "",
     fetch_status: str = "",
     fetch_error: str = "",
-    fetched_at: int = 0,
+    fetched_at: str | None = None,
     source: str = "",
-    updated_at: int | None = None,
+    updated_at: str | None = None,
 ) -> str:
     channel_id = (channel_id or "").strip()
     if not channel_id:
         channel_id = youtube_channel_id_from_url(url)
     if not channel_id:
         return ""
-    url = url or youtube_channel_url(channel_id)
-    now = updated_at or int(time.time())
+    now = updated_at or utc_now()
     existing = conn.execute("SELECT * FROM channels WHERE channel_id = ?", (channel_id,)).fetchone()
     if existing:
         conn.execute(
             """
             UPDATE channels
             SET title = ?,
-                url = ?,
                 description = ?,
                 aliases = ?,
                 thumbnail_url = ?,
@@ -418,13 +452,12 @@ def upsert_channel(
                 fetch_status = ?,
                 fetch_error = ?,
                 fetched_at = ?,
-                source = ?,
+                metadata_source = ?,
                 updated_at = ?
             WHERE channel_id = ?
             """,
             (
                 merge_channel_value(existing["title"], title),
-                merge_channel_value(existing["url"], url),
                 merge_channel_value(existing["description"], description),
                 merge_channel_value(existing["aliases"], aliases),
                 merge_channel_value(existing["thumbnail_url"], thumbnail_url),
@@ -435,7 +468,7 @@ def upsert_channel(
                 merge_channel_value(existing["fetch_status"], fetch_status),
                 fetch_error if fetch_status else existing["fetch_error"],
                 fetched_at or existing["fetched_at"],
-                merge_channel_value(existing["source"], source),
+                merge_channel_value(existing["metadata_source"], source),
                 now,
                 channel_id,
             ),
@@ -444,16 +477,15 @@ def upsert_channel(
         conn.execute(
             """
             INSERT INTO channels(
-              channel_id, title, url, description, aliases, thumbnail_url, thumbnail_path,
+              channel_id, title, description, aliases, thumbnail_url, thumbnail_path,
               archivarix_channel_id, status, status_reason, fetch_status, fetch_error,
-              fetched_at, source, updated_at
+              fetched_at, metadata_source, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 channel_id,
                 title,
-                url,
                 description,
                 aliases,
                 thumbnail_url,
@@ -471,8 +503,205 @@ def upsert_channel(
     return channel_id
 
 
+def useful_video_title(value: str) -> bool:
+    return (value or "").strip().lower().strip("[]() ") not in {
+        "",
+        "youtube",
+        "- youtube",
+        "deleted video",
+        "private video",
+        "unavailable video",
+    }
+
+
+def upsert_video(
+    conn: sqlite3.Connection,
+    video_id: str,
+    *,
+    title: str = "",
+    description: str = "",
+    channel_id: str = "",
+    channel_title: str = "",
+    channel_url: str = "",
+    duration_text: str = "",
+    view_count: str = "",
+    upload_date: str = "",
+    thumbnail_url: str = "",
+    thumbnail_path: str = "",
+    reaction: str = "",
+    watch_progress_percent: int | str | None = None,
+    watch_resume_seconds: int | str | None = None,
+    is_playable: bool | int | None = None,
+    availability: str = "",
+    source: str = "",
+    fetch_status: str = "",
+    fetch_error: str = "",
+    fetched_at: str | None = None,
+    checked_at: str | None = None,
+    updated_at: str | None = None,
+) -> str:
+    video_id = (video_id or "").strip()
+    if not video_id:
+        return ""
+    now = updated_at or utc_now()
+    channel_id = upsert_channel(
+        conn,
+        channel_id,
+        title=channel_title,
+        url=channel_url,
+        source=source,
+        updated_at=now,
+    ) or None
+    existing = conn.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,)).fetchone()
+    incoming_priority = VIDEO_SOURCE_PRIORITY.get(source, 0)
+    existing_priority = VIDEO_SOURCE_PRIORITY.get(existing["metadata_source"], 0) if existing else 0
+    authoritative = not existing or incoming_priority >= existing_priority
+
+    def current(name: str, incoming: str, *, useful: bool = True) -> str:
+        incoming = (incoming or "").strip()
+        if useful and not incoming:
+            return existing[name] if existing else ""
+        if authoritative and incoming:
+            return incoming
+        return (existing[name] if existing else "") or incoming
+
+    canonical_title = current("title", title if useful_video_title(title) else "")
+    canonical_channel = channel_id if authoritative and channel_id else ((existing["channel_id"] if existing else None) or channel_id)
+    incoming_playability = None if is_playable is None else int(bool(is_playable))
+    canonical_playability = incoming_playability if incoming_playability is not None else (existing["is_playable"] if existing else None)
+    canonical_availability = normalize_video_availability(
+        video_id,
+        availability,
+        canonical_playability,
+    )
+    if not availability and existing and incoming_playability is None:
+        canonical_availability = existing["availability"]
+    progress = bounded_int(watch_progress_percent) if watch_progress_percent is not None else (existing["watch_progress_percent"] if existing else 0)
+    resume = max(0, int(watch_resume_seconds or 0)) if watch_resume_seconds is not None else (existing["watch_resume_seconds"] if existing else 0)
+    last_seen = now if canonical_playability == 1 else (existing["last_seen_available_at"] if existing else None)
+    metadata_source = source if authoritative and source else (existing["metadata_source"] if existing else source)
+    values = (
+        canonical_title,
+        current("description", description),
+        canonical_channel,
+        current("duration_text", duration_text),
+        current("view_count", str(view_count or "")),
+        current("upload_date", upload_date),
+        current("thumbnail_url", thumbnail_url),
+        current("thumbnail_path", thumbnail_path),
+        current("reaction", reaction),
+        progress,
+        resume,
+        canonical_playability,
+        canonical_availability,
+        metadata_source,
+        fetch_status or (existing["fetch_status"] if existing else ""),
+        fetch_error if fetch_status else (existing["fetch_error"] if existing else ""),
+        fetched_at or (existing["fetched_at"] if existing else None),
+        last_seen,
+        checked_at or (existing["last_checked_at"] if existing else None),
+        now,
+    )
+    if existing:
+        conn.execute(
+            """
+            UPDATE videos SET
+              title=?, description=?, channel_id=?, duration_text=?, view_count=?, upload_date=?,
+              thumbnail_url=?, thumbnail_path=?, reaction=?, watch_progress_percent=?,
+              watch_resume_seconds=?, is_playable=?, availability=?, metadata_source=?,
+              fetch_status=?, fetch_error=?, fetched_at=?, last_seen_available_at=?,
+              last_checked_at=?, updated_at=?
+            WHERE video_id=?
+            """,
+            (*values, video_id),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO videos(
+              video_id, title, description, channel_id, duration_text, view_count, upload_date,
+              thumbnail_url, thumbnail_path, reaction, watch_progress_percent,
+              watch_resume_seconds, is_playable, availability, metadata_source,
+              fetch_status, fetch_error, fetched_at, last_seen_available_at,
+              last_checked_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (video_id, *values),
+        )
+    return video_id
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def utc_days_ago(days: int) -> str:
+    return (
+        datetime.now(timezone.utc) - timedelta(days=max(days, 0))
+    ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def normalize_utc_timestamp(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def current_iso_timestamp() -> str:
-    return datetime.now().astimezone().replace(microsecond=0).isoformat()
+    return utc_now()
+
+
+def valid_timezone_name(value: str) -> bool:
+    try:
+        ZoneInfo((value or "").strip())
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    return True
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+    row = conn.execute("SELECT value FROM app_settings WHERE setting_key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    if key == "display_timezone" and not valid_timezone_name(value):
+        raise ValueError(f"Invalid IANA timezone: {value}")
+    conn.execute(
+        """
+        INSERT INTO app_settings(setting_key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(setting_key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        (key, value, utc_now()),
+    )
+    if key == "display_timezone":
+        refresh_exact_history_dates(conn, value)
+
+
+def refresh_exact_history_dates(conn: sqlite3.Connection, timezone_name: str) -> None:
+    rows = conn.execute(
+        "SELECT event_id, watched_at FROM history_events WHERE time_precision = 'exact'"
+    ).fetchall()
+    conn.executemany(
+        "UPDATE history_events SET watch_date = ? WHERE event_id = ?",
+        [
+            (local_date_for_utc_instant(row["watched_at"], timezone_name), row["event_id"])
+            for row in rows
+        ],
+    )
+
+
+def display_timezone(conn: sqlite3.Connection) -> ZoneInfo:
+    value = get_setting(conn, "display_timezone", DEFAULT_DISPLAY_TIMEZONE)
+    try:
+        return ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo(DEFAULT_DISPLAY_TIMEZONE)
 
 
 def load_cookie_jar(cookie_file: Path) -> http.cookiejar.MozillaCookieJar:
@@ -1638,7 +1867,7 @@ def unavailable_reason(renderer: dict[str, Any], title: str) -> str:
     return ", ".join(badges)
 
 
-def is_hidden_video(renderer: dict[str, Any], title: str, reason: str) -> bool:
+def is_unavailable_video_renderer(renderer: dict[str, Any], title: str, reason: str) -> bool:
     if renderer.get("isPlayable") is False:
         return True
     lower_title = title.strip().lower()
@@ -1664,7 +1893,7 @@ def parse_video_renderer(
     channel = text_from_runs(renderer.get("shortBylineText")).strip()
     duration = text_from_runs(renderer.get("lengthText")).strip()
     reason = unavailable_reason(renderer, title)
-    hidden = is_hidden_video(renderer, title, reason)
+    unavailable = is_unavailable_video_renderer(renderer, title, reason)
     return {
         "playlist_id": playlist_id,
         "position": position,
@@ -1672,7 +1901,7 @@ def parse_video_renderer(
         "title": title,
         "channel": channel,
         "duration_text": duration,
-        "is_playable": 0 if hidden else 1,
+        "is_playable": 0 if unavailable else 1,
         "availability": reason,
         "url": f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}" if video_id else "",
     }
@@ -1691,7 +1920,7 @@ def parse_panel_video_renderer(
     channel = text_from_runs(renderer.get("shortBylineText") or renderer.get("longBylineText")).strip()
     duration = text_from_runs(renderer.get("lengthText")).strip()
     reason = unavailable_reason(renderer, title)
-    hidden = is_hidden_video(renderer, title, reason)
+    unavailable = is_unavailable_video_renderer(renderer, title, reason)
     return {
         "playlist_id": playlist_id,
         "position": position,
@@ -1699,7 +1928,7 @@ def parse_panel_video_renderer(
         "title": title,
         "channel": channel,
         "duration_text": duration,
-        "is_playable": 0 if hidden else 1,
+        "is_playable": 0 if unavailable else 1,
         "availability": reason,
         "url": f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}" if video_id else "",
     }
@@ -1802,38 +2031,17 @@ TZ_OFFSETS = {
 }
 
 
-def pacific_offset_for_date(value: date) -> str:
-    march = date(value.year, 3, 1)
-    second_sunday_march = march + timedelta(days=(6 - march.weekday()) % 7 + 7)
-    november = date(value.year, 11, 1)
-    first_sunday_november = november + timedelta(days=(6 - november.weekday()) % 7)
-    return "-07:00" if second_sunday_march <= value < first_sunday_november else "-08:00"
-
-
-def youtube_watch_datetime(watch_date: str) -> str:
-    try:
-        parsed = date.fromisoformat(watch_date)
-    except ValueError:
-        return watch_date
-    return f"{watch_date}T00:00:00{pacific_offset_for_date(parsed)}"
-
-
-def pacific_date_for_iso_instant(value: str) -> str:
+def local_date_for_utc_instant(value: str, timezone_name: str) -> str:
     if not value:
         return ""
     try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        zone = ZoneInfo(timezone_name)
+    except (ValueError, ZoneInfoNotFoundError):
         return value[:10]
     if parsed.tzinfo is None:
-        return parsed.date().isoformat()
-    utc_value = parsed.astimezone(timezone.utc)
-    fallback_local_date = (utc_value + timedelta(hours=-8)).date()
-    offset = pacific_offset_for_date(fallback_local_date)
-    sign = -1 if offset.startswith("-") else 1
-    hours, minutes = (int(part) for part in offset[1:].split(":", 1))
-    local_value = utc_value + sign * timedelta(hours=hours, minutes=minutes)
-    return local_value.date().isoformat()
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(zone).date().isoformat()
 
 
 def takeout_watch_datetime(watched_at: str) -> str:
@@ -1841,7 +2049,7 @@ def takeout_watch_datetime(watched_at: str) -> str:
     iso_match = re.match(r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$", cleaned)
     if iso_match:
         offset = "+00:00" if iso_match.group(3) == "Z" else iso_match.group(3)
-        return f"{iso_match.group(1)}T{iso_match.group(2)}{offset}"
+        return normalize_utc_timestamp(f"{iso_match.group(1)}T{iso_match.group(2)}{offset}")
     match = re.match(r"^(.*)\s+([A-Z]{2,5})$", cleaned)
     if not match:
         return ""
@@ -1852,7 +2060,7 @@ def takeout_watch_datetime(watched_at: str) -> str:
     for fmt in ("%b %d, %Y, %I:%M:%S %p", "%B %d, %Y, %I:%M:%S %p"):
         try:
             parsed = datetime.strptime(datetime_text, fmt)
-            return parsed.strftime("%Y-%m-%dT%H:%M:%S") + offset
+            return normalize_utc_timestamp(parsed.strftime("%Y-%m-%dT%H:%M:%S") + offset)
         except ValueError:
             continue
     return ""
@@ -2041,7 +2249,12 @@ def history_sections(data: dict[str, Any], today: date | None = None) -> list[tu
     return sections
 
 
-def fetch_youtube_history_web(cookie_file: Path, limit: int = 100, start: int = 1) -> list[dict[str, Any]]:
+def fetch_youtube_history_web(
+    cookie_file: Path,
+    limit: int = 100,
+    start: int = 1,
+    timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
+) -> list[dict[str, Any]]:
     jar = load_cookie_jar(cookie_file)
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
     referer = "https://www.youtube.com/feed/history"
@@ -2057,7 +2270,10 @@ def fetch_youtube_history_web(cookie_file: Path, limit: int = 100, start: int = 
     seen_tokens: set[str] = set()
     max_needed = max(1, start) + max(1, limit) - 1
     all_rows: list[dict[str, Any]] = []
-    today = date.today()
+    try:
+        today = datetime.now(ZoneInfo(timezone_name)).date()
+    except ZoneInfoNotFoundError:
+        today = datetime.now(timezone.utc).date()
 
     while pages:
         page_data = pages.pop(0)
@@ -2575,9 +2791,9 @@ def store_video_metadata(
     metadata: dict[str, str],
     status: str,
     error: str = "",
-    updated_at: int | None = None,
+    updated_at: str | None = None,
 ) -> str:
-    now = updated_at or int(time.time())
+    now = updated_at or utc_now()
     channel_id = upsert_channel(
         conn,
         metadata.get("channel_id", ""),
@@ -2593,54 +2809,35 @@ def store_video_metadata(
         source="metadata",
         updated_at=now,
     )
-    conn.execute(
-        """
-        INSERT INTO video_metadata(
-          video_id, title, description, channel_id, duration_text, view_count,
-          upload_date, thumbnail_url, thumbnail_path,
-          reaction, watch_progress_percent, watch_resume_seconds,
-          yt_status, fetch_status, fetch_error, fetched_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(video_id) DO UPDATE SET
-          title=excluded.title,
-          description=excluded.description,
-          channel_id=excluded.channel_id,
-          duration_text=excluded.duration_text,
-          view_count=excluded.view_count,
-          upload_date=excluded.upload_date,
-          thumbnail_url=excluded.thumbnail_url,
-          thumbnail_path=excluded.thumbnail_path,
-          reaction=excluded.reaction,
-          watch_progress_percent=excluded.watch_progress_percent,
-          watch_resume_seconds=excluded.watch_resume_seconds,
-          yt_status=excluded.yt_status,
-          fetch_status=excluded.fetch_status,
-          fetch_error=excluded.fetch_error,
-          fetched_at=excluded.fetched_at,
-          updated_at=excluded.updated_at
-        """,
-        (
+    playability = watch_playability_value(metadata)
+    upsert_video(
+        conn,
+        metadata.get("video_id", ""),
+        title=metadata.get("title", ""),
+        description=metadata.get("description", ""),
+        channel_id=channel_id,
+        duration_text=metadata.get("duration_text", ""),
+        view_count=metadata.get("view_count", ""),
+        upload_date=metadata.get("upload_date", ""),
+        thumbnail_url=metadata.get("thumbnail_url", ""),
+        thumbnail_path=metadata.get("thumbnail_path", ""),
+        reaction=metadata.get("reaction", ""),
+        watch_progress_percent=metadata.get("watch_progress_percent"),
+        watch_resume_seconds=metadata.get("watch_resume_seconds"),
+        is_playable=playability,
+        availability=normalize_video_availability(
             metadata.get("video_id", ""),
-            metadata.get("title", ""),
-            metadata.get("description", ""),
-            channel_id,
-            metadata.get("duration_text", ""),
-            metadata.get("view_count", ""),
-            metadata.get("upload_date", ""),
-            metadata.get("thumbnail_url", ""),
-            metadata.get("thumbnail_path", ""),
-            metadata.get("reaction", ""),
-            bounded_int(metadata.get("watch_progress_percent")),
-            max(0, int(metadata.get("watch_resume_seconds") or 0)),
+            metadata.get("availability", ""),
+            playability,
             metadata.get("yt_status", ""),
-            status,
-            error,
-            now,
-            now,
         ),
+        source="metadata",
+        fetch_status=status,
+        fetch_error=error,
+        fetched_at=now,
+        checked_at=now,
+        updated_at=now,
     )
-    apply_watch_playability_to_playlist_rows(conn, metadata.get("video_id", ""), metadata)
     return channel_id
 
 
@@ -2725,9 +2922,9 @@ def store_channel_metadata(
     metadata: dict[str, str],
     status: str,
     error: str = "",
-    updated_at: int | None = None,
+    updated_at: str | None = None,
 ) -> str:
-    now = updated_at or int(time.time())
+    now = updated_at or utc_now()
     return upsert_channel(
         conn,
         metadata.get("channel_id", ""),
@@ -2757,7 +2954,7 @@ def fetch_provided_metadata(
     source, subject_id = resolve_metadata_target(opener, target)
     if not source or not subject_id:
         raise ValueError("Enter a YouTube watch URL, video ID, channel URL, channel ID, or @handle.")
-    now = int(time.time())
+    now = utc_now()
     if source == "channel":
         metadata = fetch_channel_metadata(opener, subject_id, thumb_dir, fallback_query=target)
         status = "ok" if (
@@ -2802,20 +2999,13 @@ def fetch_provided_metadata(
                 )
             metadata = metadata_from_archivarix_video(subject_id, video, thumbnail_url, thumbnail_path)
             status = "ok" if useful_video_metadata(metadata) else "no_metadata"
-            for row in conn.execute(
-                "SELECT DISTINCT snapshot_key FROM snapshot_videos WHERE video_id = ?",
-                (subject_id,),
-            ).fetchall():
-                save_snapshot_video_recovery(
-                    conn,
-                    row["snapshot_key"],
-                    subject_id,
-                    video,
-                    thumbnail_url,
-                    thumbnail_path,
-                    arch_status,
-                    arch_error,
-                )
+            save_video_recovery(
+                conn,
+                subject_id,
+                video,
+                arch_status,
+                arch_error,
+            )
     store_video_metadata(conn, metadata, status, updated_at=now)
     return {
         "source": source,
@@ -3210,30 +3400,29 @@ def import_playlists(args: argparse.Namespace) -> None:
                     thumbnail_url=metadata.get("owner_thumbnail_url", ""),
                     thumbnail_path=owner_thumbnail_path,
                     source="playlist_owner",
-                    updated_at=int(time.time()),
+                    updated_at=utc_now(),
                 )
             conn.execute(
                 """
                 INSERT INTO playlists(
                   playlist_id, title, description, owner_channel_id, visibility, video_count,
-                  thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
+                  thumbnail_url, thumbnail_path, fetch_status, fetch_error, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(playlist_id) DO UPDATE SET
                   title=excluded.title,
                   description=excluded.description,
                   owner_channel_id=CASE
-                    WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN ''
-                    ELSE COALESCE(NULLIF(excluded.owner_channel_id, ''), playlists.owner_channel_id)
+                    WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN NULL
+                    ELSE COALESCE(excluded.owner_channel_id, playlists.owner_channel_id)
                   END,
                   visibility=CASE
-                    WHEN NULLIF(excluded.owner_channel_id, '') IS NOT NULL THEN ''
+                    WHEN excluded.owner_channel_id IS NOT NULL THEN ''
                     ELSE COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility)
                   END,
                   video_count=excluded.video_count,
                   thumbnail_url=excluded.thumbnail_url,
                   thumbnail_path=excluded.thumbnail_path,
-                  url=excluded.url,
                   fetch_status=excluded.fetch_status,
                   fetch_error=excluded.fetch_error,
                   updated_at=excluded.updated_at
@@ -3242,15 +3431,14 @@ def import_playlists(args: argparse.Namespace) -> None:
                     playlist_id,
                     metadata["title"],
                     metadata["description"],
-                    owner_channel_id,
+                    owner_channel_id or None,
                     metadata["visibility"],
                     metadata["video_count"],
                     metadata["thumbnail_url"],
                     thumbnail_path,
-                    metadata["url"],
                     status,
                     error,
-                    int(time.time()),
+                    utc_now(),
                 ),
             )
         print(f"[{index:03d}/{len(all_playlist_ids):03d}] {status} {metadata['title']}")
@@ -3406,30 +3594,29 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
                     thumbnail_url=record.get("owner_thumbnail_url", ""),
                     thumbnail_path=owner_thumbnail_path,
                     source="playlist_owner",
-                    updated_at=int(time.time()),
+                    updated_at=utc_now(),
                 )
             conn.execute(
                 """
                 INSERT INTO playlists(
                   playlist_id, title, description, owner_channel_id, visibility, video_count,
-                  thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
+                  thumbnail_url, thumbnail_path, fetch_status, fetch_error, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', '', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ok', '', ?)
                 ON CONFLICT(playlist_id) DO UPDATE SET
                   title=excluded.title,
                   description=excluded.description,
                   owner_channel_id=CASE
-                    WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN ''
-                    ELSE COALESCE(NULLIF(excluded.owner_channel_id, ''), playlists.owner_channel_id)
+                    WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN NULL
+                    ELSE COALESCE(excluded.owner_channel_id, playlists.owner_channel_id)
                   END,
                   visibility=CASE
-                    WHEN NULLIF(excluded.owner_channel_id, '') IS NOT NULL THEN ''
+                    WHEN excluded.owner_channel_id IS NOT NULL THEN ''
                     ELSE COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility)
                   END,
                   video_count=excluded.video_count,
                   thumbnail_url=excluded.thumbnail_url,
                   thumbnail_path=excluded.thumbnail_path,
-                  url=excluded.url,
                   fetch_status='ok',
                   fetch_error='',
                   updated_at=excluded.updated_at
@@ -3438,13 +3625,12 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
                     playlist_id,
                     record["title"],
                     record["description"],
-                    owner_channel_id,
+                    owner_channel_id or None,
                     record["visibility"],
                     record["video_count"],
                     record["thumbnail_url"],
                     thumbnail_path,
-                    record["url"],
-                    int(time.time()),
+                    utc_now(),
                 ),
             )
             if playlist_id not in existing_groups:
@@ -3479,7 +3665,7 @@ def log_worker_event(
         INSERT INTO metadata_worker_log(run_id, created_at, level, video_id, message)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (run_id, int(time.time()), level, video_id, message),
+        (run_id, utc_now(), level, video_id, message),
     )
 
 
@@ -3495,7 +3681,7 @@ def log_playlist_scan_event(
         INSERT INTO playlist_scan_worker_log(run_id, created_at, level, playlist_id, message)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (run_id, int(time.time()), level, playlist_id, message),
+        (run_id, utc_now(), level, playlist_id, message),
     )
 
 
@@ -3511,7 +3697,7 @@ def log_live_history_event(
         INSERT INTO live_history_worker_log(run_id, created_at, level, video_id, message)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (run_id, int(time.time()), level, video_id, message),
+        (run_id, utc_now(), level, video_id, message),
     )
 
 
@@ -3523,40 +3709,29 @@ def playlist_placeholder_recovery_rows(
     playlist_id: str = "",
 ) -> list[sqlite3.Row]:
     where = [
-        "v.video_id <> ''",
-        """
-        (
-          v.is_playable = 0
-          OR lower(trim(COALESCE(v.title, ''), '[]() ')) IN ('deleted video', 'private video')
-          OR lower(COALESCE(v.title, '')) LIKE '%unavailable%'
-          OR lower(COALESCE(v.availability, '')) LIKE '%unavailable%'
-          OR lower(COALESCE(v.availability, '')) LIKE '%deleted%'
-          OR lower(COALESCE(v.availability, '')) LIKE '%private%'
-        )
-        """,
+        "pi.video_id IS NOT NULL",
+        "(pi.membership_state = 'retained_unavailable' OR v.is_playable = 0)",
     ]
     if not force:
         where.append("(r.video_id IS NULL OR r.search_status = 'error')")
     params: list[Any] = []
     if playlist_id:
-        where.append("v.playlist_id = ?")
+        where.append("pi.playlist_id = ?")
         params.append(playlist_id)
     sql = f"""
-        SELECT v.snapshot_key,
-               v.video_id,
-               MIN(v.display_position) AS display_position,
+        SELECT pi.video_id,
+               MIN(pi.position) AS display_position,
                MIN(p.title) AS playlist_title,
                MIN(v.title) AS title,
-               COUNT(DISTINCT v.playlist_id) AS playlist_count,
+               COUNT(DISTINCT pi.playlist_id) AS playlist_count,
                COALESCE(r.search_status, '') AS previous_status
-        FROM playlist_video_reconciled v
-        JOIN playlists p ON p.playlist_id = v.playlist_id
-        LEFT JOIN snapshot_video_recovery r
-          ON r.snapshot_key = v.snapshot_key
-         AND r.video_id = v.video_id
+        FROM playlist_items pi
+        JOIN playlists p ON p.playlist_id = pi.playlist_id
+        JOIN videos v ON v.video_id = pi.video_id
+        LEFT JOIN video_recovery r ON r.video_id = pi.video_id
         WHERE {" AND ".join(where)}
-        GROUP BY v.snapshot_key, v.video_id, COALESCE(r.search_status, '')
-        ORDER BY MIN(p.title) COLLATE NOCASE, MIN(v.display_position), v.video_id
+        GROUP BY pi.video_id, COALESCE(r.search_status, '')
+        ORDER BY MIN(p.title) COLLATE NOCASE, MIN(pi.position), pi.video_id
     """
     if limit:
         sql += " LIMIT ?"
@@ -3575,8 +3750,8 @@ def playlist_placeholder_recovery_count(
     return len(playlist_placeholder_recovery_rows(conn, limit=0, force=force, playlist_id=playlist_id))
 
 
-def placeholder_queue_subject_key(snapshot_key: str, video_id: str) -> str:
-    return f"placeholder:{(snapshot_key or '').strip()}:{(video_id or '').strip()}"
+def placeholder_queue_subject_key(video_id: str) -> str:
+    return f"placeholder:{(video_id or '').strip()}"
 
 
 def enqueue_placeholder_recovery_targets(
@@ -3586,7 +3761,7 @@ def enqueue_placeholder_recovery_targets(
     rows = playlist_placeholder_recovery_rows(conn, force=False, playlist_id=playlist_id)
     inserted = 0
     existing = 0
-    now = int(time.time())
+    now = utc_now()
     # Recovery should not interrupt the scan that discovered it or the work
     # already queued ahead of it. Keep this batch at the current queue tail.
     tail_priority = int(
@@ -3594,11 +3769,10 @@ def enqueue_placeholder_recovery_targets(
         or 1
     )
     for row in rows:
-        snapshot_key = row["snapshot_key"] or ""
         video_id = row["video_id"] or ""
-        if not snapshot_key or not video_id:
+        if not video_id:
             continue
-        subject_key = placeholder_queue_subject_key(snapshot_key, video_id)
+        subject_key = placeholder_queue_subject_key(video_id)
         queued = conn.execute(
             "SELECT 1 FROM worker_queue WHERE subject_key = ?",
             (subject_key,),
@@ -3621,7 +3795,7 @@ def enqueue_placeholder_recovery_targets(
                 video_id,
                 playlist_id,
                 row["title"] or video_id,
-                snapshot_key,
+                "",
                 int(row["playlist_count"] or 0),
                 tail_priority,
                 now,
@@ -3651,16 +3825,24 @@ def placeholder_worker_queue_rows(
     return conn.execute(sql).fetchall()
 
 
-def save_snapshot_video_recovery(
+def archive_capture_timestamp(url: str) -> str | None:
+    match = re.search(r"/web/(\d{14})", url or "")
+    if not match:
+        return None
+    parsed = datetime.strptime(match.group(1), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    return parsed.isoformat().replace("+00:00", "Z")
+
+
+def save_video_recovery(
     conn: sqlite3.Connection,
-    snapshot_key: str,
     video_id: str,
     video: dict[str, Any] | None,
-    thumbnail_url: str,
-    thumbnail_path: str,
     search_status: str,
     search_error: str,
+    thumbnail_url: str = "",
+    thumbnail_path: str = "",
 ) -> None:
+    now = utc_now()
     recovered_status = (video or {}).get("status") or ""
     if search_status == "not_found":
         recovered_status = "NOT_FOUND"
@@ -3677,49 +3859,51 @@ def save_snapshot_video_recovery(
         archivarix_channel_id=archivarix_channel_id if not archivarix_channel_id.startswith("UC") else "",
         source="archivarix",
     )
+    playability = is_playable_from_recovery_status(recovered_status) if recovered_status else None
+    upsert_video(
+        conn,
+        video_id,
+        title=str((video or {}).get("title") or ""),
+        description=str((video or {}).get("description") or ""),
+        channel_id=channel_id,
+        duration_text=format_duration((video or {}).get("duration")),
+        view_count=str((video or {}).get("viewCount") or ""),
+        upload_date=str((video or {}).get("uploadDate") or ""),
+        thumbnail_url=thumbnail_url,
+        thumbnail_path=thumbnail_path,
+        is_playable=playability,
+        availability=video_availability_from_recovery_status(recovered_status),
+        source="archivarix",
+        checked_at=now,
+        updated_at=now,
+    )
     conn.execute(
         """
-        INSERT INTO snapshot_video_recovery(
-          snapshot_key, video_id, title, description, channel_id, archivarix_channel_id, status, duration_text,
-          upload_date, view_count, thumbnail_url, thumbnail_path,
-          archive_url, video_file_url, searched_at, search_status, search_error
+        INSERT INTO video_recovery(
+          video_id, archivarix_status, archivarix_channel_id, archive_capture_at,
+          media_available, searched_at, search_status, search_error, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(snapshot_key, video_id) DO UPDATE SET
-          title=excluded.title,
-          description=excluded.description,
-          channel_id=excluded.channel_id,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(video_id) DO UPDATE SET
+          archivarix_status=excluded.archivarix_status,
           archivarix_channel_id=excluded.archivarix_channel_id,
-          status=excluded.status,
-          duration_text=excluded.duration_text,
-          upload_date=excluded.upload_date,
-          view_count=excluded.view_count,
-          thumbnail_url=excluded.thumbnail_url,
-          thumbnail_path=excluded.thumbnail_path,
-          archive_url=excluded.archive_url,
-          video_file_url=excluded.video_file_url,
+          archive_capture_at=COALESCE(excluded.archive_capture_at, video_recovery.archive_capture_at),
+          media_available=COALESCE(excluded.media_available, video_recovery.media_available),
           searched_at=excluded.searched_at,
           search_status=excluded.search_status,
-          search_error=excluded.search_error
+          search_error=excluded.search_error,
+          updated_at=excluded.updated_at
         """,
         (
-            snapshot_key,
             video_id,
-            (video or {}).get("title") or "",
-            (video or {}).get("description") or "",
-            channel_id,
-            archivarix_channel_id if not archivarix_channel_id.startswith("UC") else "",
             recovered_status,
-            format_duration((video or {}).get("duration")),
-            (video or {}).get("uploadDate") or "",
-            str((video or {}).get("viewCount") or ""),
-            thumbnail_url,
-            thumbnail_path,
-            (video or {}).get("archiveUrl") or "",
-            (video or {}).get("videoFileUrl") or "",
-            int(time.time()),
+            archivarix_channel_id if not archivarix_channel_id.startswith("UC") else "",
+            archive_capture_timestamp(str((video or {}).get("archiveUrl") or "")),
+            1 if (video or {}).get("videoFileUrl") else None,
+            now,
             search_status,
             search_error,
+            now,
         ),
     )
 
@@ -3808,10 +3992,10 @@ def youtube_occurrence_sequence(
         for row in conn.execute(
             """
             SELECT video_id
-            FROM youtube_history_occurrences
-            WHERE ordinal >= ?
-              AND ordinal < ?
-            ORDER BY ordinal
+            FROM history_events
+            WHERE youtube_ordinal >= ?
+              AND youtube_ordinal < ?
+            ORDER BY youtube_ordinal
             """,
             (start, start + limit),
         )
@@ -3827,13 +4011,13 @@ def find_feed_overlap(fetched: list[str], existing: list[str]) -> int | None:
     return None
 
 
-def save_youtube_history_occurrences(
+def save_youtube_history_events(
     conn: sqlite3.Connection,
     rows: list[dict[str, Any]],
     start: int,
 ) -> tuple[int, int, str]:
-    now = int(time.time())
-    observed_at = current_iso_timestamp()
+    now = utc_now()
+    observed_at = now
     inserted = 0
     existing = 0
     last_video_id = ""
@@ -3842,11 +4026,7 @@ def save_youtube_history_occurrences(
         if not video_id:
             continue
         previous = conn.execute(
-            """
-            SELECT video_id
-            FROM youtube_history_occurrences
-            WHERE ordinal = ?
-            """,
+            "SELECT * FROM history_events WHERE youtube_ordinal = ?",
             (index,),
         ).fetchone()
         if previous and previous["video_id"] == video_id:
@@ -3861,35 +4041,57 @@ def save_youtube_history_occurrences(
             title=row.get("channel") or "",
             url=channel_url,
             source="youtube_history",
+            updated_at=now,
         )
+        upsert_video(
+            conn,
+            video_id,
+            title=row.get("title") or "",
+            channel_id=channel_id,
+            channel_title=row.get("channel") or "",
+            channel_url=channel_url,
+            watch_progress_percent=row.get("watch_progress_percent"),
+            watch_resume_seconds=row.get("watch_resume_seconds"),
+            source="youtube_history",
+            updated_at=now,
+        )
+        if previous and previous["video_id"] != video_id:
+            if previous["takeout_history_key"]:
+                conn.execute(
+                    """
+                    UPDATE history_events
+                    SET youtube_ordinal=NULL, source_type='takeout', match_type='takeout_only', updated_at=?
+                    WHERE event_id=?
+                    """,
+                    (now, previous["event_id"]),
+                )
+            else:
+                conn.execute("DELETE FROM history_events WHERE event_id = ?", (previous["event_id"],))
         conn.execute(
             """
-            INSERT INTO youtube_history_occurrences(
-              ordinal, video_id, title, url, channel_id, channel,
-              watch_date, watch_progress_percent, watch_resume_seconds,
+            INSERT INTO history_events(
+              event_id, video_id, watched_at, watch_date, time_precision,
+              source_type, match_type, youtube_ordinal,
+              watch_progress_percent, watch_resume_seconds,
               observed_at, imported_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(ordinal) DO UPDATE SET
+            VALUES (?, ?, NULL, ?, ?, 'youtube', 'youtube_only', ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
               video_id=excluded.video_id,
-              title=excluded.title,
-              url=excluded.url,
-              channel_id=excluded.channel_id,
-              channel=excluded.channel,
               watch_date=excluded.watch_date,
+              time_precision=excluded.time_precision,
+              youtube_ordinal=excluded.youtube_ordinal,
               watch_progress_percent=excluded.watch_progress_percent,
               watch_resume_seconds=excluded.watch_resume_seconds,
               observed_at=excluded.observed_at,
               updated_at=excluded.updated_at
             """,
             (
-                index,
+                f"youtube:{index}",
                 video_id,
-                row.get("title") or video_id,
-                row.get("url") or f"https://www.youtube.com/watch?v={video_id}",
-                channel_id,
-                row.get("channel") or "",
                 row.get("watch_date") or "",
+                "date_only" if row.get("watch_date") else "unknown",
+                index,
                 bounded_int(row.get("watch_progress_percent")),
                 max(0, int(row.get("watch_resume_seconds") or 0)),
                 observed_at,
@@ -3902,145 +4104,69 @@ def save_youtube_history_occurrences(
 
 def history_row_hash(row: dict[str, str]) -> str:
     payload = "\x1f".join(
-        row.get(key, "")
-        for key in ("video_id", "title", "url", "channel", "channel_url", "watched_at")
+        (row.get("video_id", ""), takeout_watch_datetime(row.get("watched_at", "")))
     )
     return hashlib.sha1(payload.encode("utf-8", "replace")).hexdigest()
 
 
 def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
-    now = int(time.time())
+    now = utc_now()
+    timezone_name = get_setting(conn, "display_timezone", DEFAULT_DISPLAY_TIMEZONE)
     youtube_rows = conn.execute(
         """
         SELECT *
-        FROM youtube_history_occurrences
-        WHERE video_id <> ''
-        ORDER BY ordinal
+        FROM history_events
+        WHERE youtube_ordinal IS NOT NULL AND takeout_history_key IS NULL
+        ORDER BY youtube_ordinal
         """
     ).fetchall()
-    youtube_by_ordinal = {row["ordinal"]: row for row in youtube_rows}
     takeout_rows = conn.execute(
         """
         SELECT *
-        FROM takeout_history_occurrences
-        WHERE video_id <> ''
-        ORDER BY history_key, watched_at_iso DESC, row_hash
+        FROM history_events
+        WHERE takeout_history_key IS NOT NULL AND youtube_ordinal IS NULL
+        ORDER BY watched_at DESC, takeout_history_key, takeout_row_key
         """
     ).fetchall()
 
     takeout_by_video_date: dict[tuple[str, str], list[sqlite3.Row]] = {}
     for row in takeout_rows:
-        match_date = pacific_date_for_iso_instant(row["watched_at_iso"])
+        match_date = local_date_for_utc_instant(row["watched_at"], timezone_name)
         takeout_by_video_date.setdefault((row["video_id"], match_date), []).append(row)
 
-    matched_youtube: dict[int, sqlite3.Row] = {}
-    takeout_to_youtube: dict[tuple[str, str], int] = {}
-    matched_takeout: set[tuple[str, str]] = set()
+    matched_takeout: set[str] = set()
+    matched = 0
     for youtube in youtube_rows:
         key = (youtube["video_id"], youtube["watch_date"])
         if not key[0] or not key[1]:
             continue
         candidates = takeout_by_video_date.get(key, [])
         for takeout in candidates:
-            takeout_key = (takeout["history_key"], takeout["row_hash"])
+            takeout_key = takeout["event_id"]
             if takeout_key in matched_takeout:
                 continue
             matched_takeout.add(takeout_key)
-            youtube_key = youtube["ordinal"]
-            matched_youtube[youtube_key] = takeout
-            takeout_to_youtube[takeout_key] = youtube_key
-            break
-
-    conn.execute("DELETE FROM history_reconciled")
-    inserted = 0
-    matched = 0
-    for takeout in takeout_rows:
-        takeout_key = (takeout["history_key"], takeout["row_hash"])
-        youtube_match = takeout_to_youtube.get(takeout_key)
-        youtube_progress = 0
-        youtube_resume = 0
-        if youtube_match:
-            youtube_row = youtube_by_ordinal.get(youtube_match)
-            if youtube_row:
-                youtube_progress = youtube_row["watch_progress_percent"] if "watch_progress_percent" in youtube_row.keys() else 0
-                youtube_resume = youtube_row["watch_resume_seconds"] if "watch_resume_seconds" in youtube_row.keys() else 0
-        source_type = "takeout_youtube" if youtube_match else "takeout"
-        match_type = "video_id_date" if youtube_match else "takeout_only"
-        time_quality = "exact"
-        if youtube_match:
+            conn.execute(
+                """
+                UPDATE history_events
+                SET source_type='takeout_youtube', match_type='video_id_date',
+                    youtube_ordinal=?, watch_progress_percent=?, watch_resume_seconds=?,
+                    observed_at=?, updated_at=?
+                WHERE event_id=?
+                """,
+                (
+                    youtube["youtube_ordinal"],
+                    youtube["watch_progress_percent"],
+                    youtube["watch_resume_seconds"],
+                    youtube["observed_at"],
+                    now,
+                    takeout["event_id"],
+                ),
+            )
+            conn.execute("DELETE FROM history_events WHERE event_id = ?", (youtube["event_id"],))
             matched += 1
-        conn.execute(
-            """
-            INSERT INTO history_reconciled(
-              reconciled_id, video_id, title, url, channel_id, channel,
-              best_watch_time, watch_date, source_type, match_type, time_quality,
-              youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
-              watch_progress_percent, watch_resume_seconds, imported_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                f"takeout:{takeout['history_key']}:{takeout['row_hash']}",
-                takeout["video_id"],
-                takeout["title"],
-                takeout["url"],
-                takeout["channel_id"],
-                takeout["channel"],
-                takeout["watched_at_iso"],
-                takeout["watched_at_iso"][:10],
-                source_type,
-                match_type,
-                time_quality,
-                "youtube" if youtube_match else "",
-                youtube_match if youtube_match else 0,
-                takeout["history_key"],
-                takeout["row_hash"],
-                youtube_progress,
-                youtube_resume,
-                now,
-                now,
-            ),
-        )
-        inserted += 1
-
-    for youtube in youtube_rows:
-        youtube_key = youtube["ordinal"]
-        if youtube_key in matched_youtube:
-            continue
-        youtube_watch_time = youtube_watch_datetime(youtube["watch_date"]) if youtube["watch_date"] else ""
-        youtube_time_quality = "date_only" if youtube["watch_date"] else "observed_only"
-        conn.execute(
-            """
-            INSERT INTO history_reconciled(
-              reconciled_id, video_id, title, url, channel_id, channel,
-              best_watch_time, watch_date, source_type, match_type, time_quality,
-                youtube_history_key, youtube_ordinal, takeout_history_key, takeout_row_hash,
-                watch_progress_percent, watch_resume_seconds, imported_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)
-            """,
-            (
-                f"youtube:{youtube['ordinal']}",
-                youtube["video_id"],
-                youtube["title"],
-                youtube["url"],
-                youtube["channel_id"],
-                youtube["channel"],
-                youtube_watch_time,
-                youtube["watch_date"],
-                "youtube",
-                "youtube_only",
-                youtube_time_quality,
-                "youtube",
-                youtube["ordinal"],
-                youtube["watch_progress_percent"] if "watch_progress_percent" in youtube.keys() else 0,
-                youtube["watch_resume_seconds"] if "watch_resume_seconds" in youtube.keys() else 0,
-                youtube["imported_at"],
-                now,
-            ),
-        )
-        inserted += 1
-
+            break
+    inserted = conn.execute("SELECT COUNT(*) FROM history_events").fetchone()[0]
     return {
         "rows": inserted,
         "matched": matched,
@@ -4071,52 +4197,102 @@ def save_playlist_scan(
         deduped_videos.append(cleaned)
         next_position += 1
     videos = deduped_videos
-    hidden_count = sum(1 for video in videos if not video["is_playable"])
-    now = int(time.time())
-    conn.execute("DELETE FROM playlist_videos WHERE playlist_id = ?", (playlist_id,))
+    unavailable_count = sum(1 for video in videos if not video["is_playable"])
+    now = utc_now()
+    retained = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT * FROM playlist_items
+            WHERE playlist_id = ?
+              AND (membership_state = 'retained_unavailable' OR source_quality = 'takeout')
+            ORDER BY position
+            """,
+            (playlist_id,),
+        )
+    ]
+    conn.execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
     for video in videos:
         channel_id = upsert_channel(
             conn,
             video.get("channel_id") or "",
             title=video.get("channel") or "",
             source="playlist",
+            updated_at=now,
         )
+        video_id = (video.get("video_id") or "").strip()
+        if video_id:
+            upsert_video(
+                conn,
+                video_id,
+                title=video.get("title") or "",
+                channel_id=channel_id,
+                channel_title=video.get("channel") or "",
+                duration_text=video.get("duration_text") or "",
+                is_playable=video.get("is_playable"),
+                availability=video.get("availability") or "",
+                source="playlist",
+                checked_at=now,
+                updated_at=now,
+            )
         conn.execute(
             """
-            INSERT INTO playlist_videos(
-              playlist_id, position, video_id, title, channel_id, channel, duration_text,
-              is_playable, availability, url, updated_at
+            INSERT INTO playlist_items(
+              playlist_id, position, video_id, membership_state, unavailable_kind,
+              source_quality, match_type, match_confidence, added_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'youtube', ?, ?, NULL, ?)
             """,
             (
-                video["playlist_id"],
+                playlist_id,
                 video["position"],
-                video["video_id"],
-                video["title"],
-                channel_id,
-                video["channel"],
-                video["duration_text"],
-                video["is_playable"],
-                video["availability"],
-                video["url"],
+                video_id or None,
+                "current" if video_id else "unresolved_unavailable",
+                (video.get("availability") or "unavailable") if not video_id else "",
+                "" if video_id else "ambiguous_hidden_slot",
+                "video_id" if video_id else "hidden_slot_only",
                 now,
             ),
         )
+    current_ids = {str(video.get("video_id") or "") for video in videos if video.get("video_id")}
+    retained_position = (len(videos) + 1) * 1000
+    for item in retained:
+        if item.get("video_id") in current_ids:
+            continue
+        conn.execute(
+            """
+            INSERT INTO playlist_items(
+              playlist_id, position, video_id, membership_state, unavailable_kind,
+              source_quality, match_type, match_confidence, added_at, updated_at
+            ) VALUES (?, ?, ?, 'retained_unavailable', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                playlist_id,
+                retained_position,
+                item.get("video_id"),
+                item.get("unavailable_kind") or "unavailable",
+                item.get("source_quality") or "takeout",
+                item.get("match_type") or "ambiguous_hidden_candidate",
+                item.get("match_confidence") or "takeout_missing",
+                item.get("added_at"),
+                now,
+            ),
+        )
+        retained_position += 1
     conn.execute(
         """
         INSERT INTO playlist_scans(
-          playlist_id, scanned_at, video_count, hidden_count, scan_status, scan_error
+          playlist_id, scanned_at, video_count, unavailable_count, scan_status, scan_error
         )
         VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(playlist_id) DO UPDATE SET
           scanned_at=excluded.scanned_at,
           video_count=excluded.video_count,
-          hidden_count=excluded.hidden_count,
+          unavailable_count=excluded.unavailable_count,
           scan_status=excluded.scan_status,
           scan_error=excluded.scan_error
         """,
-        (playlist_id, now, len(videos), hidden_count, status, error),
+        (playlist_id, now, len(videos), unavailable_count, status, error),
     )
     if playlist_metadata:
         metadata = {
@@ -4130,7 +4306,6 @@ def save_playlist_scan(
                 "visibility",
                 "thumbnail_url",
                 "thumbnail_path",
-                "url",
             )
         }
         if metadata["owner_channel_id"]:
@@ -4149,18 +4324,18 @@ def save_playlist_scan(
             """
             INSERT INTO playlists(
               playlist_id, title, description, owner_channel_id, visibility, video_count,
-              thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
+              thumbnail_url, thumbnail_path, fetch_status, fetch_error, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(playlist_id) DO UPDATE SET
               title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
               description=COALESCE(NULLIF(excluded.description, ''), playlists.description),
               owner_channel_id=CASE
-                WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN ''
-                ELSE COALESCE(NULLIF(excluded.owner_channel_id, ''), playlists.owner_channel_id)
+                WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN NULL
+                ELSE COALESCE(excluded.owner_channel_id, playlists.owner_channel_id)
               END,
               visibility=CASE
-                WHEN NULLIF(excluded.owner_channel_id, '') IS NOT NULL THEN ''
+                WHEN excluded.owner_channel_id IS NOT NULL THEN ''
                 ELSE COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility)
               END,
               video_count=CASE
@@ -4169,7 +4344,6 @@ def save_playlist_scan(
               END,
               thumbnail_url=COALESCE(NULLIF(excluded.thumbnail_url, ''), playlists.thumbnail_url),
               thumbnail_path=COALESCE(NULLIF(excluded.thumbnail_path, ''), playlists.thumbnail_path),
-              url=COALESCE(NULLIF(excluded.url, ''), playlists.url),
               fetch_status=excluded.fetch_status,
               fetch_error=excluded.fetch_error,
               updated_at=excluded.updated_at
@@ -4178,19 +4352,17 @@ def save_playlist_scan(
                 playlist_id,
                 metadata["title"],
                 metadata["description"],
-                metadata["owner_channel_id"],
+                metadata["owner_channel_id"] or None,
                 metadata["visibility"],
                 metadata["video_count"],
                 metadata["thumbnail_url"],
                 metadata["thumbnail_path"],
-                metadata["url"],
                 status,
                 error,
                 now,
             ),
         )
-    rebuild_playlist_reconciliation(conn, playlist_id)
-    return len(videos), hidden_count
+    return len(videos), unavailable_count
 
 
 def save_playlist_scan_error(
@@ -4198,256 +4370,56 @@ def save_playlist_scan_error(
     playlist_id: str,
     error: str,
 ) -> tuple[int, int]:
-    now = int(time.time())
+    now = utc_now()
     previous = conn.execute(
         """
-        SELECT video_count, hidden_count
+        SELECT video_count, unavailable_count
         FROM playlist_scans
         WHERE playlist_id = ?
         """,
         (playlist_id,),
     ).fetchone()
     video_count = int(previous["video_count"] or 0) if previous else 0
-    hidden_count = int(previous["hidden_count"] or 0) if previous else 0
+    unavailable_count = int(previous["unavailable_count"] or 0) if previous else 0
     conn.execute(
         """
         INSERT INTO playlist_scans(
-          playlist_id, scanned_at, video_count, hidden_count, scan_status, scan_error
+          playlist_id, scanned_at, video_count, unavailable_count, scan_status, scan_error
         )
         VALUES (?, ?, ?, ?, 'error', ?)
         ON CONFLICT(playlist_id) DO UPDATE SET
           scanned_at=excluded.scanned_at,
           video_count=playlist_scans.video_count,
-          hidden_count=playlist_scans.hidden_count,
+          unavailable_count=playlist_scans.unavailable_count,
           scan_status=excluded.scan_status,
           scan_error=excluded.scan_error
         """,
-        (playlist_id, now, video_count, hidden_count, error),
+        (playlist_id, now, video_count, unavailable_count, error),
     )
-    return video_count, hidden_count
-
-
-def latest_snapshot_key_for_playlist(conn: sqlite3.Connection, playlist_id: str) -> str:
-    row = conn.execute(
-        """
-        SELECT sv.snapshot_key
-        FROM snapshot_videos sv
-        JOIN snapshots s ON s.snapshot_key = sv.snapshot_key
-        WHERE sv.playlist_id = ?
-        GROUP BY sv.snapshot_key
-        ORDER BY s.imported_at DESC, sv.snapshot_key DESC
-        LIMIT 1
-        """,
-        (playlist_id,),
-    ).fetchone()
-    return row["snapshot_key"] if row else ""
+    return video_count, unavailable_count
 
 
 def rebuild_playlist_reconciliation(
     conn: sqlite3.Connection,
     playlist_id: str | None = None,
 ) -> dict[str, int]:
-    now = int(time.time())
-    if playlist_id:
-        playlist_ids = [playlist_id]
-    else:
-        playlist_ids = [
-            row["playlist_id"]
-            for row in conn.execute(
-                """
-                SELECT playlist_id
-                FROM playlists
-                ORDER BY playlist_id
-                """
-            )
-        ]
-
-    total_rows = 0
-    inferred = 0
-    ambiguous = 0
-    for pid in playlist_ids:
-        conn.execute("DELETE FROM playlist_video_reconciled WHERE playlist_id = ?", (pid,))
-        current_rows = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT *
-                FROM playlist_videos
-                WHERE playlist_id = ?
-                ORDER BY position
-                """,
-                (pid,),
-            )
-        ]
-        snapshot_key = latest_snapshot_key_for_playlist(conn, pid)
-        snapshot_rows = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT *
-                FROM snapshot_videos
-                WHERE playlist_id = ? AND snapshot_key = ?
-                ORDER BY position
-                """,
-                (pid, snapshot_key),
-            )
-        ] if snapshot_key else []
-        snapshot_by_video_id = {
-            row["video_id"]: row
-            for row in snapshot_rows
-            if row.get("video_id")
-        }
-
-        current_ids = {row["video_id"] for row in current_rows if row.get("video_id")}
-        hidden_rows = [row for row in current_rows if not row.get("video_id") or not row.get("is_playable")]
-        missing_snapshot_rows = [
-            row for row in snapshot_rows if row.get("video_id") and row["video_id"] not in current_ids
-        ]
-        assign_hidden = bool(hidden_rows and len(hidden_rows) == len(missing_snapshot_rows))
-        hidden_assignments = {
-            hidden["position"]: snap
-            for hidden, snap in zip(hidden_rows, missing_snapshot_rows)
-        } if assign_hidden else {}
-
-        for current in current_rows:
-            assigned = hidden_assignments.get(current["position"])
-            if assigned:
-                recovery = conn.execute(
-                    """
-                    SELECT *
-                    FROM snapshot_video_recovery
-                    WHERE snapshot_key = ? AND video_id = ?
-                    """,
-                    (assigned["snapshot_key"], assigned["video_id"]),
-                ).fetchone()
-                title = (recovery["title"] if recovery else "") or assigned["video_id"]
-                channel_id = recovery["channel_id"] if recovery else ""
-                channel = channel_title_for_id(conn, channel_id)
-                duration = recovery["duration_text"] if recovery else ""
-                recovered_status = recovery["status"] if recovery else ""
-                is_playable = is_playable_from_recovery_status(recovered_status)
-                source_quality = "takeout"
-                match_type = "inferred_hidden_slot"
-                match_confidence = "count_equal_ordered"
-                availability = reconciled_video_availability(assigned["video_id"], "", recovered_status, is_playable)
-                inferred += 1
-                video_id = assigned["video_id"]
-                snapshot_position = assigned["position"]
-                snapshot_key_value = assigned["snapshot_key"]
-                added_at = assigned["added_at"]
-            else:
-                title = current["title"]
-                channel_id = current["channel_id"]
-                channel = current["channel"]
-                duration = current["duration_text"]
-                video_id = current["video_id"]
-                snapshot_match = snapshot_by_video_id.get(video_id) if video_id else None
-                snapshot_position = snapshot_match["position"] if snapshot_match else 0
-                snapshot_key_value = snapshot_match["snapshot_key"] if snapshot_match else ""
-                added_at = snapshot_match["added_at"] if snapshot_match else ""
-                if current.get("video_id"):
-                    source_quality = "current_exact"
-                    match_type = ""
-                    match_confidence = "video_id"
-                    availability = reconciled_video_availability(video_id, current["availability"], "", current["is_playable"])
-                elif current.get("is_playable"):
-                    source_quality = "current_unknown"
-                    match_type = ""
-                    match_confidence = "current_only"
-                    availability = ""
-                else:
-                    source_quality = "current"
-                    match_type = "ambiguous_hidden_slot"
-                    match_confidence = "hidden_slot_only"
-                    availability = ""
-                    ambiguous += 1
-            conn.execute(
-                """
-                INSERT INTO playlist_video_reconciled(
-                  playlist_id, display_position, current_position, snapshot_position,
-                  video_id, title, channel_id, channel, duration_text, is_playable, availability, url,
-                  source_quality, match_type, match_confidence, snapshot_key, added_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    pid,
-                    current["position"],
-                    current["position"],
-                    snapshot_position,
-                    video_id,
-                    title,
-                    channel_id,
-                    channel,
-                    duration,
-                    is_playable if assigned else current["is_playable"],
-                    availability,
-                    current["url"] or (f"https://www.youtube.com/watch?v={video_id}&list={pid}" if video_id else ""),
-                    source_quality,
-                    match_type,
-                    match_confidence,
-                    snapshot_key_value,
-                    added_at,
-                    now,
-                ),
-            )
-            total_rows += 1
-
-        if not assign_hidden:
-            used_missing_ids: set[str] = set()
-            next_position = (max((row["position"] for row in current_rows), default=0) + 1) * 1000
-            for snap in missing_snapshot_rows:
-                if snap["video_id"] in used_missing_ids:
-                    continue
-                used_missing_ids.add(snap["video_id"])
-                recovery = conn.execute(
-                    """
-                    SELECT *
-                    FROM snapshot_video_recovery
-                    WHERE snapshot_key = ? AND video_id = ?
-                    """,
-                    (snap["snapshot_key"], snap["video_id"]),
-                ).fetchone()
-                title = (recovery["title"] if recovery else "") or snap["video_id"]
-                channel_id = recovery["channel_id"] if recovery else ""
-                channel = channel_title_for_id(conn, channel_id)
-                duration = recovery["duration_text"] if recovery else ""
-                recovered_status = recovery["status"] if recovery else ""
-                is_playable = is_playable_from_recovery_status(recovered_status)
-                conn.execute(
-                    """
-                    INSERT INTO playlist_video_reconciled(
-                      playlist_id, display_position, current_position, snapshot_position,
-                      video_id, title, channel_id, channel, duration_text, is_playable, availability, url,
-                      source_quality, match_type, match_confidence, snapshot_key, added_at, updated_at
-                    )
-                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        pid,
-                        next_position,
-                        snap["position"],
-                        snap["video_id"],
-                        title,
-                        channel_id,
-                        channel,
-                        duration,
-                        is_playable,
-                        reconciled_video_availability(snap["video_id"], "", recovered_status, is_playable),
-                        f"https://www.youtube.com/watch?v={snap['video_id']}&list={pid}",
-                        "takeout",
-                        "ambiguous_hidden_candidate",
-                        "snapshot_missing",
-                        snap["snapshot_key"],
-                        snap["added_at"],
-                        now,
-                    ),
-                )
-                ambiguous += 1
-                total_rows += 1
-                next_position += 1
-
-    return {"playlists": len(playlist_ids), "rows": total_rows, "inferred": inferred, "ambiguous": ambiguous}
+    where = "WHERE playlist_id = ?" if playlist_id else ""
+    params: tuple[Any, ...] = (playlist_id,) if playlist_id else ()
+    rows = conn.execute(
+        f"SELECT membership_state, COUNT(*) AS count FROM playlist_items {where} GROUP BY membership_state",
+        params,
+    ).fetchall()
+    counts = {row["membership_state"]: int(row["count"] or 0) for row in rows}
+    playlist_count = conn.execute(
+        f"SELECT COUNT(DISTINCT playlist_id) FROM playlist_items {where}",
+        params,
+    ).fetchone()[0]
+    return {
+        "playlists": int(playlist_count or 0),
+        "rows": sum(counts.values()),
+        "inferred": 0,
+        "ambiguous": counts.get("retained_unavailable", 0) + counts.get("unresolved_unavailable", 0),
+    }
 
 
 def playlist_scan_candidate_rows(
@@ -4457,7 +4429,7 @@ def playlist_scan_candidate_rows(
     force: bool = False,
     stale_days: int = 7,
 ) -> list[sqlite3.Row]:
-    stale_before = int(time.time()) - max(stale_days, 0) * 86400
+    stale_before = utc_days_ago(stale_days)
     where = ["p.playlist_id <> ''"]
     params: list[Any] = []
     if not force:
@@ -4467,7 +4439,7 @@ def playlist_scan_candidate_rows(
               ps.playlist_id IS NULL
               OR ps.scan_status <> 'ok'
               OR (p.video_count > 0 AND p.video_count <> COALESCE(ps.video_count, -1))
-              OR (ps.scanned_at > 0 AND ps.scanned_at < ?)
+              OR (ps.scanned_at IS NOT NULL AND ps.scanned_at < ?)
             )
             """
         )
@@ -4476,16 +4448,16 @@ def playlist_scan_candidate_rows(
         SELECT p.playlist_id,
                p.title,
                p.video_count AS playlist_video_count,
-               COALESCE(ps.scanned_at, 0) AS scanned_at,
+               COALESCE(ps.scanned_at, '') AS scanned_at,
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
-               COALESCE(ps.hidden_count, 0) AS hidden_count
+               COALESCE(ps.unavailable_count, 0) AS unavailable_count
         FROM playlists p
         LEFT JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
         WHERE {" AND ".join(where)}
         ORDER BY
           CASE WHEN ps.playlist_id IS NULL THEN 0 ELSE 1 END,
-          COALESCE(ps.scanned_at, 0),
+          COALESCE(ps.scanned_at, ''),
           p.title COLLATE NOCASE
     """
     if limit:
@@ -4522,7 +4494,7 @@ def worker_queue_rows(
                p.video_count AS playlist_video_count,
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
-               COALESCE(ps.hidden_count, 0) AS hidden_count
+               COALESCE(ps.unavailable_count, 0) AS unavailable_count
         FROM worker_queue w
         LEFT JOIN playlists p ON p.playlist_id = w.playlist_id
         LEFT JOIN playlist_scans ps ON ps.playlist_id = w.playlist_id
@@ -4571,7 +4543,7 @@ def remove_worker_queue_entry(conn: sqlite3.Connection, queue_id: int) -> bool:
 
 def enqueue_history_task(conn: sqlite3.Connection, mode: str, *, priority: int = 100, manual: bool = True) -> str:
     mode = (mode or "recent").strip() or "recent"
-    now = int(time.time())
+    now = utc_now()
     subject_key = f"history:{mode}"
     conn.execute(
         """
@@ -4610,7 +4582,7 @@ def enqueue_playlist_scan_item(
     priority: int = 100,
     manual: bool = False,
 ) -> str:
-    now = int(time.time())
+    now = utc_now()
     playlist_id = (playlist_id or "").strip()
     if not playlist_id:
         raise ValueError("Playlist queue item needs a playlist ID")
@@ -4667,10 +4639,10 @@ def playlist_scan_queue_rows(
                w.playlist_id,
                COALESCE(NULLIF(w.current_title, ''), p.title, w.playlist_id) AS title,
                p.video_count AS playlist_video_count,
-               COALESCE(ps.scanned_at, 0) AS scanned_at,
+               COALESCE(ps.scanned_at, '') AS scanned_at,
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
-               COALESCE(ps.hidden_count, 0) AS hidden_count,
+               COALESCE(ps.unavailable_count, 0) AS unavailable_count,
                w.priority,
                w.manual,
                w.created_at,
@@ -4727,252 +4699,56 @@ def metadata_queue_candidate_rows(
     force: bool = False,
     stale_days: int = 30,
 ) -> list[sqlite3.Row]:
-    stale_before = int(time.time()) - max(stale_days, 0) * 86400
-    channel_retry_sql = f"""
-      (
-        COALESCE(ch.fetch_status, '') = 'error'
-        OR COALESCE(ch.fetched_at, 0) = 0
-        OR COALESCE(ch.fetched_at, 0) < {stale_before}
-      )
-    """
-    if limit and not force:
-        known_channel_count = int(
-            conn.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM channels ch
-                WHERE ch.channel_id <> ''
-                  AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted')
-                  AND (
-                    COALESCE(ch.url, '') = ''
-                    OR COALESCE(ch.thumbnail_path, '') = ''
-                  )
-                  AND {channel_retry_sql}
-                """
-            ).fetchone()[0]
-        )
-        if offset < known_channel_count:
-            rows = conn.execute(
-                f"""
-                SELECT ch.channel_id AS video_id,
-                       ch.channel_id,
-                       COALESCE(NULLIF(ch.title, ''), ch.channel_id) AS channel_title,
-                       0 AS playlist_count,
-                       '' AS current_title,
-                       'channel' AS metadata_source,
-                       0 AS priority
-                FROM channels ch
-                WHERE ch.channel_id <> ''
-                  AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted')
-                  AND (
-                    COALESCE(ch.url, '') = ''
-                    OR COALESCE(ch.thumbnail_path, '') = ''
-                  )
-                  AND {channel_retry_sql}
-                ORDER BY COALESCE(NULLIF(ch.title, ''), ch.channel_id) COLLATE NOCASE,
-                         ch.channel_id
-                LIMIT ? OFFSET ?
-                """,
-                (limit, max(0, offset)),
-            ).fetchall()
-            if len(rows) == limit or offset + len(rows) < known_channel_count:
-                return rows
-
-    where = ["q.video_id <> ''"]
+    stale_before = utc_days_ago(stale_days)
+    where = ""
     params: list[Any] = []
     if not force:
-        where.append(
-            f"""
-            (
-              (q.source_priority IN (0, 1) AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND {channel_retry_sql})
-              OR (q.source_priority NOT IN (0, 1) AND vm.video_id IS NULL)
-              OR vm.fetch_status = 'error'
-              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.url, '') = '' AND {channel_retry_sql})
-              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.thumbnail_path, '') = '' AND {channel_retry_sql})
-              OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
-            )
-            """
-        )
+        where = """
+        WHERE fetch_status = 'error'
+           OR fetched_at IS NULL
+           OR fetched_at < ?
+        """
         params.append(stale_before)
     sql = f"""
-        WITH all_channel_refs AS (
-          SELECT vm.video_id,
-                 vm.channel_id,
-                 COALESCE(NULLIF(ch.title, ''), vm.channel_id) AS channel_title,
-                 0 AS playlist_count,
-                 COALESCE(NULLIF(vm.title, ''), vm.video_id) AS current_title,
-                 0 AS playlist_sort,
-                 '' AS history_sort
-          FROM video_metadata vm
-          LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
-          WHERE vm.video_id <> ''
-            AND vm.channel_id <> ''
-            AND (
-              COALESCE(ch.url, '') = ''
-              OR COALESCE(ch.thumbnail_path, '') = ''
-            )
-            AND {channel_retry_sql}
-          UNION ALL
-          SELECT pv.video_id,
-                 pv.channel_id,
-                 COALESCE(NULLIF(ch.title, ''), NULLIF(pv.channel, ''), pv.channel_id) AS channel_title,
-                 COUNT(DISTINCT pv.playlist_id) AS playlist_count,
-                 MIN(pv.title) AS current_title,
-                 MAX(MAX(COALESCE(ps.scanned_at, 0), COALESCE(p.updated_at, 0), COALESCE(pv.updated_at, 0))) AS playlist_sort,
-                 '' AS history_sort
-          FROM playlist_videos pv
-          JOIN playlists p ON p.playlist_id = pv.playlist_id
-          LEFT JOIN playlist_scans ps ON ps.playlist_id = pv.playlist_id
-          LEFT JOIN channels ch ON ch.channel_id = pv.channel_id
-          WHERE pv.video_id <> ''
-            AND pv.channel_id <> ''
-            AND (
-              COALESCE(ch.url, '') = ''
-              OR COALESCE(ch.thumbnail_path, '') = ''
-            )
-            AND {channel_retry_sql}
-          GROUP BY pv.video_id, pv.channel_id
-          UNION ALL
-          SELECT pvr.video_id,
-                 pvr.channel_id,
-                 COALESCE(NULLIF(ch.title, ''), NULLIF(pvr.channel, ''), pvr.channel_id) AS channel_title,
-                 COUNT(DISTINCT pvr.playlist_id) AS playlist_count,
-                 MIN(pvr.title) AS current_title,
-                 MAX(MAX(COALESCE(ps.scanned_at, 0), COALESCE(p.updated_at, 0), COALESCE(pvr.updated_at, 0))) AS playlist_sort,
-                 '' AS history_sort
-          FROM playlist_video_reconciled pvr
-          JOIN playlists p ON p.playlist_id = pvr.playlist_id
-          LEFT JOIN playlist_scans ps ON ps.playlist_id = pvr.playlist_id
-          LEFT JOIN channels ch ON ch.channel_id = pvr.channel_id
-          WHERE pvr.video_id <> ''
-            AND pvr.channel_id <> ''
-            AND (
-              COALESCE(ch.url, '') = ''
-              OR COALESCE(ch.thumbnail_path, '') = ''
-            )
-            AND {channel_retry_sql}
-          GROUP BY pvr.video_id, pvr.channel_id
-          UNION ALL
-          SELECT hr.video_id,
-                 hr.channel_id,
-                 COALESCE(NULLIF(ch.title, ''), NULLIF(hr.channel, ''), hr.channel_id) AS channel_title,
-                 0 AS playlist_count,
-                 MIN(hr.title) AS current_title,
-                 0 AS playlist_sort,
-                 MAX(hr.best_watch_time) AS history_sort
-          FROM history_reconciled hr
-          LEFT JOIN channels ch ON ch.channel_id = hr.channel_id
-          WHERE hr.video_id <> ''
-            AND hr.channel_id <> ''
-            AND (
-              COALESCE(ch.url, '') = ''
-              OR COALESCE(ch.thumbnail_path, '') = ''
-            )
-            AND {channel_retry_sql}
-          GROUP BY hr.video_id, hr.channel_id
-        ),
-        known_channel_sources AS (
+        WITH candidates AS (
           SELECT ch.channel_id AS video_id,
                  ch.channel_id,
                  COALESCE(NULLIF(ch.title, ''), ch.channel_id) AS channel_title,
-                 0 AS source_priority,
                  0 AS playlist_count,
                  '' AS current_title,
-                 0 AS playlist_sort,
-                 '' AS history_sort
+                 'channel' AS metadata_source,
+                 0 AS priority,
+                 ch.fetch_status,
+                 ch.fetched_at,
+                 ch.title,
+                 ch.thumbnail_path
           FROM channels ch
-          WHERE ch.channel_id <> ''
-            AND (
-              COALESCE(ch.url, '') = ''
-              OR COALESCE(ch.thumbnail_path, '') = ''
-            )
-            AND {channel_retry_sql}
-        ),
-        discovered_channel_sources AS (
-          SELECT ref.channel_id AS video_id,
-                 ref.channel_id,
-                 MAX(ref.channel_title) AS channel_title,
-                 1 AS source_priority,
-                 SUM(ref.playlist_count) AS playlist_count,
-                 '' AS current_title,
-                 MAX(ref.playlist_sort) AS playlist_sort,
-                 MAX(ref.history_sort) AS history_sort
-          FROM all_channel_refs ref
-          LEFT JOIN channels ch ON ch.channel_id = ref.channel_id
-          WHERE ch.channel_id IS NULL
-          GROUP BY ref.channel_id
-        ),
-        queue_sources AS (
-          SELECT * FROM known_channel_sources
           UNION ALL
-          SELECT * FROM discovered_channel_sources
-          UNION ALL
-          SELECT pv.video_id,
-                 '' AS channel_id,
-                 '' AS channel_title,
-                 2 AS source_priority,
-                 COUNT(DISTINCT pv.playlist_id) AS playlist_count,
-                 MIN(pv.title) AS current_title,
-                 MAX(MAX(COALESCE(ps.scanned_at, 0), COALESCE(p.updated_at, 0), COALESCE(pv.updated_at, 0))) AS playlist_sort,
-                 '' AS history_sort
-          FROM playlist_videos pv
-          JOIN playlists p ON p.playlist_id = pv.playlist_id
-          LEFT JOIN playlist_scans ps ON ps.playlist_id = pv.playlist_id
-          WHERE pv.video_id <> ''
-          GROUP BY pv.video_id
-          UNION ALL
-          SELECT hr.video_id,
-                 '' AS channel_id,
-                 '' AS channel_title,
-                 3 AS source_priority,
-                 0 AS playlist_count,
-                 MIN(hr.title) AS current_title,
-                 0 AS playlist_sort,
-                 MAX(hr.best_watch_time) AS history_sort
-          FROM history_reconciled hr
-          WHERE hr.video_id <> ''
-          GROUP BY hr.video_id
-        ),
-        q AS (
-          SELECT video_id,
-                 MIN(source_priority) AS source_priority,
-                 MAX(channel_id) AS channel_id,
-                 MAX(channel_title) AS channel_title,
-                 SUM(playlist_count) AS playlist_count,
-                 MIN(current_title) AS current_title,
-                 MAX(playlist_sort) AS playlist_sort,
-                 MAX(history_sort) AS history_sort
-          FROM queue_sources
-          GROUP BY video_id
+          SELECT v.video_id,
+                 COALESCE(v.channel_id, '') AS channel_id,
+                 COALESCE(ch.title, '') AS channel_title,
+                 COUNT(DISTINCT pi.playlist_id) AS playlist_count,
+                 COALESCE(NULLIF(v.title, ''), v.video_id) AS current_title,
+                 CASE WHEN COUNT(pi.playlist_id) > 0 THEN 'playlist' ELSE 'history' END AS metadata_source,
+                 CASE WHEN COUNT(pi.playlist_id) > 0 THEN 2 ELSE 3 END AS priority,
+                 v.fetch_status,
+                 v.fetched_at,
+                 v.title,
+                 v.thumbnail_path
+          FROM videos v
+          LEFT JOIN channels ch ON ch.channel_id = v.channel_id
+          LEFT JOIN playlist_items pi ON pi.video_id = v.video_id
+          GROUP BY v.video_id
         )
-        SELECT q.video_id,
-               q.channel_id,
-               q.channel_title,
-               q.playlist_count,
-               q.current_title,
-               q.source_priority AS priority,
-               CASE
-                 WHEN q.source_priority IN (0, 1) THEN 'channel'
-                 WHEN q.source_priority = 2 THEN 'playlist'
-                 ELSE 'history'
-               END AS metadata_source
-        FROM q
-        LEFT JOIN video_metadata vm ON vm.video_id = q.video_id
-        LEFT JOIN channels ch ON ch.channel_id = COALESCE(NULLIF(vm.channel_id, ''), NULLIF(q.channel_id, ''))
-        WHERE {" AND ".join(where)}
-        ORDER BY q.source_priority,
-                 CASE WHEN q.source_priority IN (0, 1) THEN q.channel_title ELSE '' END COLLATE NOCASE,
-                 CASE WHEN q.source_priority = 2 THEN q.playlist_sort ELSE 0 END DESC,
-                 CASE WHEN q.source_priority = 3 THEN q.history_sort ELSE '' END DESC,
-                 COALESCE(vm.fetched_at, 0),
-                 q.video_id
+        SELECT video_id, channel_id, channel_title, playlist_count, current_title,
+               metadata_source, priority
+        FROM candidates
+        {where}
+        ORDER BY priority, COALESCE(fetched_at, ''), current_title COLLATE NOCASE, video_id
     """
     if limit:
-        sql += " LIMIT ?"
-        params.append(limit)
-        if offset:
-            sql += " OFFSET ?"
-            params.append(max(0, offset))
+        sql += " LIMIT ? OFFSET ?"
+        params.extend([limit, max(0, offset)])
     return conn.execute(sql, params).fetchall()
 
 
@@ -4981,130 +4757,7 @@ def metadata_queue_candidate_count(
     force: bool = False,
     stale_days: int = 30,
 ) -> int:
-    stale_before = int(time.time()) - max(stale_days, 0) * 86400
-    channel_retry_sql = f"""
-      (
-        COALESCE(ch.fetch_status, '') = 'error'
-        OR COALESCE(ch.fetched_at, 0) = 0
-        OR COALESCE(ch.fetched_at, 0) < {stale_before}
-      )
-    """
-    where = ["q.video_id <> ''"]
-    params: list[Any] = []
-    if not force:
-        where.append(
-            f"""
-            (
-              (q.source_priority IN (0, 1) AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND {channel_retry_sql})
-              OR (q.source_priority NOT IN (0, 1) AND vm.video_id IS NULL)
-              OR vm.fetch_status = 'error'
-              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.url, '') = '' AND {channel_retry_sql})
-              OR (vm.channel_id <> '' AND COALESCE(ch.status, '') NOT IN ('terminated', 'deleted') AND COALESCE(ch.thumbnail_path, '') = '' AND {channel_retry_sql})
-              OR (vm.fetched_at > 0 AND vm.fetched_at < ?)
-            )
-            """
-        )
-        params.append(stale_before)
-    row = conn.execute(
-        f"""
-        WITH all_channel_refs AS (
-          SELECT vm.video_id,
-                 vm.channel_id
-          FROM video_metadata vm
-          LEFT JOIN channels ch ON ch.channel_id = vm.channel_id
-          WHERE vm.video_id <> ''
-            AND vm.channel_id <> ''
-            AND (
-              COALESCE(ch.url, '') = ''
-              OR COALESCE(ch.thumbnail_path, '') = ''
-            )
-            AND {channel_retry_sql}
-          UNION
-          SELECT pv.video_id,
-                 pv.channel_id
-          FROM playlist_videos pv
-          LEFT JOIN channels ch ON ch.channel_id = pv.channel_id
-          WHERE pv.video_id <> ''
-            AND pv.channel_id <> ''
-            AND (
-              COALESCE(ch.url, '') = ''
-              OR COALESCE(ch.thumbnail_path, '') = ''
-            )
-            AND {channel_retry_sql}
-          UNION
-          SELECT pvr.video_id,
-                 pvr.channel_id
-          FROM playlist_video_reconciled pvr
-          LEFT JOIN channels ch ON ch.channel_id = pvr.channel_id
-          WHERE pvr.video_id <> ''
-            AND pvr.channel_id <> ''
-            AND (
-              COALESCE(ch.url, '') = ''
-              OR COALESCE(ch.thumbnail_path, '') = ''
-            )
-            AND {channel_retry_sql}
-          UNION
-          SELECT hr.video_id,
-                 hr.channel_id
-          FROM history_reconciled hr
-          LEFT JOIN channels ch ON ch.channel_id = hr.channel_id
-          WHERE hr.video_id <> ''
-            AND hr.channel_id <> ''
-            AND (
-              COALESCE(ch.url, '') = ''
-              OR COALESCE(ch.thumbnail_path, '') = ''
-            )
-            AND {channel_retry_sql}
-        ),
-        known_channel_sources AS (
-          SELECT ch.channel_id AS video_id,
-                 0 AS source_priority
-          FROM channels ch
-          WHERE ch.channel_id <> ''
-            AND (
-              COALESCE(ch.url, '') = ''
-              OR COALESCE(ch.thumbnail_path, '') = ''
-            )
-            AND {channel_retry_sql}
-        ),
-        discovered_channel_sources AS (
-          SELECT ref.channel_id AS video_id,
-                 1 AS source_priority
-          FROM all_channel_refs ref
-          LEFT JOIN channels ch ON ch.channel_id = ref.channel_id
-          WHERE ch.channel_id IS NULL
-          GROUP BY ref.channel_id
-        ),
-        queue_sources AS (
-          SELECT video_id, source_priority
-          FROM known_channel_sources
-          UNION
-          SELECT video_id, source_priority
-          FROM discovered_channel_sources
-          UNION
-          SELECT video_id, 2 AS source_priority
-          FROM playlist_videos
-          WHERE video_id <> ''
-          UNION
-          SELECT video_id, 3 AS source_priority
-          FROM history_reconciled
-          WHERE video_id <> ''
-        ),
-        q AS (
-          SELECT video_id,
-                 MIN(source_priority) AS source_priority
-          FROM queue_sources
-          GROUP BY video_id
-        )
-        SELECT COUNT(*) AS count
-        FROM q
-        LEFT JOIN video_metadata vm ON vm.video_id = q.video_id
-        LEFT JOIN channels ch ON ch.channel_id = COALESCE(NULLIF(vm.channel_id, ''), q.video_id)
-        WHERE {" AND ".join(where)}
-        """,
-        params,
-    ).fetchone()
-    return int(row["count"] or 0)
+    return len(metadata_queue_candidate_rows(conn, force=force, stale_days=stale_days))
 
 
 def metadata_queue_subject_key(video_id: str, channel_id: str, metadata_source: str) -> str:
@@ -5118,39 +4771,6 @@ def metadata_queue_subject_key(video_id: str, channel_id: str, metadata_source: 
 
 def playlist_queue_subject_key(playlist_id: str) -> str:
     return f"playlist:scan:{(playlist_id or '').strip()}"
-
-
-def migrate_metadata_queue_to_worker_queue(conn: sqlite3.Connection) -> None:
-    if "metadata_queue" not in {
-        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    }:
-        return
-    if "worker_queue" not in {
-        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    }:
-        return
-    rows = conn.execute(
-        """
-        SELECT subject_key, video_id, channel_id, channel_title, current_title,
-               metadata_source, source_key, playlist_count, priority, manual, created_at, updated_at
-        FROM metadata_queue
-        """
-    ).fetchall()
-    for row in rows:
-        enqueue_metadata_item(
-            conn,
-            video_id=row["video_id"] or "",
-            channel_id=row["channel_id"] or "",
-            channel_title=row["channel_title"] or "",
-            current_title=row["current_title"] or "",
-            metadata_source=row["metadata_source"] or "history",
-            source_key=row["source_key"] or "",
-            playlist_count=int(row["playlist_count"] or 0),
-            priority=int(row["priority"] or 100),
-            manual=bool(row["manual"]),
-        )
-    if rows:
-        conn.execute("DELETE FROM metadata_queue")
 
 
 def metadata_queue_rows(
@@ -5256,7 +4876,7 @@ def enqueue_metadata_item(
     priority: int = 100,
     manual: bool = False,
 ) -> str:
-    now = int(time.time())
+    now = utc_now()
     video_id = (video_id or "").strip()
     channel_id = (channel_id or "").strip()
     metadata_source = (metadata_source or "").strip() or "history"
@@ -5334,31 +4954,17 @@ def enqueue_playlist_metadata_targets(conn: sqlite3.Connection, playlist_id: str
         raise ValueError("Enter a YouTube playlist URL or playlist ID.")
     rows = conn.execute(
         """
-        SELECT video_id,
-               MAX(title) AS title,
-               MIN(display_position) AS position
-        FROM playlist_video_reconciled
-        WHERE playlist_id = ?
-          AND video_id <> ''
-        GROUP BY video_id
+        SELECT pi.video_id,
+               MAX(v.title) AS title,
+               MIN(pi.position) AS position
+        FROM playlist_items pi
+        JOIN videos v ON v.video_id = pi.video_id
+        WHERE pi.playlist_id = ?
+        GROUP BY pi.video_id
         ORDER BY position
         """,
         (playlist_id,),
     ).fetchall()
-    if not rows:
-        rows = conn.execute(
-            """
-            SELECT video_id,
-                   MAX(title) AS title,
-                   MIN(position) AS position
-            FROM playlist_videos
-            WHERE playlist_id = ?
-              AND video_id <> ''
-            GROUP BY video_id
-            ORDER BY position
-            """,
-            (playlist_id,),
-        ).fetchall()
     if not rows:
         raise ValueError(f"No known videos found for playlist {playlist_id}. Scan the playlist first.")
     for index, row in enumerate(rows):
@@ -5559,12 +5165,12 @@ def admin_status(
             conn.execute(
                 """
                 SELECT
-                  COUNT(DISTINCT video_id) AS distinct_playlist_videos,
-                  COUNT(*) AS playlist_video_rows,
-                  (SELECT COUNT(*) FROM history_reconciled) AS history_rows,
-                  (SELECT COUNT(DISTINCT video_id) FROM history_reconciled WHERE video_id <> '') AS distinct_history_videos
-                FROM playlist_videos
-                WHERE video_id <> ''
+                  COUNT(DISTINCT video_id) AS distinct_playlist_item_videos,
+                  COUNT(*) AS playlist_item_rows,
+                  (SELECT COUNT(*) FROM history_events) AS history_rows,
+                  (SELECT COUNT(DISTINCT video_id) FROM history_events) AS distinct_history_videos
+                FROM playlist_items
+                WHERE video_id IS NOT NULL
                 """
             ).fetchone()
         )
@@ -5574,8 +5180,9 @@ def admin_status(
                 SELECT
                   COUNT(*) AS live_rows,
                   COUNT(DISTINCT video_id) AS live_video_ids,
-                  COALESCE(MAX(imported_at), 0) AS last_imported_at
-                FROM youtube_history_occurrences
+                  COALESCE(MAX(imported_at), '') AS last_imported_at
+                FROM history_events
+                WHERE youtube_ordinal IS NOT NULL
                 """
             ).fetchone()
         )
@@ -5597,7 +5204,7 @@ def admin_status(
             for row in conn.execute(
                 """
                 SELECT COALESCE(fetch_status, '') AS fetch_status, COUNT(*) AS count
-                FROM video_metadata
+                FROM videos
                 GROUP BY COALESCE(fetch_status, '')
                 ORDER BY count DESC
                 """
@@ -5611,7 +5218,7 @@ def admin_status(
                   SUM(CASE WHEN COALESCE(thumbnail_path, '') <> '' THEN 1 ELSE 0 END) AS thumbnail_cached,
                   SUM(CASE WHEN COALESCE(thumbnail_path, '') = '' AND COALESCE(status, '') NOT IN ('terminated', 'deleted') THEN 1 ELSE 0 END) AS thumbnail_missing,
                   SUM(CASE WHEN COALESCE(status, '') IN ('terminated', 'deleted') THEN 1 ELSE 0 END) AS terminated,
-                  SUM(CASE WHEN COALESCE(url, '') = '' THEN 1 ELSE 0 END) AS url_missing
+                  0 AS url_missing
                 FROM channels
                 WHERE channel_id <> ''
                 """
@@ -5716,7 +5323,7 @@ def reconcile_worker_runs(
     metadata_running = metadata_worker.is_running() if metadata_worker else False
     playlist_running = playlist_worker.is_running() if playlist_worker else False
     live_history_running = live_history_worker.is_running() if live_history_worker else False
-    now = int(time.time())
+    now = utc_now()
     conn = connect(db_path)
     try:
         with conn:
@@ -5788,57 +5395,11 @@ def scan_hidden(args: argparse.Namespace) -> None:
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
             status = "error"
             error = str(exc)
-        hidden_count = sum(1 for video in videos if not video["is_playable"])
-        total_hidden += hidden_count
+        unavailable_count = sum(1 for video in videos if not video["is_playable"])
+        total_hidden += unavailable_count
         with conn:
-            conn.execute("DELETE FROM playlist_videos WHERE playlist_id = ?", (playlist_id,))
-            now = int(time.time())
-            for video in videos:
-                channel_id = upsert_channel(
-                    conn,
-                    video.get("channel_id") or "",
-                    title=video.get("channel") or "",
-                    source="playlist",
-                    updated_at=now,
-                )
-                conn.execute(
-                    """
-                    INSERT INTO playlist_videos(
-                      playlist_id, position, video_id, title, channel_id, channel, duration_text,
-                      is_playable, availability, url, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        video["playlist_id"],
-                        video["position"],
-                        video["video_id"],
-                        video["title"],
-                        channel_id,
-                        video["channel"],
-                        video["duration_text"],
-                        video["is_playable"],
-                        video["availability"],
-                        video["url"],
-                        now,
-                    ),
-                )
-            conn.execute(
-                """
-                INSERT INTO playlist_scans(
-                  playlist_id, scanned_at, video_count, hidden_count, scan_status, scan_error
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(playlist_id) DO UPDATE SET
-                  scanned_at=excluded.scanned_at,
-                  video_count=excluded.video_count,
-                  hidden_count=excluded.hidden_count,
-                  scan_status=excluded.scan_status,
-                  scan_error=excluded.scan_error
-                """,
-                (playlist_id, now, len(videos), hidden_count, status, error),
-            )
-        suffix = f"{hidden_count} unavailable / {len(videos)} videos"
+            save_playlist_scan(conn, playlist_id, videos, status, error)
+        suffix = f"{unavailable_count} unavailable / {len(videos)} videos"
         if status != "ok":
             suffix = f"ERROR {error}"
         print(f"[{index:03d}/{len(rows):03d}] {suffix} - {title}")
@@ -5851,11 +5412,11 @@ def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
     conn = connect(db_path)
     rows = conn.execute(
         """
-        SELECT p.playlist_id, p.title, s.hidden_count
+        SELECT p.playlist_id, p.title, s.unavailable_count
         FROM playlist_scans s
         JOIN playlists p ON p.playlist_id = s.playlist_id
-        WHERE s.hidden_count > 0
-        ORDER BY s.hidden_count DESC, p.title COLLATE NOCASE
+        WHERE s.unavailable_count > 0
+        ORDER BY s.unavailable_count DESC, p.title COLLATE NOCASE
         """
     ).fetchall()
     if args.limit:
@@ -5880,10 +5441,6 @@ def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
         ]
         cached = 0
         with conn:
-            conn.execute(
-                "DELETE FROM archivarix_candidates WHERE playlist_id = ?", (playlist_id,)
-            )
-            now = int(time.time())
             for video in candidates:
                 video_id = video["videoId"]
                 thumbnail_url = (
@@ -5896,54 +5453,16 @@ def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
                 )
                 if thumbnail_path:
                     cached += 1
-                channel_id = upsert_channel(
-                    conn,
-                    video.get("channelExternalId") or "",
-                    title=video.get("channelTitle") or "",
-                    source="archivarix_candidate",
-                    updated_at=now,
-                )
-                conn.execute(
-                    """
-                    INSERT INTO archivarix_candidates(
-                      playlist_id, video_id, title, channel_id, channel, status, duration_text,
-                      upload_date, view_count, thumbnail_url, thumbnail_path,
-                      archive_url, video_file_url, query, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(playlist_id, video_id) DO UPDATE SET
-                      title=excluded.title,
-                      channel_id=excluded.channel_id,
-                      channel=excluded.channel,
-                      status=excluded.status,
-                      duration_text=excluded.duration_text,
-                      upload_date=excluded.upload_date,
-                      view_count=excluded.view_count,
-                      thumbnail_url=excluded.thumbnail_url,
-                      thumbnail_path=excluded.thumbnail_path,
-                      archive_url=excluded.archive_url,
-                      video_file_url=excluded.video_file_url,
-                      query=excluded.query,
-                      updated_at=excluded.updated_at
-                    """,
-                    (
-                        playlist_id,
+                if conn.execute("SELECT 1 FROM videos WHERE video_id = ?", (video_id,)).fetchone():
+                    save_video_recovery(
+                        conn,
                         video_id,
-                        video.get("title") or "",
-                        channel_id,
-                        video.get("channelTitle") or "",
-                        video.get("status") or "",
-                        format_duration(video.get("duration")),
-                        video.get("uploadDate") or "",
-                        str(video.get("viewCount") or ""),
+                        video,
+                        "found",
+                        "",
                         thumbnail_url,
                         thumbnail_path,
-                        video.get("archiveUrl") or "",
-                        video.get("videoFileUrl") or "",
-                        query,
-                        now,
-                    ),
-                )
+                    )
         total_candidates += len(candidates)
         total_cached += cached
         print(
@@ -5958,7 +5477,7 @@ def normalized_playlist_title(value: str) -> str:
     return value
 
 
-def import_takeout_snapshot(args: argparse.Namespace) -> None:
+def import_takeout_playlists(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     takeout_dir = Path(args.takeout)
     playlists_dir = takeout_dir / "playlists"
@@ -5967,8 +5486,7 @@ def import_takeout_snapshot(args: argparse.Namespace) -> None:
         raise SystemExit(f"Takeout playlists.csv not found: {playlists_csv}")
 
     conn = connect(db_path)
-    snapshot_key = args.snapshot_key
-    now = int(time.time())
+    now = utc_now()
     playlist_rows: list[dict[str, str]] = []
     with playlists_csv.open("r", encoding="utf-8-sig", newline="") as handle:
         playlist_rows = list(csv.DictReader(handle))
@@ -5980,31 +5498,24 @@ def import_takeout_snapshot(args: argparse.Namespace) -> None:
             playlist_by_title[title.casefold()] = row
 
     with conn:
-        conn.execute("DELETE FROM snapshots WHERE snapshot_key = ?", (snapshot_key,))
-        conn.execute(
-            "INSERT INTO snapshots(snapshot_key, label, source_path, imported_at) VALUES (?, ?, ?, ?)",
-            (snapshot_key, args.label, str(takeout_dir), now),
-        )
         for row in playlist_rows:
             playlist_id = row.get("Playlist ID", "").strip()
             if not playlist_id:
                 continue
             conn.execute(
                 """
-                INSERT INTO snapshot_playlists(
-                  snapshot_key, playlist_id, title, created_at, updated_at,
-                  visibility, video_order
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO playlists(playlist_id, title, visibility, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(playlist_id) DO UPDATE SET
+                  title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
+                  visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
+                  updated_at=excluded.updated_at
                 """,
                 (
-                    snapshot_key,
                     playlist_id,
                     row.get("Playlist Title (Original)", "").strip(),
-                    row.get("Playlist Create Timestamp", "").strip(),
-                    row.get("Playlist Update Timestamp", "").strip(),
-                    row.get("Playlist Visibility", "").strip(),
-                    row.get("Playlist Video Order", "").strip(),
+                    normalize_playlist_visibility(row.get("Playlist Visibility", "")),
+                    now,
                 ),
             )
 
@@ -6025,15 +5536,13 @@ def import_takeout_snapshot(args: argparse.Namespace) -> None:
                 playlist_title = title_from_file
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO snapshot_playlists(
-                      snapshot_key, playlist_id, title
-                    )
+                    INSERT OR IGNORE INTO playlists(playlist_id, title, updated_at)
                     VALUES (?, ?, ?)
                     """,
                     (
-                        snapshot_key,
                         playlist_id,
                         playlist_title,
+                        now,
                     ),
                 )
             else:
@@ -6041,34 +5550,41 @@ def import_takeout_snapshot(args: argparse.Namespace) -> None:
                 playlist_title = playlist_row.get("Playlist Title (Original)", "").strip()
             if not playlist_id:
                 continue
+            conn.execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
             with video_file.open("r", encoding="utf-8-sig", newline="") as handle:
                 for position, row in enumerate(csv.DictReader(handle), start=1):
                     video_id = row.get("Video ID", "").strip()
                     if not video_id:
                         continue
+                    upsert_video(conn, video_id, source="takeout", updated_at=now)
+                    added_at = row.get("Playlist Video Creation Timestamp", "").strip()
+                    if added_at:
+                        try:
+                            added_at = normalize_utc_timestamp(added_at)
+                        except ValueError:
+                            pass
                     conn.execute(
                         """
-                        INSERT INTO snapshot_videos(
-                          snapshot_key, playlist_id, playlist_title, position,
-                          video_id, added_at
+                        INSERT INTO playlist_items(
+                          playlist_id, position, video_id, membership_state,
+                          source_quality, added_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, 'current', 'takeout', ?, ?)
                         """,
                         (
-                            snapshot_key,
                             playlist_id,
-                            playlist_title,
                             position,
                             video_id,
-                            row.get("Playlist Video Creation Timestamp", "").strip(),
+                            added_at or None,
+                            now,
                         ),
                     )
                     imported_video_rows += 1
         reconcile_stats = rebuild_playlist_reconciliation(conn)
 
     print(
-        f"Imported {len(playlist_rows)} snapshot playlists and "
-        f"{imported_video_rows} snapshot video rows into {snapshot_key}."
+        f"Imported {len(playlist_rows)} Takeout playlists and "
+        f"{imported_video_rows} current playlist items."
     )
     print(
         f"Reconciled {reconcile_stats['rows']} playlist rows across "
@@ -6197,6 +5713,91 @@ def read_zip_member_text(zf: zipfile.ZipFile, suffix: str) -> str:
     return ""
 
 
+def import_takeout_playlists_zip(conn: sqlite3.Connection, zip_path: Path) -> dict[str, int]:
+    now = utc_now()
+    with zipfile.ZipFile(zip_path) as zf:
+        playlists_text = read_zip_member_text(zf, "playlists/playlists.csv")
+        if not playlists_text:
+            return {"playlists": 0, "items": 0, "unmatched": 0}
+        playlist_rows = list(csv.DictReader(io.StringIO(playlists_text)))
+        by_title = {
+            (row.get("Playlist Title (Original)") or "").strip().casefold(): row
+            for row in playlist_rows
+            if (row.get("Playlist Title (Original)") or "").strip()
+        }
+        for row in playlist_rows:
+            playlist_id = (row.get("Playlist ID") or "").strip()
+            if not playlist_id:
+                continue
+            conn.execute(
+                """
+                INSERT INTO playlists(playlist_id, title, visibility, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(playlist_id) DO UPDATE SET
+                  title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
+                  visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    playlist_id,
+                    (row.get("Playlist Title (Original)") or "").strip(),
+                    normalize_playlist_visibility(row.get("Playlist Visibility") or ""),
+                    now,
+                ),
+            )
+
+        item_count = 0
+        unmatched = 0
+        for member_name in zf.namelist():
+            normalized = member_name.replace("\\", "/")
+            if not normalized.lower().endswith("-videos.csv") or "/playlists/" not in normalized.lower():
+                continue
+            filename = normalized.rsplit("/", 1)[-1]
+            title = normalized_playlist_title(filename[: -len("-videos.csv")])
+            playlist_row = by_title.get(title.casefold())
+            if playlist_row is None:
+                playlist_row = by_title.get(title.replace("_", "/").casefold())
+            if playlist_row is None and title.endswith("_"):
+                playlist_row = by_title.get((title[:-1] + "?").casefold())
+            if playlist_row is None:
+                unmatched += 1
+                continue
+            playlist_id = (playlist_row.get("Playlist ID") or "").strip()
+            if not playlist_id:
+                continue
+            scanned = conn.execute(
+                "SELECT 1 FROM playlist_scans WHERE playlist_id = ?",
+                (playlist_id,),
+            ).fetchone()
+            if not scanned:
+                conn.execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
+            text = zf.read(member_name).decode("utf-8-sig", "replace")
+            for position, row in enumerate(csv.DictReader(io.StringIO(text)), start=1):
+                video_id = (row.get("Video ID") or "").strip()
+                if not video_id:
+                    continue
+                upsert_video(conn, video_id, source="takeout", updated_at=now)
+                if scanned:
+                    continue
+                added_at = (row.get("Playlist Video Creation Timestamp") or "").strip()
+                if added_at:
+                    try:
+                        added_at = normalize_utc_timestamp(added_at)
+                    except ValueError:
+                        pass
+                conn.execute(
+                    """
+                    INSERT INTO playlist_items(
+                      playlist_id, position, video_id, membership_state,
+                      source_quality, added_at, updated_at
+                    ) VALUES (?, ?, ?, 'current', 'takeout', ?, ?)
+                    """,
+                    (playlist_id, position, video_id, added_at or None, now),
+                )
+                item_count += 1
+    return {"playlists": len(playlist_rows), "items": item_count, "unmatched": unmatched}
+
+
 def load_takeout_subscriptions(takeout_path: Path) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for zip_path in find_takeout_zips(takeout_path):
@@ -6230,7 +5831,7 @@ def sync_takeout_subscriptions(conn: sqlite3.Connection, takeout_path: Path) -> 
     rows = load_takeout_subscriptions(takeout_path)
     if not rows:
         return
-    now = int(time.time())
+    now = utc_now()
     for row in rows:
         channel_id = upsert_channel(
             conn,
@@ -6271,23 +5872,66 @@ def import_history(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     takeout_path = Path(args.takeout)
     requested_key = getattr(args, "history_key", "") or ""
-    if requested_key:
-        sources = [load_takeout_history_source(takeout_path, requested_key)]
-    else:
-        zips = find_takeout_zips(takeout_path)
-        if zips:
-            sources = [load_takeout_history_source(zip_path, "") for zip_path in zips]
-        else:
-            sources = [load_takeout_history_source(takeout_path, "")]
+    source_zip = find_takeout_zip(takeout_path)
+    sources = [load_takeout_history_source(source_zip or takeout_path, requested_key)]
 
     conn = connect(db_path)
-    imported_at = int(time.time())
+    imported_at = utc_now()
     total_watch_rows = 0
     distinct_video_ids: set[str] = set()
     imported_keys: list[str] = []
     with conn:
-        sync_takeout_subscriptions(conn, takeout_path)
-        conn.execute("DELETE FROM takeout_history_occurrences")
+        matched_live_rows = conn.execute(
+            """
+            SELECT video_id, watched_at, youtube_ordinal,
+                   watch_progress_percent, watch_resume_seconds, observed_at
+            FROM history_events
+            WHERE takeout_history_key IS NOT NULL AND youtube_ordinal IS NOT NULL
+            """
+        ).fetchall()
+        sync_takeout_subscriptions(conn, source_zip or takeout_path)
+        playlist_stats = (
+            import_takeout_playlists_zip(conn, source_zip)
+            if source_zip
+            else {"playlists": 0, "items": 0, "unmatched": 0}
+        )
+        conn.execute("DELETE FROM history_events WHERE takeout_history_key IS NOT NULL")
+        timezone_name = get_setting(conn, "display_timezone", DEFAULT_DISPLAY_TIMEZONE)
+        for row in matched_live_rows:
+            ordinal = row["youtube_ordinal"]
+            conn.execute(
+                """
+                INSERT INTO history_events(
+                  event_id, video_id, watched_at, watch_date, time_precision,
+                  source_type, match_type, youtube_ordinal,
+                  watch_progress_percent, watch_resume_seconds,
+                  observed_at, imported_at, updated_at
+                )
+                VALUES (?, ?, NULL, ?, 'date_only', 'youtube', 'youtube_only', ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                  video_id=excluded.video_id,
+                  watch_date=excluded.watch_date,
+                  time_precision=excluded.time_precision,
+                  source_type=excluded.source_type,
+                  match_type=excluded.match_type,
+                  youtube_ordinal=excluded.youtube_ordinal,
+                  watch_progress_percent=excluded.watch_progress_percent,
+                  watch_resume_seconds=excluded.watch_resume_seconds,
+                  observed_at=excluded.observed_at,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    f"youtube:{ordinal}",
+                    row["video_id"],
+                    local_date_for_utc_instant(row["watched_at"], timezone_name),
+                    ordinal,
+                    row["watch_progress_percent"],
+                    row["watch_resume_seconds"],
+                    row["observed_at"],
+                    imported_at,
+                    imported_at,
+                ),
+            )
         for history_key, watch_text in sources:
             imported_keys.append(history_key)
             watch_rows = parse_takeout_watch_history_text(watch_text) if watch_text else []
@@ -6303,24 +5947,38 @@ def import_history(args: argparse.Namespace) -> None:
                     title=row["channel"],
                     url=row["channel_url"],
                     source="takeout_history",
+                    updated_at=imported_at,
                 )
+                upsert_video(
+                    conn,
+                    row["video_id"],
+                    title=row["title"],
+                    channel_id=channel_id,
+                    channel_title=row["channel"],
+                    channel_url=row["channel_url"],
+                    source="takeout",
+                    updated_at=imported_at,
+                )
+                row_key = f"{row_hash}:{position}"
                 conn.execute(
                     """
-                    INSERT INTO takeout_history_occurrences(
-                      history_key, row_hash, video_id, title, url, channel_id, channel,
-                      watched_at_iso
+                    INSERT INTO history_events(
+                      event_id, video_id, watched_at, watch_date, time_precision,
+                      source_type, match_type, takeout_history_key, takeout_row_key,
+                      imported_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, 'takeout', 'takeout_only', ?, ?, ?, ?)
                     """,
                     (
-                        history_key,
-                        row_hash,
+                        f"takeout:{history_key}:{row_key}",
                         row["video_id"],
-                        row["title"],
-                        row["url"],
-                        channel_id,
-                        row["channel"],
                         watched_at_iso,
+                        watched_at_iso[:10] if watched_at_iso else None,
+                        "exact" if watched_at_iso else "unknown",
+                        history_key,
+                        row_key,
+                        imported_at,
+                        imported_at,
                     ),
                 )
         stats = rebuild_history_reconciliation(conn)
@@ -6328,49 +5986,38 @@ def import_history(args: argparse.Namespace) -> None:
     print(
         f"Imported {total_watch_rows} watch history rows from {', '.join(imported_keys)} "
         f"({len(distinct_video_ids)} distinct videos). "
-        f"Reconciled {stats['rows']} rows ({stats['matched']} matched)."
+        f"Reconciled {stats['rows']} rows ({stats['matched']} matched). "
+        f"Loaded {playlist_stats['playlists']} playlists and {playlist_stats['items']} playlist items."
     )
 
 
-def recover_snapshot_missing(args: argparse.Namespace) -> None:
+def recover_unavailable_videos(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     thumb_dir = Path(args.thumbs)
     conn = connect(db_path)
     archivarix_opener = load_cookie_opener(Path(args.archivarix_cookies))
     where_clauses = [
-        "sv.snapshot_key = ?",
-        """
-        (
-          pv.video_id IS NULL
-          OR pv.is_playable = 0
-          OR lower(trim(COALESCE(pv.title, ''), '[]() ')) IN ('deleted video', 'private video')
-          OR lower(COALESCE(pv.title, '')) LIKE '%unavailable%'
-          OR lower(COALESCE(pv.availability, '')) LIKE '%unavailable%'
-          OR lower(COALESCE(pv.availability, '')) LIKE '%deleted%'
-          OR lower(COALESCE(pv.availability, '')) LIKE '%private%'
-        )
-        """,
+        "pi.video_id IS NOT NULL",
+        "(pi.membership_state = 'retained_unavailable' OR v.is_playable = 0)",
     ]
-    params: list[Any] = [args.snapshot_key]
-    if args.likely_hidden_only:
+    params: list[Any] = []
+    if args.likely_unavailable_only:
         where_clauses.append(
             """
             EXISTS (
               SELECT 1
               FROM playlist_scans ps
-              WHERE ps.playlist_id = sv.playlist_id
-                AND ps.hidden_count > 0
+              WHERE ps.playlist_id = pi.playlist_id
+                AND ps.unavailable_count > 0
             )
             """
         )
     rows = conn.execute(
         f"""
-        SELECT DISTINCT sv.snapshot_key, sv.video_id
-        FROM snapshot_videos sv
-        JOIN playlists p ON p.playlist_id = sv.playlist_id
-        LEFT JOIN playlist_videos pv
-          ON pv.playlist_id = sv.playlist_id
-         AND pv.video_id = sv.video_id
+        SELECT DISTINCT pi.video_id
+        FROM playlist_items pi
+        JOIN playlists p ON p.playlist_id = pi.playlist_id
+        JOIN videos v ON v.video_id = pi.video_id
         WHERE {" AND ".join(where_clauses)}
         ORDER BY sv.video_id
         """,
@@ -6385,22 +6032,22 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
             if conn.execute(
                 """
                 SELECT 1
-                FROM snapshot_video_recovery
-                WHERE snapshot_key = ? AND video_id = ? AND thumbnail_path <> ''
+                FROM video_recovery vr
+                JOIN videos v ON v.video_id = vr.video_id
+                WHERE vr.video_id = ? AND v.thumbnail_path <> ''
                 """,
-                (row["snapshot_key"], row["video_id"]),
+                (row["video_id"],),
             ).fetchone()
             is None
         ]
     if args.limit:
         rows = rows[: args.limit]
-    scope = "likely unavailable" if args.likely_hidden_only else "missing snapshot"
+    scope = "likely unavailable" if args.likely_unavailable_only else "unavailable"
     print(f"Recovering Archivarix thumbnails for {len(rows)} {scope} video IDs...")
     found = 0
     cached = 0
     channel_cache: dict[str, dict[str, Any]] = {}
     for index, row in enumerate(rows, start=1):
-        snapshot_key = row["snapshot_key"]
         video_id = row["video_id"]
         video, thumbnail_url, thumbnail_path, status, error = recover_archivarix_video(
             video_id,
@@ -6418,15 +6065,14 @@ def recover_snapshot_missing(args: argparse.Namespace) -> None:
             if thumbnail_path:
                 cached += 1
         with conn:
-            save_snapshot_video_recovery(
+            save_video_recovery(
                 conn,
-                snapshot_key,
                 video_id,
                 video,
-                thumbnail_url,
-                thumbnail_path,
                 status,
                 error,
+                thumbnail_url,
+                thumbnail_path,
             )
         label = (video or {}).get("title") or video_id
         suffix = "thumbnail" if thumbnail_path else status

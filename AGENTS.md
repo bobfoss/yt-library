@@ -26,8 +26,8 @@ $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | F
 python -m py_compile @files
 python -m unittest discover -s tests -v
 python yt_library_manager.py migrate --db yt_library.sqlite3
-python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout .
-python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout .
+python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout takeout
+python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout takeout
 ```
 
 - `py_compile` catches syntax errors without running workers.
@@ -98,11 +98,13 @@ Restart the local service when necessary, not automatically after every action. 
 
 ## Data Modeling Notes
 
-Keep raw source tables and display overlays separate. `playlist_videos` should reflect the current YouTube scan, while `playlist_video_reconciled` is the overlay that restores hidden/missing identities from Takeout and Archivarix evidence. Do not overwrite raw scan rows just to improve presentation.
+The database is a current-state model, not a metadata archive. `videos` owns canonical metadata and current playability. `playlist_items` and `history_events` link to videos and store only membership or event facts. New scans replace superseded metadata; failed or unavailable responses must not erase the last useful identity.
 
 For hidden or memory-holed playlist videos, keep uncertainty visible. Preserve badges that distinguish `Unavailable`, `restored from Takeout`, `Takeout candidate`, and Archivarix statuses such as `DELETED_FULL_META` or `NOT_FOUND`. Avoid forcing ambiguous hidden-slot matches; show candidates when counts or positions do not support a confident mapping.
 
-Video like/dislike state is stored on `video_metadata.reaction` as a compact per-video value: `L`, `D`, or empty. The `Liked videos` browser view is derived from metadata instead of being stored as a normal playlist.
+Video like/dislike state is stored on `videos.reaction` as a compact per-video value: `L`, `D`, or empty. The `Liked videos` browser view is derived from canonical videos instead of being stored as a normal playlist.
+
+Store exact timestamps as ISO 8601 UTC with `Z`. Date-only live-history observations keep `watched_at` null and use `watch_date` plus ordinal order. Generate stable YouTube and Archivarix URLs from IDs and capture timestamps instead of storing them.
 
 ## Commit & Pull Request Guidelines
 

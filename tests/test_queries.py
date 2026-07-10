@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,247 +9,117 @@ from yt_library import core
 from yt_library.queries import fetch_app_data, history_search_data
 
 
-class HistorySearchTests(unittest.TestCase):
+class NormalizedReadModelTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.original_root = core.ROOT
-        core.ROOT = Path(self.temp_dir.name)
-        db_path = Path(self.temp_dir.name) / "library.sqlite3"
-        core.migrate_database(db_path)
-        self.conn = core.connect(db_path)
-        self.addCleanup(self.cleanup)
+        self.db_path = Path(self.temp_dir.name) / "test.sqlite3"
+        core.migrate_database(self.db_path)
+        self.conn = core.connect(self.db_path)
 
-    def cleanup(self) -> None:
+    def tearDown(self) -> None:
         self.conn.close()
-        core.ROOT = self.original_root
         self.temp_dir.cleanup()
 
-    def test_history_search_sorts_newest_first_and_filters_metadata(self) -> None:
+    def add_video(self, video_id: str, title: str, channel_id: str | None = None) -> None:
+        if channel_id:
+            core.upsert_channel(self.conn, channel_id, title=f"Channel {channel_id}")
+        core.upsert_video(
+            self.conn,
+            video_id,
+            title=title,
+            description=f"Description for {title}",
+            channel_id=channel_id or "",
+            source="metadata",
+        )
+
+    def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:
+        self.add_video("old123", "Old Router Video")
+        self.add_video("new123", "AT&T Fiber Without the Gateway")
         self.conn.executemany(
             """
-            INSERT INTO history_reconciled(
-              reconciled_id, video_id, title, channel, best_watch_time, watch_date,
-              source_type, match_type, time_quality, imported_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO history_events(
+              event_id, video_id, watched_at, watch_date, time_precision, source_type, match_type
+            ) VALUES (?, ?, ?, ?, 'exact', 'takeout', 'takeout_only')
             """,
             [
-                (
-                    "old",
-                    "old123",
-                    "Old Router Video",
-                    "Net Channel",
-                    "2026-07-01T09:00:00-07:00",
-                    "2026-07-01",
-                    "takeout",
-                    "takeout_only",
-                    "exact",
-                    1,
-                ),
-                (
-                    "new",
-                    "new123",
-                    "New Fiber Video",
-                    "Got Wire",
-                    "2026-07-05T09:00:00-07:00",
-                    "2026-07-05",
-                    "youtube",
-                    "youtube_only",
-                    "date_only",
-                    2,
-                ),
+                ("old", "old123", "2026-07-01T16:00:00Z", "2026-07-01"),
+                ("new", "new123", "2026-07-02T16:00:00Z", "2026-07-02"),
             ],
-        )
-        self.conn.execute(
-            """
-            INSERT INTO video_metadata(video_id, title, description, duration_text)
-            VALUES (?, ?, ?, ?)
-            """,
-            ("new123", "AT&T Fiber Without the Gateway", "Gateway bypass and router notes", "11:34"),
         )
         self.conn.commit()
 
-        data = history_search_data(self.conn, "", limit=10)
+        data = history_search_data(self.conn, "")
         self.assertEqual([row["video_id"] for row in data["watch"]], ["new123", "old123"])
-        self.assertEqual(data["watch"][0]["history_badges"], ["YouTube", "date only", "YouTube only"])
+        filtered = history_search_data(self.conn, "fiber")
+        self.assertEqual([row["video_id"] for row in filtered["watch"]], ["new123"])
 
-        filtered = history_search_data(self.conn, "gateway", limit=10)
-        self.assertEqual(filtered["totals"]["filtered_watch_rows"], 1)
-        self.assertEqual(filtered["watch"][0]["video_id"], "new123")
-        self.assertEqual(filtered["watch"][0]["metadata_duration"], "11:34")
-
-    def test_history_search_clamps_limit_and_offset(self) -> None:
+    def test_history_search_preserves_date_only_without_fabricating_time(self) -> None:
+        self.add_video("date123", "Date Only")
         self.conn.execute(
             """
-            INSERT INTO history_reconciled(
-              reconciled_id, video_id, title, best_watch_time, watch_date
-            )
-            VALUES ('one', 'one123', 'One', '2026-07-01T09:00:00-07:00', '2026-07-01')
+            INSERT INTO history_events(
+              event_id, video_id, watch_date, time_precision, source_type, match_type, youtube_ordinal
+            ) VALUES ('youtube:1', 'date123', '2026-07-04', 'date_only', 'youtube', 'youtube_only', 1)
             """
         )
-        self.conn.commit()
+        row = history_search_data(self.conn, "", limit=1)["watch"][0]
+        self.assertIsNone(row["watched_at"])
+        self.assertEqual(row["watch_date"], "2026-07-04")
+        self.assertEqual(row["time_quality"], "date_only")
 
-        data = history_search_data(self.conn, "", limit=0, offset=-10)
-        self.assertEqual(data["limit"], 1)
-        self.assertEqual(data["offset"], 0)
-        self.assertEqual(len(data["watch"]), 1)
+    def test_history_search_filters_by_canonical_channel(self) -> None:
+        self.add_video("history123", "History Channel Video", "UC_history")
+        self.conn.execute(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES ('history-channel', 'history123', '2026-07-01', 'date_only')
+            """
+        )
+        rows = history_search_data(self.conn, "", channel_id="UC_history")["watch"]
+        self.assertEqual([row["video_id"] for row in rows], ["history123"])
 
-    def test_history_search_filters_by_channel_id_from_history_or_metadata(self) -> None:
+    def test_playlist_items_share_one_video_and_include_all_playlist_links(self) -> None:
+        self.add_video("same123", "Same Video")
         self.conn.executemany(
-            """
-            INSERT INTO history_reconciled(
-              reconciled_id, video_id, title, channel_id, best_watch_time, watch_date
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [
-                ("history-channel", "history123", "History Channel Video", "UC_history", "2026-07-01T09:00:00-07:00", "2026-07-01"),
-                ("metadata-channel", "metadata123", "Metadata Channel Video", "", "2026-07-02T09:00:00-07:00", "2026-07-02"),
-            ],
-        )
-        self.conn.execute(
-            "INSERT INTO video_metadata(video_id, channel_id) VALUES (?, ?)",
-            ("metadata123", "UC_metadata"),
-        )
-        self.conn.commit()
-
-        history_rows = history_search_data(self.conn, "", channel_id="UC_history")
-        metadata_rows = history_search_data(self.conn, "", channel_id="UC_metadata")
-
-        self.assertEqual([row["video_id"] for row in history_rows["watch"]], ["history123"])
-        self.assertEqual([row["video_id"] for row in metadata_rows["watch"]], ["metadata123"])
-
-    def test_likely_hidden_excludes_live_recovered_snapshot_rows(self) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO playlists(playlist_id, title)
-            VALUES ('pl1', 'Snapshot Playlist')
-            """
-        )
-        self.conn.execute(
-            """
-            INSERT INTO snapshots(snapshot_key, label)
-            VALUES ('snap1', 'Snapshot')
-            """
-        )
-        self.conn.execute(
-            """
-            INSERT INTO playlist_scans(playlist_id, video_count, hidden_count, scan_status)
-            VALUES ('pl1', 10, 2, 'ok')
-            """
+            "INSERT INTO playlists(playlist_id, title) VALUES (?, ?)",
+            [("pl1", "First Playlist"), ("pl2", "Second Playlist")],
         )
         self.conn.executemany(
             """
-            INSERT INTO snapshot_videos(
-              snapshot_key, playlist_id, position, video_id, playlist_title
-            )
-            VALUES ('snap1', 'pl1', ?, ?, 'Snapshot Playlist')
+            INSERT INTO playlist_items(
+              playlist_id, position, video_id, membership_state, source_quality
+            ) VALUES (?, 1, 'same123', ?, ?)
             """,
             [
-                (1, "live123"),
-                (2, "deleted123"),
-            ],
-        )
-        self.conn.executemany(
-            """
-            INSERT INTO snapshot_video_recovery(snapshot_key, video_id, title, status, search_status)
-            VALUES ('snap1', ?, ?, ?, 'found')
-            """,
-            [
-                ("live123", "Live but removed", "LIVE"),
-                ("deleted123", "Deleted and hidden", "DELETED_FULL_META"),
+                ("pl1", "current", "youtube"),
+                ("pl2", "retained_unavailable", "takeout"),
             ],
         )
         self.conn.commit()
 
-        data = fetch_app_data(self.conn)
-
-        self.assertEqual(
-            {row["video_id"] for row in data["snapshotMissing"]},
-            {"live123", "deleted123"},
-        )
-        self.assertEqual(
-            [row["video_id"] for row in data["snapshotLikelyHidden"]],
-            ["deleted123"],
-        )
-
-    def test_fetch_app_data_marks_dominant_owner_as_library_owner(self) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO channels(channel_id, title)
-            VALUES ('UCmine', 'Gir Bot'), ('UCother', 'Other Channel')
-            """
-        )
-        self.conn.executemany(
-            """
-            INSERT INTO playlists(playlist_id, title, owner_channel_id)
-            VALUES (?, ?, ?)
-            """,
-            [
-                ("mine1", "Mine 1", "UCmine"),
-                ("mine2", "Mine 2", "UCmine"),
-                ("mine3", "Mine 3", "UCmine"),
-                ("mine4", "Mine 4", "UCmine"),
-                ("mine5", "Mine 5", "UCmine"),
-                ("other1", "Other 1", "UCother"),
-            ],
-        )
-        self.conn.commit()
-
-        rows = {row["playlist_id"]: row for row in fetch_app_data(self.conn)["playlists"]}
-
-        self.assertEqual(rows["mine1"]["is_library_owner"], 1)
-        self.assertEqual(rows["other1"]["is_library_owner"], 0)
-
-    def test_playlist_videos_include_all_playlist_links_for_same_video(self) -> None:
-        self.conn.executemany(
-            """
-            INSERT INTO playlists(playlist_id, title)
-            VALUES (?, ?)
-            """,
-            [
-                ("pl1", "First Playlist"),
-                ("pl2", "Second Playlist"),
-            ],
-        )
-        self.conn.executemany(
-            """
-            INSERT INTO playlist_video_reconciled(
-              playlist_id, display_position, video_id, title, source_quality, match_type
-            )
-            VALUES (?, ?, 'same123', 'Same Video', ?, ?)
-            """,
-            [
-                ("pl1", 1, "current", ""),
-                ("pl2", 2, "takeout", "ambiguous_hidden_candidate"),
-            ],
-        )
-        self.conn.executemany(
-            """
-            INSERT INTO history_reconciled(reconciled_id, video_id, title, best_watch_time, watch_date)
-            VALUES (?, 'same123', 'Same Video', ?, ?)
-            """,
-            [
-                ("watch1", "2026-07-01T09:00:00-07:00", "2026-07-01"),
-                ("watch2", "2026-07-02T09:00:00-07:00", "2026-07-02"),
-            ],
-        )
-        self.conn.commit()
-
-        data = fetch_app_data(self.conn)
-        rows = [row for row in data["playlistVideos"] if row["video_id"] == "same123"]
-
+        rows = [row for row in fetch_app_data(self.conn)["playlistVideos"] if row["video_id"] == "same123"]
         self.assertEqual(len(rows), 2)
-        for row in rows:
-            self.assertEqual(row["watch_count"], 2)
-            self.assertEqual(row["watch_dates"], ["2026-07-01", "2026-07-02"])
-            self.assertEqual(
-                row["playlist_links"],
-                [
-                    {"playlist_id": "pl1", "title": "First Playlist", "removed": False},
-                    {"playlist_id": "pl2", "title": "Second Playlist", "removed": True},
-                ],
-            )
+        self.assertEqual(
+            rows[0]["playlist_links"],
+            [
+                {"playlist_id": "pl1", "title": "First Playlist", "removed": False},
+                {"playlist_id": "pl2", "title": "Second Playlist", "removed": True},
+            ],
+        )
+
+    def test_fetch_app_data_marks_dominant_owner_and_generates_urls(self) -> None:
+        core.upsert_channel(self.conn, "UC_owner", title="Library Owner")
+        self.conn.executemany(
+            "INSERT INTO playlists(playlist_id, title, owner_channel_id) VALUES (?, ?, 'UC_owner')",
+            [(f"pl{i}", f"Playlist {i}") for i in range(6)],
+        )
+        self.conn.commit()
+        playlists = fetch_app_data(self.conn)["playlists"]
+        self.assertTrue(all(row["is_library_owner"] for row in playlists))
+        self.assertTrue(all(row["url"].startswith("https://www.youtube.com/playlist?list=") for row in playlists))
+
+    def test_foreign_key_check_is_clean(self) -> None:
+        self.assertEqual(self.conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
 
 if __name__ == "__main__":

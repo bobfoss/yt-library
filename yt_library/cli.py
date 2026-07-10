@@ -14,15 +14,14 @@ from .core import (
     DEFAULT_THUMB_DIR,
     DEFAULT_VIDEO_THUMB_DIR,
     POCKETTUBE_EXPORT,
-    ROOT,
     TAKEOUT_DIR,
     discover_current_playlists,
     import_history,
     import_playlists,
-    import_takeout_snapshot,
+    import_takeout_playlists,
     migrate_database,
     recover_archivarix_thumbnails,
-    recover_snapshot_missing,
+    recover_unavailable_videos,
     scan_hidden,
 )
 from .server import serve
@@ -72,35 +71,32 @@ def main(argv: list[str] | None = None) -> int:
     archivarix_parser.add_argument("--page-size", type=int, default=50)
     archivarix_parser.set_defaults(func=recover_archivarix_thumbnails)
 
-    takeout_parser = subparsers.add_parser("import-takeout", help="Import a Google Takeout YouTube snapshot")
+    takeout_parser = subparsers.add_parser("import-takeout", help="Import current playlists from an extracted Takeout")
     takeout_parser.add_argument("--db", default=str(DEFAULT_DB))
     takeout_parser.add_argument("--takeout", default=str(TAKEOUT_DIR))
-    takeout_parser.add_argument("--snapshot-key", default="takeout-2025-11-09")
-    takeout_parser.add_argument("--label", default="Takeout 2025-11-09")
-    takeout_parser.set_defaults(func=import_takeout_snapshot)
+    takeout_parser.set_defaults(func=import_takeout_playlists)
 
     history_parser = subparsers.add_parser("import-history", help="Import YouTube Takeout watch/search history")
     history_parser.add_argument("--db", default=str(DEFAULT_DB))
-    history_parser.add_argument("--takeout", default=str(ROOT))
+    history_parser.add_argument("--takeout", default=str(TAKEOUT_DIR))
     history_parser.add_argument("--history-key", default="")
     history_parser.set_defaults(func=import_history)
 
     recover_missing_parser = subparsers.add_parser(
         "recover-missing-thumbnails",
-        help="Recover Archivarix thumbnails for exact missing snapshot video IDs",
+        help="Recover Archivarix metadata for exact unavailable video IDs",
     )
     recover_missing_parser.add_argument("--db", default=str(DEFAULT_DB))
     recover_missing_parser.add_argument("--thumbs", default=str(DEFAULT_ARCHIVARIX_THUMB_DIR))
-    recover_missing_parser.add_argument("--snapshot-key", default="takeout-2025-11-09")
     recover_missing_parser.add_argument("--archivarix-cookies", default=str(ARCHIVARIX_COOKIE_FILE))
     recover_missing_parser.add_argument("--video-id", default="")
     recover_missing_parser.add_argument("--limit", type=int, default=0)
     recover_missing_parser.add_argument("--only-missing", action="store_true")
-    recover_missing_parser.add_argument("--likely-hidden-only", action="store_true")
+    recover_missing_parser.add_argument("--likely-unavailable-only", action="store_true")
     recover_missing_parser.add_argument("--no-api", action="store_true", help="Only try direct Archivarix thumbnail URLs")
     recover_missing_parser.add_argument("--delay", type=float, default=3.0, help="Seconds to wait before each Archivarix API search")
     recover_missing_parser.add_argument("--refresh-metadata", action="store_true", help="Use Archivarix API even when a thumbnail is already cached")
-    recover_missing_parser.set_defaults(func=recover_snapshot_missing)
+    recover_missing_parser.set_defaults(func=recover_unavailable_videos)
 
     migrate_parser = subparsers.add_parser("migrate", help="Initialize the current database schema")
     migrate_parser.add_argument("--db", default=str(DEFAULT_DB))
@@ -110,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--db", default=str(DEFAULT_DB))
     serve_parser.add_argument("--cookies", default=str(COOKIE_FILE))
     serve_parser.add_argument("--video-thumbs", default=str(DEFAULT_VIDEO_THUMB_DIR))
-    serve_parser.add_argument("--takeout", default=str(ROOT))
+    serve_parser.add_argument("--takeout", default=str(TAKEOUT_DIR))
     serve_parser.add_argument("--host", default="0.0.0.0")
     serve_parser.add_argument("--port", type=int, default=8765)
     serve_parser.set_defaults(func=serve)

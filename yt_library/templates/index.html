@@ -211,10 +211,10 @@
     let playlistVideos = new Map();
 
     let selected = '';
-    let playlistVisibility = { videos: true, hidden: true };
+    let playlistVisibility = { videos: true, unavailable: true };
     let playlistListVisibility = { private: true, public: true, unlisted: true, others: true, unknown: true };
     let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
-    let searchResultVisibility = { hidden: true };
+    let searchResultVisibility = { unavailable: true };
     let searchResultsSort = 'relevance';
     let playlistVisibilityPlaylistId = '';
     let allVideosSort = 'newest_added';
@@ -314,18 +314,13 @@
       ['__all_videos__', 'playlist-videos'],
       ['__history__', 'history'],
       ['__liked__', 'liked-videos'],
-      ['__hidden_playlists__', 'playlists-with-unavailable'],
+      ['__unavailable_playlists__', 'playlists-with-unavailable'],
       ['__channels__', 'channels'],
       ['__subscribed_channels__', 'subscribed-channels'],
       ['__terminated_channels__', 'terminated-channels'],
-      ['__snapshot__', 'takeout-snapshot'],
-      ['__snapshot_missing__', 'snapshot-missing'],
-      ['__snapshot_likely_hidden__', 'likely-unavailable-ids'],
     ]);
     const selectionByViewHash = new Map([...viewHashBySelection].map(([selection, hash]) => [hash, selection]));
     selectionByViewHash.set('all-videos', '__all_videos__');
-    selectionByViewHash.set('playlists-with-hidden', '__hidden_playlists__');
-    selectionByViewHash.set('likely-hidden-ids', '__snapshot_likely_hidden__');
 
     function localViewHref(value) {
       if (value === '__search__') return searchHash();
@@ -345,7 +340,7 @@
       if (query) params.set('q', query);
       const filters = searchFilterParamValue();
       if (filters) params.set('f', filters);
-      if (!searchResultVisibility.hidden) params.set('unavailable', '0');
+      if (!searchResultVisibility.unavailable) params.set('unavailable', '0');
       if (searchResultsSort !== 'relevance') params.set('sort', searchResultsSort);
       if (currentPage > 1) params.set('page', String(currentPage));
       if (pageSize !== '100') params.set('size', pageSize);
@@ -368,7 +363,7 @@
         syncVideosParentFilter();
         syncSearchForFilters();
       }
-      searchResultVisibility.hidden = params.get('unavailable') !== '0';
+      searchResultVisibility.unavailable = params.get('unavailable') !== '0';
       searchResultsSort = params.get('sort') || 'relevance';
       pageSize = params.get('size') || '100';
       const page = Number(params.get('page') || 1);
@@ -460,7 +455,7 @@
     function resetPlaylistVisibilityFor(playlistId) {
       if (playlistVisibilityPlaylistId === playlistId) return;
       playlistVisibilityPlaylistId = playlistId;
-      playlistVisibility = { videos: true, hidden: true };
+      playlistVisibility = { videos: true, unavailable: true };
       playlistPageSearch = '';
     }
 
@@ -743,12 +738,12 @@
       return video.source_quality === 'takeout' && video.match_type === 'ambiguous_hidden_candidate';
     }
 
-    function isHiddenPlaylistVideo(video) {
+    function isUnavailablePlaylistVideo(video) {
       return !Number(video.is_playable || 0) || Boolean(unavailableLabel(video));
     }
 
     function wasRemovedByMeFromPlaylist(video) {
-      return wasRemovedFromPlaylist(video) && !isHiddenPlaylistVideo(video);
+      return wasRemovedFromPlaylist(video) && !isUnavailablePlaylistVideo(video);
     }
 
     function hasActivePlaylistLink(video) {
@@ -812,7 +807,6 @@
       const item = result.item || {};
       if (result.kind === 'playlist') return item.title || item.playlist_id || '';
       if (result.kind === 'channel') return item.title || item.channel_id || '';
-      if (result.kind === 'missing') return item.recovered_title || item.video_id || item.playlist_title || '';
       return displayVideoTitle(item);
     }
 
@@ -821,12 +815,10 @@
       const value = result.kind === 'history'
         ? (item.watched_at || item.best_watch_time || item.watch_date || item.added_at || '')
         : result.kind === 'playlist'
-          ? (item.updated_at ? Number(item.updated_at) * 1000 : '')
+          ? (item.updated_at || '')
           : result.kind === 'channel'
-            ? (Number(item.updated_at || item.fetched_at || 0) * 1000)
-            : result.kind === 'missing'
-              ? (item.recovered_upload_date || item.added_at || '')
-              : (item.added_at || item.metadata_upload_date || item.metadata_published_at || item.published_at || '');
+            ? (item.updated_at || item.fetched_at || '')
+            : (item.added_at || item.metadata_upload_date || item.metadata_published_at || item.published_at || '');
       const time = typeof value === 'number' ? value : Date.parse(value);
       return Number.isFinite(time) ? time : 0;
     }
@@ -1108,8 +1100,8 @@
 
     function sortedChannels(rows) {
       return [...rows].sort((left, right) => {
-        const leftUpdated = Number(left.updated_at || left.fetched_at || 0);
-        const rightUpdated = Number(right.updated_at || right.fetched_at || 0);
+        const leftUpdated = Date.parse(left.updated_at || left.fetched_at || '') || 0;
+        const rightUpdated = Date.parse(right.updated_at || right.fetched_at || '') || 0;
         if (channelViewSort === 'newest_updated' && rightUpdated !== leftUpdated) return rightUpdated - leftUpdated;
         if (channelViewSort === 'oldest_updated' && leftUpdated !== rightUpdated) return leftUpdated - rightUpdated;
         const titleCompare = String(left.title || left.channel_id).localeCompare(
@@ -1139,8 +1131,8 @@
 
     function sortedPlaylists(rows) {
       return [...rows].sort((left, right) => {
-        const leftUpdated = Number(left.updated_at || 0);
-        const rightUpdated = Number(right.updated_at || 0);
+        const leftUpdated = Date.parse(left.updated_at || '') || 0;
+        const rightUpdated = Date.parse(right.updated_at || '') || 0;
         if (allPlaylistsSort === 'newest_updated' && rightUpdated !== leftUpdated) return rightUpdated - leftUpdated;
         if (allPlaylistsSort === 'oldest_updated' && leftUpdated !== rightUpdated) return leftUpdated - rightUpdated;
         if (allPlaylistsSort === 'most_videos') {
@@ -1148,7 +1140,7 @@
           if (countDelta) return countDelta;
         }
         if (allPlaylistsSort === 'most_unavailable') {
-          const countDelta = Number(right.hidden_count || 0) - Number(left.hidden_count || 0);
+          const countDelta = Number(right.unavailable_count || 0) - Number(left.unavailable_count || 0);
           if (countDelta) return countDelta;
         }
         const titleCompare = String(left.title || left.playlist_id).localeCompare(
@@ -1296,7 +1288,7 @@
       const searchUnavailableVideos = filters.has('unavailable_videos');
       if (searchTextFields && searchPlaylistVideos) {
         for (const video of data.playlistVideos || []) {
-          if (isHiddenPlaylistVideo(video) && !searchUnavailableVideos) continue;
+          if (isUnavailablePlaylistVideo(video) && !searchUnavailableVideos) continue;
           const titleHit = searchTitles && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.match_label} ${video.match_note} ${video.video_id} ${video.playlist_title}`, query);
           const descriptionHit = searchDescriptions && includesQuery(video.metadata_description, query);
           if (titleHit || descriptionHit) {
@@ -1305,18 +1297,6 @@
               seenVideoKeys.add(key);
               results.push({ kind: 'video', score: titleHit ? 1 : 3, item: video, matchedDescription: descriptionHit && !titleHit });
             }
-          }
-        }
-      }
-      if (searchTextFields && searchUnavailableVideos) {
-        for (const video of data.snapshotMissing || []) {
-          const key = video.video_id ? `video:${video.video_id}` : `snapshot-row:${video.playlist_id}:${video.position}`;
-          if (seenVideoKeys.has(key)) continue;
-          const titleHit = searchTitles && includesQuery(`${video.video_id} ${video.playlist_title} ${video.current_title} ${video.recovered_title} ${video.recovered_channel} ${video.recovered_status}`, query);
-          const descriptionHit = searchDescriptions && includesQuery(video.recovered_description, query);
-          if (titleHit || descriptionHit) {
-            seenVideoKeys.add(key);
-            results.push({ kind: 'missing', score: titleHit ? 4 : 5, item: video });
           }
         }
       }
@@ -1336,29 +1316,25 @@
     }
 
     function resultIsUnavailable(result) {
-      if (result.kind === 'missing') {
-        const status = String(result.item?.recovered_status || '').toUpperCase();
-        return status !== 'LIVE';
-      }
       if (result.kind === 'history') return false;
       if (result.kind !== 'video') return false;
-      return isHiddenPlaylistVideo(result.item);
+      return isUnavailablePlaylistVideo(result.item);
     }
 
     function resultUsesVideoAvailabilityFilter(result) {
-      return result.kind === 'video' || result.kind === 'missing' || result.kind === 'history';
+      return result.kind === 'video' || result.kind === 'history';
     }
 
     function filterSearchResultsByAvailability(rows) {
       return rows.filter(result => {
         if (!resultUsesVideoAvailabilityFilter(result)) return true;
         const unavailable = resultIsUnavailable(result);
-        return unavailable ? searchResultVisibility.hidden : true;
+        return unavailable ? searchResultVisibility.unavailable : true;
       });
     }
 
     function isVideoSearchResult(result) {
-      return result.kind === 'video' || result.kind === 'history' || result.kind === 'missing';
+      return result.kind === 'video' || result.kind === 'history';
     }
 
     function searchResultVideoId(result) {
@@ -1368,7 +1344,6 @@
     function searchResultSourceRank(result) {
       if (result.kind === 'video') return 0;
       if (result.kind === 'history') return 1;
-      if (result.kind === 'missing') return 2;
       return 99;
     }
 
@@ -1472,7 +1447,7 @@
       videoSection.appendChild(navButton('__history__', 'History', data.historySummary?.watch_rows || 0));
       const likedRows = likedVideos();
       videoSection.appendChild(navButton('__liked__', 'Liked videos', likedRows.length));
-      const hiddenPlaylists = data.playlists.filter(playlist => (playlist.hidden_count || 0) > 0);
+      const unavailablePlaylists = data.playlists.filter(playlist => (playlist.unavailable_count || 0) > 0);
 
       const channelSection = sectionFor('Channels');
       channelSection.appendChild(navButton('__channels__', 'Channels', (data.channels || []).length));
@@ -1482,10 +1457,7 @@
       channelSection.appendChild(navButton('__terminated_channels__', 'Terminated channels', terminatedChannels.length));
 
       const metaSection = sectionFor('Meta');
-      metaSection.appendChild(navButton('__hidden_playlists__', 'Playlists with unavailable', hiddenPlaylists.length));
-      metaSection.appendChild(navButton('__snapshot__', 'Takeout snapshot', data.snapshotPlaylists.length));
-      metaSection.appendChild(navButton('__snapshot_missing__', 'Snapshot missing', data.snapshotMissing.length));
-      metaSection.appendChild(navButton('__snapshot_likely_hidden__', 'Likely unavailable IDs', data.snapshotLikelyHidden.length));
+      metaSection.appendChild(navButton('__unavailable_playlists__', 'Playlists with unavailable', unavailablePlaylists.length));
 
       const pocketTubeSection = sectionFor('Playlists');
       pocketTubeSection.appendChild(navButton('', 'All playlists', data.playlists.length));
@@ -1499,10 +1471,6 @@
 
     function videoRowsById(videoId) {
       return (data.playlistVideos || []).filter(video => video.video_id === videoId);
-    }
-
-    function snapshotRowsById(videoId) {
-      return (data.snapshotMissing || []).filter(video => video.video_id === videoId);
     }
 
     function channelById(channelId) {
@@ -1526,29 +1494,6 @@
       const playlistRows = videoRowsById(videoId);
       if (playlistRows.length) {
         return playlistRows.find(video => video.metadata_description) || playlistRows[0];
-      }
-      const snapshotRows = snapshotRowsById(videoId);
-      if (snapshotRows.length) {
-        const row = snapshotRows.find(video => video.recovered_description) || snapshotRows[0];
-        return {
-          ...row,
-          title: row.current_title || row.recovered_title || row.video_id,
-          metadata_title: row.recovered_title || row.current_title || '',
-          metadata_description: row.recovered_description || '',
-          metadata_channel: row.recovered_channel || '',
-          metadata_channel_url: row.recovered_channel_url || '',
-          metadata_channel_thumbnail_path: row.recovered_channel_thumbnail_path || '',
-          metadata_channel_id: row.recovered_channel_id || '',
-          metadata_duration: row.recovered_duration || '',
-          metadata_upload_date: row.recovered_upload_date || '',
-          metadata_thumbnail_path: row.recovered_thumbnail_path || '',
-          recovered_status: row.recovered_status || '',
-          playlist_links: [{
-            playlist_id: row.playlist_id,
-            title: row.current_title || row.playlist_title || row.playlist_id,
-            removed: false,
-          }],
-        };
       }
       return null;
     }
@@ -1804,11 +1749,11 @@
           ].join(' ').toLowerCase();
           return haystack.includes(playlistQuery);
         });
-        const videoCount = allRows.filter(video => !isHiddenPlaylistVideo(video)).length;
+        const videoCount = allRows.filter(video => !isUnavailablePlaylistVideo(video)).length;
         const hiddenCount = allRows.length - videoCount;
         const rows = sortedPlaylistVideos(allRows.filter(video => {
-          const hidden = isHiddenPlaylistVideo(video);
-          return hidden ? playlistVisibility.hidden : playlistVisibility.videos;
+          const unavailable = isUnavailablePlaylistVideo(video);
+          return unavailable ? playlistVisibility.unavailable : playlistVisibility.videos;
         }), playlistViewSort);
         title.innerHTML = `
           <span class="title-with-action">
@@ -1819,7 +1764,7 @@
         meta.innerHTML = `
           <input class="playlist-search" type="search" data-playlist-page-search placeholder="Search this playlist" autocomplete="off" value="${escapeHtml(playlistPageSearch)}">
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
           ${videoSortHtml(playlistViewSort, 'playlist')}
         `;
         renderPagedGrid(rows, video => playlistVideoCardFor(video, { showPosition: true }), playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.');
@@ -1827,17 +1772,17 @@
       }
       if (selected === '__all_videos__') {
         resetPlaylistVisibilityFor('__all_videos__');
-        const allRows = allPlaylistVideos().filter(video => isHiddenPlaylistVideo(video) || hasActivePlaylistLink(video));
-        const hiddenCount = allRows.filter(isHiddenPlaylistVideo).length;
+        const allRows = allPlaylistVideos().filter(video => isUnavailablePlaylistVideo(video) || hasActivePlaylistLink(video));
+        const hiddenCount = allRows.filter(isUnavailablePlaylistVideo).length;
         const videoCount = allRows.length - hiddenCount;
         const rows = sortedPlaylistVideos(allRows.filter(video => {
-          const hidden = isHiddenPlaylistVideo(video);
-          return hidden ? playlistVisibility.hidden : playlistVisibility.videos;
+          const unavailable = isUnavailablePlaylistVideo(video);
+          return unavailable ? playlistVisibility.unavailable : playlistVisibility.videos;
         }), allVideosSort);
         title.textContent = 'Playlist videos';
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-filter="hidden" ${playlistVisibility.hidden ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
           ${videoSortHtml(allVideosSort, 'all')}
         `;
         renderPagedGrid(rows, playlistVideoCardFor, 'No playlist videos match.');
@@ -1849,7 +1794,7 @@
       }
       if (selected === '__hidden__') {
         title.textContent = 'Unavailable videos';
-        const rows = data.hiddenVideos.filter(video => {
+        const rows = data.unavailableVideos.filter(video => {
           const haystack = `${video.title} ${video.channel} ${video.availability} ${video.playlist_title} ${video.video_id}`.toLowerCase();
           return !query || haystack.includes(query);
         });
@@ -1910,51 +1855,20 @@
         renderPagedGrid(rows, channelCardFor, 'No terminated channels match.');
         return;
       }
-      if (selected === '__hidden_playlists__') {
+      if (selected === '__unavailable_playlists__') {
         title.textContent = 'Playlists with unavailable videos';
         const rows = data.playlists
-          .filter(playlist => (playlist.hidden_count || 0) > 0)
+          .filter(playlist => (playlist.unavailable_count || 0) > 0)
           .filter(playlist => {
             const haystack = playlistSearchText(playlist).toLowerCase();
             return !query || haystack.includes(query);
           })
           .sort((a, b) =>
-            (b.hidden_count || 0) - (a.hidden_count || 0)
+            (b.unavailable_count || 0) - (a.unavailable_count || 0)
             || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
           );
         meta.textContent = `${rows.length} playlists`;
         renderPagedGrid(rows, cardFor, 'No playlists with unavailable videos match.');
-        return;
-      }
-      if (selected === '__snapshot__') {
-        const label = data.snapshots[0]?.label || 'Takeout snapshot';
-        title.textContent = label;
-        const rows = data.snapshotPlaylists.filter(playlist => {
-          const haystack = `${playlist.title} ${playlist.playlist_id} ${playlist.visibility}`.toLowerCase();
-          return !query || haystack.includes(query);
-        });
-        meta.textContent = `${rows.length} playlists`;
-        renderPagedGrid(rows, snapshotPlaylistCardFor, 'No snapshot playlists match.');
-        return;
-      }
-      if (selected === '__snapshot_missing__') {
-        title.textContent = 'Snapshot missing';
-        const rows = data.snapshotMissing.filter(video => {
-          const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.added_at}`.toLowerCase();
-          return !query || haystack.includes(query);
-        });
-        meta.textContent = `${rows.length} video IDs`;
-        renderPagedGrid(rows, snapshotMissingCardFor, 'No snapshot missing videos match.');
-        return;
-      }
-      if (selected === '__snapshot_likely_hidden__') {
-        title.textContent = 'Likely unavailable IDs';
-        const rows = data.snapshotLikelyHidden.filter(video => {
-          const haystack = `${video.video_id} ${video.playlist_title} ${video.current_title} ${video.added_at} ${video.recovered_title}`.toLowerCase();
-          return !query || haystack.includes(query);
-        });
-        meta.textContent = `${rows.length} video IDs`;
-        renderPagedGrid(rows, snapshotMissingCardFor, 'No likely unavailable videos match.');
         return;
       }
       if (selected === '') {
@@ -2015,7 +1929,7 @@
         </div>
         <div class="details">
           ${playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : ''}
-          ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} unavailable</span>` : ''}
+          ${playlist.unavailable_count ? `<span class="badge">${playlist.unavailable_count} unavailable</span>` : ''}
           ${playlistVisibilityLabelHtml(playlist)}
           ${playlist.fetch_status === 'error' ? '<span class="status">Fetch failed</span>' : ''}
         </div>
@@ -2192,11 +2106,10 @@
     }
 
     function historyWatchedAtLabel(video) {
-      const value = video.watched_at || video.watch_date || '';
-      if (!value) return '';
-      const parsed = Date.parse(value);
-      if (!Number.isFinite(parsed)) return value;
-      return new Date(parsed).toLocaleString();
+      if (video.time_quality === 'exact' && video.watched_at) {
+        return window.YTLibraryTime.format(video.watched_at);
+      }
+      return video.watch_date || '';
     }
 
     function historyRowCardFor(video) {
@@ -2228,9 +2141,6 @@
       }
       if (result.kind === 'channel') {
         return channelCardFor(result.item, { resultKind: 'Channel' });
-      }
-      if (result.kind === 'missing') {
-        return snapshotMissingCardFor(result.item, { resultKind: 'Video' });
       }
       if (result.kind === 'history') {
         return playlistVideoCardFor(result.item, {
@@ -2310,93 +2220,6 @@
         sparklineHtml: watchSparklineHtml(video),
         sources: [
           `<a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>`,
-        ],
-      });
-    }
-
-    function candidateCardFor(video) {
-      const article = document.createElement('article');
-      article.className = 'card';
-      const img = document.createElement('img');
-      img.className = 'thumb';
-      img.loading = 'lazy';
-      img.alt = '';
-      img.src = video.thumbnail_path ? `/${video.thumbnail_path}` : '';
-      const body = document.createElement('div');
-      body.className = 'body';
-      const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`;
-      body.innerHTML = `
-        <div class="title-row">
-          <a class="playlist-title" href="${localVideoHref(video.video_id)}">${escapeHtml(video.title)}</a>
-          <a class="external-link" href="${watchUrl}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(video.title)} on YouTube">${externalLinkSvg()}</a>
-        </div>
-        <div class="details">
-          <span class="badge">${escapeHtml(video.status)}</span>
-          ${video.duration_text ? `<span>${escapeHtml(video.duration_text)}</span>` : ''}
-          ${video.upload_date ? `<span>${escapeHtml(video.upload_date)}</span>` : ''}
-          ${video.channel ? creatorHtml('', video.channel, video.channel_id ? localChannelHref(video.channel_id) : '') : ''}
-          <span>${escapeHtml(video.video_id)}</span>
-        </div>
-        ${watchSparklineHtml(video)}
-        ${reactionIconsHtml(video)}
-        <div class="details">
-          <a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>
-        </div>
-      `;
-      article.append(img, body);
-      return article;
-    }
-
-    function snapshotPlaylistCardFor(playlist) {
-      const article = document.createElement('article');
-      article.className = 'card';
-      const body = document.createElement('div');
-      body.className = 'body';
-      const currentName = playlist.current_title || '';
-      body.innerHTML = `
-        <div class="playlist-title">${escapeHtml(playlist.title)}</div>
-        <div class="details">
-          <span>${playlist.video_count} videos</span>
-          ${playlist.current_video_count ? `<span>${playlist.current_video_count} current</span>` : ''}
-          ${playlist.current_hidden_count ? `<span class="badge">${playlist.current_hidden_count} unavailable now</span>` : ''}
-          ${visibilityLabelHtml(String(playlist.visibility || '').trim().toLowerCase(), playlist.visibility)}
-        </div>
-        <div class="details">
-          <span>${escapeHtml(playlist.playlist_id)}</span>
-          ${currentName && currentName !== playlist.title ? `<span>Current: ${escapeHtml(currentName)}</span>` : ''}
-        </div>
-      `;
-      article.append(body);
-      return article;
-    }
-
-    function snapshotMissingCardFor(video, options = {}) {
-      const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}`;
-      const archivarixUrl = `https://tube.archivarix.net/?q=${encodeURIComponent(video.video_id)}`;
-      const displayTitle = video.recovered_title || video.video_id;
-      return videoCardFor({
-        thumbnailPath: video.recovered_thumbnail_path,
-        resultKind: options.resultKind,
-        title: displayTitle,
-        localUrl: video.video_id ? localVideoHref(video.video_id) : '',
-        externalUrl: watchUrl,
-        badges: [
-          { label: recoveredAvailabilityLabel(video) },
-          { label: video.recovered_status },
-        ],
-        details: [
-          video.recovered_duration ? `<span>${escapeHtml(video.recovered_duration)}</span>` : '',
-          video.recovered_upload_date ? `<span>${escapeHtml(video.recovered_upload_date)}</span>` : '',
-          video.added_at ? `<span>Added ${escapeHtml(video.added_at.slice(0, 10))}</span>` : '',
-          video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
-          `<a class="playlist-link" href="${archivarixUrl}" target="_blank" rel="noreferrer">Archivarix</a>`,
-        ],
-        channelHtml: creatorHtml(video.recovered_channel_thumbnail_path, video.recovered_channel, video.recovered_channel_id ? localChannelHref(video.recovered_channel_id) : video.recovered_channel_url),
-        sparklineHtml: watchSparklineHtml(video),
-        reactionHtml: reactionIconsHtml(video),
-        description: video.recovered_description,
-        sources: [
-          `<a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.current_title || video.playlist_title)}</a>`,
         ],
       });
     }

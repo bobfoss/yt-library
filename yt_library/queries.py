@@ -6,12 +6,17 @@ import sqlite3
 from typing import Any
 
 from .core import (
+    archivarix_media_url,
     history_match_type_label,
     history_source_type_label,
     history_time_quality_label,
     history_time_quality_note,
     playlist_match_type_label,
     playlist_match_type_note,
+    wayback_video_url,
+    youtube_channel_url,
+    youtube_playlist_url,
+    youtube_video_url,
 )
 
 
@@ -28,11 +33,10 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             """
             SELECT p.*,
                    COALESCE(s.video_count, 0) AS scanned_video_count,
-                   COALESCE(s.hidden_count, 0) AS hidden_count,
-                   COALESCE(s.scanned_at, 0) AS scanned_at,
+                   COALESCE(s.unavailable_count, 0) AS unavailable_count,
+                   s.scanned_at,
                    COALESCE(s.scan_status, '') AS scan_status,
                    COALESCE(ch.title, '') AS owner_channel_title,
-                   COALESCE(ch.url, '') AS owner_channel_url,
                    COALESCE(ch.thumbnail_path, '') AS owner_channel_thumbnail_path,
                    COALESCE(ch.status, '') AS owner_channel_status
             FROM playlists p
@@ -42,6 +46,9 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             """
         )
     ]
+    for playlist in playlists:
+        playlist["url"] = youtube_playlist_url(playlist.get("playlist_id", ""))
+        playlist["owner_channel_url"] = youtube_channel_url(playlist.get("owner_channel_id", ""))
     mark_library_owner_playlists(playlists)
     memberships = [
         dict(row)
@@ -54,203 +61,96 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             """
         )
     ]
-    hidden_videos = [
-        dict(row)
-        for row in conn.execute(
-            """
-            SELECT v.*, p.title AS playlist_title, p.url AS playlist_url
-            FROM playlist_videos v
-            JOIN playlists p ON p.playlist_id = v.playlist_id
-            WHERE v.is_playable = 0
-            ORDER BY p.title COLLATE NOCASE, v.position
-            """
-        )
-    ]
-    channels = [
-        dict(row)
-        for row in conn.execute(
-            """
-            SELECT *
-            FROM channels
-            WHERE channel_id <> ''
-            ORDER BY title COLLATE NOCASE, channel_id
-            """
-        )
-    ]
+    channels = [dict(row) for row in conn.execute("SELECT * FROM channels ORDER BY title COLLATE NOCASE")]
+    for channel in channels:
+        channel["url"] = youtube_channel_url(channel.get("channel_id", ""))
+
     playlist_videos = [
         dict(row)
         for row in conn.execute(
             """
-            SELECT v.*, p.title AS playlist_title, p.url AS playlist_url,
-                   v.display_position AS position,
-                   COALESCE(NULLIF(NULLIF(vm.title, '- YouTube'), 'YouTube'), r.title, '') AS metadata_title,
-                   COALESCE(NULLIF(vm.description, ''), r.description, '') AS metadata_description,
-                   COALESCE(NULLIF(r.channel_id, ''), NULLIF(vm.channel_id, ''), NULLIF(v.channel_id, ''), '') AS metadata_channel_id,
-                   COALESCE(NULLIF(rc.title, ''), NULLIF(vc.title, ''), NULLIF(vmc.title, ''), v.channel, '') AS metadata_channel,
-                   COALESCE(NULLIF(rc.url, ''), NULLIF(vc.url, ''), NULLIF(vmc.url, ''), CASE WHEN r.channel_id <> '' THEN 'https://www.youtube.com/channel/' || r.channel_id ELSE '' END, '') AS metadata_channel_url,
-                   COALESCE(NULLIF(vm.duration_text, ''), r.duration_text, '') AS metadata_duration,
-                   COALESCE(NULLIF(vm.upload_date, ''), r.upload_date, '') AS metadata_upload_date,
-                   COALESCE(NULLIF(vm.thumbnail_path, ''), r.thumbnail_path, '') AS metadata_thumbnail_path,
-                   COALESCE(NULLIF(rc.thumbnail_path, ''), NULLIF(vc.thumbnail_path, ''), NULLIF(vmc.thumbnail_path, ''), '') AS metadata_channel_thumbnail_path,
-                   COALESCE(NULLIF(vm.fetch_status, ''), r.search_status, '') AS metadata_fetch_status,
-                   COALESCE(vm.reaction, '') AS reaction,
-                   COALESCE(NULLIF(vm.watch_progress_percent, 0), latest_history.watch_progress_percent, 0) AS watch_progress_percent,
-                   COALESCE(NULLIF(vm.watch_resume_seconds, 0), latest_history.watch_resume_seconds, 0) AS watch_resume_seconds,
-                   COALESCE(latest_history.watch_count, 0) AS watch_count,
-                   COALESCE(latest_history.watch_dates, '') AS watch_dates_text,
-                   COALESCE(r.status, '') AS recovered_status
-            FROM playlist_video_reconciled v
-            JOIN playlists p ON p.playlist_id = v.playlist_id
-            LEFT JOIN video_metadata vm ON vm.video_id = v.video_id
-            LEFT JOIN snapshot_video_recovery r
-              ON r.snapshot_key = v.snapshot_key AND r.video_id = v.video_id
-            LEFT JOIN channels vmc ON vmc.channel_id = vm.channel_id
-            LEFT JOIN channels rc ON rc.channel_id = r.channel_id
-            LEFT JOIN channels vc ON vc.channel_id = v.channel_id
+            SELECT pi.*,
+                   pi.position AS display_position,
+                   CASE WHEN pi.membership_state = 'current' THEN pi.position ELSE 0 END AS current_position,
+                   p.title AS playlist_title,
+                   v.title,
+                   COALESCE(v.channel_id, '') AS channel_id,
+                   COALESCE(ch.title, '') AS channel,
+                   v.duration_text,
+                   COALESCE(v.is_playable, 0) AS is_playable,
+                   CASE WHEN pi.video_id IS NULL THEN pi.unavailable_kind ELSE v.availability END AS availability,
+                   v.title AS metadata_title,
+                   v.description AS metadata_description,
+                   COALESCE(v.channel_id, '') AS metadata_channel_id,
+                   COALESCE(ch.title, '') AS metadata_channel,
+                   v.duration_text AS metadata_duration,
+                   v.upload_date AS metadata_upload_date,
+                   v.thumbnail_path AS metadata_thumbnail_path,
+                   COALESCE(ch.thumbnail_path, '') AS metadata_channel_thumbnail_path,
+                   v.fetch_status AS metadata_fetch_status,
+                   v.reaction,
+                   COALESCE(NULLIF(v.watch_progress_percent, 0), hw.watch_progress_percent, 0) AS watch_progress_percent,
+                   COALESCE(NULLIF(v.watch_resume_seconds, 0), hw.watch_resume_seconds, 0) AS watch_resume_seconds,
+                   COALESCE(hw.watch_count, 0) AS watch_count,
+                   COALESCE(hw.watch_dates, '') AS watch_dates_text,
+                   COALESCE(vr.archivarix_status, '') AS recovered_status,
+                   vr.archive_capture_at,
+                   vr.media_available
+            FROM playlist_items pi
+            JOIN playlists p ON p.playlist_id = pi.playlist_id
+            LEFT JOIN videos v ON v.video_id = pi.video_id
+            LEFT JOIN channels ch ON ch.channel_id = v.channel_id
+            LEFT JOIN video_recovery vr ON vr.video_id = v.video_id
             LEFT JOIN (
-                SELECT hr.video_id,
-                       MAX(hr.watch_progress_percent) AS watch_progress_percent,
-                       MAX(hr.watch_resume_seconds) AS watch_resume_seconds,
+                SELECT video_id,
+                       MAX(watch_progress_percent) AS watch_progress_percent,
+                       MAX(watch_resume_seconds) AS watch_resume_seconds,
                        COUNT(*) AS watch_count,
-                       GROUP_CONCAT(COALESCE(NULLIF(hr.watch_date, ''), substr(hr.best_watch_time, 1, 10)), '|') AS watch_dates
-                FROM history_reconciled hr
-                WHERE hr.video_id <> ''
-                GROUP BY hr.video_id
-            ) latest_history ON latest_history.video_id = v.video_id
-            ORDER BY p.title COLLATE NOCASE, v.display_position
+                       GROUP_CONCAT(COALESCE(watch_date, substr(watched_at, 1, 10)), '|') AS watch_dates
+                FROM history_events
+                GROUP BY video_id
+            ) hw ON hw.video_id = pi.video_id
+            ORDER BY p.title COLLATE NOCASE, pi.position
             """
         )
     ]
+    playlist_links_by_video: dict[str, list[dict[str, Any]]] = {}
+    seen_links: set[tuple[str, str]] = set()
     for video in playlist_videos:
-        video["match_label"] = playlist_match_type_label(video.get("match_type", ""))
-        video["match_note"] = playlist_match_type_note(video.get("match_type", ""))
-        video["watch_dates"] = [
-            value
-            for value in str(video.pop("watch_dates_text", "") or "").split("|")
-            if value
-        ]
-    playlist_links_by_video: dict[str, list[dict[str, str]]] = {}
-    seen_playlist_links: set[tuple[str, str]] = set()
-    for video in playlist_videos:
-        video_id = video.get("video_id", "")
-        playlist_id = video.get("playlist_id", "")
-        if not video_id or not playlist_id:
+        video_id = video.get("video_id") or ""
+        playlist_id = video.get("playlist_id") or ""
+        video["url"] = youtube_video_url(video_id, playlist_id)
+        video["playlist_url"] = youtube_playlist_url(playlist_id)
+        video["metadata_channel_url"] = youtube_channel_url(video.get("metadata_channel_id") or "")
+        video["archive_url"] = wayback_video_url(video_id, video.get("archive_capture_at"))
+        video["video_file_url"] = archivarix_media_url(video_id) if video.get("media_available") else ""
+        video["match_label"] = playlist_match_type_label(video.get("match_type") or "")
+        video["match_note"] = playlist_match_type_note(video.get("match_type") or "")
+        video["watch_dates"] = [value for value in (video.pop("watch_dates_text", "") or "").split("|") if value]
+        if not video_id or not playlist_id or (video_id, playlist_id) in seen_links:
             continue
-        key = (video_id, playlist_id)
-        if key in seen_playlist_links:
-            continue
-        seen_playlist_links.add(key)
+        seen_links.add((video_id, playlist_id))
         playlist_links_by_video.setdefault(video_id, []).append(
             {
                 "playlist_id": playlist_id,
-                "title": video.get("playlist_title", "") or playlist_id,
-                "removed": bool(
-                    video.get("source_quality") == "takeout"
-                    and video.get("match_type") == "ambiguous_hidden_candidate"
-                    and video.get("is_playable")
-                ),
+                "title": video.get("playlist_title") or playlist_id,
+                "removed": video.get("membership_state") == "retained_unavailable",
             }
         )
     for video in playlist_videos:
-        video_id = video.get("video_id", "")
-        playlist_links = playlist_links_by_video.get(video_id, []) if video_id else []
-        if not playlist_links and video.get("playlist_id"):
-            playlist_links = [
-                {
-                    "playlist_id": video.get("playlist_id", ""),
-                    "title": video.get("playlist_title", "") or video.get("playlist_id", ""),
-                    "removed": bool(
-                        video.get("source_quality") == "takeout"
-                        and video.get("match_type") == "ambiguous_hidden_candidate"
-                        and video.get("is_playable")
-                    ),
-                }
-            ]
-        video["playlist_links"] = playlist_links
-    archivarix_candidates = [
-        dict(row)
-        for row in conn.execute(
-            """
-            SELECT a.*, p.title AS playlist_title, p.url AS playlist_url
-            FROM archivarix_candidates a
-            JOIN playlists p ON p.playlist_id = a.playlist_id
-            ORDER BY p.title COLLATE NOCASE, a.upload_date DESC, a.title COLLATE NOCASE
-            """
-        )
+        video["playlist_links"] = playlist_links_by_video.get(video.get("video_id") or "", [])
+
+    unavailable_videos = [
+        video
+        for video in playlist_videos
+        if video.get("membership_state") != "current" or not video.get("is_playable")
     ]
-    snapshots = [dict(row) for row in conn.execute("SELECT * FROM snapshots ORDER BY imported_at DESC")]
-    snapshot_playlists = [
-        dict(row)
-        for row in conn.execute(
-            """
-            SELECT sp.*,
-                   COUNT(sv.video_id) AS video_count,
-                   p.title AS current_title,
-                   COALESCE(ps.video_count, 0) AS current_video_count,
-                   COALESCE(ps.hidden_count, 0) AS current_hidden_count
-            FROM snapshot_playlists sp
-            LEFT JOIN snapshot_videos sv
-              ON sv.snapshot_key = sp.snapshot_key AND sv.playlist_id = sp.playlist_id
-            LEFT JOIN playlists p ON p.playlist_id = sp.playlist_id
-            LEFT JOIN playlist_scans ps ON ps.playlist_id = sp.playlist_id
-            GROUP BY sp.snapshot_key, sp.playlist_id
-            ORDER BY sp.title COLLATE NOCASE
-            """
-        )
-    ]
-    snapshot_missing = [
-        dict(row)
-        for row in conn.execute(
-            """
-            SELECT sv.snapshot_key,
-                   sv.playlist_id,
-                   sv.playlist_title,
-                   sv.position,
-                   sv.video_id,
-                   sv.added_at,
-                   p.title AS current_title,
-                   p.url AS playlist_url,
-                   COALESCE(r.title, '') AS recovered_title,
-                   COALESCE(r.description, '') AS recovered_description,
-                   COALESCE(NULLIF(r.channel_id, ''), '') AS recovered_channel_id,
-                   COALESCE(NULLIF(rc.title, ''), '') AS recovered_channel,
-                   COALESCE(NULLIF(rc.url, ''), CASE WHEN r.channel_id <> '' THEN 'https://www.youtube.com/channel/' || r.channel_id ELSE '' END, '') AS recovered_channel_url,
-                   COALESCE(NULLIF(rc.thumbnail_path, ''), '') AS recovered_channel_thumbnail_path,
-                   COALESCE(r.status, '') AS recovered_status,
-                   COALESCE(r.duration_text, '') AS recovered_duration,
-                   COALESCE(r.upload_date, '') AS recovered_upload_date,
-                   COALESCE(r.thumbnail_path, '') AS recovered_thumbnail_path,
-                   COALESCE(r.search_status, '') AS recovery_search_status
-            FROM snapshot_videos sv
-            JOIN playlists p ON p.playlist_id = sv.playlist_id
-            LEFT JOIN playlist_videos pv
-              ON pv.playlist_id = sv.playlist_id
-             AND pv.video_id = sv.video_id
-             AND pv.is_playable = 1
-            LEFT JOIN snapshot_video_recovery r
-              ON r.snapshot_key = sv.snapshot_key
-             AND r.video_id = sv.video_id
-            LEFT JOIN channels rc ON rc.channel_id = r.channel_id
-            WHERE pv.video_id IS NULL
-            ORDER BY sv.playlist_title COLLATE NOCASE, sv.position
-            """
-        )
-    ]
-    snapshot_likely_hidden = [
-        row
-        for row in snapshot_missing
-        if conn.execute(
-            "SELECT hidden_count FROM playlist_scans WHERE playlist_id = ? AND hidden_count > 0",
-            (row["playlist_id"],),
-        ).fetchone()
-        and (row["recovered_status"] or "").upper() != "LIVE"
-    ]
-    history_summary = dict(
+    totals = dict(
         conn.execute(
             """
             SELECT
-              (SELECT COUNT(*) FROM history_reconciled) AS watch_rows,
-              (SELECT COUNT(DISTINCT video_id) FROM history_reconciled WHERE video_id <> '') AS distinct_watch_videos
+              (SELECT COUNT(*) FROM history_events) AS watch_rows,
+              (SELECT COUNT(DISTINCT video_id) FROM history_events) AS distinct_watch_videos
             """
         ).fetchone()
     )
@@ -260,13 +160,8 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
         "memberships": memberships,
         "playlistVideos": playlist_videos,
         "channels": channels,
-        "hiddenVideos": hidden_videos,
-        "archivarixCandidates": archivarix_candidates,
-        "snapshots": snapshots,
-        "snapshotPlaylists": snapshot_playlists,
-        "snapshotMissing": snapshot_missing,
-        "snapshotLikelyHidden": snapshot_likely_hidden,
-        "historySummary": history_summary,
+        "unavailableVideos": unavailable_videos,
+        "historySummary": totals,
     }
 
 
@@ -276,7 +171,6 @@ def clean_playlist_owner_name(value: str) -> str:
 
 
 def mark_library_owner_playlists(playlists: list[dict[str, Any]]) -> None:
-    """Mark the dominant playlist owner so external owners can stay distinct."""
     channel_counts: dict[str, int] = {}
     name_counts: dict[str, int] = {}
     for playlist in playlists:
@@ -289,15 +183,12 @@ def mark_library_owner_playlists(playlists: list[dict[str, Any]]) -> None:
         if owner_name:
             key = owner_name.casefold()
             name_counts[key] = name_counts.get(key, 0) + 1
-
     library_channel_id = dominant_owner_key(channel_counts)
     library_owner_name = dominant_owner_key(name_counts)
     for playlist in playlists:
         owner_channel_id = (playlist.get("owner_channel_id") or "").strip()
         owner_name = clean_playlist_owner_name(playlist.get("owner_channel_title") or "")
-        playlist["owner_channel_title"] = clean_playlist_owner_name(
-            playlist.get("owner_channel_title") or ""
-        )
+        playlist["owner_channel_title"] = owner_name
         playlist["is_library_owner"] = int(
             bool(library_channel_id and owner_channel_id == library_channel_id)
             or bool(library_owner_name and owner_name.casefold() == library_owner_name)
@@ -324,158 +215,116 @@ def history_search_data(
     channel_id = channel_id.strip()
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
-    like = f"%{query.lower()}%"
-    watch_conditions: list[str] = []
-    watch_params: list[Any] = []
+    conditions: list[str] = []
+    params: list[Any] = []
     if query:
-        watch_conditions.append(
-            """
-            lower(
-              hr.title || ' ' ||
-              hr.channel || ' ' ||
-              hr.video_id || ' ' ||
-              COALESCE(vm.title, '') || ' ' ||
-              COALESCE(vmc.title, '') || ' ' ||
-              COALESCE(hc.title, '') || ' ' ||
-              COALESCE(vm.upload_date, '') || ' ' ||
-              COALESCE(vm.description, '')
-            ) LIKE ?
-            """
+        conditions.append(
+            "lower(v.title || ' ' || COALESCE(ch.title, '') || ' ' || v.video_id || ' ' || v.description || ' ' || v.upload_date) LIKE ?"
         )
-        watch_params.append(like)
+        params.append(f"%{query.lower()}%")
     if channel_id:
-        watch_conditions.append("(hr.channel_id = ? OR vm.channel_id = ?)")
-        watch_params.extend([channel_id, channel_id])
-    watch_where = f"WHERE {' AND '.join(watch_conditions)}" if watch_conditions else ""
-    filtered_watch_rows = int(
-        conn.execute(
-            f"""
-            SELECT COUNT(*) AS count
-            FROM history_reconciled hr
-            LEFT JOIN video_metadata vm ON vm.video_id = hr.video_id
-            LEFT JOIN channels vmc ON vmc.channel_id = vm.channel_id
-            LEFT JOIN channels hc ON hc.channel_id = hr.channel_id
-            {watch_where}
-            """,
-            watch_params,
-        ).fetchone()["count"]
-    )
-    watch_rows = [
+        conditions.append("v.channel_id = ?")
+        params.append(channel_id)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    filtered = conn.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM history_events he
+        JOIN videos v ON v.video_id = he.video_id
+        LEFT JOIN channels ch ON ch.channel_id = v.channel_id
+        {where}
+        """,
+        params,
+    ).fetchone()["count"]
+    rows = [
         dict(row)
         for row in conn.execute(
             f"""
-            SELECT hr.reconciled_id,
-                   COALESCE(NULLIF(hr.takeout_history_key, ''), hr.youtube_history_key) AS history_key,
-                   hr.youtube_ordinal AS position,
+            SELECT he.event_id AS reconciled_id,
+                   COALESCE(he.takeout_history_key, 'youtube') AS history_key,
+                   COALESCE(he.youtube_ordinal, 0) AS position,
                    'Watched' AS action,
-                   hr.video_id,
-                   hr.title,
-                   hr.url,
-                   hr.channel,
-                   hr.best_watch_time AS watched_at,
-                   hr.watch_date,
-                   hr.source_type,
-                   hr.match_type,
-                   hr.time_quality,
-                   hr.youtube_history_key,
-                   hr.youtube_ordinal,
-                   hr.takeout_history_key,
-                   hr.takeout_row_hash,
-                   hr.imported_at,
-                   COALESCE(vm.title, '') AS metadata_title,
-                   COALESCE(vm.description, '') AS metadata_description,
-                   COALESCE(NULLIF(vm.channel_id, ''), NULLIF(hr.channel_id, ''), '') AS metadata_channel_id,
-                   COALESCE(NULLIF(vmc.title, ''), NULLIF(hc.title, ''), hr.channel, '') AS metadata_channel,
-                   COALESCE(NULLIF(vmc.url, ''), NULLIF(hc.url, ''), '') AS metadata_channel_url,
-                   COALESCE(vm.duration_text, '') AS metadata_duration,
-                   COALESCE(vm.thumbnail_path, '') AS metadata_thumbnail_path,
-                   COALESCE(NULLIF(vmc.thumbnail_path, ''), NULLIF(hc.thumbnail_path, ''), '') AS metadata_channel_thumbnail_path,
-                   COALESCE(vm.reaction, '') AS reaction,
-                   COALESCE(NULLIF(hr.watch_progress_percent, 0), vm.watch_progress_percent, 0) AS watch_progress_percent,
-                   COALESCE(NULLIF(hr.watch_resume_seconds, 0), vm.watch_resume_seconds, 0) AS watch_resume_seconds,
-                   COALESCE(history_counts.watch_count, 0) AS watch_count,
-                   COALESCE(history_counts.watch_dates, '') AS watch_dates_text,
-                   COALESCE(vm.fetch_status, '') AS metadata_fetch_status
-            FROM history_reconciled hr
-            LEFT JOIN video_metadata vm ON vm.video_id = hr.video_id
-            LEFT JOIN channels vmc ON vmc.channel_id = vm.channel_id
-            LEFT JOIN channels hc ON hc.channel_id = hr.channel_id
-            LEFT JOIN (
-                SELECT video_id,
-                       COUNT(*) AS watch_count,
-                       GROUP_CONCAT(COALESCE(NULLIF(watch_date, ''), substr(best_watch_time, 1, 10)), '|') AS watch_dates
-                FROM history_reconciled
-                WHERE video_id <> ''
-                GROUP BY video_id
-            ) history_counts ON history_counts.video_id = hr.video_id
-            {watch_where}
-            ORDER BY CASE WHEN hr.best_watch_time = '' THEN 1 ELSE 0 END,
-                     hr.best_watch_time DESC,
-                     hr.imported_at DESC,
-                     position
+                   he.video_id,
+                   v.title,
+                   COALESCE(ch.title, '') AS channel,
+                   he.watched_at,
+                   he.watch_date,
+                   he.source_type,
+                   he.match_type,
+                   he.time_precision AS time_quality,
+                   he.youtube_ordinal,
+                   COALESCE(he.takeout_history_key, '') AS takeout_history_key,
+                   COALESCE(he.takeout_row_key, '') AS takeout_row_hash,
+                   he.imported_at,
+                   v.title AS metadata_title,
+                   v.description AS metadata_description,
+                   COALESCE(v.channel_id, '') AS metadata_channel_id,
+                   COALESCE(ch.title, '') AS metadata_channel,
+                   v.duration_text AS metadata_duration,
+                   v.thumbnail_path AS metadata_thumbnail_path,
+                   COALESCE(ch.thumbnail_path, '') AS metadata_channel_thumbnail_path,
+                   v.reaction,
+                   COALESCE(NULLIF(he.watch_progress_percent, 0), v.watch_progress_percent, 0) AS watch_progress_percent,
+                   COALESCE(NULLIF(he.watch_resume_seconds, 0), v.watch_resume_seconds, 0) AS watch_resume_seconds,
+                   counts.watch_count,
+                   counts.watch_dates AS watch_dates_text,
+                   v.fetch_status AS metadata_fetch_status
+            FROM history_events he
+            JOIN videos v ON v.video_id = he.video_id
+            LEFT JOIN channels ch ON ch.channel_id = v.channel_id
+            JOIN (
+              SELECT video_id, COUNT(*) AS watch_count,
+                     GROUP_CONCAT(COALESCE(watch_date, substr(watched_at, 1, 10)), '|') AS watch_dates
+              FROM history_events GROUP BY video_id
+            ) counts ON counts.video_id = he.video_id
+            {where}
+            ORDER BY COALESCE(he.watched_at, he.watch_date || 'T23:59:59Z') DESC,
+                     CASE WHEN he.youtube_ordinal IS NULL THEN 1 ELSE 0 END,
+                     he.youtube_ordinal
             LIMIT ? OFFSET ?
             """,
-            [*watch_params, limit, offset],
+            [*params, limit, offset],
         )
     ]
-    for row in watch_rows:
-        source_label = history_source_type_label(row.get("source_type", ""))
-        time_label = history_time_quality_label(row.get("time_quality", ""))
-        match_label = history_match_type_label(row.get("match_type", ""))
-        row["source_label"] = source_label
-        row["time_quality_label"] = time_label
-        row["match_label"] = match_label
-        row["watch_dates"] = [
-            value
-            for value in str(row.pop("watch_dates_text", "") or "").split("|")
-            if value
-        ]
-        row["time_quality_note"] = history_time_quality_note(row.get("time_quality", ""))
-        labels = [label for label in (source_label, time_label, match_label) if label]
-        row["history_badges"] = labels
-    video_ids = sorted({row.get("video_id", "") for row in watch_rows if row.get("video_id", "")})
-    playlist_links_by_video: dict[str, list[dict[str, Any]]] = {}
+    video_ids = sorted({row["video_id"] for row in rows})
+    playlist_links: dict[str, list[dict[str, Any]]] = {}
     if video_ids:
         placeholders = ",".join("?" for _ in video_ids)
-        seen_links: set[tuple[str, str]] = set()
         for link in conn.execute(
             f"""
-            SELECT v.video_id,
-                   v.playlist_id,
-                   p.title,
-                   v.source_quality,
-                   v.match_type,
-                   v.is_playable
-            FROM playlist_video_reconciled v
-            JOIN playlists p ON p.playlist_id = v.playlist_id
-            WHERE v.video_id IN ({placeholders})
-            ORDER BY p.title COLLATE NOCASE, v.display_position
+            SELECT DISTINCT pi.video_id, pi.playlist_id, p.title, pi.membership_state
+            FROM playlist_items pi JOIN playlists p ON p.playlist_id = pi.playlist_id
+            WHERE pi.video_id IN ({placeholders})
+            ORDER BY p.title COLLATE NOCASE
             """,
             video_ids,
         ):
-            key = (link["video_id"], link["playlist_id"])
-            if key in seen_links:
-                continue
-            seen_links.add(key)
-            playlist_links_by_video.setdefault(link["video_id"], []).append(
+            playlist_links.setdefault(link["video_id"], []).append(
                 {
                     "playlist_id": link["playlist_id"],
                     "title": link["title"] or link["playlist_id"],
-                    "removed": bool(
-                        link["source_quality"] == "takeout"
-                        and link["match_type"] == "ambiguous_hidden_candidate"
-                        and link["is_playable"]
-                    ),
+                    "removed": link["membership_state"] == "retained_unavailable",
                 }
             )
-    for row in watch_rows:
-        row["playlist_links"] = playlist_links_by_video.get(row.get("video_id", ""), [])
-    total = dict(
+    for row in rows:
+        row["url"] = youtube_video_url(row["video_id"])
+        row["metadata_channel_url"] = youtube_channel_url(row.get("metadata_channel_id") or "")
+        row["source_label"] = history_source_type_label(row.get("source_type") or "")
+        row["time_quality_label"] = history_time_quality_label(row.get("time_quality") or "")
+        row["match_label"] = history_match_type_label(row.get("match_type") or "")
+        row["time_quality_note"] = history_time_quality_note(row.get("time_quality") or "")
+        row["history_badges"] = [
+            value
+            for value in (row["source_label"], row["time_quality_label"], row["match_label"])
+            if value
+        ]
+        row["watch_dates"] = [value for value in (row.pop("watch_dates_text", "") or "").split("|") if value]
+        row["playlist_links"] = playlist_links.get(row["video_id"], [])
+    totals = dict(
         conn.execute(
             """
-            SELECT
-              (SELECT COUNT(*) FROM history_reconciled) AS watch_rows,
-              (SELECT COUNT(DISTINCT video_id) FROM history_reconciled WHERE video_id <> '') AS distinct_watch_videos
+            SELECT COUNT(*) AS watch_rows, COUNT(DISTINCT video_id) AS distinct_watch_videos
+            FROM history_events
             """
         ).fetchone()
     )
@@ -484,6 +333,6 @@ def history_search_data(
         "channel_id": channel_id,
         "limit": limit,
         "offset": offset,
-        "watch": watch_rows,
-        "totals": {**total, "filtered_watch_rows": filtered_watch_rows},
+        "watch": rows,
+        "totals": {**totals, "filtered_watch_rows": int(filtered or 0)},
     }

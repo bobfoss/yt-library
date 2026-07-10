@@ -4,10 +4,10 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 
 ## Features
 
-- Browse playlists, playlist videos, hidden or missing videos, and Takeout snapshots.
+- Browse current playlists, canonical videos, and retained unavailable videos.
 - Search watch history with paginated results across titles, channels, IDs, and fetched metadata descriptions.
 - Import YouTube Takeout history zip files without extracting them first.
-- Reconcile live YouTube history observations with precise Takeout watch timestamps.
+- Reconcile date-only live YouTube history observations with precise Takeout watch timestamps.
 - Cache video thumbnails and creator channel avatars locally.
 - Capture YouTube like/dislike reaction state during metadata fetches and expose a derived Liked videos view.
 - Monitor playlist scans, metadata fetches, history verification, and Takeout imports from the admin page.
@@ -38,7 +38,7 @@ Keep a Netscape-format YouTube cookie file in the project directory or pass its 
 
 ```powershell
 python yt_library_manager.py migrate --db yt_library.sqlite3
-python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout .
+python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout takeout
 ```
 
 Run `migrate` deliberately when creating a fresh local database after schema
@@ -60,11 +60,11 @@ Open:
 $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
 python -m py_compile @files
 python -m unittest discover -s tests -v
-python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout .
+python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout takeout
 git diff --check
 ```
 
-`import-history` scans the Takeout path for watch history zip files, imports watch rows, syncs Takeout subscription channels when present, and rebuilds reconciliation.
+`import-history` uses only the newest Takeout zip in the selected path. It imports current playlists, watch events, and subscriptions, then reconciles exact Takeout times with live-history ordinals. Older exports are not retained as metadata history.
 
 ## Testing
 
@@ -73,6 +73,8 @@ The test suite uses the Python standard library `unittest` runner, so there is n
 ## Data Notes
 
 Takeout history is the authoritative source for exact watch times. Live YouTube history is useful for recent observations and ordering, but it may only provide date-level data. Reconciled history rows use compact `source_type`, `match_type`, and `time_quality` values so fetch time is not mistaken for watch time.
+
+The database stores canonical video metadata once in `videos`; playlist membership and history events link to that entity. Metadata revisions are intentionally discarded, except that the last useful state is retained when a video becomes unavailable. Exact timestamps use ISO 8601 UTC. The UI detects the browser timezone once when no preference exists, and Admin can override it.
 
 ## Security
 

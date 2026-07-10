@@ -27,6 +27,7 @@ from .workers import (
 INDEX_HTML = load_template("index.html")
 HISTORY_HTML = load_template("history.html")
 ADMIN_HTML = load_template("admin.html")
+TIMEZONE_JS = load_template("timezone.js")
 
 class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(
@@ -47,8 +48,17 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/timezone.js":
+            body = TIMEZONE_JS.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path in {"/", "/index.html"}:
-            body = INDEX_HTML.encode("utf-8")
+            body = self.render_page(INDEX_HTML)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -57,7 +67,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         if parsed.path == "/admin":
-            body = ADMIN_HTML.encode("utf-8")
+            body = self.render_page(ADMIN_HTML)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -66,13 +76,20 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         if parsed.path == "/history":
-            body = HISTORY_HTML.encode("utf-8")
+            body = self.render_page(HISTORY_HTML)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if parsed.path == "/api/settings":
+            conn = connect(self.db_path)
+            try:
+                self.send_json({"displayTimezone": get_setting(conn, "display_timezone", "")})
+            finally:
+                conn.close()
             return
         if parsed.path == "/api/data":
             conn = connect(self.db_path)
@@ -157,6 +174,20 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
+        if parsed.path == "/api/settings/timezone":
+            value = (params.get("value") or [""])[0].strip()
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    try:
+                        set_setting(conn, "display_timezone", value)
+                    except ValueError as exc:
+                        self.send_json({"error": str(exc)}, status=400)
+                        return
+            finally:
+                conn.close()
+            self.send_json({"ok": True, "displayTimezone": value})
+            return
         if parsed.path == "/api/admin/metadata/start":
             stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
             force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
@@ -276,7 +307,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/admin/playlists/reconcile":
             conn = connect(self.db_path)
             run_id = uuid.uuid4().hex
-            started_at = int(time.time())
+            started_at = utc_now()
             try:
                 with conn:
                     conn.execute(
@@ -307,7 +338,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         WHERE run_id = ?
                         """,
                         (
-                            int(time.time()),
+                            utc_now(),
                             stats["playlists"],
                             stats["playlists"],
                             stats["inferred"],
@@ -363,6 +394,29 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": True, **stats})
             return
         self.send_error(404, "Not found")
+
+    def do_DELETE(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/api/settings/timezone":
+            self.send_error(404, "Not found")
+            return
+        conn = connect(self.db_path)
+        try:
+            with conn:
+                conn.execute("DELETE FROM app_settings WHERE setting_key = 'display_timezone'")
+        finally:
+            conn.close()
+        self.send_json({"ok": True, "displayTimezone": ""})
+
+    def render_page(self, template: str) -> bytes:
+        conn = connect(self.db_path)
+        try:
+            timezone_name = get_setting(conn, "display_timezone", "")
+        finally:
+            conn.close()
+        config = json.dumps({"displayTimezone": timezone_name}, ensure_ascii=False)
+        scripts = f"<script>window.YT_LIBRARY_CONFIG={config};</script><script src=\"/timezone.js\"></script>"
+        return template.replace("</head>", scripts + "</head>").encode("utf-8")
 
     def send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
