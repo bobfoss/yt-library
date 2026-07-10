@@ -128,13 +128,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             include_total = (params.get("include_total") or ["1"])[0] not in {"0", "false", "no"}
             conn = connect(self.db_path)
             try:
-                if queue_type == "metadata":
-                    total = metadata_queue_count(conn, force=False, stale_days=30) if include_total else 0
-                    rows = metadata_queue_rows(conn, limit=limit, offset=offset, force=False, stale_days=30)
-                elif queue_type == "playlists":
-                    total = playlist_scan_queue_count(conn) if include_total else 0
-                    rows = playlist_scan_queue_rows(conn, limit=limit, offset=offset, force=False, stale_days=7)
-                elif queue_type == "worker":
+                if queue_type == "worker":
                     total = worker_queue_count(conn) if include_total else 0
                     rows = worker_queue_rows(conn, limit=limit, offset=offset)
                 elif queue_type == "placeholders":
@@ -160,7 +154,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
-        if parsed.path in {"/api/admin/worker/start", "/api/admin/metadata/start"}:
+        if parsed.path == "/api/admin/metadata/start":
             stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
             force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
             conn = connect(self.db_path)
@@ -179,24 +173,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
             self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
             return
-        if parsed.path == "/api/admin/metadata/fetch-provided":
-            target = (params.get("target") or [""])[0]
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    try:
-                        result = enqueue_provided_metadata_target(conn, target)
-                    except ValueError as exc:
-                        self.send_json({"error": str(exc)}, status=400)
-                        return
-                self.send_json({
-                    "ok": True,
-                    "message": "Queued provided metadata target",
-                    **result,
-                })
-            finally:
-                conn.close()
-            return
         if parsed.path == "/api/admin/queue/add-target":
             target = (params.get("target") or [""])[0]
             conn = connect(self.db_path)
@@ -208,30 +184,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         self.send_json({"error": str(exc)}, status=400)
                         return
                 self.send_json({"ok": True, **result})
-            finally:
-                conn.close()
-            return
-        if parsed.path == "/api/admin/queue/add-playlist":
-            target = (params.get("target") or [""])[0]
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    try:
-                        result = enqueue_playlist_scan_target_from_text(conn, target)
-                    except ValueError as exc:
-                        self.send_json({"error": str(exc)}, status=400)
-                        return
-                self.send_json({"ok": True, **result})
-            finally:
-                conn.close()
-            return
-        if parsed.path == "/api/admin/queue/add-history":
-            mode = (params.get("mode") or ["recent"])[0]
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    subject_key = enqueue_history_task(conn, mode, priority=0, manual=True)
-                self.send_json({"ok": True, "subject_key": subject_key, "worker_type": "history", "mode": mode})
             finally:
                 conn.close()
             return
@@ -304,54 +256,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             }
             self.send_json({"ok": True, **result})
             return
-        if parsed.path == "/api/admin/metadata/rebuild-queue":
-            if METADATA_WORKER.is_running():
-                self.send_json({"error": "Stop metadata worker before rebuilding the queue"}, status=409)
-                return
-            try:
-                stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
-            except ValueError:
-                stale_days = 30
-            force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    stats = rebuild_metadata_queue(conn, force=force, stale_days=stale_days)
-            finally:
-                conn.close()
-            self.send_json({"ok": True, **stats})
-            return
-        if parsed.path == "/api/admin/metadata/clear-queue":
-            if METADATA_WORKER.is_running():
-                self.send_json({"error": "Stop metadata worker before clearing the queue"}, status=409)
-                return
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    cleared = clear_metadata_queue(conn)
-            finally:
-                conn.close()
-            self.send_json({"ok": True, "cleared": cleared})
-            return
-        if parsed.path == "/api/admin/metadata/remove-queue-entry":
-            try:
-                queue_id = int((params.get("queue_id") or ["0"])[0] or 0)
-            except ValueError:
-                queue_id = 0
-            if not queue_id:
-                self.send_json({"error": "Missing queue_id"}, status=400)
-                return
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    removed = remove_metadata_queue_entry(conn, queue_id)
-            finally:
-                conn.close()
-            self.send_json({"ok": removed, "removed": removed})
-            return
-        if parsed.path in {"/api/admin/worker/stop", "/api/admin/metadata/stop"}:
-            self.send_json(WORKER_QUEUE_DISPATCHER.stop())
-            return
         if parsed.path == "/api/admin/playlists/start":
             conn = connect(self.db_path)
             try:
@@ -368,9 +272,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 conn.close()
             dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
             self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
-            return
-        if parsed.path == "/api/admin/playlists/stop":
-            self.send_json(PLAYLIST_SCAN_WORKER.stop())
             return
         if parsed.path == "/api/admin/placeholders/start":
             limit = max(0, int((params.get("limit") or ["25"])[0] or 0))
@@ -446,7 +347,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
             self.send_json({"dispatcher": dispatcher})
             return
-        if parsed.path in {"/api/admin/live-history/verify", "/api/admin/live-history/rebuild"}:
+        if parsed.path == "/api/admin/live-history/verify":
             conn = connect(self.db_path)
             try:
                 with conn:

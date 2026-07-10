@@ -6,6 +6,7 @@ import argparse
 import sqlite3
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ class MetadataWorker:
         limit: int,
         force: bool,
         stale_days: int,
+        record_summary: bool = True,
     ) -> dict[str, Any]:
         with self._lock:
             if self._thread and self._thread.is_alive():
@@ -39,7 +41,17 @@ class MetadataWorker:
             self._run_id = uuid.uuid4().hex
             self._thread = threading.Thread(
                 target=self._run,
-                args=(self._run_id, db_path, cookie_file, thumb_dir, delay, limit, force, stale_days),
+                args=(
+                    self._run_id,
+                    db_path,
+                    cookie_file,
+                    thumb_dir,
+                    delay,
+                    limit,
+                    force,
+                    stale_days,
+                    record_summary,
+                ),
                 daemon=True,
             )
             self._thread.start()
@@ -62,11 +74,13 @@ class MetadataWorker:
         limit: int,
         force: bool,
         stale_days: int,
+        record_summary: bool,
     ) -> None:
         conn = connect(db_path)
         opener = load_cookie_opener(cookie_file)
         try:
-            initial_total = metadata_queue_count(conn, force=force, stale_days=stale_days)
+            initial_total = worker_queue_type_count(conn, "metadata")
+            run_total = min(initial_total, limit) if limit else initial_total
             with conn:
                 conn.execute(
                     """
@@ -79,7 +93,7 @@ class MetadataWorker:
                     (
                         run_id,
                         int(time.time()),
-                        initial_total,
+                        run_total,
                         delay,
                         limit,
                         1 if force else 0,
@@ -87,18 +101,14 @@ class MetadataWorker:
                         "Metadata worker started",
                     ),
                 )
-                log_worker_event(conn, run_id, "info", f"Queued {initial_total} metadata items")
+                if record_summary:
+                    log_worker_event(conn, run_id, "info", f"Queued {initial_total} metadata items")
 
             processed = 0
             found = 0
             failed = 0
-            attempted_queue_ids: set[int] = set()
             while True:
-                rows = [
-                    candidate
-                    for candidate in metadata_queue_rows(conn, force=force, stale_days=stale_days)
-                    if int(candidate["queue_id"] or 0) not in attempted_queue_ids
-                ]
+                rows = metadata_queue_rows(conn, force=force, stale_days=stale_days)
                 if not rows:
                     break
                 if limit and processed >= limit:
@@ -117,8 +127,6 @@ class MetadataWorker:
                         log_worker_event(conn, run_id, "warn", "Worker stopped by request")
                     return
                 queue_id = int(row["queue_id"]) if "queue_id" in row.keys() else 0
-                if queue_id:
-                    attempted_queue_ids.add(queue_id)
                 video_id = row["video_id"]
                 metadata_source = row["metadata_source"] if "metadata_source" in row.keys() else "history"
                 queued_channel_id = row["channel_id"] if "channel_id" in row.keys() else ""
@@ -288,8 +296,9 @@ class MetadataWorker:
                             log_worker_event(conn, run_id, metadata_source, f"{status}: {channel_label} (via {title})", channel_label)
                         else:
                             log_worker_event(conn, run_id, metadata_source, f"{status}: {title}", video_id)
-                    if queue_id and status != "error":
+                    if queue_id:
                         conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
+                    remaining = worker_queue_type_count(conn, "metadata")
                     conn.execute(
                         """
                         UPDATE metadata_worker_runs
@@ -297,16 +306,16 @@ class MetadataWorker:
                         WHERE run_id = ?
                         """,
                         (
-                            processed + metadata_queue_count(conn, force=force, stale_days=stale_days),
+                            run_total,
                             processed,
                             found,
                             failed,
                             video_id,
-                            f"Processed {processed}; {metadata_queue_count(conn, force=force, stale_days=stale_days)} queued",
+                            f"Processed {processed} of {run_total}; {remaining} metadata jobs remain queued",
                             run_id,
                         ),
                     )
-                if delay and metadata_queue_count(conn, force=force, stale_days=stale_days) > 0:
+                if delay and worker_queue_type_count(conn, "metadata") > 0:
                     time.sleep(delay)
             with conn:
                 conn.execute(
@@ -317,7 +326,8 @@ class MetadataWorker:
                     """,
                     (int(time.time()), f"Completed {processed} items", run_id),
                 )
-                log_worker_event(conn, run_id, "info", f"Worker complete: {processed} processed")
+                if record_summary:
+                    log_worker_event(conn, run_id, "info", f"Worker complete: {processed} processed")
         except Exception as exc:
             with conn:
                 conn.execute(
@@ -355,6 +365,7 @@ class PlaylistScanWorker:
         limit: int,
         force: bool,
         stale_days: int,
+        record_summary: bool = True,
     ) -> dict[str, Any]:
         with self._lock:
             if self._thread and self._thread.is_alive():
@@ -363,7 +374,7 @@ class PlaylistScanWorker:
             self._run_id = uuid.uuid4().hex
             self._thread = threading.Thread(
                 target=self._run,
-                args=(self._run_id, db_path, cookie_file, delay, limit, force, stale_days),
+                args=(self._run_id, db_path, cookie_file, delay, limit, force, stale_days, record_summary),
                 daemon=True,
             )
             self._thread.start()
@@ -376,74 +387,6 @@ class PlaylistScanWorker:
             self._stop.set()
             return {"stopping": True, "run_id": self._run_id, "message": "Playlist scan stop requested"}
 
-    def _recover_placeholders_for_playlist(
-        self,
-        conn: sqlite3.Connection,
-        playlist_run_id: str,
-        playlist_id: str,
-        archivarix_opener: Any,
-        channel_cache: dict[str, dict[str, Any]],
-        delay: float,
-    ) -> int:
-        with conn:
-            rebuild_playlist_reconciliation(conn, playlist_id)
-            rows = playlist_placeholder_recovery_rows(conn, force=False, playlist_id=playlist_id)
-            if rows:
-                log_playlist_scan_event(
-                    conn,
-                    playlist_run_id,
-                    "info",
-                    f"Recovering {len(rows)} placeholders before reconciliation",
-                    playlist_id,
-                )
-        recovered = 0
-        for row in rows:
-            video_id = row["video_id"]
-            snapshot_key = row["snapshot_key"] or ""
-            try:
-                video, thumbnail_url, thumbnail_path, search_status, error = recover_archivarix_video(
-                    video_id,
-                    DEFAULT_ARCHIVARIX_THUMB_DIR,
-                    archivarix_opener,
-                    refresh_metadata=True,
-                    no_api=False,
-                    delay=delay,
-                    channel_cache=channel_cache,
-                )
-                with conn:
-                    save_snapshot_video_recovery(
-                        conn,
-                        snapshot_key,
-                        video_id,
-                        video,
-                        thumbnail_url,
-                        thumbnail_path,
-                        search_status,
-                        error,
-                    )
-                    if search_status in {"found", "thumbnail_only"}:
-                        recovered += 1
-                    title = (video or {}).get("title") or video_id
-                    log_playlist_scan_event(
-                        conn,
-                        playlist_run_id,
-                        "placeholder",
-                        f"{search_status}: {title}",
-                        playlist_id,
-                    )
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-                with conn:
-                    log_playlist_scan_event(
-                        conn,
-                        playlist_run_id,
-                        "placeholder error",
-                        f"{video_id}: {exc}",
-                        playlist_id,
-                    )
-        with conn:
-            rebuild_playlist_reconciliation(conn, playlist_id)
-        return recovered
-
     def _run(
         self,
         run_id: str,
@@ -453,13 +396,13 @@ class PlaylistScanWorker:
         limit: int,
         force: bool,
         stale_days: int,
+        record_summary: bool,
     ) -> None:
         conn = connect(db_path)
         opener = load_cookie_opener(cookie_file)
-        archivarix_opener = load_cookie_opener(ARCHIVARIX_COOKIE_FILE)
-        channel_cache: dict[str, dict[str, Any]] = {}
         try:
-            initial_total = playlist_scan_queue_count(conn)
+            initial_total = worker_queue_type_count(conn, "playlist")
+            run_total = min(initial_total, limit) if limit else initial_total
             with conn:
                 conn.execute(
                     """
@@ -472,7 +415,7 @@ class PlaylistScanWorker:
                     (
                         run_id,
                         int(time.time()),
-                        initial_total,
+                        run_total,
                         delay,
                         limit,
                         1 if force else 0,
@@ -480,18 +423,14 @@ class PlaylistScanWorker:
                         "Playlist scan worker started",
                     ),
                 )
-                log_playlist_scan_event(conn, run_id, "info", f"Queued {initial_total} playlists")
+                if record_summary:
+                    log_playlist_scan_event(conn, run_id, "info", f"Queued {initial_total} playlists")
 
             processed = 0
             found = 0
             failed = 0
-            attempted_queue_ids: set[int] = set()
             while True:
-                rows = [
-                    candidate
-                    for candidate in playlist_scan_queue_rows(conn)
-                    if int(candidate["queue_id"] or 0) not in attempted_queue_ids
-                ]
+                rows = playlist_scan_queue_rows(conn)
                 if not rows:
                     break
                 if limit and processed >= limit:
@@ -511,8 +450,6 @@ class PlaylistScanWorker:
                     return
 
                 queue_id = int(row["queue_id"]) if "queue_id" in row.keys() else 0
-                if queue_id:
-                    attempted_queue_ids.add(queue_id)
                 playlist_id = row["playlist_id"]
                 title = row["title"] or playlist_id
                 status = "ok"
@@ -521,25 +458,41 @@ class PlaylistScanWorker:
                 ytdlp_error = ""
                 videos: list[dict[str, Any]] = []
                 playlist_metadata: dict[str, Any] = {}
+                header_metadata: dict[str, str] = {}
+                try:
+                    playlist_url = f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}"
+                    header_metadata = extract_playlist_metadata(
+                        request_text(opener, playlist_url), playlist_id
+                    )
+                except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+                    header_metadata = {}
                 try:
                     videos, playlist_metadata = scan_playlist_ytdlp(playlist_id, cookie_file)
                     backend = "yt-dlp"
                 except Exception as exc:
                     ytdlp_error = str(exc)
                     try:
-                        videos = scan_playlist_videos(opener, playlist_id)
+                        videos = scan_playlist_videos(opener, playlist_id, cookie_file)
                     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as web_exc:
                         status = "error"
                         error = str(web_exc)
+                if header_metadata.get("video_count_text"):
+                    playlist_metadata["video_count_text"] = header_metadata["video_count_text"]
+                if header_metadata.get("visibility"):
+                    playlist_metadata["visibility"] = header_metadata["visibility"]
+                    playlist_metadata["owner"] = ""
+                header_expected_count = expected_video_count(header_metadata.get("video_count_text", ""))
                 metadata_expected_count = expected_video_count(playlist_metadata.get("video_count_text", ""))
                 row_expected_count = expected_video_count(row["video_count_text"] if "video_count_text" in row.keys() else "")
-                expected_count = metadata_expected_count or row_expected_count
+                expected_count = header_expected_count or metadata_expected_count or row_expected_count
                 if status == "ok" and expected_count > 0 and len(videos) < expected_count:
                     status = "error"
-                    error = f"Parsed {len(videos)} videos, but playlist metadata says {expected_count} videos"
+                    expected_source = "YouTube playlist header" if header_expected_count else "playlist metadata"
+                    error = f"Parsed {len(videos)} videos, but {expected_source} says {expected_count} videos"
                     if ytdlp_error:
                         error += f"; yt-dlp failed: {ytdlp_error[:500]}"
                 with conn:
+                    metadata_queued = 0
                     if status == "error":
                         video_count, hidden_count = save_playlist_scan_error(conn, playlist_id, error)
                     else:
@@ -551,6 +504,9 @@ class PlaylistScanWorker:
                             error,
                             playlist_metadata=playlist_metadata,
                         )
+                        if bool(row["manual"]) and video_count:
+                            metadata_result = enqueue_playlist_metadata_targets(conn, playlist_id)
+                            metadata_queued = int(metadata_result["queued_count"])
                     processed += 1
                     if status == "error":
                         failed += 1
@@ -561,12 +517,15 @@ class PlaylistScanWorker:
                             conn,
                             run_id,
                             "info",
-                            f"{title}: {video_count} videos, {hidden_count} unavailable ({backend})",
+                            (
+                                f"{title}: {video_count} videos, {hidden_count} unavailable ({backend})"
+                                + (f"; queued {metadata_queued} metadata items" if metadata_queued else "")
+                            ),
                             playlist_id,
                         )
-                        if queue_id:
-                            conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
-                    remaining = playlist_scan_queue_count(conn)
+                    if queue_id:
+                        conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
+                    remaining = worker_queue_type_count(conn, "playlist")
                     conn.execute(
                         """
                         UPDATE playlist_scan_worker_runs
@@ -574,34 +533,16 @@ class PlaylistScanWorker:
                         WHERE run_id = ?
                         """,
                         (
-                            processed + remaining,
+                            run_total,
                             processed,
                             found,
                             failed,
                             playlist_id,
-                            f"Processed {processed}; {remaining} queued",
+                            f"Processed {processed} of {run_total}; {remaining} playlist jobs remain queued",
                             run_id,
                         ),
                     )
-                if status != "error":
-                    recovered = self._recover_placeholders_for_playlist(
-                        conn,
-                        run_id,
-                        playlist_id,
-                        archivarix_opener,
-                        channel_cache,
-                        delay=3.0,
-                    )
-                    if recovered:
-                        with conn:
-                            log_playlist_scan_event(
-                                conn,
-                                run_id,
-                                "info",
-                                f"Recovered {recovered} placeholders and reconciled playlist",
-                                playlist_id,
-                            )
-                if delay and playlist_scan_queue_count(conn) > 0:
+                if delay and worker_queue_type_count(conn, "playlist") > 0:
                     time.sleep(delay)
             with conn:
                 conn.execute(
@@ -612,7 +553,8 @@ class PlaylistScanWorker:
                     """,
                     (int(time.time()), f"Completed {processed} playlists", run_id),
                 )
-                log_playlist_scan_event(conn, run_id, "info", f"Playlist scan complete: {processed} processed")
+                if record_summary:
+                    log_playlist_scan_event(conn, run_id, "info", f"Playlist scan complete: {processed} processed")
         except Exception as exc:
             with conn:
                 conn.execute(
@@ -1087,6 +1029,24 @@ class WorkerQueueDispatcher:
         finally:
             conn.close()
 
+    def _run_placeholder_recovery_if_needed(self, db_path: Path) -> None:
+        conn = connect(db_path)
+        try:
+            pending = playlist_placeholder_recovery_count(conn, force=False)
+        finally:
+            conn.close()
+        if not pending or self._stop.is_set():
+            return
+        PLACEHOLDER_RECOVERY_WORKER.start(
+            db_path,
+            ARCHIVARIX_COOKIE_FILE,
+            DEFAULT_ARCHIVARIX_THUMB_DIR,
+            delay=3.0,
+            limit=10,
+            force=False,
+        )
+        self._wait_for_worker(PLACEHOLDER_RECOVERY_WORKER)
+
     def _run(self, db_path: Path, cookie_file: Path, thumb_dir: Path) -> None:
         while not self._stop.is_set():
             row = self._next_row(db_path)
@@ -1102,6 +1062,7 @@ class WorkerQueueDispatcher:
                     limit=1,
                     force=False,
                     stale_days=30,
+                    record_summary=False,
                 )
                 if not result.get("started") and not METADATA_WORKER.is_running():
                     time.sleep(0.5)
@@ -1114,10 +1075,12 @@ class WorkerQueueDispatcher:
                     limit=1,
                     force=False,
                     stale_days=7,
+                    record_summary=False,
                 )
                 if not result.get("started") and not PLAYLIST_SCAN_WORKER.is_running():
                     time.sleep(0.5)
                 self._wait_for_worker(PLAYLIST_SCAN_WORKER)
+                self._run_placeholder_recovery_if_needed(db_path)
             elif worker_type == "history":
                 mode = "verify" if row.get("task_type") == "verify" else "recent"
                 result = LIVE_HISTORY_WORKER.start(db_path, cookie_file, mode=mode)

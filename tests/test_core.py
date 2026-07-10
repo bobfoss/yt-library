@@ -3,11 +3,15 @@ from __future__ import annotations
 import tempfile
 import time
 import sqlite3
+import json
+import urllib.error
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from yt_library import core
+from yt_library.workers import MetadataWorker
 
 
 class CoreHelperTests(unittest.TestCase):
@@ -79,6 +83,56 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(visibility_only["visibility"], "unlisted")
         with self.assertRaises(AssertionError):
             core.assert_playlist_owner_visibility({"owner": "Gir Bot", "visibility": "public"})
+
+    def test_extract_playlist_metadata_reads_page_header_count_and_visibility(self) -> None:
+        initial_data = {
+            "header": {
+                "pageHeaderRenderer": {
+                    "content": {
+                        "pageHeaderViewModel": {
+                            "metadata": {
+                                "contentMetadataViewModel": {
+                                    "metadataRows": [
+                                        {
+                                            "metadataParts": [
+                                                {"text": {"content": "Playlist"}},
+                                                {"text": {"content": "Unlisted"}},
+                                                {"text": {"content": "150 videos"}},
+                                                {"text": {"content": "143 views"}},
+                                            ]
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        html = f"<script>var ytInitialData = {json.dumps(initial_data)};</script>"
+
+        metadata = core.extract_playlist_metadata(html, "PLexample")
+
+        self.assertEqual(metadata["video_count_text"], "Playlist • Unlisted • 150 videos • 143 views")
+        self.assertEqual(metadata["visibility"], "unlisted")
+        self.assertEqual(metadata["owner"], "")
+
+    def test_playlist_continuation_prefers_command_executor_token(self) -> None:
+        data = {
+            "continuationItemRenderer": {
+                "continuationEndpoint": {
+                    "continuationCommand": {"token": "wrong-token"},
+                    "commandExecutorCommand": {
+                        "commands": [
+                            {"playlistVotingRefreshPopupCommand": {}},
+                            {"continuationCommand": {"token": "playlist-token"}},
+                        ]
+                    },
+                }
+            }
+        }
+
+        self.assertEqual(core.playlist_continuation_token(data), "playlist-token")
 
     def test_parse_takeout_watch_history_json(self) -> None:
         rows = core.parse_takeout_watch_history_text(
@@ -408,11 +462,6 @@ class SchemaTests(unittest.TestCase):
                     self.assertEqual([row["video_id"] for row in persisted], ["UCvmGOqGlxOgpZDoszBbWxmA"])
 
                     with conn:
-                        queued = core.enqueue_provided_metadata_target(conn, "https://www.youtube.com/@ESSIGI")
-                    self.assertEqual(queued["channel_id"], "@ESSIGI")
-                    self.assertEqual(queued["metadata_source"], "channel")
-
-                    with conn:
                         conn.execute(
                             """
                             INSERT INTO playlists(playlist_id, title)
@@ -427,22 +476,6 @@ class SchemaTests(unittest.TestCase):
                               ('PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4', 2, 'def12345678', 'Second')
                             """
                         )
-                        queued_playlist = core.enqueue_provided_metadata_target(
-                            conn,
-                            "https://www.youtube.com/playlist?list=PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
-                        )
-                    self.assertEqual(queued_playlist["metadata_source"], "playlist")
-                    self.assertEqual(queued_playlist["queued_count"], "2")
-                    with conn:
-                        queued_scan = core.enqueue_playlist_scan_target_from_text(
-                            conn,
-                            "PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
-                        )
-                    self.assertEqual(queued_scan["worker_type"], "playlist")
-                    playlist_queue_rows = core.playlist_scan_queue_rows(conn, limit=10)
-                    self.assertEqual([row["playlist_id"] for row in playlist_queue_rows], ["PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4"])
-                    with self.assertRaises(ValueError):
-                        core.enqueue_playlist_scan_target_from_text(conn, "https://www.youtube.com/watch?v=abc12345678")
                     with conn:
                         unified_youtube_playlist = core.enqueue_worker_queue_target(
                             conn,
@@ -451,22 +484,26 @@ class SchemaTests(unittest.TestCase):
                     self.assertEqual(unified_youtube_playlist["worker_type"], "playlist")
                     self.assertEqual(unified_youtube_playlist["source"], "youtube")
                     with conn:
+                        core.clear_worker_queue(conn)
                         unified_local_playlist = core.enqueue_worker_queue_target(
                             conn,
                             "http://127.0.0.1:8765/#playlist=PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
                         )
-                    self.assertEqual(unified_local_playlist["worker_type"], "metadata")
+                    self.assertEqual(unified_local_playlist["worker_type"], "playlist")
                     self.assertEqual(unified_local_playlist["source"], "local")
-                    self.assertEqual(unified_local_playlist["queued_count"], "2")
+                    self.assertEqual(unified_local_playlist["queued_count"], "1")
+                    self.assertEqual(core.worker_queue_type_count(conn, "playlist"), 1)
+                    queued_local_rows = core.playlist_scan_queue_rows(conn, limit=10)
+                    self.assertEqual(
+                        [row["playlist_id"] for row in queued_local_rows],
+                        ["PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4"],
+                    )
                     playlist_video_rows = [
                         row
                         for row in core.metadata_queue_rows(conn, limit=10)
                         if row["metadata_source"] == "playlist"
                     ]
-                    self.assertEqual(
-                        {row["video_id"] for row in playlist_video_rows},
-                        {"abc12345678", "def12345678"},
-                    )
+                    self.assertEqual(playlist_video_rows, [])
 
                     core.upsert_channel(
                         conn,
@@ -496,11 +533,11 @@ class SchemaTests(unittest.TestCase):
                         conn.execute(
                             """
                             INSERT INTO playlists(
-                              playlist_id, title, description, owner, video_count_text,
+                              playlist_id, title, description, owner, visibility, video_count_text,
                               thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
                             )
                             VALUES (
-                              'PLrename', 'Old name', 'Old description', 'Old owner', '1 video',
+                              'PLrename', 'Old name', 'Old description', 'Old owner', 'unlisted', '1 video',
                               'https://example.test/old.jpg', 'thumbs/PLrename.jpg',
                               'https://www.youtube.com/playlist?list=PLrename', 'ok', '', 1
                             )
@@ -686,6 +723,62 @@ class SchemaTests(unittest.TestCase):
                     conn.close()
             finally:
                 core.ROOT = original_root
+
+
+class WorkerQueueTests(unittest.TestCase):
+    def test_dispatch_metadata_error_acknowledges_queue_entry_without_summary_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="abc12345678",
+                        current_title="Example video",
+                        metadata_source="provided",
+                        priority=0,
+                        manual=True,
+                    )
+            finally:
+                conn.close()
+
+            worker = MetadataWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.fetch_watch_metadata",
+                    side_effect=urllib.error.URLError("offline for test"),
+                ),
+            ):
+                worker._run(
+                    "test-run",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=30,
+                    record_summary=False,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_count(conn), 0)
+                run = conn.execute(
+                    "SELECT status, total, processed, failed FROM metadata_worker_runs WHERE run_id = 'test-run'"
+                ).fetchone()
+                self.assertEqual(dict(run), {"status": "complete", "total": 1, "processed": 1, "failed": 1})
+                logs = conn.execute(
+                    "SELECT level, message FROM metadata_worker_log WHERE run_id = 'test-run' ORDER BY id"
+                ).fetchall()
+                self.assertEqual(len(logs), 1)
+                self.assertEqual(logs[0]["level"], "provided error")
+                self.assertNotIn("Worker complete", logs[0]["message"])
+                self.assertNotIn("Queued", logs[0]["message"])
+            finally:
+                conn.close()
 
 
 if __name__ == "__main__":

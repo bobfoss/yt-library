@@ -114,7 +114,6 @@
         <div class="grid">
           <div class="panel"><div class="metric">Playlist count</div><div id="playlistRows" class="value">0</div></div>
           <div class="panel"><div class="metric">Distinct video IDs</div><div id="distinctVideos" class="value">0</div></div>
-          <div class="panel"><div class="metric">Playlist scan queue</div><div id="playlistQueueCount" class="value">0</div></div>
         </div>
         <div class="controls">
           <button id="scanPlaylists" class="primary" type="button">Scan all playlists</button>
@@ -220,7 +219,6 @@
       metadataStaleDays: document.getElementById('metadataStaleDays'),
       metadataForce: document.getElementById('metadataForce'),
       placeholderForce: document.getElementById('placeholderForce'),
-      playlistQueueCount: document.getElementById('playlistQueueCount'),
       placeholderQueueCount: document.getElementById('placeholderQueueCount'),
       commonQueueCount: document.getElementById('commonQueueCount'),
       commonWorkerState: document.getElementById('commonWorkerState'),
@@ -294,7 +292,6 @@
       fields.historyRows.textContent = data.counts.history_rows || 0;
       fields.historyVideos.textContent = data.counts.distinct_history_videos || 0;
       fields.liveHistoryRows.textContent = data.liveHistoryCounts?.live_rows || 0;
-      fields.playlistQueueCount.textContent = data.playlistScanQueueCount || 0;
       fields.placeholderQueueCount.textContent = data.placeholderRecoveryQueueCount || 0;
       fields.commonQueueCount.textContent = data.workerQueueCount || 0;
       const anyWorkerRunning = Boolean(data.workerQueueRunning || data.playlistScanRunning || data.metadataRunning || data.liveHistoryRunning || data.placeholderRecoveryRunning);
@@ -520,6 +517,8 @@
       }
       try {
         await post('/api/admin/queue/add-target', { target });
+        fields.providedQueueTarget.value = '';
+        await post('/api/admin/queue/start');
       } catch (error) {
         alert(error.message);
       }
