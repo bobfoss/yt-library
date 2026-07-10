@@ -562,6 +562,74 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(metadata["channel_url"], "")
         self.assertEqual(metadata["channel_thumbnail_url"], "")
 
+    def test_watch_metadata_exposes_raw_playability_status(self) -> None:
+        html = """
+        <html><body>
+        <script>
+        var ytInitialPlayerResponse = {
+          "playabilityStatus": {"status": "OK"},
+          "videoDetails": {"title": "Members video", "author": "Creator"},
+          "microformat": {"playerMicroformatRenderer": {}}
+        };
+        var ytInitialData = {};
+        </script>
+        </body></html>
+        """
+
+        metadata = core.extract_watch_metadata(html, "jhtY3OsTuwk")
+
+        self.assertEqual(metadata["yt_status"], "OK")
+        self.assertEqual(metadata["playability_status"], "OK")
+        self.assertEqual(core.watch_playability_value(metadata), 1)
+
+    def test_watch_playability_repairs_playlist_rows_without_losing_availability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                conn.execute(
+                    "INSERT INTO playlists(playlist_id, title) VALUES ('PLmembers', 'Members')"
+                )
+                core.save_playlist_scan(
+                    conn,
+                    "PLmembers",
+                    [
+                        {
+                            "playlist_id": "PLmembers",
+                            "position": 1,
+                            "video_id": "jhtY3OsTuwk",
+                            "title": "Members video",
+                            "channel_id": "",
+                            "channel": "",
+                            "duration_text": "",
+                            "is_playable": 0,
+                            "availability": "subscriber_only",
+                            "url": "https://www.youtube.com/watch?v=jhtY3OsTuwk",
+                        }
+                    ],
+                    "ok",
+                    "",
+                )
+
+                changed = core.apply_watch_playability_to_playlist_rows(
+                    conn,
+                    "jhtY3OsTuwk",
+                    {"playability_status": "OK"},
+                )
+
+                self.assertEqual(changed, 1)
+                row = conn.execute(
+                    """
+                    SELECT is_playable, availability
+                    FROM playlist_video_reconciled
+                    WHERE playlist_id = 'PLmembers' AND video_id = 'jhtY3OsTuwk'
+                    """
+                ).fetchone()
+                self.assertEqual(row["is_playable"], 1)
+                self.assertEqual(row["availability"], "subscriber_only")
+            finally:
+                conn.close()
+
     def test_metadata_from_archivarix_video_includes_channel_metadata(self) -> None:
         metadata = core.metadata_from_archivarix_video(
             "Ax8Yn8DPZe0",

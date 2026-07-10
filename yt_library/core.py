@@ -226,6 +226,65 @@ def playlist_entry_is_unavailable(title: str, availability: str = "") -> bool:
     }
 
 
+def watch_playability_value(metadata: dict[str, Any]) -> int | None:
+    status = str(metadata.get("playability_status") or metadata.get("yt_status") or "").strip().upper()
+    if not status:
+        return None
+    status = status.split(":", 1)[0].strip()
+    if status == "OK":
+        return 1
+    if status in {"ERROR", "UNPLAYABLE", "LOGIN_REQUIRED", "LIVE_STREAM_OFFLINE"}:
+        return 0
+    return None
+
+
+def apply_watch_playability_to_playlist_rows(
+    conn: sqlite3.Connection,
+    video_id: str,
+    metadata: dict[str, Any],
+) -> int:
+    video_id = (video_id or "").strip()
+    playability = watch_playability_value(metadata)
+    if not video_id or playability is None:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT playlist_id, availability
+        FROM playlist_videos
+        WHERE video_id = ?
+        """,
+        (video_id,),
+    ).fetchall()
+    changed_playlists: set[str] = set()
+    for row in rows:
+        current_availability = row["availability"] if isinstance(row, sqlite3.Row) else row[1]
+        if playability:
+            availability = normalize_video_availability(video_id, current_availability, 1)
+        else:
+            availability = current_availability or "unavailable"
+        result = conn.execute(
+            """
+            UPDATE playlist_videos
+            SET is_playable = ?, availability = ?
+            WHERE playlist_id = ? AND video_id = ?
+              AND (is_playable <> ? OR availability <> ?)
+            """,
+            (
+                playability,
+                availability,
+                row["playlist_id"] if isinstance(row, sqlite3.Row) else row[0],
+                video_id,
+                playability,
+                availability,
+            ),
+        )
+        if result.rowcount:
+            changed_playlists.add(row["playlist_id"] if isinstance(row, sqlite3.Row) else row[0])
+    for playlist_id in changed_playlists:
+        rebuild_playlist_reconciliation(conn, playlist_id)
+    return len(changed_playlists)
+
+
 def playlist_zero_result_is_suspicious(
     parsed_count: int,
     ytdlp_error: str,
@@ -2395,6 +2454,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     reaction = extract_reaction_from_initial_data(initial_data)
     status = str(playability.get("status") or "").strip()
     reason = text_from_runs(playability.get("reason")).strip()
+    playability_status = status
     if reason and status and reason not in status:
         status = f"{status}: {reason}"
     channel = str(details.get("author") or "").strip()
@@ -2418,6 +2478,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         "reaction": reaction,
         "watch_progress_percent": str(watch_progress_percent),
         "watch_resume_seconds": str(watch_resume_seconds),
+        "playability_status": playability_status,
         "yt_status": status or ("OK" if title else ""),
     }
 
@@ -2579,6 +2640,7 @@ def store_video_metadata(
             now,
         ),
     )
+    apply_watch_playability_to_playlist_rows(conn, metadata.get("video_id", ""), metadata)
     return channel_id
 
 

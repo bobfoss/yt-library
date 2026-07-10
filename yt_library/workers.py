@@ -283,6 +283,7 @@ class MetadataWorker:
                                 now,
                             ),
                         )
+                        apply_watch_playability_to_playlist_rows(conn, video_id, metadata)
                     processed += 1
                     channel_label = metadata.get("channel") or queued_channel_title or queued_channel_id or video_id
                     if status == "error":

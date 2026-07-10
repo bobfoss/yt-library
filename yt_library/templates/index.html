@@ -1988,7 +1988,7 @@
       renderPagedGrid(rows, cardFor, 'No playlists match.');
     }
 
-    function cardFor(playlist) {
+    function cardFor(playlist, options = {}) {
       const article = document.createElement('article');
       article.className = 'card';
       const localHref = localPlaylistHref(playlist.playlist_id);
@@ -2006,6 +2006,7 @@
       const body = document.createElement('div');
       body.className = 'body';
       body.innerHTML = `
+        ${options.resultKind ? `<div class="result-kind">${escapeHtml(options.resultKind)}</div>` : ''}
         <div class="title-row">
           <a class="playlist-title" href="${localHref}">${escapeHtml(playlist.title)}</a>
           <a class="external-link" href="${playlist.url}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(playlist.title)} on YouTube">
@@ -2200,7 +2201,6 @@
 
     function historyRowCardFor(video) {
       const article = playlistVideoCardFor(video, {
-        resultKind: 'History',
         playlistSourcesHtml: playlistSourceLinksHtml(video),
       });
       article.classList.add('history-row');
@@ -2224,10 +2224,10 @@
 
     function searchResultCardFor(result) {
       if (result.kind === 'playlist') {
-        return cardFor(result.item);
+        return cardFor(result.item, { resultKind: 'Playlist' });
       }
       if (result.kind === 'channel') {
-        return channelCardFor(result.item);
+        return channelCardFor(result.item, { resultKind: 'Channel' });
       }
       if (result.kind === 'missing') {
         return snapshotMissingCardFor(result.item, { resultKind: 'Video' });
@@ -2244,7 +2244,7 @@
       });
     }
 
-    function channelCardFor(channel) {
+    function channelCardFor(channel, options = {}) {
       const article = document.createElement('article');
       article.className = 'card';
       if (channel.thumbnail_path) {
@@ -2268,7 +2268,7 @@
         channel.channel_id ? localChannelHref(channel.channel_id) : ''
       );
       body.innerHTML = `
-        <div class="result-kind">Channel</div>
+        ${options.resultKind ? `<div class="result-kind">${escapeHtml(options.resultKind)}</div>` : ''}
         <div class="title-row">
           <div class="playlist-title">${titleHtml || escapeHtml(titleText)}</div>
           ${youtubeUrl ? `<a class="external-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
