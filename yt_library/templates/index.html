@@ -1717,6 +1717,8 @@
       const article = document.createElement('article');
       article.className = 'card';
       const localHref = localPlaylistHref(playlist.playlist_id);
+      const playlistCount = playlistVideoCountLabel(playlist);
+      const owner = playlistOwnerHtml(playlist);
       const img = document.createElement('img');
       img.className = 'thumb';
       img.loading = 'lazy';
@@ -1736,16 +1738,39 @@
           </a>
         </div>
         <div class="details">
-          ${playlist.video_count ? `<span>${escapeHtml(playlist.video_count)} videos</span>` : ''}
-          ${playlist.scanned_video_count ? `<span>${playlist.scanned_video_count} scanned</span>` : ''}
+          ${playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : ''}
           ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} unavailable</span>` : ''}
           ${displayPlaylistVisibility(playlist) ? `<span>${escapeHtml(displayPlaylistVisibility(playlist))}</span>` : ''}
-          ${playlist.owner ? `<span>${escapeHtml(playlist.owner)}</span>` : ''}
+          ${owner}
           ${playlist.fetch_status === 'error' ? '<span class="status">Fetch failed</span>' : ''}
+        </div>
+        <div class="details">
+          ${playlist.playlist_id ? `<span>${escapeHtml(playlist.playlist_id)}</span>` : ''}
         </div>
       `;
       article.append(thumbLink, body);
       return article;
+    }
+
+    function playlistVideoCountLabel(playlist) {
+      const reported = Number(playlist.video_count || 0);
+      const scanned = Number(playlist.scanned_video_count || 0);
+      const count = reported || scanned;
+      if (!count) return '';
+      const incomplete = Boolean(
+        playlist.scan_status === 'error'
+        || (reported && scanned && reported !== scanned)
+      );
+      return `${count} videos${incomplete ? ' (incomplete)' : ''}`;
+    }
+
+    function playlistOwnerHtml(playlist) {
+      const name = playlist.owner_channel_title || playlist.owner || '';
+      if (!name) return '';
+      const href = playlist.owner_channel_id
+        ? localChannelHref(playlist.owner_channel_id)
+        : (playlist.owner_channel_url || '');
+      return creatorHtml(playlist.owner_channel_thumbnail_path || '', name, href);
     }
 
     function detailRowHtml(items, className = 'details') {

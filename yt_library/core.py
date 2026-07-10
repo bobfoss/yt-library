@@ -125,6 +125,7 @@ def _bootstrap_database(conn: sqlite3.Connection) -> None:
         conn,
         "playlists",
         {
+            "owner_channel_id": "TEXT NOT NULL DEFAULT ''",
             "visibility": "TEXT NOT NULL DEFAULT ''",
             "video_count": "INTEGER NOT NULL DEFAULT 0",
         },
@@ -219,6 +220,7 @@ def _bootstrap_database(conn: sqlite3.Connection) -> None:
     if channel_backfill_needed(conn):
         backfill_channels(conn)
     backfill_playlist_channel_ids_by_name(conn)
+    backfill_playlist_owner_channel_ids_by_name(conn)
     sync_takeout_subscriptions(conn, ROOT)
     drop_deprecated_channel_columns(conn)
     migrate_metadata_queue_to_worker_queue(conn)
@@ -879,6 +881,47 @@ def backfill_playlist_channel_ids_by_name(conn: sqlite3.Connection) -> None:
             channel_id = unique_channels.get(row["channel"].casefold(), "")
             if channel_id:
                 conn.execute(f"UPDATE {table} SET channel_id = ? WHERE rowid = ?", (channel_id, row["rowid"]))
+
+
+def backfill_playlist_owner_channel_ids_by_name(conn: sqlite3.Connection) -> None:
+    cols = table_columns(conn, "playlists")
+    if "owner_channel_id" not in cols or "owner" not in cols:
+        return
+    needs_backfill = conn.execute(
+        """
+        SELECT 1
+        FROM playlists
+        WHERE owner_channel_id = ''
+          AND owner <> ''
+        LIMIT 1
+        """
+    ).fetchone()
+    if not needs_backfill:
+        return
+    unique_channels: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for row in conn.execute("SELECT channel_id, title FROM channels WHERE title <> '' AND channel_id <> ''"):
+        key = row["title"].casefold()
+        if key in unique_channels and unique_channels[key] != row["channel_id"]:
+            ambiguous.add(key)
+        else:
+            unique_channels[key] = row["channel_id"]
+    for key in ambiguous:
+        unique_channels.pop(key, None)
+    for row in conn.execute(
+        """
+        SELECT playlist_id, owner
+        FROM playlists
+        WHERE owner_channel_id = ''
+          AND owner <> ''
+        """
+    ).fetchall():
+        channel_id = unique_channels.get(row["owner"].casefold(), "")
+        if channel_id:
+            conn.execute(
+                "UPDATE playlists SET owner_channel_id = ? WHERE playlist_id = ?",
+                (channel_id, row["playlist_id"]),
+            )
 
 
 def drop_deprecated_channel_columns(conn: sqlite3.Connection) -> None:
@@ -1743,6 +1786,28 @@ def content_text(value: Any) -> str:
     return text_from_runs(value)
 
 
+def rich_text_channel_ref(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    for run in value.get("runs") or []:
+        if not isinstance(run, dict):
+            continue
+        endpoint = run.get("navigationEndpoint") or {}
+        browse = endpoint.get("browseEndpoint") or {}
+        browse_id = str(browse.get("browseId") or "").strip()
+        if browse_id.startswith("UC"):
+            return browse_id
+        canonical_base_url = str(browse.get("canonicalBaseUrl") or "").strip()
+        ref = youtube_channel_ref_from_url(canonical_base_url)
+        if ref:
+            return ref
+        command = endpoint.get("commandMetadata", {}).get("webCommandMetadata", {})
+        ref = youtube_channel_ref_from_url(str(command.get("url") or ""))
+        if ref:
+            return ref
+    return ""
+
+
 def pick_lockup_thumbnail(lockup: dict[str, Any]) -> str:
     best_url = ""
     best_width = -1
@@ -1845,6 +1910,7 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any
         "title": "",
         "description": "",
         "owner": "",
+        "owner_channel_id": "",
         "visibility": "",
         "video_count": 0,
         "has_video_count": False,
@@ -1878,10 +1944,14 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any
         description = text_from_runs(renderer.get("description"))
         if description and not metadata["description"]:
             metadata["description"] = description
-        owner_text = text_from_runs(renderer.get("ownerText") or renderer.get("subtitle"))
+        owner_rich_text = renderer.get("ownerText") or renderer.get("subtitle")
+        owner_text = text_from_runs(owner_rich_text)
         owner, visibility = split_playlist_owner_visibility(owner_text)
         if owner and not metadata["owner"]:
             metadata["owner"] = owner
+        owner_channel_id = rich_text_channel_ref(owner_rich_text)
+        if owner_channel_id and not metadata["owner_channel_id"]:
+            metadata["owner_channel_id"] = owner_channel_id
         if visibility and not metadata["visibility"]:
             metadata["visibility"] = visibility
         for key in ("numVideosText", "numVideosTextText", "videoCountText"):
@@ -3627,11 +3697,16 @@ def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) ->
     webpage_url = str(info.get("webpage_url") or info.get("original_url") or "").strip()
     if not webpage_url:
         webpage_url = f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}"
+    owner_channel_id = (
+        str(info.get("channel_id") or info.get("uploader_id") or "").strip()
+        or youtube_channel_ref_from_url(str(info.get("channel_url") or info.get("uploader_url") or ""))
+    )
     return {
         "playlist_id": playlist_id,
         "title": title or playlist_id,
         "description": description,
         "owner": owner,
+        "owner_channel_id": owner_channel_id,
         "visibility": visibility,
         "video_count": video_count,
         "thumbnail_url": thumbnail_url,
@@ -4852,27 +4927,40 @@ def save_playlist_scan(
                 "title",
                 "description",
                 "owner",
+                "owner_channel_id",
                 "visibility",
                 "thumbnail_url",
                 "thumbnail_path",
                 "url",
             )
         }
+        if metadata["owner_channel_id"]:
+            metadata["owner_channel_id"] = upsert_channel(
+                conn,
+                metadata["owner_channel_id"],
+                title=metadata["owner"],
+                source="playlist_owner",
+                updated_at=now,
+            )
         metadata["video_count"] = max(0, int(playlist_metadata.get("video_count") or 0))
         assert_playlist_owner_visibility(metadata)
         conn.execute(
             """
             INSERT INTO playlists(
-              playlist_id, title, description, owner, visibility, video_count,
+              playlist_id, title, description, owner, owner_channel_id, visibility, video_count,
               thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(playlist_id) DO UPDATE SET
               title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
               description=COALESCE(NULLIF(excluded.description, ''), playlists.description),
               owner=CASE
                 WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN ''
                 ELSE COALESCE(NULLIF(excluded.owner, ''), playlists.owner)
+              END,
+              owner_channel_id=CASE
+                WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN ''
+                ELSE COALESCE(NULLIF(excluded.owner_channel_id, ''), playlists.owner_channel_id)
               END,
               visibility=CASE
                 WHEN NULLIF(excluded.owner, '') IS NOT NULL THEN ''
@@ -4894,6 +4982,7 @@ def save_playlist_scan(
                 metadata["title"],
                 metadata["description"],
                 metadata["owner"],
+                metadata["owner_channel_id"],
                 metadata["visibility"],
                 metadata["video_count"],
                 metadata["thumbnail_url"],

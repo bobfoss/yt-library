@@ -210,6 +210,31 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(metadata["owner"], "")
         self.assertFalse(core.extract_playlist_metadata("<html></html>", "PLexample")["has_video_count"])
 
+        owner_data = {
+            "header": {
+                "playlistHeaderRenderer": {
+                    "title": {"simpleText": "Foreign Playlist"},
+                    "ownerText": {
+                        "runs": [
+                            {
+                                "text": "Other Channel",
+                                "navigationEndpoint": {
+                                    "browseEndpoint": {
+                                        "browseId": "UCabcdefghijklmnopqrstuv",
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                    "numVideosText": {"simpleText": "2 videos"},
+                }
+            }
+        }
+        owner_html = f"<script>var ytInitialData = {json.dumps(owner_data)};</script>"
+        owner_metadata = core.extract_playlist_metadata(owner_html, "PLforeign")
+        self.assertEqual(owner_metadata["owner"], "Other Channel")
+        self.assertEqual(owner_metadata["owner_channel_id"], "UCabcdefghijklmnopqrstuv")
+
     def test_playlist_continuation_prefers_command_executor_token(self) -> None:
         data = {
             "continuationItemRenderer": {
@@ -671,6 +696,7 @@ class SchemaTests(unittest.TestCase):
                                 "title": "New name",
                                 "description": "New description",
                                 "owner": "New owner",
+                                "owner_channel_id": "UCnewownerchannel123456789",
                                 "visibility": "",
                                 "video_count": 1,
                                 "thumbnail_url": "https://example.test/new.jpg",
@@ -678,15 +704,22 @@ class SchemaTests(unittest.TestCase):
                             },
                         )
                     row = conn.execute(
-                        "SELECT title, description, owner, visibility, video_count, thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLrename'"
+                        "SELECT title, description, owner, owner_channel_id, visibility, video_count, thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLrename'"
                     ).fetchone()
                     self.assertEqual(row["title"], "New name")
                     self.assertEqual(row["description"], "New description")
                     self.assertEqual(row["owner"], "New owner")
+                    self.assertEqual(row["owner_channel_id"], "UCnewownerchannel123456789")
                     self.assertEqual(row["visibility"], "")
                     self.assertEqual(row["video_count"], 1)
                     self.assertEqual(row["thumbnail_url"], "https://example.test/new.jpg")
                     self.assertEqual(row["thumbnail_path"], "thumbs/PLrename.jpg")
+                    channel = conn.execute(
+                        "SELECT title, source FROM channels WHERE channel_id = 'UCnewownerchannel123456789'"
+                    ).fetchone()
+                    self.assertIsNotNone(channel)
+                    self.assertEqual(channel["title"], "New owner")
+                    self.assertEqual(channel["source"], "playlist_owner")
                 finally:
                     conn.close()
             finally:

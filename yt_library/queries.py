@@ -30,9 +30,14 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
                    COALESCE(s.video_count, 0) AS scanned_video_count,
                    COALESCE(s.hidden_count, 0) AS hidden_count,
                    COALESCE(s.scanned_at, 0) AS scanned_at,
-                   COALESCE(s.scan_status, '') AS scan_status
+                   COALESCE(s.scan_status, '') AS scan_status,
+                   COALESCE(ch.title, '') AS owner_channel_title,
+                   COALESCE(ch.url, '') AS owner_channel_url,
+                   COALESCE(ch.thumbnail_path, '') AS owner_channel_thumbnail_path,
+                   COALESCE(ch.status, '') AS owner_channel_status
             FROM playlists p
             LEFT JOIN playlist_scans s ON s.playlist_id = p.playlist_id
+            LEFT JOIN channels ch ON ch.channel_id = p.owner_channel_id
             ORDER BY p.title COLLATE NOCASE
             """
         )
