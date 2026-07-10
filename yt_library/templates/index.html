@@ -169,18 +169,17 @@
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
       <div class="filters" aria-label="Search filters">
         <div class="filter-title">Search In</div>
+        <label class="filter"><input class="search-filter video-field-filter" type="checkbox" data-filter="videos" checked> Titles</label>
+        <label class="filter"><input class="search-filter video-field-filter" type="checkbox" data-filter="descriptions" checked> Descriptions</label>
+        <div class="filter-title">Search For</div>
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="playlists" checked> Playlists</label>
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="channels" checked> Channels</label>
         <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_subscribed" checked> Subscribed</label>
         <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_unsubscribed" checked> Non-subscribed</label>
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="videos_root" checked> Videos</label>
-        <label class="filter child"><input class="search-filter video-group-filter" type="checkbox" data-filter="video_fields" checked> Fields</label>
-        <label class="filter grandchild"><input class="search-filter video-field-filter" type="checkbox" data-filter="videos" checked> Titles</label>
-        <label class="filter grandchild"><input class="search-filter video-field-filter" type="checkbox" data-filter="descriptions" checked> Descriptions</label>
-        <label class="filter child"><input class="search-filter video-group-filter" type="checkbox" data-filter="video_sources" checked> Sources</label>
-        <label class="filter grandchild"><input class="search-filter video-source-filter" type="checkbox" data-filter="playlist_videos" checked> Playlist videos</label>
-        <label class="filter grandchild"><input class="search-filter video-source-filter" type="checkbox" data-filter="history_videos" checked> History</label>
-        <label class="filter grandchild"><input class="search-filter video-source-filter" type="checkbox" data-filter="unavailable_videos" checked> Unavailable</label>
+        <label class="filter child"><input class="search-filter video-source-filter" type="checkbox" data-filter="playlist_videos" checked> Playlist videos</label>
+        <label class="filter child"><input class="search-filter video-source-filter" type="checkbox" data-filter="history_videos" checked> History</label>
+        <label class="filter child"><input class="search-filter video-source-filter" type="checkbox" data-filter="unavailable_videos" checked> Unavailable</label>
       </div>
       <nav id="groups"></nav>
     </aside>
@@ -233,12 +232,10 @@
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
     const searchFilters = [...document.querySelectorAll('.search-filter')];
+    const playlistsFilter = document.querySelector('[data-filter="playlists"]');
     const channelsFilter = document.querySelector('[data-filter="channels"]');
     const channelChildFilters = [...document.querySelectorAll('.channel-child-filter')];
     const videosFilter = document.querySelector('[data-filter="videos_root"]');
-    const videoFieldGroupFilter = document.querySelector('[data-filter="video_fields"]');
-    const videoSourceGroupFilter = document.querySelector('[data-filter="video_sources"]');
-    const videoGroupFilters = [...document.querySelectorAll('.video-group-filter')];
     const videoFieldFilters = [...document.querySelectorAll('.video-field-filter')];
     const videoSourceFilters = [...document.querySelectorAll('.video-source-filter')];
     const grid = document.getElementById('grid');
@@ -421,8 +418,9 @@
         searchFilters
           .filter(input => {
             if (!input.checked) return false;
-            if (['videos_root', 'video_fields', 'video_sources'].includes(input.dataset.filter)) return false;
+            if (input.dataset.filter === 'videos_root') return false;
             if (input.classList.contains('channel-child-filter') && !channelsFilter.checked) return false;
+            if (input.classList.contains('video-source-filter') && !videosFilter.checked) return false;
             return true;
           })
           .map(input => input.dataset.filter)
@@ -444,23 +442,18 @@
 
     function syncVideosParentFilter() {
       if (!videosFilter) return;
-      const checkedFieldCount = videoFieldFilters.filter(input => input.checked).length;
       const checkedSourceCount = videoSourceFilters.filter(input => input.checked).length;
-      if (videoFieldGroupFilter && videoFieldFilters.length) {
-        videoFieldGroupFilter.checked = checkedFieldCount === videoFieldFilters.length;
-        videoFieldGroupFilter.indeterminate = checkedFieldCount > 0 && checkedFieldCount < videoFieldFilters.length;
-      }
-      if (videoSourceGroupFilter && videoSourceFilters.length) {
-        videoSourceGroupFilter.checked = checkedSourceCount === videoSourceFilters.length;
-        videoSourceGroupFilter.indeterminate = checkedSourceCount > 0 && checkedSourceCount < videoSourceFilters.length;
-      }
-      const children = [...videoFieldFilters, ...videoSourceFilters];
-      const checkedCount = children.filter(input => input.checked).length;
-      const canSearchVideos = checkedFieldCount > 0 && checkedSourceCount > 0;
-      videosFilter.checked = canSearchVideos && checkedCount === children.length;
-      videosFilter.indeterminate = canSearchVideos && checkedCount > 0 && checkedCount < children.length;
-      setFilterDimmed([videoSourceGroupFilter, ...videoSourceFilters], checkedFieldCount === 0);
-      setFilterDimmed([videoFieldGroupFilter, ...videoFieldFilters], checkedSourceCount === 0);
+      videosFilter.checked = checkedSourceCount > 0;
+      videosFilter.indeterminate = checkedSourceCount > 0 && checkedSourceCount < videoSourceFilters.length;
+      setFilterDimmed(videoSourceFilters, !videosFilter.checked);
+    }
+
+    function syncSearchForFilters() {
+      const checkedFieldCount = videoFieldFilters.filter(input => input.checked).length;
+      const fieldless = checkedFieldCount === 0;
+      setFilterDimmed([playlistsFilter, channelsFilter, videosFilter], fieldless);
+      setFilterDimmed(channelChildFilters, fieldless || !channelsFilter.checked);
+      setFilterDimmed(videoSourceFilters, fieldless || !videosFilter.checked);
     }
 
     function setFilterDimmed(inputs, dimmed) {
@@ -1198,11 +1191,22 @@
       const filters = activeSearchFilters();
       const results = [];
       const seenVideoKeys = new Set();
+      const searchTitles = filters.has('videos');
+      const searchDescriptions = filters.has('descriptions');
+      const searchTextFields = searchTitles || searchDescriptions;
       if (filters.has('playlists')) {
         for (const playlist of data.playlists) {
-          const haystack = playlistSearchText(playlist);
-          if (includesQuery(haystack, query)) {
-            results.push({ kind: 'playlist', score: includesQuery(playlist.title, query) ? 0 : 2, item: playlist });
+          const titleHit = searchTitles && includesQuery([
+            playlist.title,
+            playlist.owner_channel_title,
+            playlist.owner_channel_id,
+            playlist.owner_channel_url,
+            playlist.visibility,
+            playlist.playlist_id,
+          ].join(' '), query);
+          const descriptionHit = searchDescriptions && includesQuery(playlist.description, query);
+          if (titleHit || descriptionHit) {
+            results.push({ kind: 'playlist', score: titleHit ? 0 : 2, item: playlist });
           }
         }
       }
@@ -1211,19 +1215,17 @@
           const subscribed = isSubscribedChannel(channel);
           if (subscribed && !filters.has('channels_subscribed')) continue;
           if (!subscribed && !filters.has('channels_unsubscribed')) continue;
-          const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`;
-          if (includesQuery(haystack, query)) {
-            results.push({ kind: 'channel', score: includesQuery(channel.title, query) ? 0 : 2, item: channel });
+          const titleHit = searchTitles && includesQuery(`${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.status}`, query);
+          const descriptionHit = searchDescriptions && includesQuery(`${channel.description} ${channel.status_reason}`, query);
+          if (titleHit || descriptionHit) {
+            results.push({ kind: 'channel', score: titleHit ? 0 : 2, item: channel });
           }
         }
       }
-      const searchTitles = filters.has('videos');
-      const searchDescriptions = filters.has('descriptions');
-      const searchVideoFields = searchTitles || searchDescriptions;
       const searchPlaylistVideos = filters.has('playlist_videos');
       const searchHistoryVideos = filters.has('history_videos');
       const searchUnavailableVideos = filters.has('unavailable_videos');
-      if (searchVideoFields && searchPlaylistVideos) {
+      if (searchTextFields && searchPlaylistVideos) {
         for (const video of data.playlistVideos || []) {
           if (isHiddenPlaylistVideo(video) && !searchUnavailableVideos) continue;
           const titleHit = searchTitles && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.match_label} ${video.match_note} ${video.video_id} ${video.playlist_title}`, query);
@@ -1237,7 +1239,7 @@
           }
         }
       }
-      if (searchVideoFields && searchUnavailableVideos) {
+      if (searchTextFields && searchUnavailableVideos) {
         for (const video of data.snapshotMissing || []) {
           const key = video.video_id ? `video:${video.video_id}` : `snapshot-row:${video.playlist_id}:${video.position}`;
           if (seenVideoKeys.has(key)) continue;
@@ -1249,7 +1251,7 @@
           }
         }
       }
-      if (searchVideoFields && searchHistoryVideos) {
+      if (searchTextFields && searchHistoryVideos) {
         const seenHistoryKeys = new Set();
         for (const video of await fetchHistorySearchRows(query)) {
           const titleHit = searchTitles && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.video_id}`, query);
@@ -2444,33 +2446,17 @@
         }
         currentPage = 1;
         syncChannelParentFilter();
+        syncSearchForFilters();
         render();
       });
     }
     if (videosFilter) {
       videosFilter.addEventListener('change', () => {
         videosFilter.indeterminate = false;
-        for (const child of [...videoFieldFilters, ...videoSourceFilters]) child.checked = videosFilter.checked;
+        for (const child of videoSourceFilters) child.checked = videosFilter.checked;
         currentPage = 1;
         syncVideosParentFilter();
-        render();
-      });
-    }
-    if (videoFieldGroupFilter) {
-      videoFieldGroupFilter.addEventListener('change', () => {
-        videoFieldGroupFilter.indeterminate = false;
-        for (const child of videoFieldFilters) child.checked = videoFieldGroupFilter.checked;
-        currentPage = 1;
-        syncVideosParentFilter();
-        render();
-      });
-    }
-    if (videoSourceGroupFilter) {
-      videoSourceGroupFilter.addEventListener('change', () => {
-        videoSourceGroupFilter.indeterminate = false;
-        for (const child of videoSourceFilters) child.checked = videoSourceGroupFilter.checked;
-        currentPage = 1;
-        syncVideosParentFilter();
+        syncSearchForFilters();
         render();
       });
     }
@@ -2478,13 +2464,23 @@
       input.addEventListener('change', () => {
         channelsManuallyDisabled = false;
         syncChannelParentFilter();
+        syncSearchForFilters();
         currentPage = 1;
         render();
       });
     }
-    for (const input of [...videoFieldFilters, ...videoSourceFilters]) {
+    for (const input of videoFieldFilters) {
       input.addEventListener('change', () => {
         syncVideosParentFilter();
+        syncSearchForFilters();
+        currentPage = 1;
+        render();
+      });
+    }
+    for (const input of videoSourceFilters) {
+      input.addEventListener('change', () => {
+        syncVideosParentFilter();
+        syncSearchForFilters();
         currentPage = 1;
         render();
       });
@@ -2493,18 +2489,19 @@
       if (
         input === channelsFilter
         || input === videosFilter
-        || videoGroupFilters.includes(input)
         || channelChildFilters.includes(input)
         || videoFieldFilters.includes(input)
         || videoSourceFilters.includes(input)
       ) continue;
       input.addEventListener('change', () => {
+        syncSearchForFilters();
         currentPage = 1;
         render();
       });
     }
     syncChannelParentFilter();
     syncVideosParentFilter();
+    syncSearchForFilters();
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
       currentPage = 1;
