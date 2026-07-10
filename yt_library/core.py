@@ -104,9 +104,13 @@ def connect(db_path: Path) -> sqlite3.Connection:
     ensure_columns(
         conn,
         "playlists",
-        {"visibility": "TEXT NOT NULL DEFAULT ''"},
+        {
+            "visibility": "TEXT NOT NULL DEFAULT ''",
+            "video_count": "INTEGER NOT NULL DEFAULT 0",
+        },
     )
     migrate_playlist_owner_visibility(conn)
+    drop_playlist_video_count_text_column(conn)
     ensure_columns(
         conn,
         "playlist_videos",
@@ -190,6 +194,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     ensure_takeout_history_schema(conn)
     ensure_history_reconciled_schema(conn)
     drop_legacy_history_tables(conn)
+    drop_legacy_placeholder_recovery_tables(conn)
     ensure_channel_indexes(conn)
     if channel_backfill_needed(conn):
         backfill_channels(conn)
@@ -229,7 +234,7 @@ def split_playlist_owner_visibility(value: str) -> tuple[str, str]:
     return ("", visibility) if visibility else ((value or "").strip(), "")
 
 
-def assert_playlist_owner_visibility(metadata: dict[str, str]) -> None:
+def assert_playlist_owner_visibility(metadata: dict[str, Any]) -> None:
     owner = (metadata.get("owner") or "").strip()
     visibility = (metadata.get("visibility") or "").strip()
     assert not (owner and visibility), (
@@ -249,6 +254,12 @@ def migrate_playlist_owner_visibility(conn: sqlite3.Connection) -> None:
         WHERE lower(trim(owner)) IN ('private', 'public', 'unlisted')
         """
     )
+
+
+def drop_playlist_video_count_text_column(conn: sqlite3.Connection) -> None:
+    """Keep only the typed YouTube playlist count; do not migrate display text."""
+    if "video_count_text" in table_columns(conn, "playlists"):
+        conn.execute("ALTER TABLE playlists DROP COLUMN video_count_text")
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -1132,6 +1143,11 @@ def drop_legacy_history_tables(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS search_history")
 
 
+def drop_legacy_placeholder_recovery_tables(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS placeholder_recovery_worker_log")
+    conn.execute("DROP TABLE IF EXISTS placeholder_recovery_worker_runs")
+
+
 def ensure_takeout_history_schema(conn: sqlite3.Connection) -> None:
     expected = {
         "history_key",
@@ -1331,6 +1347,27 @@ def load_cookie_jar(cookie_file: Path) -> http.cookiejar.MozillaCookieJar:
                 except OSError:
                     pass
     return jar
+
+
+def archivarix_session_status(cookie_file: Path, now: float | None = None) -> tuple[bool, str]:
+    """Return whether the local Archivarix login session is still usable."""
+    now = time.time() if now is None else now
+    try:
+        jar = load_cookie_jar(cookie_file)
+    except (OSError, http.cookiejar.LoadError):
+        return False, "Archivarix cookie file could not be read"
+    sessions = [
+        cookie
+        for cookie in jar
+        if cookie.name == "__Secure-better-auth.session_token"
+        and cookie.domain.lstrip(".").endswith("archivarix.net")
+    ]
+    if not sessions:
+        return False, "Archivarix login session cookie is missing"
+    session = max(sessions, key=lambda cookie: cookie.expires or float("inf"))
+    if session.expires is not None and session.expires <= now:
+        return False, "Archivarix login session cookie has expired"
+    return True, ""
 
 
 def load_cookie_opener(cookie_file: Path) -> urllib.request.OpenerDirector:
@@ -1666,7 +1703,12 @@ def lockup_metadata_rows(lockup: dict[str, Any]) -> list[list[str]]:
     return rows
 
 
-def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, str] | None:
+def parse_youtube_playlist_video_count(value: str) -> int:
+    found = re.search(r"([\d,]+)\s+videos?", value or "", re.I)
+    return int(found.group(1).replace(",", "")) if found else 0
+
+
+def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, Any] | None:
     playlist_id = lockup.get("contentId")
     if not isinstance(playlist_id, str) or not playlist_id:
         return None
@@ -1678,25 +1720,26 @@ def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, str] | None:
     ).strip()
     rows = lockup_metadata_rows(lockup)
     visibility = ""
-    video_count_text = ""
+    video_count = 0
     updated_text = ""
     for parts in rows:
         joined = " • ".join(parts)
         if "Playlist" in parts and parts:
             visibility = normalize_playlist_visibility(parts[0])
-        if re.search(r"\bvideos?\b", joined, re.I):
-            video_count_text = joined
+        if not video_count:
+            video_count = parse_youtube_playlist_video_count(joined)
         if joined.lower().startswith("updated"):
             updated_text = joined
-    if not video_count_text:
+    if not video_count:
         for node in walk(lockup):
             if not isinstance(node, dict):
                 continue
             badge = node.get("thumbnailBadgeViewModel")
             if isinstance(badge, dict):
                 text = badge.get("text")
-                if isinstance(text, str) and re.search(r"\bvideos?\b", text, re.I):
-                    video_count_text = text
+                if isinstance(text, str):
+                    video_count = parse_youtube_playlist_video_count(text)
+                if video_count:
                     break
 
     return {
@@ -1705,13 +1748,13 @@ def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, str] | None:
         "description": updated_text,
         "owner": "",
         "visibility": visibility,
-        "video_count_text": video_count_text,
+        "video_count": video_count,
         "thumbnail_url": pick_lockup_thumbnail(lockup),
         "url": f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}",
     }
 
 
-def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, str]:
+def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any]:
     initial_data = extract_json_assignment(html_text, "ytInitialData")
     metadata = {
         "playlist_id": playlist_id,
@@ -1719,7 +1762,7 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, str
         "description": "",
         "owner": "",
         "visibility": "",
-        "video_count_text": "",
+        "video_count": 0,
         "thumbnail_url": "",
         "url": f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}",
     }
@@ -1758,8 +1801,8 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, str
             metadata["visibility"] = visibility
         for key in ("numVideosText", "numVideosTextText", "videoCountText"):
             count_text = text_from_runs(renderer.get(key))
-            if count_text and not metadata["video_count_text"]:
-                metadata["video_count_text"] = count_text
+            if count_text and not metadata["video_count"]:
+                metadata["video_count"] = parse_youtube_playlist_video_count(count_text)
         thumbnail = renderer.get("playlistHeaderBanner")
         if isinstance(thumbnail, dict):
             thumbs = thumbnail.get("heroPlaylistThumbnailRenderer", {}).get("thumbnail", {}).get("thumbnails", [])
@@ -1784,9 +1827,12 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, str
                     visibility = normalize_playlist_visibility(part)
                     if visibility and not metadata["visibility"]:
                         metadata["visibility"] = visibility
-                joined = " • ".join(parts)
-                if re.search(r"\b[\d,]+\s+videos?\b", joined, re.I) and not metadata["video_count_text"]:
-                    metadata["video_count_text"] = joined
+                # This is YouTube's displayed playlist count, not the local scan total.
+                if not metadata["video_count"]:
+                    for part in parts:
+                        metadata["video_count"] = parse_youtube_playlist_video_count(part)
+                        if metadata["video_count"]:
+                            break
 
     if not metadata["thumbnail_url"]:
         for node in walk(initial_data):
@@ -1873,6 +1919,7 @@ def cache_channel_thumbnail(
     thumbnail_url: str,
     thumb_dir: Path,
     referer_url: str = "",
+    timeout: int = 30,
 ) -> str:
     if not subject_id or not thumbnail_url:
         return ""
@@ -1881,7 +1928,7 @@ def cache_channel_thumbnail(
         body, content_type = request_bytes(
             opener,
             thumbnail_url,
-            timeout=30,
+            timeout=timeout,
             referer=referer_url or f"https://www.youtube.com/watch?v={subject_id}",
         )
     except Exception:
@@ -1935,7 +1982,12 @@ def archivarix_lookup_video(
     video_id: str,
     opener: urllib.request.OpenerDirector | None = None,
     channel_cache: dict[str, dict[str, Any]] | None = None,
+    stop_event: threading.Event | None = None,
+    request_timeout: int = 20,
+    stream_timeout: int = 25,
 ) -> dict[str, Any] | None:
+    if stop_event and stop_event.is_set():
+        return None
     opener = opener or urllib.request.build_opener()
     channel_cache = channel_cache if channel_cache is not None else {}
     youtube_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -1953,7 +2005,7 @@ def archivarix_lookup_video(
         },
         method="POST",
     )
-    with opener.open(request, timeout=20) as response:
+    with opener.open(request, timeout=request_timeout) as response:
         session = json.loads(response.read().decode("utf-8", "replace")).get("data", {})
     endpoint = session.get("sseEndpointUrl")
     if not isinstance(endpoint, str) or not endpoint:
@@ -1972,8 +2024,10 @@ def archivarix_lookup_video(
     )
     event = ""
     resolved_channel: dict[str, Any] = {}
-    with opener.open(stream_request, timeout=25) as response:
+    with opener.open(stream_request, timeout=stream_timeout) as response:
         for raw_line in response:
+            if stop_event and stop_event.is_set():
+                return None
             line = raw_line.decode("utf-8", "replace").strip()
             if not line:
                 event = ""
@@ -2128,6 +2182,8 @@ def cache_archivarix_thumbnail(
     thumbnail_url: str,
     thumb_dir: Path,
     opener: urllib.request.OpenerDirector | None = None,
+    timeout: int = 12,
+    stop_event: threading.Event | None = None,
 ) -> str:
     if not video_id:
         return ""
@@ -2142,11 +2198,13 @@ def cache_archivarix_thumbnail(
     body = b""
     content_type = ""
     for source in sources:
+        if stop_event and stop_event.is_set():
+            return ""
         try:
             body, content_type = request_bytes(
                 opener,
                 source,
-                timeout=12,
+                timeout=timeout,
                 referer=f"https://tube.archivarix.net/?q={urllib.parse.quote(video_id)}",
             )
             if body:
@@ -2738,13 +2796,6 @@ def parse_shorts_lockup(
         "availability": "",
         "url": f"https://www.youtube.com/shorts/{video_id}" if video_id else "",
     }
-
-
-def expected_video_count(text: str) -> int:
-    found = re.search(r"([\d,]+)\s+videos?", text or "", re.I)
-    if not found:
-        return 0
-    return int(found.group(1).replace(",", ""))
 
 
 def extract_channel_thumbnail_url(initial_data: dict[str, Any]) -> str:
@@ -3467,7 +3518,7 @@ def scan_playlist_videos_ytdlp(
     return videos
 
 
-def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) -> dict[str, str]:
+def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) -> dict[str, Any]:
     title = str(info.get("title") or info.get("playlist_title") or "").strip()
     description = str(info.get("description") or "").strip()
     owner, inferred_visibility = split_playlist_owner_visibility(
@@ -3481,7 +3532,7 @@ def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) ->
     elif visibility:
         owner = ""
     playlist_count = info.get("playlist_count") or info.get("n_entries")
-    video_count_text = f"{playlist_count} videos" if playlist_count else ""
+    video_count = int(playlist_count or 0)
     thumbnail_url = str(info.get("thumbnail") or "").strip()
     webpage_url = str(info.get("webpage_url") or info.get("original_url") or "").strip()
     if not webpage_url:
@@ -3492,7 +3543,7 @@ def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) ->
         "description": description,
         "owner": owner,
         "visibility": visibility,
-        "video_count_text": video_count_text,
+        "video_count": video_count,
         "thumbnail_url": thumbnail_url,
         "url": webpage_url,
     }
@@ -3810,7 +3861,7 @@ def import_playlists(args: argparse.Namespace) -> None:
                 "description": "",
                 "owner": "",
                 "visibility": "",
-                "video_count_text": "",
+                "video_count": 0,
                 "thumbnail_url": "",
                 "url": url,
             }
@@ -3821,7 +3872,7 @@ def import_playlists(args: argparse.Namespace) -> None:
             conn.execute(
                 """
                 INSERT INTO playlists(
-                  playlist_id, title, description, owner, visibility, video_count_text,
+                  playlist_id, title, description, owner, visibility, video_count,
                   thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3836,7 +3887,7 @@ def import_playlists(args: argparse.Namespace) -> None:
                     WHEN NULLIF(excluded.owner, '') IS NOT NULL THEN ''
                     ELSE COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility)
                   END,
-                  video_count_text=excluded.video_count_text,
+                  video_count=excluded.video_count,
                   thumbnail_url=excluded.thumbnail_url,
                   thumbnail_path=excluded.thumbnail_path,
                   url=excluded.url,
@@ -3850,7 +3901,7 @@ def import_playlists(args: argparse.Namespace) -> None:
                     metadata["description"],
                     metadata["owner"],
                     metadata["visibility"],
-                    metadata["video_count_text"],
+                    metadata["video_count"],
                     metadata["thumbnail_url"],
                     thumbnail_path,
                     metadata["url"],
@@ -3997,7 +4048,7 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
             conn.execute(
                 """
                 INSERT INTO playlists(
-                  playlist_id, title, description, owner, visibility, video_count_text,
+                  playlist_id, title, description, owner, visibility, video_count,
                   thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', '', ?)
@@ -4012,7 +4063,7 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
                     WHEN NULLIF(excluded.owner, '') IS NOT NULL THEN ''
                     ELSE COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility)
                   END,
-                  video_count_text=excluded.video_count_text,
+                  video_count=excluded.video_count,
                   thumbnail_url=excluded.thumbnail_url,
                   thumbnail_path=excluded.thumbnail_path,
                   url=excluded.url,
@@ -4026,7 +4077,7 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
                     record["description"],
                     record["owner"],
                     record["visibility"],
-                    record["video_count_text"],
+                    record["video_count"],
                     record["thumbnail_url"],
                     thumbnail_path,
                     record["url"],
@@ -4101,22 +4152,6 @@ def log_live_history_event(
     )
 
 
-def log_placeholder_recovery_event(
-    conn: sqlite3.Connection,
-    run_id: str,
-    level: str,
-    message: str,
-    video_id: str = "",
-) -> None:
-    conn.execute(
-        """
-        INSERT INTO placeholder_recovery_worker_log(run_id, created_at, level, video_id, message)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (run_id, int(time.time()), level, video_id, message),
-    )
-
-
 def playlist_placeholder_recovery_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
@@ -4148,6 +4183,7 @@ def playlist_placeholder_recovery_rows(
                v.video_id,
                MIN(v.display_position) AS display_position,
                MIN(p.title) AS playlist_title,
+               MIN(v.title) AS title,
                COUNT(DISTINCT v.playlist_id) AS playlist_count,
                COALESCE(r.search_status, '') AS previous_status
         FROM playlist_video_reconciled v
@@ -4174,6 +4210,82 @@ def playlist_placeholder_recovery_count(
     playlist_id: str = "",
 ) -> int:
     return len(playlist_placeholder_recovery_rows(conn, limit=0, force=force, playlist_id=playlist_id))
+
+
+def placeholder_queue_subject_key(snapshot_key: str, video_id: str) -> str:
+    return f"placeholder:{(snapshot_key or '').strip()}:{(video_id or '').strip()}"
+
+
+def enqueue_placeholder_recovery_targets(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+) -> dict[str, int]:
+    rows = playlist_placeholder_recovery_rows(conn, force=False, playlist_id=playlist_id)
+    inserted = 0
+    existing = 0
+    now = int(time.time())
+    # Recovery should not interrupt the scan that discovered it or the work
+    # already queued ahead of it. Keep this batch at the current queue tail.
+    tail_priority = int(
+        conn.execute("SELECT COALESCE(MAX(priority), 0) + 1 AS priority FROM worker_queue").fetchone()["priority"]
+        or 1
+    )
+    for row in rows:
+        snapshot_key = row["snapshot_key"] or ""
+        video_id = row["video_id"] or ""
+        if not snapshot_key or not video_id:
+            continue
+        subject_key = placeholder_queue_subject_key(snapshot_key, video_id)
+        queued = conn.execute(
+            "SELECT 1 FROM worker_queue WHERE subject_key = ?",
+            (subject_key,),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO worker_queue(
+              subject_key, worker_type, task_type, video_id, channel_id, playlist_id,
+              channel_title, current_title, source_key, playlist_count, priority, manual, created_at, updated_at
+            )
+            VALUES (?, 'placeholder', 'recover', ?, '', ?, '', ?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(subject_key) DO UPDATE SET
+              playlist_id=excluded.playlist_id,
+              current_title=COALESCE(NULLIF(excluded.current_title, ''), worker_queue.current_title),
+              playlist_count=MAX(worker_queue.playlist_count, excluded.playlist_count),
+              updated_at=excluded.updated_at
+            """,
+            (
+                subject_key,
+                video_id,
+                playlist_id,
+                row["title"] or video_id,
+                snapshot_key,
+                int(row["playlist_count"] or 0),
+                tail_priority,
+                now,
+                now,
+            ),
+        )
+        if queued:
+            existing += 1
+        else:
+            inserted += 1
+    return {"inserted": inserted, "existing": existing}
+
+
+def placeholder_worker_queue_rows(
+    conn: sqlite3.Connection,
+    limit: int = 0,
+) -> list[sqlite3.Row]:
+    sql = """
+        SELECT queue_id, video_id, playlist_id, current_title, source_key, priority
+        FROM worker_queue
+        WHERE worker_type = 'placeholder'
+        ORDER BY priority, queue_id
+    """
+    if limit:
+        sql += " LIMIT ?"
+        return conn.execute(sql, (limit,)).fetchall()
+    return conn.execute(sql).fetchall()
 
 
 def save_snapshot_video_recovery(
@@ -4257,7 +4369,14 @@ def recover_archivarix_video(
     no_api: bool = False,
     delay: float = 0,
     channel_cache: dict[str, dict[str, Any]] | None = None,
+    stop_event: threading.Event | None = None,
+    request_timeout: int = 20,
+    stream_timeout: int = 25,
+    thumbnail_timeout: int = 12,
+    channel_thumbnail_timeout: int = 30,
 ) -> tuple[dict[str, Any] | None, str, str, str, str]:
+    if stop_event and stop_event.is_set():
+        return None, "", "", "stopped", "Stop requested"
     status = "not_found"
     error = ""
     video: dict[str, Any] | None = None
@@ -4267,18 +4386,33 @@ def recover_archivarix_video(
         "",
         thumb_dir,
         archivarix_opener,
+        timeout=thumbnail_timeout,
+        stop_event=stop_event,
     )
     if thumbnail_path and not refresh_metadata:
         status = "thumbnail_only"
     elif not no_api:
         try:
             if delay:
-                time.sleep(delay)
-            video = archivarix_lookup_video(video_id, archivarix_opener, channel_cache=channel_cache)
+                if stop_event:
+                    if stop_event.wait(delay):
+                        return None, "", thumbnail_path, "stopped", "Stop requested"
+                else:
+                    time.sleep(delay)
+            video = archivarix_lookup_video(
+                video_id,
+                archivarix_opener,
+                channel_cache=channel_cache,
+                stop_event=stop_event,
+                request_timeout=request_timeout,
+                stream_timeout=stream_timeout,
+            )
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             status = "error"
             error = str(exc)
     if video:
+        if stop_event and stop_event.is_set():
+            return None, "", thumbnail_path, "stopped", "Stop requested"
         status = "found"
         thumbnail_url = video.get("thumbnailArchiveUrl") or video.get("thumbnailUrl") or ""
         thumbnail_path = thumbnail_path or cache_archivarix_thumbnail(
@@ -4286,6 +4420,8 @@ def recover_archivarix_video(
             thumbnail_url,
             thumb_dir,
             archivarix_opener,
+            timeout=thumbnail_timeout,
+            stop_event=stop_event,
         )
         channel_thumbnail_url = video.get("channelThumbnailUrl") or ""
         if channel_thumbnail_url:
@@ -4294,6 +4430,7 @@ def recover_archivarix_video(
                 video_id,
                 channel_thumbnail_url,
                 thumb_dir,
+                timeout=channel_thumbnail_timeout,
             )
     return video, thumbnail_url, thumbnail_path, status, error
 
@@ -4626,17 +4763,17 @@ def save_playlist_scan(
                 "description",
                 "owner",
                 "visibility",
-                "video_count_text",
                 "thumbnail_url",
                 "thumbnail_path",
                 "url",
             )
         }
+        metadata["video_count"] = max(0, int(playlist_metadata.get("video_count") or 0))
         assert_playlist_owner_visibility(metadata)
         conn.execute(
             """
             INSERT INTO playlists(
-              playlist_id, title, description, owner, visibility, video_count_text,
+              playlist_id, title, description, owner, visibility, video_count,
               thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -4651,7 +4788,10 @@ def save_playlist_scan(
                 WHEN NULLIF(excluded.owner, '') IS NOT NULL THEN ''
                 ELSE COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility)
               END,
-              video_count_text=COALESCE(NULLIF(excluded.video_count_text, ''), playlists.video_count_text),
+              video_count=CASE
+                WHEN excluded.video_count > 0 THEN excluded.video_count
+                ELSE playlists.video_count
+              END,
               thumbnail_url=COALESCE(NULLIF(excluded.thumbnail_url, ''), playlists.thumbnail_url),
               thumbnail_path=COALESCE(NULLIF(excluded.thumbnail_path, ''), playlists.thumbnail_path),
               url=COALESCE(NULLIF(excluded.url, ''), playlists.url),
@@ -4665,7 +4805,7 @@ def save_playlist_scan(
                 metadata["description"],
                 metadata["owner"],
                 metadata["visibility"],
-                metadata["video_count_text"],
+                metadata["video_count"],
                 metadata["thumbnail_url"],
                 metadata["thumbnail_path"],
                 metadata["url"],
@@ -4951,10 +5091,7 @@ def playlist_scan_candidate_rows(
             (
               ps.playlist_id IS NULL
               OR ps.scan_status <> 'ok'
-              OR (
-                CAST(REPLACE(p.video_count_text, ',', '') AS INTEGER) > 0
-                AND CAST(REPLACE(p.video_count_text, ',', '') AS INTEGER) <> COALESCE(ps.video_count, -1)
-              )
+              OR (p.video_count > 0 AND p.video_count <> COALESCE(ps.video_count, -1))
               OR (ps.scanned_at > 0 AND ps.scanned_at < ?)
             )
             """
@@ -4963,7 +5100,7 @@ def playlist_scan_candidate_rows(
     sql = f"""
         SELECT p.playlist_id,
                p.title,
-               p.video_count_text,
+               p.video_count AS playlist_video_count,
                COALESCE(ps.scanned_at, 0) AS scanned_at,
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
@@ -5007,7 +5144,7 @@ def worker_queue_rows(
                w.created_at,
                w.updated_at,
                p.title AS playlist_title,
-               p.video_count_text,
+               p.video_count AS playlist_video_count,
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
                COALESCE(ps.hidden_count, 0) AS hidden_count
@@ -5094,7 +5231,6 @@ def enqueue_playlist_scan_item(
     playlist_id: str,
     *,
     title: str = "",
-    video_count_text: str = "",
     source_key: str = "",
     priority: int = 100,
     manual: bool = False,
@@ -5103,14 +5239,13 @@ def enqueue_playlist_scan_item(
     playlist_id = (playlist_id or "").strip()
     if not playlist_id:
         raise ValueError("Playlist queue item needs a playlist ID")
-    if not title or not video_count_text:
+    if not title:
         row = conn.execute(
-            "SELECT title, video_count_text FROM playlists WHERE playlist_id = ?",
+            "SELECT title FROM playlists WHERE playlist_id = ?",
             (playlist_id,),
         ).fetchone()
         if row:
             title = title or row["title"] or ""
-            video_count_text = video_count_text or row["video_count_text"] or ""
     subject_key = playlist_queue_subject_key(playlist_id)
     conn.execute(
         """
@@ -5156,7 +5291,7 @@ def playlist_scan_queue_rows(
                w.subject_key,
                w.playlist_id,
                COALESCE(NULLIF(w.current_title, ''), p.title, w.playlist_id) AS title,
-               COALESCE(NULLIF(w.source_key, ''), p.video_count_text, '') AS video_count_text,
+               p.video_count AS playlist_video_count,
                COALESCE(ps.scanned_at, 0) AS scanned_at,
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
@@ -5203,7 +5338,6 @@ def rebuild_playlist_scan_queue(
             conn,
             row["playlist_id"] or "",
             title=row["title"] or "",
-            video_count_text=row["video_count_text"] or "",
             priority=index,
             manual=False,
         )
@@ -6040,10 +6174,10 @@ def admin_status(
     metadata_worker: "MetadataWorker | None" = None,
     playlist_worker: "PlaylistScanWorker | None" = None,
     live_history_worker: "LiveHistoryWorker | None" = None,
-    placeholder_recovery_worker: "PlaceholderRecoveryWorker | None" = None,
     queue_dispatcher: "WorkerQueueDispatcher | None" = None,
+    include_logs: bool = True,
 ) -> dict[str, Any]:
-    reconcile_worker_runs(db_path, metadata_worker, playlist_worker, live_history_worker, placeholder_recovery_worker)
+    reconcile_worker_runs(db_path, metadata_worker, playlist_worker, live_history_worker)
     conn = connect(db_path)
     try:
         counts = dict(
@@ -6109,14 +6243,9 @@ def admin_status(
             ).fetchone()
         )
         worker_queue_count_value = worker_queue_count(conn)
-        placeholder_recovery_queue_count = playlist_placeholder_recovery_count(conn, force=False)
         worker_queue_preview_rows = [
             dict(row)
             for row in worker_queue_rows(conn, limit=20)
-        ]
-        placeholder_recovery_queue_rows = [
-            dict(row)
-            for row in playlist_placeholder_recovery_rows(conn, limit=20, force=False)
         ]
         latest_metadata_run = conn.execute(
             """
@@ -6142,58 +6271,43 @@ def admin_status(
             LIMIT 1
             """
         ).fetchone()
-        latest_placeholder_recovery_run = conn.execute(
-            """
-            SELECT *
-            FROM placeholder_recovery_worker_runs
-            ORDER BY started_at DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        metadata_logs = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT *
-                FROM metadata_worker_log
-                ORDER BY id DESC
-                LIMIT 80
-                """
-            )
-        ]
-        playlist_logs = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT *
-                FROM playlist_scan_worker_log
-                ORDER BY id DESC
-                LIMIT 80
-                """
-            )
-        ]
-        live_history_logs = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT *
-                FROM live_history_worker_log
-                ORDER BY id DESC
-                LIMIT 80
-                """
-            )
-        ]
-        placeholder_recovery_logs = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT *
-                FROM placeholder_recovery_worker_log
-                ORDER BY id DESC
-                LIMIT 80
-                """
-            )
-        ]
+        metadata_logs: list[dict[str, Any]] = []
+        playlist_logs: list[dict[str, Any]] = []
+        live_history_logs: list[dict[str, Any]] = []
+        if include_logs:
+            metadata_logs = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT *
+                    FROM metadata_worker_log
+                    ORDER BY id DESC
+                    LIMIT 80
+                    """
+                )
+            ]
+            playlist_logs = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT *
+                    FROM playlist_scan_worker_log
+                    ORDER BY id DESC
+                    LIMIT 80
+                    """
+                )
+            ]
+            live_history_logs = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT *
+                    FROM live_history_worker_log
+                    ORDER BY id DESC
+                    LIMIT 80
+                    """
+                )
+            ]
     finally:
         conn.close()
     return {
@@ -6201,38 +6315,31 @@ def admin_status(
         "playlistScanRunning": playlist_worker.is_running() if playlist_worker else False,
         "liveHistoryRunning": live_history_worker.is_running() if live_history_worker else False,
         "workerQueueRunning": queue_dispatcher.is_running() if queue_dispatcher else False,
-        "placeholderRecoveryRunning": placeholder_recovery_worker.is_running() if placeholder_recovery_worker else False,
         "counts": counts,
         "liveHistoryCounts": live_history_counts,
         "playlistCounts": playlist_counts,
         "metadataCounts": metadata_counts,
         "channelCounts": channel_counts,
         "workerQueueCount": worker_queue_count_value,
-        "placeholderRecoveryQueueCount": placeholder_recovery_queue_count,
         "workerQueue": worker_queue_preview_rows,
-        "placeholderRecoveryQueue": placeholder_recovery_queue_rows,
         "latestRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestMetadataRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestPlaylistScanRun": dict(latest_playlist_run) if latest_playlist_run else None,
         "latestLiveHistoryRun": dict(latest_live_history_run) if latest_live_history_run else None,
-        "latestPlaceholderRecoveryRun": dict(latest_placeholder_recovery_run) if latest_placeholder_recovery_run else None,
         "logs": metadata_logs,
         "metadataLogs": metadata_logs,
         "playlistScanLogs": playlist_logs,
         "liveHistoryLogs": live_history_logs,
-        "placeholderRecoveryLogs": placeholder_recovery_logs,
     }
 def reconcile_worker_runs(
     db_path: Path,
     metadata_worker: "MetadataWorker | None" = None,
     playlist_worker: "PlaylistScanWorker | None" = None,
     live_history_worker: "LiveHistoryWorker | None" = None,
-    placeholder_recovery_worker: "PlaceholderRecoveryWorker | None" = None,
 ) -> None:
     metadata_running = metadata_worker.is_running() if metadata_worker else False
     playlist_running = playlist_worker.is_running() if playlist_worker else False
     live_history_running = live_history_worker.is_running() if live_history_worker else False
-    placeholder_recovery_running = placeholder_recovery_worker.is_running() if placeholder_recovery_worker else False
     now = int(time.time())
     conn = connect(db_path)
     try:
@@ -6269,20 +6376,6 @@ def reconcile_worker_runs(
                 conn.execute(
                     """
                     UPDATE live_history_worker_runs
-                    SET status = 'interrupted',
-                        finished_at = ?,
-                        message = CASE
-                          WHEN message = '' THEN 'Interrupted by server restart'
-                          ELSE message || ' (interrupted by server restart)'
-                        END
-                    WHERE status = 'running'
-                    """,
-                    (now,),
-                )
-            if not placeholder_recovery_running:
-                conn.execute(
-                    """
-                    UPDATE placeholder_recovery_worker_runs
                     SET status = 'interrupted',
                         finished_at = ?,
                         message = CASE

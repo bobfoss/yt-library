@@ -476,14 +476,14 @@ class PlaylistScanWorker:
                     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as web_exc:
                         status = "error"
                         error = str(web_exc)
-                if header_metadata.get("video_count_text"):
-                    playlist_metadata["video_count_text"] = header_metadata["video_count_text"]
+                if header_metadata.get("video_count"):
+                    playlist_metadata["video_count"] = header_metadata["video_count"]
                 if header_metadata.get("visibility"):
                     playlist_metadata["visibility"] = header_metadata["visibility"]
                     playlist_metadata["owner"] = ""
-                header_expected_count = expected_video_count(header_metadata.get("video_count_text", ""))
-                metadata_expected_count = expected_video_count(playlist_metadata.get("video_count_text", ""))
-                row_expected_count = expected_video_count(row["video_count_text"] if "video_count_text" in row.keys() else "")
+                header_expected_count = int(header_metadata.get("video_count") or 0)
+                metadata_expected_count = int(playlist_metadata.get("video_count") or 0)
+                row_expected_count = int(row["playlist_video_count"] or 0)
                 expected_count = header_expected_count or metadata_expected_count or row_expected_count
                 if status == "ok" and expected_count > 0 and len(videos) < expected_count:
                     status = "error"
@@ -493,6 +493,7 @@ class PlaylistScanWorker:
                         error += f"; yt-dlp failed: {ytdlp_error[:500]}"
                 with conn:
                     metadata_queued = 0
+                    placeholder_queued = 0
                     if status == "error":
                         video_count, hidden_count = save_playlist_scan_error(conn, playlist_id, error)
                     else:
@@ -507,6 +508,11 @@ class PlaylistScanWorker:
                         if bool(row["manual"]) and video_count:
                             metadata_result = enqueue_playlist_metadata_targets(conn, playlist_id)
                             metadata_queued = int(metadata_result["queued_count"])
+                        placeholder_result = enqueue_placeholder_recovery_targets(
+                            conn,
+                            playlist_id,
+                        )
+                        placeholder_queued = int(placeholder_result["inserted"])
                     processed += 1
                     if status == "error":
                         failed += 1
@@ -520,6 +526,7 @@ class PlaylistScanWorker:
                             (
                                 f"{title}: {video_count} videos, {hidden_count} unavailable ({backend})"
                                 + (f"; queued {metadata_queued} metadata items" if metadata_queued else "")
+                                + (f"; queued {placeholder_queued} placeholder recoveries" if placeholder_queued else "")
                             ),
                             playlist_id,
                         )
@@ -764,7 +771,6 @@ class PlaceholderRecoveryWorker:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-        self._run_id = ""
 
     def is_running(self) -> bool:
         with self._lock:
@@ -775,184 +781,105 @@ class PlaceholderRecoveryWorker:
         db_path: Path,
         archivarix_cookie_file: Path,
         thumb_dir: Path,
-        delay: float,
-        limit: int,
-        force: bool,
     ) -> dict[str, Any]:
+        session_valid, session_message = archivarix_session_status(archivarix_cookie_file)
+        if not session_valid:
+            return {
+                "started": False,
+                "blocked": True,
+                "message": session_message,
+            }
         with self._lock:
             if self._thread and self._thread.is_alive():
-                return {
-                    "started": False,
-                    "run_id": self._run_id,
-                    "message": "Placeholder recovery already running",
-                }
+                return {"started": False, "message": "Placeholder recovery already running"}
             self._stop.clear()
-            self._run_id = uuid.uuid4().hex
             self._thread = threading.Thread(
                 target=self._run,
-                args=(self._run_id, db_path, archivarix_cookie_file, thumb_dir, delay, limit, force),
+                args=(db_path, archivarix_cookie_file, thumb_dir),
                 daemon=True,
             )
             self._thread.start()
-            return {"started": True, "run_id": self._run_id, "message": "Placeholder recovery started"}
+            return {"started": True, "message": "Placeholder recovery started"}
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
             if not self._thread or not self._thread.is_alive():
                 return {"stopping": False, "message": "Placeholder recovery is not running"}
             self._stop.set()
-            return {"stopping": True, "run_id": self._run_id, "message": "Placeholder recovery stop requested"}
+            return {"stopping": True, "message": "Placeholder recovery stop requested"}
 
     def _run(
         self,
-        run_id: str,
         db_path: Path,
         archivarix_cookie_file: Path,
         thumb_dir: Path,
-        delay: float,
-        limit: int,
-        force: bool,
     ) -> None:
         conn = connect(db_path)
         archivarix_opener = load_cookie_opener(archivarix_cookie_file)
         try:
-            rows = playlist_placeholder_recovery_rows(conn, limit=limit, force=force)
-            channel_cache: dict[str, dict[str, Any]] = {}
-            with conn:
-                conn.execute(
-                    """
-                    INSERT INTO placeholder_recovery_worker_runs(
-                      run_id, status, started_at, total, delay_seconds,
-                      requested_limit, force, message
-                    )
-                    VALUES (?, 'running', ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        run_id,
-                        int(time.time()),
-                        len(rows),
-                        delay,
-                        limit,
-                        1 if force else 0,
-                        "Placeholder recovery started",
-                    ),
+            rows = placeholder_worker_queue_rows(conn, limit=1)
+            if not rows or self._stop.is_set():
+                return
+            row = rows[0]
+            queue_id = int(row["queue_id"] or 0)
+            snapshot_key = row["source_key"] or ""
+            playlist_id = row["playlist_id"] or ""
+            video_id = row["video_id"]
+            title = row["current_title"] or video_id
+            status = "not_found"
+            error = ""
+            try:
+                video, thumbnail_url, thumbnail_path, status, error = recover_archivarix_video(
+                    video_id,
+                    thumb_dir,
+                    archivarix_opener,
+                    refresh_metadata=True,
+                    no_api=False,
+                    delay=3.0,
+                    channel_cache={},
+                    stop_event=self._stop,
+                    request_timeout=5,
+                    stream_timeout=5,
+                    thumbnail_timeout=5,
+                    channel_thumbnail_timeout=5,
                 )
-                log_placeholder_recovery_event(conn, run_id, "info", f"Queued {len(rows)} placeholder videos")
-
-            processed = 0
-            found = 0
-            failed = 0
-            skipped = 0
-            for row in rows:
                 if self._stop.is_set():
-                    with conn:
-                        conn.execute(
-                            """
-                            UPDATE placeholder_recovery_worker_runs
-                            SET status = 'stopped', finished_at = ?, message = ?
-                            WHERE run_id = ?
-                            """,
-                            (int(time.time()), "Stop requested", run_id),
-                        )
-                        log_placeholder_recovery_event(conn, run_id, "warn", "Placeholder recovery stopped by request")
                     return
-
-                snapshot_key = row["snapshot_key"] or ""
-                video_id = row["video_id"]
-                title = ""
-                status = "not_found"
-                error = ""
-                try:
-                    video, thumbnail_url, thumbnail_path, status, error = recover_archivarix_video(
-                        video_id,
-                        thumb_dir,
-                        archivarix_opener,
-                        refresh_metadata=True,
-                        no_api=False,
-                        delay=delay,
-                        channel_cache=channel_cache,
-                    )
-                    with conn:
-                        save_snapshot_video_recovery(
-                            conn,
-                            snapshot_key,
-                            video_id,
-                            video,
-                            thumbnail_url,
-                            thumbnail_path,
-                            status,
-                            error,
-                        )
-                    title = (video or {}).get("title") or video_id
-                except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-                    status = "error"
-                    error = str(exc)
-                    title = video_id
-
-                with conn:
-                    processed += 1
-                    if status == "found":
-                        found += 1
-                        level = "found"
-                        message = f"found: {title}"
-                    elif status == "thumbnail_only":
-                        found += 1
-                        level = "thumbnail"
-                        message = f"thumbnail only: {title}"
-                    elif status == "not_found":
-                        skipped += 1
-                        level = "not found"
-                        message = "not found"
-                    else:
-                        failed += 1
-                        level = "error"
-                        message = error or status
-                    conn.execute(
-                        """
-                        UPDATE placeholder_recovery_worker_runs
-                        SET processed = ?, found = ?, failed = ?, skipped = ?,
-                            last_video_id = ?, message = ?
-                        WHERE run_id = ?
-                        """,
-                        (
-                            processed,
-                            found,
-                            failed,
-                            skipped,
-                            video_id,
-                            f"Processed {processed} of {len(rows)}",
-                            run_id,
-                        ),
-                    )
-                    log_placeholder_recovery_event(conn, run_id, level, message, video_id)
+                save_snapshot_video_recovery(
+                    conn,
+                    snapshot_key,
+                    video_id,
+                    video,
+                    thumbnail_url,
+                    thumbnail_path,
+                    status,
+                    error,
+                )
+                title = (video or {}).get("title") or title
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+                status = "error"
+                error = str(exc)
 
             with conn:
-                stats = rebuild_playlist_reconciliation(conn)
-                final_message = (
-                    f"Placeholder recovery complete: {processed} checked, "
-                    f"{found} found, {skipped} not found, {failed} failed; "
-                    f"reconciled {stats['rows']} rows"
-                )
-                conn.execute(
-                    """
-                    UPDATE placeholder_recovery_worker_runs
-                    SET status = 'complete', finished_at = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (int(time.time()), final_message, run_id),
-                )
-                log_placeholder_recovery_event(conn, run_id, "info", final_message)
+                if status == "found":
+                    level = "placeholder found"
+                    message = f"found: {title}"
+                elif status == "thumbnail_only":
+                    level = "placeholder thumbnail"
+                    message = f"thumbnail only: {title}"
+                elif status == "not_found":
+                    level = "placeholder not found"
+                    message = "not found"
+                else:
+                    level = "placeholder error"
+                    message = error or status
+                if queue_id:
+                    conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
+                rebuild_playlist_reconciliation(conn, playlist_id)
+                log_worker_event(conn, "", level, message, video_id)
         except Exception as exc:
             with conn:
-                conn.execute(
-                    """
-                    UPDATE placeholder_recovery_worker_runs
-                    SET status = 'error', finished_at = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (int(time.time()), str(exc), run_id),
-                )
-                log_placeholder_recovery_event(conn, run_id, "error", f"Placeholder recovery crashed: {exc}")
+                log_worker_event(conn, "", "placeholder error", f"Worker crashed: {exc}")
         finally:
             conn.close()
 
@@ -965,6 +892,7 @@ class WorkerQueueDispatcher:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._placeholder_block_reason = ""
 
     def is_running(self) -> bool:
         with self._lock:
@@ -992,6 +920,7 @@ class WorkerQueueDispatcher:
             METADATA_WORKER.stop()
             PLAYLIST_SCAN_WORKER.stop()
             LIVE_HISTORY_WORKER.stop()
+            PLACEHOLDER_RECOVERY_WORKER.stop()
         running = thread.is_alive()
         return {
             "stopping": running,
@@ -1029,24 +958,6 @@ class WorkerQueueDispatcher:
         finally:
             conn.close()
 
-    def _run_placeholder_recovery_if_needed(self, db_path: Path) -> None:
-        conn = connect(db_path)
-        try:
-            pending = playlist_placeholder_recovery_count(conn, force=False)
-        finally:
-            conn.close()
-        if not pending or self._stop.is_set():
-            return
-        PLACEHOLDER_RECOVERY_WORKER.start(
-            db_path,
-            ARCHIVARIX_COOKIE_FILE,
-            DEFAULT_ARCHIVARIX_THUMB_DIR,
-            delay=3.0,
-            limit=10,
-            force=False,
-        )
-        self._wait_for_worker(PLACEHOLDER_RECOVERY_WORKER)
-
     def _run(self, db_path: Path, cookie_file: Path, thumb_dir: Path) -> None:
         while not self._stop.is_set():
             row = self._next_row(db_path)
@@ -1080,7 +991,34 @@ class WorkerQueueDispatcher:
                 if not result.get("started") and not PLAYLIST_SCAN_WORKER.is_running():
                     time.sleep(0.5)
                 self._wait_for_worker(PLAYLIST_SCAN_WORKER)
-                self._run_placeholder_recovery_if_needed(db_path)
+            elif worker_type == "placeholder":
+                result = PLACEHOLDER_RECOVERY_WORKER.start(
+                    db_path,
+                    ARCHIVARIX_COOKIE_FILE,
+                    DEFAULT_ARCHIVARIX_THUMB_DIR,
+                )
+                if result.get("blocked"):
+                    reason = str(result.get("message") or "unavailable")
+                    conn = connect(db_path)
+                    try:
+                        with conn:
+                            if reason != self._placeholder_block_reason:
+                                log_worker_event(
+                                    conn,
+                                    "",
+                                    "placeholder warn",
+                                    f"Automatic recovery skipped: {reason}",
+                                    row.get("video_id") or "",
+                                )
+                            remove_worker_queue_entry(conn, int(row.get("queue_id") or 0))
+                    finally:
+                        conn.close()
+                    self._placeholder_block_reason = reason
+                    continue
+                self._placeholder_block_reason = ""
+                if not result.get("started") and not PLACEHOLDER_RECOVERY_WORKER.is_running():
+                    time.sleep(0.5)
+                self._wait_for_worker(PLACEHOLDER_RECOVERY_WORKER)
             elif worker_type == "history":
                 mode = "verify" if row.get("task_type") == "verify" else "recent"
                 result = LIVE_HISTORY_WORKER.start(db_path, cookie_file, mode=mode)

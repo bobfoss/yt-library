@@ -1736,7 +1736,7 @@
           </a>
         </div>
         <div class="details">
-          ${playlist.video_count_text ? `<span>${escapeHtml(playlist.video_count_text)}</span>` : ''}
+          ${playlist.video_count ? `<span>${escapeHtml(playlist.video_count)} videos</span>` : ''}
           ${playlist.scanned_video_count ? `<span>${playlist.scanned_video_count} scanned</span>` : ''}
           ${playlist.hidden_count ? `<span class="badge">${playlist.hidden_count} unavailable</span>` : ''}
           ${displayPlaylistVisibility(playlist) ? `<span>${escapeHtml(displayPlaylistVisibility(playlist))}</span>` : ''}

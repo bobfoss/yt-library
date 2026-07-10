@@ -4,6 +4,7 @@ import tempfile
 import time
 import sqlite3
 import json
+import threading
 import urllib.error
 import unittest
 from datetime import date
@@ -11,10 +12,46 @@ from pathlib import Path
 from unittest.mock import patch
 
 from yt_library import core
-from yt_library.workers import MetadataWorker
+from yt_library.workers import MetadataWorker, PlaceholderRecoveryWorker
 
 
 class CoreHelperTests(unittest.TestCase):
+    def test_archivarix_recovery_does_not_start_when_stop_is_requested(self) -> None:
+        stop_event = threading.Event()
+        stop_event.set()
+        with (
+            patch("yt_library.core.cache_archivarix_thumbnail") as cache_thumbnail,
+            patch("yt_library.core.archivarix_lookup_video") as lookup_video,
+        ):
+            result = core.recover_archivarix_video(
+                "abc12345678",
+                Path("unused"),
+                object(),
+                stop_event=stop_event,
+            )
+
+        self.assertEqual(result[3:], ("stopped", "Stop requested"))
+        cache_thumbnail.assert_not_called()
+        lookup_video.assert_not_called()
+
+    def test_archivarix_session_status_requires_a_current_session_cookie(self) -> None:
+        class Cookie:
+            def __init__(self, expires: int | None) -> None:
+                self.name = "__Secure-better-auth.session_token"
+                self.domain = "tube.archivarix.net"
+                self.expires = expires
+
+        with patch("yt_library.core.load_cookie_jar", return_value=[Cookie(200)]):
+            self.assertEqual(core.archivarix_session_status(Path("unused"), now=100), (True, ""))
+        with patch("yt_library.core.load_cookie_jar", return_value=[Cookie(100)]):
+            valid, message = core.archivarix_session_status(Path("unused"), now=100)
+            self.assertFalse(valid)
+            self.assertIn("expired", message)
+        with patch("yt_library.core.load_cookie_jar", return_value=[]):
+            valid, message = core.archivarix_session_status(Path("unused"), now=100)
+            self.assertFalse(valid)
+            self.assertIn("missing", message)
+
     def test_history_date_from_relative_and_month_labels(self) -> None:
         today = date(2026, 7, 6)
 
@@ -113,7 +150,8 @@ class CoreHelperTests(unittest.TestCase):
 
         metadata = core.extract_playlist_metadata(html, "PLexample")
 
-        self.assertEqual(metadata["video_count_text"], "Playlist • Unlisted • 150 videos • 143 views")
+        self.assertEqual(metadata["video_count"], 150)
+        self.assertNotIn("view_count", metadata)
         self.assertEqual(metadata["visibility"], "unlisted")
         self.assertEqual(metadata["owner"], "")
 
@@ -426,6 +464,8 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("metadata_worker_runs", tables)
         self.assertIn("reaction", columns)
         self.assertIn("visibility", playlist_columns)
+        self.assertIn("video_count", playlist_columns)
+        self.assertNotIn("video_count_text", playlist_columns)
         self.assertIn("match_type", reconciled_columns)
         self.assertNotIn("match_notes", reconciled_columns)
         self.assertIn("source_type", history_columns)
@@ -533,11 +573,11 @@ class SchemaTests(unittest.TestCase):
                         conn.execute(
                             """
                             INSERT INTO playlists(
-                              playlist_id, title, description, owner, visibility, video_count_text,
+                              playlist_id, title, description, owner, visibility, video_count,
                               thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
                             )
                             VALUES (
-                              'PLrename', 'Old name', 'Old description', 'Old owner', 'unlisted', '1 video',
+                              'PLrename', 'Old name', 'Old description', 'Old owner', 'unlisted', 1,
                               'https://example.test/old.jpg', 'thumbs/PLrename.jpg',
                               'https://www.youtube.com/playlist?list=PLrename', 'ok', '', 1
                             )
@@ -567,18 +607,19 @@ class SchemaTests(unittest.TestCase):
                                 "description": "New description",
                                 "owner": "New owner",
                                 "visibility": "",
-                                "video_count_text": "1 video",
+                                "video_count": 1,
                                 "thumbnail_url": "https://example.test/new.jpg",
                                 "url": "https://www.youtube.com/playlist?list=PLrename",
                             },
                         )
                     row = conn.execute(
-                        "SELECT title, description, owner, visibility, thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLrename'"
+                        "SELECT title, description, owner, visibility, video_count, thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLrename'"
                     ).fetchone()
                     self.assertEqual(row["title"], "New name")
                     self.assertEqual(row["description"], "New description")
                     self.assertEqual(row["owner"], "New owner")
                     self.assertEqual(row["visibility"], "")
+                    self.assertEqual(row["video_count"], 1)
                     self.assertEqual(row["thumbnail_url"], "https://example.test/new.jpg")
                     self.assertEqual(row["thumbnail_path"], "thumbs/PLrename.jpg")
                 finally:
@@ -622,9 +663,9 @@ class SchemaTests(unittest.TestCase):
                 migrated = core.connect(db_path)
                 try:
                     rows = {
-                        row["playlist_id"]: (row["owner"], row["visibility"])
+                        row["playlist_id"]: (row["owner"], row["visibility"], row["video_count"])
                         for row in migrated.execute(
-                            "SELECT playlist_id, owner, visibility FROM playlists"
+                            "SELECT playlist_id, owner, visibility, video_count FROM playlists"
                         )
                     }
                 finally:
@@ -632,8 +673,8 @@ class SchemaTests(unittest.TestCase):
             finally:
                 core.ROOT = original_root
 
-        self.assertEqual(rows["PLprivate"], ("", "private"))
-        self.assertEqual(rows["PLowner"], ("Gir Bot", ""))
+        self.assertEqual(rows["PLprivate"], ("", "private", 0))
+        self.assertEqual(rows["PLowner"], ("Gir Bot", "", 0))
 
     def test_save_playlist_scan_error_preserves_existing_counts(self) -> None:
         original_root = core.ROOT
@@ -726,6 +767,90 @@ class SchemaTests(unittest.TestCase):
 
 
 class WorkerQueueTests(unittest.TestCase):
+    def test_placeholder_recovery_targets_use_the_common_worker_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = core.connect(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.enqueue_worker_queue_target(conn, "PLearlierWork")
+                    conn.execute("UPDATE worker_queue SET priority = 25 WHERE playlist_id = 'PLearlierWork'")
+                candidate = {
+                    "snapshot_key": "20260704T052745Z",
+                    "video_id": "abc12345678",
+                    "title": "Unavailable example",
+                    "playlist_count": 2,
+                }
+                with patch("yt_library.core.playlist_placeholder_recovery_rows", return_value=[candidate]):
+                    with conn:
+                        first = core.enqueue_placeholder_recovery_targets(
+                            conn,
+                            "PLexample",
+                        )
+                        second = core.enqueue_placeholder_recovery_targets(
+                            conn,
+                            "PLexample",
+                        )
+
+                self.assertEqual(first, {"inserted": 1, "existing": 0})
+                self.assertEqual(second, {"inserted": 0, "existing": 1})
+                row = conn.execute(
+                    "SELECT worker_type, task_type, video_id, playlist_id, current_title, source_key, priority "
+                    "FROM worker_queue WHERE worker_type = 'placeholder'"
+                ).fetchone()
+                self.assertEqual(
+                    dict(row),
+                    {
+                        "worker_type": "placeholder",
+                        "task_type": "recover",
+                        "video_id": "abc12345678",
+                        "playlist_id": "PLexample",
+                        "current_title": "Unavailable example",
+                        "source_key": "20260704T052745Z",
+                        "priority": 26,
+                    },
+                )
+            finally:
+                conn.close()
+
+    def test_stopped_placeholder_recovery_keeps_its_queue_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = core.connect(db_path)
+            try:
+                candidate = {
+                    "snapshot_key": "20260704T052745Z",
+                    "video_id": "abc12345678",
+                    "title": "Unavailable example",
+                    "playlist_count": 1,
+                }
+                with patch("yt_library.core.playlist_placeholder_recovery_rows", return_value=[candidate]):
+                    with conn:
+                        core.enqueue_placeholder_recovery_targets(conn, "PLexample")
+            finally:
+                conn.close()
+
+            worker = PlaceholderRecoveryWorker()
+
+            def stop_during_recovery(*args, **kwargs):
+                worker._stop.set()
+                return None, "", "", "stopped", "Stop requested"
+
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.recover_archivarix_video", side_effect=stop_during_recovery),
+            ):
+                worker._run(db_path, Path(temp_dir) / "cookies.txt", Path(temp_dir) / "thumbs")
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
+                logs = conn.execute(
+                    "SELECT * FROM metadata_worker_log WHERE level LIKE 'placeholder %'"
+                ).fetchall()
+                self.assertEqual(logs, [])
+            finally:
+                conn.close()
+
     def test_dispatch_metadata_error_acknowledges_queue_entry_without_summary_logs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

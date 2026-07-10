@@ -19,7 +19,6 @@ from .templates import load_template
 from .workers import (
     LIVE_HISTORY_WORKER,
     METADATA_WORKER,
-    PLACEHOLDER_RECOVERY_WORKER,
     PLAYLIST_SCAN_WORKER,
     WORKER_QUEUE_DISPATCHER,
 )
@@ -103,14 +102,16 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(data)
             return
         if parsed.path == "/api/admin/status":
+            params = urllib.parse.parse_qs(parsed.query)
+            include_logs = (params.get("include_logs") or ["1"])[0].strip().lower() not in {"0", "false", "no"}
             self.send_json(
                 admin_status(
                     self.db_path,
                     METADATA_WORKER,
                     PLAYLIST_SCAN_WORKER,
                     LIVE_HISTORY_WORKER,
-                    PLACEHOLDER_RECOVERY_WORKER,
                     WORKER_QUEUE_DISPATCHER,
+                    include_logs,
                 )
             )
             return
@@ -131,9 +132,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 if queue_type == "worker":
                     total = worker_queue_count(conn) if include_total else 0
                     rows = worker_queue_rows(conn, limit=limit, offset=offset)
-                elif queue_type == "placeholders":
-                    total = playlist_placeholder_recovery_count(conn, force=False) if include_total else 0
-                    rows = playlist_placeholder_recovery_rows(conn, limit=limit, offset=offset, force=False)
                 else:
                     self.send_json({"error": "Unknown queue type"}, status=400)
                     return
@@ -193,7 +191,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 or METADATA_WORKER.is_running()
                 or PLAYLIST_SCAN_WORKER.is_running()
                 or LIVE_HISTORY_WORKER.is_running()
-                or PLACEHOLDER_RECOVERY_WORKER.is_running()
             ):
                 self.send_json({"error": "Stop active workers before rebuilding the queue"}, status=409)
                 return
@@ -214,7 +211,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 or METADATA_WORKER.is_running()
                 or PLAYLIST_SCAN_WORKER.is_running()
                 or LIVE_HISTORY_WORKER.is_running()
-                or PLACEHOLDER_RECOVERY_WORKER.is_running()
             ):
                 self.send_json({"error": "Stop active workers before clearing the queue"}, status=409)
                 return
@@ -252,7 +248,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 "metadata": METADATA_WORKER.stop(),
                 "playlists": PLAYLIST_SCAN_WORKER.stop(),
                 "history": LIVE_HISTORY_WORKER.stop(),
-                "placeholders": PLACEHOLDER_RECOVERY_WORKER.stop(),
             }
             self.send_json({"ok": True, **result})
             return
@@ -272,23 +267,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 conn.close()
             dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
             self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
-            return
-        if parsed.path == "/api/admin/placeholders/start":
-            limit = max(0, int((params.get("limit") or ["25"])[0] or 0))
-            delay = max(1.0, float((params.get("delay") or ["3"])[0] or 3))
-            force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
-            result = PLACEHOLDER_RECOVERY_WORKER.start(
-                self.db_path,
-                ARCHIVARIX_COOKIE_FILE,
-                DEFAULT_ARCHIVARIX_THUMB_DIR,
-                delay=delay,
-                limit=limit,
-                force=force,
-            )
-            self.send_json(result)
-            return
-        if parsed.path == "/api/admin/placeholders/stop":
-            self.send_json(PLACEHOLDER_RECOVERY_WORKER.stop())
             return
         if parsed.path == "/api/admin/playlists/reconcile":
             conn = connect(self.db_path)
@@ -407,7 +385,7 @@ def serve(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}. Run import first.")
-    reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER, PLACEHOLDER_RECOVERY_WORKER)
+    reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER)
 
     def handler(*handler_args, **handler_kwargs):
         return LibraryHandler(

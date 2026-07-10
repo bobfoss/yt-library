@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS playlists (
   description TEXT NOT NULL DEFAULT '',
   owner TEXT NOT NULL DEFAULT '',
   visibility TEXT NOT NULL DEFAULT '',
-  video_count_text TEXT NOT NULL DEFAULT '',
+  video_count INTEGER NOT NULL DEFAULT 0,
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
   url TEXT NOT NULL DEFAULT '',
@@ -347,32 +347,6 @@ CREATE TABLE IF NOT EXISTS live_history_worker_log (
   message TEXT NOT NULL DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS placeholder_recovery_worker_runs (
-  run_id TEXT PRIMARY KEY,
-  status TEXT NOT NULL DEFAULT '',
-  started_at INTEGER NOT NULL DEFAULT 0,
-  finished_at INTEGER NOT NULL DEFAULT 0,
-  total INTEGER NOT NULL DEFAULT 0,
-  processed INTEGER NOT NULL DEFAULT 0,
-  found INTEGER NOT NULL DEFAULT 0,
-  failed INTEGER NOT NULL DEFAULT 0,
-  skipped INTEGER NOT NULL DEFAULT 0,
-  delay_seconds REAL NOT NULL DEFAULT 0,
-  requested_limit INTEGER NOT NULL DEFAULT 0,
-  force INTEGER NOT NULL DEFAULT 0,
-  last_video_id TEXT NOT NULL DEFAULT '',
-  message TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS placeholder_recovery_worker_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_id TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL DEFAULT 0,
-  level TEXT NOT NULL DEFAULT '',
-  video_id TEXT NOT NULL DEFAULT '',
-  message TEXT NOT NULL DEFAULT ''
-);
-
 CREATE INDEX IF NOT EXISTS idx_groups_parent_position ON groups(parent_key, position);
 CREATE INDEX IF NOT EXISTS idx_group_playlists_position ON group_playlists(group_key, position);
 CREATE INDEX IF NOT EXISTS idx_playlist_videos_hidden ON playlist_videos(is_playable, playlist_id, position);
@@ -397,4 +371,3 @@ CREATE INDEX IF NOT EXISTS idx_worker_queue_task ON worker_queue(task_type, upda
 CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_run ON metadata_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_run ON playlist_scan_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_live_history_worker_log_run ON live_history_worker_log(run_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_placeholder_recovery_worker_log_run ON placeholder_recovery_worker_log(run_id, created_at);

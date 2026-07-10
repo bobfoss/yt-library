@@ -140,23 +140,6 @@
         </div>
       </section>
 
-      <section class="workstream">
-        <div class="workstream-header">
-          <h2>Placeholder Recovery</h2>
-          <div id="placeholderRunStatus" class="status"></div>
-        </div>
-        <div class="grid">
-          <div class="panel"><div class="metric">Placeholder recovery queue</div><div id="placeholderQueueCount" class="value">0</div></div>
-          <div class="panel"><div class="metric">Placeholder recovery</div><div id="placeholderWorkerState" class="value">idle</div></div>
-        </div>
-        <div class="controls">
-          <label>Limit<input id="placeholderLimit" type="number" min="0" step="1" value="10"></label>
-          <label>Recovery delay<input id="recoveryDelay" type="number" min="1" step="1" value="3"></label>
-          <label class="checkbox"><input id="placeholderForce" type="checkbox">Refresh already fetched</label>
-          <button id="recoverPlaceholders" class="primary" type="button">Recover deleted playlist videos</button>
-          <button id="stopPlaceholders" type="button">Stop placeholder recovery</button>
-        </div>
-      </section>
     </section>
 
     <section class="panel">
@@ -173,7 +156,7 @@
         <button id="startWorkerQueue" class="primary" type="button">Start queue</button>
         <button id="rebuildWorkerQueue" type="button">Rebuild queue</button>
         <button id="clearWorkerQueue" type="button">Clear queue</button>
-        <button id="stopWorkerQueue" type="button">Stop workers</button>
+        <button id="stopWorkerQueue" type="button">Stop queue</button>
         <button id="refresh" type="button">Refresh status</button>
       </div>
       <table>
@@ -214,22 +197,15 @@
       metadataCounts: document.getElementById('metadataCounts'),
       logs: document.getElementById('logs'),
       providedQueueTarget: document.getElementById('providedQueueTarget'),
-      placeholderLimit: document.getElementById('placeholderLimit'),
-      recoveryDelay: document.getElementById('recoveryDelay'),
       metadataStaleDays: document.getElementById('metadataStaleDays'),
       metadataForce: document.getElementById('metadataForce'),
-      placeholderForce: document.getElementById('placeholderForce'),
-      placeholderQueueCount: document.getElementById('placeholderQueueCount'),
       commonQueueCount: document.getElementById('commonQueueCount'),
       commonWorkerState: document.getElementById('commonWorkerState'),
       liveHistoryWorkerState: document.getElementById('liveHistoryWorkerState'),
-      placeholderWorkerState: document.getElementById('placeholderWorkerState'),
       playlistRunStatus: document.getElementById('playlistRunStatus'),
       metadataRunStatus: document.getElementById('metadataRunStatus'),
       liveHistoryRunStatus: document.getElementById('liveHistoryRunStatus'),
-      placeholderRunStatus: document.getElementById('placeholderRunStatus'),
       stopWorkerQueue: document.getElementById('stopWorkerQueue'),
-      stopPlaceholders: document.getElementById('stopPlaceholders'),
       workerQueueRows: document.getElementById('workerQueueRows'),
       workerQueuePanel: document.getElementById('workerQueuePanel'),
       workerQueueShown: document.getElementById('workerQueueShown'),
@@ -260,10 +236,13 @@
 
     function workerDetails(row) {
       if (row.worker_type === 'playlist') {
-        return `${row.playlist_id || ''}\n${row.scan_status || 'unscanned'} ${row.video_count || 0}/${row.video_count_text || '?'}`;
+        return `${row.playlist_id || ''}\n${row.scan_status || 'unscanned'} ${row.video_count || 0}/${row.playlist_video_count || '?'}`;
       }
       if (row.worker_type === 'metadata') {
         return row.task_type === 'channel' ? (row.channel_id || '') : (row.current_title || '');
+      }
+      if (row.worker_type === 'placeholder') {
+        return [row.video_id || '', row.current_title || ''].filter(Boolean).join('\n');
       }
       return row.current_title || row.task_type || '';
     }
@@ -286,24 +265,20 @@
       fields.workerQueueShown.textContent = `${queueState.rows.length}/${queueState.total || queueState.rows.length} shown`;
     }
 
-    function render(data) {
+    function render(data, includeLogs = true) {
       fields.playlistRows.textContent = data.playlistCounts.total_playlists || 0;
       fields.distinctVideos.textContent = data.counts.distinct_playlist_videos || 0;
       fields.historyRows.textContent = data.counts.history_rows || 0;
       fields.historyVideos.textContent = data.counts.distinct_history_videos || 0;
       fields.liveHistoryRows.textContent = data.liveHistoryCounts?.live_rows || 0;
-      fields.placeholderQueueCount.textContent = data.placeholderRecoveryQueueCount || 0;
       fields.commonQueueCount.textContent = data.workerQueueCount || 0;
-      const anyWorkerRunning = Boolean(data.workerQueueRunning || data.playlistScanRunning || data.metadataRunning || data.liveHistoryRunning || data.placeholderRecoveryRunning);
+      const anyWorkerRunning = Boolean(data.workerQueueRunning || data.playlistScanRunning || data.metadataRunning || data.liveHistoryRunning);
       const commonWorkerRunning = Boolean(data.workerQueueRunning || data.playlistScanRunning || data.metadataRunning || data.liveHistoryRunning);
       fields.commonWorkerState.textContent = commonWorkerRunning ? 'running' : 'idle';
       fields.commonWorkerState.className = `value ${commonWorkerRunning ? 'running' : ''}`;
       fields.liveHistoryWorkerState.textContent = data.liveHistoryRunning ? 'running' : 'idle';
       fields.liveHistoryWorkerState.className = `value ${data.liveHistoryRunning ? 'running' : ''}`;
-      fields.placeholderWorkerState.textContent = data.placeholderRecoveryRunning ? 'running' : 'idle';
-      fields.placeholderWorkerState.className = `value ${data.placeholderRecoveryRunning ? 'running' : ''}`;
       fields.stopWorkerQueue.classList.toggle('danger', anyWorkerRunning);
-      fields.stopPlaceholders.classList.toggle('danger', Boolean(data.placeholderRecoveryRunning));
 
       function runHtml(run, label) {
         return run ? `
@@ -320,7 +295,6 @@
       fields.playlistRunStatus.innerHTML = runHtml(data.latestPlaylistScanRun, 'Playlist scan');
       fields.metadataRunStatus.innerHTML = runHtml(data.latestMetadataRun, 'Metadata');
       fields.liveHistoryRunStatus.innerHTML = runHtml(data.latestLiveHistoryRun, 'History');
-      fields.placeholderRunStatus.innerHTML = runHtml(data.latestPlaceholderRecoveryRun, 'Placeholder recovery');
 
       const channelCounts = data.channelCounts || {};
       const channelCards = [
@@ -343,20 +317,26 @@
 
       hydrateQueue(data.workerQueue || [], data.workerQueueCount || 0);
 
-      const logs = [
-        ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
-        ...(data.metadataLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'metadata' })),
-        ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
-        ...(data.placeholderRecoveryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'placeholder' })),
-      ].sort((a, b) => (b.created_at - a.created_at) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
-      fields.logs.innerHTML = logs.map(log => `
-        <tr>
-          <td class="time-cell">${fmtTime(log.created_at)}</td>
-          <td>${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
-          <td class="time-cell">${escapeHtml(log.subject_id || '')}</td>
-          <td class="message">${escapeHtml(log.message)}</td>
-        </tr>
-      `).join('');
+      if (includeLogs) {
+        const logs = [
+          ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
+          ...(data.metadataLogs || []).map(log => ({
+            ...log,
+            subject_id: log.video_id,
+            source: String(log.level || '').startsWith('placeholder ') ? 'placeholder' : 'metadata',
+            level: String(log.level || '').replace(/^placeholder\s+/, ''),
+          })),
+          ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
+        ].sort((a, b) => (b.created_at - a.created_at) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
+        fields.logs.innerHTML = logs.map(log => `
+          <tr>
+            <td class="time-cell">${fmtTime(log.created_at)}</td>
+            <td>${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
+            <td class="time-cell">${escapeHtml(log.subject_id || '')}</td>
+            <td class="message">${escapeHtml(log.message)}</td>
+          </tr>
+        `).join('');
+      }
     }
 
     let statusRequest = null;
@@ -450,18 +430,29 @@
       }
     }
 
+    let operationPollTimer = null;
+    let operationPollsRemaining = 0;
+
     function scheduleActionPolls() {
-      for (const delay of [500, 1200]) {
-        window.setTimeout(() => {
-          loadStatus({ force: true }).catch(error => {
-            fields.playlistRunStatus.textContent = error.message;
+      operationPollsRemaining = Math.max(operationPollsRemaining, 10);
+      if (operationPollTimer !== null) return;
+      const poll = () => {
+        operationPollTimer = null;
+        loadStatus({ force: true, includeLogs: false })
+          .catch(error => { fields.playlistRunStatus.textContent = error.message; })
+          .finally(() => {
+            operationPollsRemaining -= 1;
+            if (operationPollsRemaining > 0) {
+              operationPollTimer = window.setTimeout(poll, 1000);
+            }
           });
-        }, delay);
-      }
+      };
+      operationPollTimer = window.setTimeout(poll, 500);
     }
 
     async function loadStatus(options = {}) {
       const force = Boolean(options.force);
+      const includeLogs = options.includeLogs !== false;
       if (statusRequest && !force) return statusRequest;
       if (statusRequest && force) {
         try {
@@ -471,9 +462,10 @@
         }
       }
       statusRequest = (async () => {
-        const response = await fetch('/api/admin/status', { cache: 'no-store' });
+        const endpoint = includeLogs ? '/api/admin/status' : '/api/admin/status?include_logs=0';
+        const response = await fetch(endpoint, { cache: 'no-store' });
         if (!response.ok) throw new Error(`Status failed: ${response.status}`);
-        render(await response.json());
+        render(await response.json(), includeLogs);
         refreshLoadedQueue();
       })();
       try {
@@ -496,7 +488,6 @@
 
     async function stopWorkersNow() {
       fields.commonWorkerState.textContent = 'stopping';
-      fields.placeholderWorkerState.textContent = 'stopping';
       fields.stopWorkerQueue.classList.add('danger');
       const response = await fetch('/api/admin/queue/stop', { method: 'POST' });
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);
@@ -541,11 +532,6 @@
     });
     document.getElementById('reconcileHistory').addEventListener('click', () => post('/api/admin/history/reconcile').catch(error => alert(error.message)));
     document.getElementById('reconcilePlaylists').addEventListener('click', () => post('/api/admin/playlists/reconcile').catch(error => alert(error.message)));
-    document.getElementById('recoverPlaceholders').addEventListener('click', () => post('/api/admin/placeholders/start', {
-      limit: fields.placeholderLimit.value,
-      delay: fields.recoveryDelay.value,
-      force: fields.placeholderForce.checked ? '1' : '0',
-    }).catch(error => alert(error.message)));
     document.getElementById('startWorkerQueue').addEventListener('click', () => post('/api/admin/queue/start').catch(error => alert(error.message)));
     document.getElementById('rebuildWorkerQueue').addEventListener('click', () => post('/api/admin/queue/rebuild').catch(error => alert(error.message)));
     document.getElementById('clearWorkerQueue').addEventListener('click', () => {
@@ -553,14 +539,12 @@
       post('/api/admin/queue/clear').catch(error => alert(error.message));
     });
     document.getElementById('stopWorkerQueue').addEventListener('click', () => stopWorkersNow().catch(error => alert(error.message)));
-    document.getElementById('stopPlaceholders').addEventListener('click', () => post('/api/admin/placeholders/stop').catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus({ force: true }).catch(error => alert(error.message)));
     fields.workerQueuePanel.addEventListener('scroll', handleQueueScroll);
     loadInitialQueue();
     loadStatus({ force: true })
       .then(() => {
         loadInitialQueue(true);
-        scheduleActionPolls();
       })
       .catch(error => { fields.playlistRunStatus.textContent = error.message; });
     setInterval(() => {
