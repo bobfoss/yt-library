@@ -106,6 +106,10 @@ class GroupNode:
     icon: str
 
 
+class ArchivarixQuotaExceeded(RuntimeError):
+    """Raised when Archivarix reports the account has exhausted its daily search quota."""
+
+
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
 
 
@@ -1519,6 +1523,23 @@ def archivarix_search_deleted(query: str, page_size: int = 50) -> list[dict[str,
     return videos if isinstance(videos, list) else []
 
 
+def archivarix_quota_message_from_text(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", text or "").strip().lower()
+    if "limit reached" in normalized or "searches per day" in normalized:
+        return "Archivarix daily search limit reached"
+    return ""
+
+
+def archivarix_http_error_message(exc: urllib.error.HTTPError) -> str:
+    if exc.code == 429:
+        return "Archivarix daily search limit reached"
+    try:
+        body = exc.read().decode("utf-8", "replace")
+    except Exception:
+        body = ""
+    return archivarix_quota_message_from_text(body)
+
+
 def archivarix_lookup_video(
     video_id: str,
     opener: urllib.request.OpenerDirector | None = None,
@@ -1547,7 +1568,11 @@ def archivarix_lookup_video(
         method="POST",
     )
     with opener.open(request, timeout=request_timeout) as response:
-        session = json.loads(response.read().decode("utf-8", "replace")).get("data", {})
+        response_text = response.read().decode("utf-8", "replace")
+    quota_message = archivarix_quota_message_from_text(response_text)
+    if quota_message:
+        raise ArchivarixQuotaExceeded(quota_message)
+    session = json.loads(response_text).get("data", {})
     endpoint = session.get("sseEndpointUrl")
     if not isinstance(endpoint, str) or not endpoint:
         return None
@@ -3954,7 +3979,18 @@ def recover_archivarix_video(
                 request_timeout=request_timeout,
                 stream_timeout=stream_timeout,
             )
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        except ArchivarixQuotaExceeded as exc:
+            status = "rate_limited"
+            error = str(exc)
+        except urllib.error.HTTPError as exc:
+            quota_message = archivarix_http_error_message(exc)
+            if quota_message:
+                status = "rate_limited"
+                error = quota_message
+            else:
+                status = "error"
+                error = str(exc)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             status = "error"
             error = str(exc)
     if video:

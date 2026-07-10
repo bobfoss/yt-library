@@ -802,10 +802,15 @@ class PlaceholderRecoveryWorker:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._blocked_reason = ""
 
     def is_running(self) -> bool:
         with self._lock:
             return bool(self._thread and self._thread.is_alive())
+
+    def blocked_reason(self) -> str:
+        with self._lock:
+            return self._blocked_reason
 
     def start(
         self,
@@ -824,6 +829,7 @@ class PlaceholderRecoveryWorker:
             if self._thread and self._thread.is_alive():
                 return {"started": False, "message": "Placeholder recovery already running"}
             self._stop.clear()
+            self._blocked_reason = ""
             self._thread = threading.Thread(
                 target=self._run,
                 args=(db_path, archivarix_cookie_file, thumb_dir),
@@ -890,6 +896,12 @@ class PlaceholderRecoveryWorker:
                 error = str(exc)
 
             with conn:
+                if status == "rate_limited":
+                    message = error or "Archivarix daily search limit reached"
+                    with self._lock:
+                        self._blocked_reason = message
+                    log_worker_event(conn, "", "placeholder warn", message, video_id)
+                    return
                 if status == "found":
                     level = "placeholder found"
                     message = f"found: {title}"
@@ -1048,6 +1060,10 @@ class WorkerQueueDispatcher:
                 if not result.get("started") and not PLACEHOLDER_RECOVERY_WORKER.is_running():
                     time.sleep(0.5)
                 self._wait_for_worker(PLACEHOLDER_RECOVERY_WORKER)
+                reason = PLACEHOLDER_RECOVERY_WORKER.blocked_reason()
+                if reason:
+                    self._placeholder_block_reason = reason
+                    return
             elif worker_type == "history":
                 mode = "verify" if row.get("task_type") == "verify" else "recent"
                 result = LIVE_HISTORY_WORKER.start(db_path, cookie_file, mode=mode)

@@ -59,6 +59,13 @@ class CoreHelperTests(unittest.TestCase):
             self.assertFalse(valid)
             self.assertIn("missing", message)
 
+    def test_archivarix_quota_text_is_detected(self) -> None:
+        self.assertEqual(
+            core.archivarix_quota_message_from_text("Limit reached: 500 searches per day"),
+            "Archivarix daily search limit reached",
+        )
+        self.assertEqual(core.archivarix_quota_message_from_text("ordinary response"), "")
+
     def test_youtube_session_status_requires_a_current_login_cookie(self) -> None:
         class Cookie:
             def __init__(self, name: str, domain: str, expires: int | None) -> None:
@@ -1428,6 +1435,44 @@ class WorkerQueueTests(unittest.TestCase):
                     "SELECT * FROM metadata_worker_log WHERE level LIKE 'placeholder %'"
                 ).fetchall()
                 self.assertEqual(logs, [])
+            finally:
+                conn.close()
+
+    def test_rate_limited_placeholder_recovery_keeps_queue_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                candidate = {
+                    "video_id": "abc12345678",
+                    "title": "Unavailable example",
+                    "playlist_count": 1,
+                }
+                with patch("yt_library.core.playlist_placeholder_recovery_rows", return_value=[candidate]):
+                    with conn:
+                        core.enqueue_placeholder_recovery_targets(conn, "PLexample")
+            finally:
+                conn.close()
+
+            worker = PlaceholderRecoveryWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.recover_archivarix_video",
+                    return_value=(None, "", "", "rate_limited", "Archivarix daily search limit reached"),
+                ),
+            ):
+                worker._run(db_path, Path(temp_dir) / "cookies.txt", Path(temp_dir) / "thumbs")
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
+                self.assertEqual(worker.blocked_reason(), "Archivarix daily search limit reached")
+                logs = conn.execute(
+                    "SELECT level, message FROM metadata_worker_log WHERE level = 'placeholder warn'"
+                ).fetchall()
+                self.assertEqual(len(logs), 1)
+                self.assertEqual(logs[0]["message"], "Archivarix daily search limit reached")
             finally:
                 conn.close()
 
