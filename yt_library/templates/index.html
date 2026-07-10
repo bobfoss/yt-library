@@ -37,14 +37,16 @@
     h1 { font-size: 20px; margin: 0 0 14px; }
     .home-title { color: var(--ink); text-decoration: none; display: inline-block; }
     .home-title:hover { color: var(--ink); text-decoration: none; }
-    .search { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 10px 12px; font: inherit; margin-bottom: 16px; }
-    .filters { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 10px 0; margin-bottom: 14px; display: grid; gap: 7px; }
+    .search { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 10px 12px; font: inherit; margin-bottom: 14px; }
+    .filters { border-bottom: 1px solid var(--line); padding: 0 0 10px; margin-bottom: 14px; display: grid; gap: 7px; }
     .filter-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
     .filter { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
     .filter input { accent-color: var(--accent); }
     .filter.dimmed { opacity: .42; }
     .group { width: 100%; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin: 2px 0; border-radius: 6px; cursor: pointer; text-align: left; font: inherit; }
     .group:hover, .group.active { background: var(--accent-soft); }
+    .search-nav { border-top: 1px solid var(--line); border-radius: 0; margin: 0 0 4px; padding-top: 12px; }
+    .search-nav:hover, .search-nav.active { border-radius: 6px; }
     .group.child { padding-left: 28px; color: var(--muted); }
     .group-section { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; }
     .group-section:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
@@ -166,6 +168,7 @@
   <div class="app">
     <aside>
       <h1><a class="home-title" href="/">YT Library</a></h1>
+      <button id="search-nav" class="group search-nav" type="button" data-key="__search__"><span>Search</span><span class="count"></span></button>
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
       <div class="filters" aria-label="Search filters">
         <div class="filter-title">Search In</div>
@@ -229,6 +232,7 @@
     let renderGeneration = 0;
     let searchProgressTimer = null;
     const search = document.getElementById('search');
+    const searchNav = document.getElementById('search-nav');
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
     const searchFilters = [...document.querySelectorAll('.search-filter')];
@@ -305,6 +309,7 @@
     }
 
     const viewHashBySelection = new Map([
+      ['__search__', 'search'],
       ['', 'all-playlists'],
       ['__all_videos__', 'playlist-videos'],
       ['__history__', 'history'],
@@ -323,14 +328,78 @@
     selectionByViewHash.set('likely-hidden-ids', '__snapshot_likely_hidden__');
 
     function localViewHref(value) {
+      if (value === '__search__') return searchHash();
       const viewHash = viewHashBySelection.get(value);
       if (viewHash) return `#view=${viewHash}`;
       if (value) return `#group=${encodeURIComponent(value)}`;
       return '#view=all-playlists';
     }
 
+    function searchFilterParamValue() {
+      return [...activeSearchFilters()].sort().join(',');
+    }
+
+    function searchHash() {
+      const params = new URLSearchParams();
+      const query = search.value.trim();
+      if (query) params.set('q', query);
+      const filters = searchFilterParamValue();
+      if (filters) params.set('f', filters);
+      if (!searchResultVisibility.hidden) params.set('unavailable', '0');
+      if (searchResultsSort !== 'relevance') params.set('sort', searchResultsSort);
+      if (currentPage > 1) params.set('page', String(currentPage));
+      if (pageSize !== '100') params.set('size', pageSize);
+      return `#search${params.toString() ? `?${params.toString()}` : ''}`;
+    }
+
+    function applySearchHash(hash) {
+      const queryIndex = hash.indexOf('?');
+      const params = new URLSearchParams(queryIndex >= 0 ? hash.slice(queryIndex + 1) : '');
+      search.value = params.get('q') || '';
+      const filterParam = params.get('f');
+      if (filterParam !== null) {
+        const active = new Set(filterParam.split(',').filter(Boolean));
+        for (const input of searchFilters) {
+          if (input.dataset.filter === 'videos_root') continue;
+          input.checked = active.has(input.dataset.filter);
+        }
+        channelsManuallyDisabled = !channelChildFilters.some(child => child.checked);
+        syncChannelParentFilter();
+        syncVideosParentFilter();
+        syncSearchForFilters();
+      }
+      searchResultVisibility.hidden = params.get('unavailable') !== '0';
+      searchResultsSort = params.get('sort') || 'relevance';
+      pageSize = params.get('size') || '100';
+      const page = Number(params.get('page') || 1);
+      currentPage = Number.isFinite(page) && page > 0 ? page : 1;
+    }
+
+    function updateSearchHash(replace = false) {
+      const href = searchHash();
+      if (window.location.hash === href) return false;
+      if (replace) {
+        history.replaceState(null, '', href);
+      } else {
+        window.location.hash = href;
+      }
+      return true;
+    }
+
+    function syncSearchHashAndRender() {
+      if (selected === '__search__') {
+        updateSearchHash(true);
+        renderGroups();
+      }
+      render();
+    }
+
     function selectionFromHash() {
       const hash = window.location.hash || '';
+      if (hash === '#search' || hash.startsWith('#search?')) {
+        applySearchHash(hash);
+        return '__search__';
+      }
       if (hash.startsWith('#playlist=')) {
         const playlistId = decodeURIComponent(hash.slice('#playlist='.length));
         if (playlistId) return playlistSelection(playlistId);
@@ -356,7 +425,7 @@
 
     function setSelected(value) {
       selected = value;
-      search.value = '';
+      if (value !== '__search__') search.value = '';
       currentPage = 1;
       if (value.startsWith('__playlist__:')) {
         const playlistId = value.slice('__playlist__:'.length);
@@ -1606,6 +1675,7 @@
       for (const button of groupsEl.querySelectorAll('.group')) {
         button.classList.toggle('active', button.dataset.key === selected);
       }
+      searchNav?.classList.toggle('active', selected === '__search__');
       if (selected.startsWith('__video__:')) {
         const videoId = selected.slice('__video__:'.length);
         const video = primaryVideoForDetail(videoId);
@@ -1671,7 +1741,15 @@
         }
         return;
       }
-      if (query) {
+      if (selected === '__search__') {
+        if (!query) {
+          title.textContent = 'Search';
+          meta.textContent = '';
+          grid.replaceChildren();
+          empty.hidden = false;
+          empty.textContent = 'Enter a search query.';
+          return;
+        }
         title.textContent = 'Searching';
         meta.textContent = '';
         showSearchProgress();
@@ -2331,8 +2409,22 @@
 
     search.addEventListener('input', () => {
       currentPage = 1;
+      if (search.value.trim()) {
+        const wasSearchHash = window.location.hash === '#search' || window.location.hash.startsWith('#search?');
+        selected = '__search__';
+        renderGroups();
+        const changed = updateSearchHash(wasSearchHash);
+        if (changed && !wasSearchHash) return;
+        render();
+        return;
+      }
+      if (selected === '__search__') {
+        setSelected('');
+        return;
+      }
       render();
     });
+    searchNav?.addEventListener('click', () => setSelected('__search__'));
     viewContext.addEventListener('click', event => {
       const target = event.target.closest('[data-channel-tab]');
       if (!(target instanceof HTMLButtonElement)) return;
@@ -2372,7 +2464,7 @@
         searchResultsSort = target.value || 'relevance';
         currentPage = 1;
         scrollResultsToTop();
-        render();
+        syncSearchHashAndRender();
         return;
       }
       if (!(target instanceof HTMLInputElement)) return;
@@ -2380,7 +2472,7 @@
       if (searchResultFilter) {
         searchResultVisibility[searchResultFilter] = target.checked;
         currentPage = 1;
-        render();
+        syncSearchHashAndRender();
         return;
       }
       const channelFilter = target.dataset.channelFilter;
@@ -2424,6 +2516,7 @@
       const page = Number(direction);
       if (Number.isFinite(page) && page > 0) currentPage = page;
       scrollResultsToTop();
+      if (selected === '__search__') updateSearchHash(true);
       render();
     }
     function handlePagerChange(event) {
@@ -2433,6 +2526,7 @@
       pageSize = target.value || '100';
       currentPage = 1;
       scrollResultsToTop();
+      if (selected === '__search__') updateSearchHash(true);
       render();
     }
     bottomPager.addEventListener('click', handlePagerClick);
@@ -2447,7 +2541,7 @@
         currentPage = 1;
         syncChannelParentFilter();
         syncSearchForFilters();
-        render();
+        syncSearchHashAndRender();
       });
     }
     if (videosFilter) {
@@ -2457,7 +2551,7 @@
         currentPage = 1;
         syncVideosParentFilter();
         syncSearchForFilters();
-        render();
+        syncSearchHashAndRender();
       });
     }
     for (const input of channelChildFilters) {
@@ -2466,7 +2560,7 @@
         syncChannelParentFilter();
         syncSearchForFilters();
         currentPage = 1;
-        render();
+        syncSearchHashAndRender();
       });
     }
     for (const input of videoFieldFilters) {
@@ -2474,7 +2568,7 @@
         syncVideosParentFilter();
         syncSearchForFilters();
         currentPage = 1;
-        render();
+        syncSearchHashAndRender();
       });
     }
     for (const input of videoSourceFilters) {
@@ -2482,7 +2576,7 @@
         syncVideosParentFilter();
         syncSearchForFilters();
         currentPage = 1;
-        render();
+        syncSearchHashAndRender();
       });
     }
     for (const input of searchFilters) {
@@ -2496,7 +2590,7 @@
       input.addEventListener('change', () => {
         syncSearchForFilters();
         currentPage = 1;
-        render();
+        syncSearchHashAndRender();
       });
     }
     syncChannelParentFilter();
@@ -2504,10 +2598,10 @@
     syncSearchForFilters();
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
-      currentPage = 1;
+      if (selected !== '__search__') currentPage = 1;
       channelDetailTab = 'playlists';
       if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
-      search.value = '';
+      if (selected !== '__search__') search.value = '';
       renderGroups();
       render();
     });
