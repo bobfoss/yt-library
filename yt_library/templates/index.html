@@ -476,7 +476,9 @@
     function playlistVisibilityCategory(playlist) {
       const value = String(playlist.visibility || '').trim().toLowerCase();
       if (['private', 'public', 'unlisted'].includes(value)) return value;
-      return String(playlist.owner || '').trim() ? 'others' : 'unknown';
+      return String(playlist.owner_channel_id || '').trim() && !Number(playlist.is_library_owner || 0)
+        ? 'others'
+        : 'unknown';
     }
 
     function displayPlaylistVisibility(playlist) {
@@ -1098,7 +1100,7 @@
       const seenVideoKeys = new Set();
       if (filters.has('playlists')) {
         for (const playlist of data.playlists) {
-          const haystack = `${playlist.title} ${playlist.owner} ${playlist.visibility} ${playlist.description} ${playlist.playlist_id}`;
+          const haystack = playlistSearchText(playlist);
           if (includesQuery(haystack, query)) {
             results.push({ kind: 'playlist', score: includesQuery(playlist.title, query) ? 0 : 2, item: playlist });
           }
@@ -1640,7 +1642,7 @@
         const rows = data.playlists
           .filter(playlist => (playlist.hidden_count || 0) > 0)
           .filter(playlist => {
-            const haystack = `${playlist.title} ${playlist.owner} ${playlist.visibility} ${playlist.description} ${playlist.playlist_id}`.toLowerCase();
+            const haystack = playlistSearchText(playlist).toLowerCase();
             return !query || haystack.includes(query);
           })
           .sort((a, b) =>
@@ -1706,7 +1708,7 @@
       title.textContent = group ? group.name : 'All playlists';
       const ids = groupPlaylistIds(selected);
       const rows = ids.map(id => playlists.get(id)).filter(Boolean).filter(p => {
-        const haystack = `${p.title} ${p.owner} ${p.visibility} ${p.description} ${p.playlist_id}`.toLowerCase();
+        const haystack = playlistSearchText(p).toLowerCase();
         return !query || haystack.includes(query);
       });
       meta.textContent = `${rows.length} shown`;
@@ -1765,12 +1767,29 @@
     }
 
     function playlistOwnerHtml(playlist) {
-      const name = playlist.owner_channel_title || playlist.owner || '';
+      const name = cleanPlaylistOwnerName(playlist.owner_channel_title || '');
       if (!name) return '';
       const href = playlist.owner_channel_id
         ? localChannelHref(playlist.owner_channel_id)
         : (playlist.owner_channel_url || '');
       return creatorHtml(playlist.owner_channel_thumbnail_path || '', name, href);
+    }
+
+    function cleanPlaylistOwnerName(value) {
+      const text = String(value || '').trim();
+      return text.toLowerCase().startsWith('by ') ? text.slice(3).trim() : text;
+    }
+
+    function playlistSearchText(playlist) {
+      return [
+        playlist.title,
+        playlist.owner_channel_title,
+        playlist.owner_channel_id,
+        playlist.owner_channel_url,
+        playlist.visibility,
+        playlist.description,
+        playlist.playlist_id,
+      ].join(' ');
     }
 
     function detailRowHtml(items, className = 'details') {

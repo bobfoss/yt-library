@@ -172,6 +172,34 @@ class HistorySearchTests(unittest.TestCase):
             ["deleted123"],
         )
 
+    def test_fetch_app_data_marks_dominant_owner_as_library_owner(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO channels(channel_id, title)
+            VALUES ('UCmine', 'Gir Bot'), ('UCother', 'Other Channel')
+            """
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO playlists(playlist_id, title, owner_channel_id)
+            VALUES (?, ?, ?)
+            """,
+            [
+                ("mine1", "Mine 1", "UCmine"),
+                ("mine2", "Mine 2", "UCmine"),
+                ("mine3", "Mine 3", "UCmine"),
+                ("mine4", "Mine 4", "UCmine"),
+                ("mine5", "Mine 5", "UCmine"),
+                ("other1", "Other 1", "UCother"),
+            ],
+        )
+        self.conn.commit()
+
+        rows = {row["playlist_id"]: row for row in fetch_app_data(self.conn)["playlists"]}
+
+        self.assertEqual(rows["mine1"]["is_library_owner"], 1)
+        self.assertEqual(rows["other1"]["is_library_owner"], 0)
+
     def test_playlist_videos_include_all_playlist_links_for_same_video(self) -> None:
         self.conn.executemany(
             """

@@ -152,8 +152,10 @@ class CoreHelperTests(unittest.TestCase):
         self.assertFalse(core.playlist_scan_is_incomplete(101, 101))
         self.assertFalse(core.playlist_scan_is_incomplete(101, 0))
         self.assertTrue(core.playlist_scan_requires_exact_count({"visibility": "private"}))
-        self.assertTrue(core.playlist_scan_requires_exact_count({"owner": "", "visibility": ""}))
-        self.assertFalse(core.playlist_scan_requires_exact_count({"owner": "Other channel"}))
+        self.assertTrue(core.playlist_scan_requires_exact_count({"owner_channel_id": "", "visibility": ""}))
+        self.assertFalse(core.playlist_scan_requires_exact_count({"owner_channel_id": "UCother"}))
+        self.assertFalse(core.playlist_scan_requires_exact_count({}, known_owner_channel_id="UCother"))
+        self.assertTrue(core.playlist_scan_requires_exact_count({}, known_visibility="private"))
 
     def test_playlist_owner_visibility_helpers(self) -> None:
         self.assertEqual(core.normalize_playlist_visibility(" Public playlist "), "public")
@@ -172,7 +174,7 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(visibility_only["owner"], "")
         self.assertEqual(visibility_only["visibility"], "unlisted")
         with self.assertRaises(AssertionError):
-            core.assert_playlist_owner_visibility({"owner": "Gir Bot", "visibility": "public"})
+            core.assert_playlist_owner_visibility({"owner_channel_id": "UCmine", "visibility": "public"})
 
     def test_extract_playlist_metadata_reads_page_header_count_and_visibility(self) -> None:
         initial_data = {
@@ -234,6 +236,61 @@ class CoreHelperTests(unittest.TestCase):
         owner_metadata = core.extract_playlist_metadata(owner_html, "PLforeign")
         self.assertEqual(owner_metadata["owner"], "Other Channel")
         self.assertEqual(owner_metadata["owner_channel_id"], "UCabcdefghijklmnopqrstuv")
+
+        attributed_data = {
+            "header": {
+                "pageHeaderRenderer": {
+                    "content": {
+                        "pageHeaderViewModel": {
+                            "metadata": {
+                                "contentMetadataViewModel": {
+                                    "metadataRows": [
+                                        {
+                                            "metadataParts": [
+                                                {
+                                                    "avatarStack": {
+                                                        "avatarStackViewModel": {
+                                                            "text": {
+                                                                "content": "by alt Tabby",
+                                                                "commandRuns": [
+                                                                    {
+                                                                        "onTap": {
+                                                                            "innertubeCommand": {
+                                                                                "browseEndpoint": {
+                                                                                    "browseId": "UC9M9ViKcwu5rdRwLDmernrg",
+                                                                                    "canonicalBaseUrl": "/@alttabby3633",
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                ],
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "metadataParts": [
+                                                {"text": {"content": "Playlist"}},
+                                                {"text": {"content": "361 videos"}},
+                                                {"text": {"content": "320 views"}},
+                                            ]
+                                        },
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        attributed_html = f"<script>var ytInitialData = {json.dumps(attributed_data)};</script>"
+        attributed_metadata = core.extract_playlist_metadata(attributed_html, "PLforeign")
+        self.assertEqual(attributed_metadata["owner"], "alt Tabby")
+        self.assertEqual(attributed_metadata["owner_channel_id"], "UC9M9ViKcwu5rdRwLDmernrg")
+        self.assertEqual(attributed_metadata["video_count"], 361)
+        self.assertFalse(core.playlist_scan_requires_exact_count(attributed_metadata))
 
     def test_playlist_continuation_prefers_command_executor_token(self) -> None:
         data = {
@@ -663,11 +720,11 @@ class SchemaTests(unittest.TestCase):
                         conn.execute(
                             """
                             INSERT INTO playlists(
-                              playlist_id, title, description, owner, visibility, video_count,
+                              playlist_id, title, description, visibility, video_count,
                               thumbnail_url, thumbnail_path, url, fetch_status, fetch_error, updated_at
                             )
                             VALUES (
-                              'PLrename', 'Old name', 'Old description', 'Old owner', 'unlisted', 1,
+                              'PLrename', 'Old name', 'Old description', 'unlisted', 1,
                               'https://example.test/old.jpg', 'thumbs/PLrename.jpg',
                               'https://www.youtube.com/playlist?list=PLrename', 'ok', '', 1
                             )
@@ -704,11 +761,10 @@ class SchemaTests(unittest.TestCase):
                             },
                         )
                     row = conn.execute(
-                        "SELECT title, description, owner, owner_channel_id, visibility, video_count, thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLrename'"
+                        "SELECT title, description, owner_channel_id, visibility, video_count, thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLrename'"
                     ).fetchone()
                     self.assertEqual(row["title"], "New name")
                     self.assertEqual(row["description"], "New description")
-                    self.assertEqual(row["owner"], "New owner")
                     self.assertEqual(row["owner_channel_id"], "UCnewownerchannel123456789")
                     self.assertEqual(row["visibility"], "")
                     self.assertEqual(row["video_count"], 1)
@@ -761,10 +817,11 @@ class SchemaTests(unittest.TestCase):
                 core.migrate_database(db_path)
                 migrated = core.connect(db_path)
                 try:
+                    self.assertNotIn("owner", core.table_columns(migrated, "playlists"))
                     rows = {
-                        row["playlist_id"]: (row["owner"], row["visibility"], row["video_count"])
+                        row["playlist_id"]: (row["visibility"], row["video_count"])
                         for row in migrated.execute(
-                            "SELECT playlist_id, owner, visibility, video_count FROM playlists"
+                            "SELECT playlist_id, visibility, video_count FROM playlists"
                         )
                     }
                 finally:
@@ -772,8 +829,8 @@ class SchemaTests(unittest.TestCase):
             finally:
                 core.ROOT = original_root
 
-        self.assertEqual(rows["PLprivate"], ("", "private", 0))
-        self.assertEqual(rows["PLowner"], ("Gir Bot", "", 0))
+        self.assertEqual(rows["PLprivate"], ("private", 0))
+        self.assertEqual(rows["PLowner"], ("", 0))
 
     def test_save_playlist_scan_error_preserves_existing_counts(self) -> None:
         original_root = core.ROOT
@@ -1055,7 +1112,7 @@ class WorkerQueueTests(unittest.TestCase):
                 conn.close()
 
             worker = PlaylistScanWorker()
-            header = {"video_count": 168, "has_video_count": True, "owner": "Other channel"}
+            header = {"video_count": 168, "has_video_count": True, "owner_channel_id": "UCother"}
             ytdlp_videos = [{"video_id": f"video{i}"} for i in range(100)]
             web_videos = [{"video_id": f"video{i}"} for i in range(167)]
             with (

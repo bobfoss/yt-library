@@ -487,10 +487,14 @@ class PlaylistScanWorker:
                     playlist_metadata["video_count"] = header_metadata["video_count"]
                 if header_metadata.get("visibility"):
                     playlist_metadata["visibility"] = header_metadata["visibility"]
-                    playlist_metadata["owner"] = ""
+                    playlist_metadata["owner_channel_id"] = ""
                 header_expected_count = int(header_metadata.get("video_count") or 0)
                 expected_count = header_expected_count
-                exact_count_required = playlist_scan_requires_exact_count(header_metadata)
+                exact_count_required = playlist_scan_requires_exact_count(
+                    header_metadata,
+                    known_owner_channel_id=row["owner_channel_id"] if "owner_channel_id" in row.keys() else "",
+                    known_visibility=row["visibility"] if "visibility" in row.keys() else "",
+                )
                 previous_scan_count = int(row["video_count"] or 0)
                 if status == "ok" and (ytdlp_error or playlist_scan_is_incomplete(ytdlp_count, expected_count)):
                     session_valid, _session_message = youtube_session_status(cookie_file, verify_remote=True)

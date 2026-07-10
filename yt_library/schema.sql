@@ -5,7 +5,6 @@ CREATE TABLE IF NOT EXISTS playlists (
   playlist_id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
-  owner TEXT NOT NULL DEFAULT '',
   owner_channel_id TEXT NOT NULL DEFAULT '',
   visibility TEXT NOT NULL DEFAULT '',
   video_count INTEGER NOT NULL DEFAULT 0,

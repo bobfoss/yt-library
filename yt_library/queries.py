@@ -42,6 +42,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
             """
         )
     ]
+    mark_library_owner_playlists(playlists)
     memberships = [
         dict(row)
         for row in conn.execute(
@@ -267,6 +268,49 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
         "snapshotLikelyHidden": snapshot_likely_hidden,
         "historySummary": history_summary,
     }
+
+
+def clean_playlist_owner_name(value: str) -> str:
+    value = (value or "").strip()
+    return value[3:].strip() if value.lower().startswith("by ") else value
+
+
+def mark_library_owner_playlists(playlists: list[dict[str, Any]]) -> None:
+    """Mark the dominant playlist owner so external owners can stay distinct."""
+    channel_counts: dict[str, int] = {}
+    name_counts: dict[str, int] = {}
+    for playlist in playlists:
+        if (playlist.get("visibility") or "").strip():
+            continue
+        owner_channel_id = (playlist.get("owner_channel_id") or "").strip()
+        owner_name = clean_playlist_owner_name(playlist.get("owner_channel_title") or "")
+        if owner_channel_id:
+            channel_counts[owner_channel_id] = channel_counts.get(owner_channel_id, 0) + 1
+        if owner_name:
+            key = owner_name.casefold()
+            name_counts[key] = name_counts.get(key, 0) + 1
+
+    library_channel_id = dominant_owner_key(channel_counts)
+    library_owner_name = dominant_owner_key(name_counts)
+    for playlist in playlists:
+        owner_channel_id = (playlist.get("owner_channel_id") or "").strip()
+        owner_name = clean_playlist_owner_name(playlist.get("owner_channel_title") or "")
+        playlist["owner_channel_title"] = clean_playlist_owner_name(
+            playlist.get("owner_channel_title") or ""
+        )
+        playlist["is_library_owner"] = int(
+            bool(library_channel_id and owner_channel_id == library_channel_id)
+            or bool(library_owner_name and owner_name.casefold() == library_owner_name)
+        )
+
+
+def dominant_owner_key(counts: dict[str, int]) -> str:
+    if not counts:
+        return ""
+    ordered = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    top_key, top_count = ordered[0]
+    next_count = ordered[1][1] if len(ordered) > 1 else 0
+    return top_key if top_count >= 5 and top_count >= max(2, next_count * 3) else ""
 
 
 def history_search_data(
