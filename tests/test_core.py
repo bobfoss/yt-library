@@ -264,7 +264,23 @@ class CoreHelperTests(unittest.TestCase):
                                                                         }
                                                                     }
                                                                 ],
-                                                            }
+                                                            },
+                                                            "avatar": {
+                                                                "avatarViewModel": {
+                                                                    "image": {
+                                                                        "sources": [
+                                                                            {
+                                                                                "url": "https://yt3.example/small.jpg",
+                                                                                "width": 48,
+                                                                            },
+                                                                            {
+                                                                                "url": "https://yt3.example/large.jpg",
+                                                                                "width": 176,
+                                                                            },
+                                                                        ]
+                                                                    }
+                                                                }
+                                                            },
                                                         }
                                                     }
                                                 }
@@ -289,6 +305,7 @@ class CoreHelperTests(unittest.TestCase):
         attributed_metadata = core.extract_playlist_metadata(attributed_html, "PLforeign")
         self.assertEqual(attributed_metadata["owner"], "alt Tabby")
         self.assertEqual(attributed_metadata["owner_channel_id"], "UC9M9ViKcwu5rdRwLDmernrg")
+        self.assertEqual(attributed_metadata["owner_thumbnail_url"], "https://yt3.example/large.jpg")
         self.assertEqual(attributed_metadata["video_count"], 361)
         self.assertFalse(core.playlist_scan_requires_exact_count(attributed_metadata))
 

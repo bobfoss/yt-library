@@ -1864,6 +1864,39 @@ def playlist_owner_from_metadata_part(part: dict[str, Any]) -> tuple[str, str]:
     return owner_text[3:].strip(), rich_text_channel_ref(text_value)
 
 
+def image_sources_thumbnail_url(value: Any) -> str:
+    best_url = ""
+    best_width = -1
+    for node in walk(value):
+        if not isinstance(node, dict):
+            continue
+        sources = node.get("sources")
+        if not isinstance(sources, list):
+            continue
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            url = source.get("url")
+            if not isinstance(url, str) or not url.startswith(("http", "//")):
+                continue
+            width = int(source.get("width") or 0)
+            if width > best_width:
+                best_url = html.unescape(url)
+                best_width = width
+    return absolute_url(best_url)
+
+
+def playlist_owner_thumbnail_from_metadata_part(part: dict[str, Any]) -> str:
+    avatar_stack = (
+        part.get("avatarStack", {})
+        .get("avatarStackViewModel", {})
+    )
+    thumbnail = image_sources_thumbnail_url(avatar_stack)
+    if thumbnail:
+        return thumbnail
+    return image_sources_thumbnail_url(part)
+
+
 def pick_lockup_thumbnail(lockup: dict[str, Any]) -> str:
     best_url = ""
     best_width = -1
@@ -1967,6 +2000,7 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any
         "description": "",
         "owner": "",
         "owner_channel_id": "",
+        "owner_thumbnail_url": "",
         "visibility": "",
         "video_count": 0,
         "has_video_count": False,
@@ -2040,6 +2074,9 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any
                         metadata["owner"] = owner
                     if owner_channel_id and not metadata["owner_channel_id"]:
                         metadata["owner_channel_id"] = owner_channel_id
+                    owner_thumbnail_url = playlist_owner_thumbnail_from_metadata_part(part)
+                    if owner_thumbnail_url and not metadata["owner_thumbnail_url"]:
+                        metadata["owner_thumbnail_url"] = owner_thumbnail_url
                 parts = [
                     content_text(part.get("text")).strip()
                     for part in row.get("metadataParts", []) or []
@@ -3771,6 +3808,7 @@ def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) ->
         "description": description,
         "owner": owner,
         "owner_channel_id": owner_channel_id,
+        "owner_thumbnail_url": "",
         "visibility": visibility,
         "video_count": video_count,
         "thumbnail_url": thumbnail_url,
@@ -4090,6 +4128,7 @@ def import_playlists(args: argparse.Namespace) -> None:
                 "description": "",
                 "owner": "",
                 "owner_channel_id": "",
+                "owner_thumbnail_url": "",
                 "visibility": "",
                 "video_count": 0,
                 "thumbnail_url": "",
@@ -4100,11 +4139,22 @@ def import_playlists(args: argparse.Namespace) -> None:
             error = str(exc)
         with conn:
             owner_channel_id = metadata.get("owner_channel_id", "")
+            owner_thumbnail_path = ""
+            if owner_channel_id and metadata.get("owner_thumbnail_url"):
+                owner_thumbnail_path = cache_channel_thumbnail(
+                    opener,
+                    owner_channel_id,
+                    metadata.get("owner_thumbnail_url", ""),
+                    DEFAULT_VIDEO_THUMB_DIR,
+                    referer_url=url,
+                )
             if owner_channel_id:
                 owner_channel_id = upsert_channel(
                     conn,
                     owner_channel_id,
                     title=metadata.get("owner", ""),
+                    thumbnail_url=metadata.get("owner_thumbnail_url", ""),
+                    thumbnail_path=owner_thumbnail_path,
                     source="playlist_owner",
                     updated_at=int(time.time()),
                 )
@@ -4285,11 +4335,22 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
             thumbnail_path = existing["thumbnail_path"]
         with conn:
             owner_channel_id = record.get("owner_channel_id", "")
+            owner_thumbnail_path = ""
+            if owner_channel_id and record.get("owner_thumbnail_url"):
+                owner_thumbnail_path = cache_channel_thumbnail(
+                    opener,
+                    owner_channel_id,
+                    record.get("owner_thumbnail_url", ""),
+                    DEFAULT_VIDEO_THUMB_DIR,
+                    referer_url=record["url"],
+                )
             if owner_channel_id:
                 owner_channel_id = upsert_channel(
                     conn,
                     owner_channel_id,
                     title=record.get("owner", ""),
+                    thumbnail_url=record.get("owner_thumbnail_url", ""),
+                    thumbnail_path=owner_thumbnail_path,
                     source="playlist_owner",
                     updated_at=int(time.time()),
                 )
@@ -5010,6 +5071,8 @@ def save_playlist_scan(
                 "title",
                 "description",
                 "owner_channel_id",
+                "owner_thumbnail_url",
+                "owner_thumbnail_path",
                 "visibility",
                 "thumbnail_url",
                 "thumbnail_path",
@@ -5021,6 +5084,8 @@ def save_playlist_scan(
                 conn,
                 metadata["owner_channel_id"],
                 title=str(playlist_metadata.get("owner") or "").strip(),
+                thumbnail_url=metadata["owner_thumbnail_url"],
+                thumbnail_path=metadata["owner_thumbnail_path"],
                 source="playlist_owner",
                 updated_at=now,
             )

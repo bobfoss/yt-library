@@ -485,9 +485,31 @@ class PlaylistScanWorker:
                 ytdlp_count = len(videos)
                 if header_metadata.get("video_count"):
                     playlist_metadata["video_count"] = header_metadata["video_count"]
+                for key in (
+                    "title",
+                    "description",
+                    "owner",
+                    "owner_channel_id",
+                    "owner_thumbnail_url",
+                    "thumbnail_url",
+                    "url",
+                ):
+                    if header_metadata.get(key):
+                        playlist_metadata[key] = header_metadata[key]
                 if header_metadata.get("visibility"):
                     playlist_metadata["visibility"] = header_metadata["visibility"]
                     playlist_metadata["owner_channel_id"] = ""
+                    playlist_metadata["owner_thumbnail_url"] = ""
+                owner_channel_id = str(playlist_metadata.get("owner_channel_id") or "").strip()
+                owner_thumbnail_url = str(playlist_metadata.get("owner_thumbnail_url") or "").strip()
+                if owner_channel_id and owner_thumbnail_url:
+                    playlist_metadata["owner_thumbnail_path"] = cache_channel_thumbnail(
+                        opener,
+                        owner_channel_id,
+                        owner_thumbnail_url,
+                        DEFAULT_VIDEO_THUMB_DIR,
+                        referer_url=playlist_url,
+                    )
                 header_expected_count = int(header_metadata.get("video_count") or 0)
                 expected_count = header_expected_count
                 exact_count_required = playlist_scan_requires_exact_count(

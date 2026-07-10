@@ -89,11 +89,19 @@ Status: completed for active library video cards.
 - This could identify memory-holed videos on foreign playlists without synthesizing unavailable rows from a count gap alone.
 - Cleanup/investigation: keep the current best-visible-row policy for foreign playlists, and add a recovery workflow only after we have a concrete fixture where historical rows exceed the current exposed rows.
 
+## Foreign Playlist Continuation Extraction
+
+- Example: `Alt Tabby 2025` (`PL0Yl36ZlaYcRi8NREnUoajhs1bwWcKdtk`) currently reports `361 videos` in the YouTube header.
+- `yt-dlp` returned 100 rows, while the web/watch-panel fallback returned 200 rows and then stopped; the saved scan logs this as `200 exposed of 361 reported`.
+- Investigation: improve extraction for foreign playlist continuations beyond the current 100/200-row limits, likely by handling the watch-panel continuation shape or using a browser-style scroller.
+- Preserve current behavior until improved: save the best exposed nonzero row set for foreign playlists, but do not synthesize unavailable rows from the header gap alone.
+
 ## Suggested Order
 
 1. Add unified server-side omni-search with correct pagination.
 2. Share the video-card renderer with `history.html`.
 3. Remove the unused Archivarix candidate card path.
-4. Investigate foreign playlist historical recovery once a real fixture exists.
-5. Revisit hidden/unavailable internal naming.
-6. Revisit collection/entity card duplication only if playlist, snapshot playlist, and channel cards continue to drift.
+4. Improve foreign playlist continuation extraction past the current exposed-row cap.
+5. Investigate foreign playlist historical recovery once a real fixture exists.
+6. Revisit hidden/unavailable internal naming.
+7. Revisit collection/entity card duplication only if playlist, snapshot playlist, and channel cards continue to drift.
