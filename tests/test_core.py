@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from yt_library import core
-from yt_library.workers import MetadataWorker, PlaceholderRecoveryWorker
+from yt_library.workers import MetadataWorker, PlaceholderRecoveryWorker, PlaylistScanWorker
 
 
 def migrated_connection(db_path: Path):
@@ -148,6 +148,12 @@ class CoreHelperTests(unittest.TestCase):
         self.assertFalse(core.playlist_zero_result_is_suspicious(1, "HTTP Error 403", 1))
         self.assertFalse(core.playlist_zero_result_is_suspicious(0, "", 1))
         self.assertFalse(core.playlist_zero_result_is_suspicious(0, "HTTP Error 403", 0))
+        self.assertTrue(core.playlist_scan_is_incomplete(100, 101))
+        self.assertFalse(core.playlist_scan_is_incomplete(101, 101))
+        self.assertFalse(core.playlist_scan_is_incomplete(101, 0))
+        self.assertTrue(core.playlist_scan_requires_exact_count({"visibility": "private"}))
+        self.assertTrue(core.playlist_scan_requires_exact_count({"owner": "", "visibility": ""}))
+        self.assertFalse(core.playlist_scan_requires_exact_count({"owner": "Other channel"}))
 
     def test_playlist_owner_visibility_helpers(self) -> None:
         self.assertEqual(core.normalize_playlist_visibility(" Public playlist "), "public")
@@ -198,9 +204,11 @@ class CoreHelperTests(unittest.TestCase):
         metadata = core.extract_playlist_metadata(html, "PLexample")
 
         self.assertEqual(metadata["video_count"], 150)
+        self.assertTrue(metadata["has_video_count"])
         self.assertNotIn("view_count", metadata)
         self.assertEqual(metadata["visibility"], "unlisted")
         self.assertEqual(metadata["owner"], "")
+        self.assertFalse(core.extract_playlist_metadata("<html></html>", "PLexample")["has_video_count"])
 
     def test_playlist_continuation_prefers_command_executor_token(self) -> None:
         data = {
@@ -825,6 +833,145 @@ class SchemaTests(unittest.TestCase):
 
 
 class WorkerQueueTests(unittest.TestCase):
+    def test_playlist_worker_uses_web_fallback_after_short_ytdlp_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLexample', 'Example')")
+                    core.enqueue_playlist_scan_item(conn, "PLexample", manual=False)
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            header = {"video_count": 2, "has_video_count": True, "visibility": "public"}
+            ytdlp_videos = [{"video_id": "first"}]
+            web_videos = [{"video_id": "first"}, {"video_id": "second"}]
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.request_text", return_value="header page"),
+                patch("yt_library.workers.extract_playlist_metadata", return_value=header),
+                patch("yt_library.workers.scan_playlist_ytdlp", return_value=(ytdlp_videos, {})),
+                patch("yt_library.workers.youtube_session_status", return_value=(True, "")),
+                patch("yt_library.workers.scan_playlist_videos", return_value=web_videos) as scan_web,
+                patch("yt_library.workers.save_playlist_scan", return_value=(2, 0)),
+                patch("yt_library.workers.enqueue_placeholder_recovery_targets", return_value={"inserted": 0}),
+            ):
+                worker._run(
+                    "test-playlist-fallback",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            scan_web.assert_called_once()
+            conn = core.connect(db_path)
+            try:
+                log = conn.execute(
+                    "SELECT level, message FROM playlist_scan_worker_log WHERE run_id = 'test-playlist-fallback'"
+                ).fetchone()
+                self.assertEqual(log["level"], "info")
+                self.assertIn("2 videos", log["message"])
+            finally:
+                conn.close()
+
+    def test_playlist_worker_skips_when_header_count_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLexample', 'Example')")
+                    core.enqueue_playlist_scan_item(conn, "PLexample", manual=False)
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.request_text", return_value="header page"),
+                patch("yt_library.workers.extract_playlist_metadata", return_value={"video_count": 0, "has_video_count": False}),
+                patch("yt_library.workers.scan_playlist_ytdlp") as scan_ytdlp,
+                patch("yt_library.workers.scan_playlist_videos") as scan_web,
+            ):
+                worker._run(
+                    "test-playlist-no-header",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            scan_ytdlp.assert_not_called()
+            scan_web.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                log = conn.execute(
+                    "SELECT level, message FROM playlist_scan_worker_log WHERE run_id = 'test-playlist-no-header'"
+                ).fetchone()
+                self.assertEqual(log["level"], "error")
+                self.assertIn("header count unavailable", log["message"])
+            finally:
+                conn.close()
+
+    def test_playlist_worker_allows_foreign_playlist_short_of_reported_count(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLforeign', 'Foreign')")
+                    core.enqueue_playlist_scan_item(conn, "PLforeign", manual=False)
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            header = {"video_count": 168, "has_video_count": True, "owner": "Other channel"}
+            ytdlp_videos = [{"video_id": f"video{i}"} for i in range(100)]
+            web_videos = [{"video_id": f"video{i}"} for i in range(167)]
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.request_text", return_value="header page"),
+                patch("yt_library.workers.extract_playlist_metadata", return_value=header),
+                patch("yt_library.workers.scan_playlist_ytdlp", return_value=(ytdlp_videos, {})),
+                patch("yt_library.workers.youtube_session_status", return_value=(True, "")),
+                patch("yt_library.workers.scan_playlist_videos", return_value=web_videos) as scan_web,
+                patch("yt_library.workers.save_playlist_scan", return_value=(167, 1)) as save_scan,
+                patch("yt_library.workers.enqueue_placeholder_recovery_targets", return_value={"inserted": 0}),
+            ):
+                worker._run(
+                    "test-foreign-short",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            scan_web.assert_called_once()
+            save_scan.assert_called_once()
+            saved_videos = save_scan.call_args.args[2]
+            self.assertEqual(len(saved_videos), 167)
+            conn = core.connect(db_path)
+            try:
+                log = conn.execute(
+                    "SELECT level, message FROM playlist_scan_worker_log WHERE run_id = 'test-foreign-short'"
+                ).fetchone()
+                self.assertEqual(log["level"], "info")
+                self.assertIn("167 exposed of 168 reported", log["message"])
+            finally:
+                conn.close()
+
     def test_placeholder_recovery_targets_use_the_common_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")

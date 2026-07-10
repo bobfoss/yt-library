@@ -485,6 +485,18 @@ def playlist_zero_result_is_suspicious(
     return parsed_count == 0 and bool(ytdlp_error.strip()) and previous_scan_count > 0
 
 
+def playlist_scan_is_incomplete(parsed_count: int, expected_count: int) -> bool:
+    """Return whether a source result is shorter than the current expected playlist size."""
+    return expected_count > 0 and parsed_count < expected_count
+
+
+def playlist_scan_requires_exact_count(metadata: dict[str, Any]) -> bool:
+    """Owned or ambiguous playlist headers must match the displayed YouTube count."""
+    owner = str(metadata.get("owner") or "").strip()
+    visibility = str(metadata.get("visibility") or "").strip()
+    return not (owner and not visibility)
+
+
 def reconciled_video_availability(
     video_id: str,
     current_availability: str = "",
@@ -1835,6 +1847,7 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any
         "owner": "",
         "visibility": "",
         "video_count": 0,
+        "has_video_count": False,
         "thumbnail_url": "",
         "url": f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}",
     }
@@ -1873,8 +1886,11 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any
             metadata["visibility"] = visibility
         for key in ("numVideosText", "numVideosTextText", "videoCountText"):
             count_text = text_from_runs(renderer.get(key))
-            if count_text and not metadata["video_count"]:
-                metadata["video_count"] = parse_youtube_playlist_video_count(count_text)
+            if count_text and not metadata["has_video_count"]:
+                parsed_count = parse_youtube_playlist_video_count(count_text)
+                if re.search(r"[\d,]+\s+videos?", count_text, re.I):
+                    metadata["video_count"] = parsed_count
+                    metadata["has_video_count"] = True
         thumbnail = renderer.get("playlistHeaderBanner")
         if isinstance(thumbnail, dict):
             thumbs = thumbnail.get("heroPlaylistThumbnailRenderer", {}).get("thumbnail", {}).get("thumbnails", [])
@@ -1900,10 +1916,12 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any
                     if visibility and not metadata["visibility"]:
                         metadata["visibility"] = visibility
                 # This is YouTube's displayed playlist count, not the local scan total.
-                if not metadata["video_count"]:
+                if not metadata["has_video_count"]:
                     for part in parts:
-                        metadata["video_count"] = parse_youtube_playlist_video_count(part)
-                        if metadata["video_count"]:
+                        parsed_count = parse_youtube_playlist_video_count(part)
+                        if re.search(r"[\d,]+\s+videos?", part, re.I):
+                            metadata["video_count"] = parsed_count
+                            metadata["has_video_count"] = True
                             break
 
     if not metadata["thumbnail_url"]:

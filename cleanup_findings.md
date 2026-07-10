@@ -82,10 +82,18 @@ Status: completed for active library video cards.
 - Cleanup: add a unified `/api/search` endpoint that applies search fields, source filters, unavailable inclusion, history dedupe, counts, ranking, and pagination on the server.
 - The browser should then render returned rows instead of merging partially complete client/server result sets.
 
+## Foreign Playlist Historical Recovery
+
+- YouTube Takeout playlist exports currently cover playlists the account created, not saved playlists owned by others.
+- If we later obtain an older local copy or exported source for someone else's playlist, compare that historical membership to the current exposed rows and current YouTube header count.
+- This could identify memory-holed videos on foreign playlists without synthesizing unavailable rows from a count gap alone.
+- Cleanup/investigation: keep the current best-visible-row policy for foreign playlists, and add a recovery workflow only after we have a concrete fixture where historical rows exceed the current exposed rows.
+
 ## Suggested Order
 
 1. Add unified server-side omni-search with correct pagination.
 2. Share the video-card renderer with `history.html`.
 3. Remove the unused Archivarix candidate card path.
-4. Revisit hidden/unavailable internal naming.
-5. Revisit collection/entity card duplication only if playlist, snapshot playlist, and channel cards continue to drift.
+4. Investigate foreign playlist historical recovery once a real fixture exists.
+5. Revisit hidden/unavailable internal naming.
+6. Revisit collection/entity card duplication only if playlist, snapshot playlist, and channel cards continue to drift.
