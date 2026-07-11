@@ -30,6 +30,8 @@ ADMIN_HTML = load_template("admin.html")
 TIMEZONE_JS = load_template("timezone.js")
 
 class LibraryHandler(http.server.SimpleHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def __init__(
         self,
         *args,
@@ -122,9 +124,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             params = urllib.parse.parse_qs(parsed.query)
             include_logs = (params.get("include_logs") or ["1"])[0].strip().lower() not in {"0", "false", "no"}
             try:
-                worker_queue_limit = max(0, min(10000, int((params.get("queue_limit") or ["0"])[0] or 0)))
+                worker_queue_limit = max(0, min(10000, int((params.get("queue_limit") or ["500"])[0] or 500)))
             except ValueError:
-                worker_queue_limit = 0
+                worker_queue_limit = 500
             self.send_json(
                 admin_status(
                     self.db_path,
@@ -136,6 +138,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     worker_queue_limit,
                 )
             )
+            return
+        if parsed.path == "/api/admin/queue/events":
+            self.stream_worker_queue_events()
             return
         if parsed.path == "/api/admin/queue":
             params = urllib.parse.parse_qs(parsed.query)
@@ -426,6 +431,83 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_sse(self, event: str, data: Any, event_id: int | None = None) -> None:
+        payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        parts = []
+        if event_id is not None:
+            parts.append(f"id: {event_id}\n")
+        parts.append(f"event: {event}\n")
+        parts.append(f"data: {payload}\n\n")
+        self.wfile.write("".join(parts).encode("utf-8"))
+        self.wfile.flush()
+
+    def stream_worker_queue_events(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        conn = connect(self.db_path)
+        try:
+            conn.execute("BEGIN")
+            cursor = worker_queue_event_cursor(conn)
+            rows = [dict(row) for row in worker_queue_rows(conn)]
+            total = len(rows)
+            conn.commit()
+
+            self.send_sse("queue_reset", {"total": total}, cursor)
+            for offset in range(0, total, 250):
+                self.send_sse(
+                    "queue_snapshot",
+                    {"rows": rows[offset : offset + 250], "total": total},
+                    cursor,
+                )
+            self.send_sse("queue_ready", {"total": total}, cursor)
+
+            last_heartbeat = time.monotonic()
+            while True:
+                events = worker_queue_events_after(conn, cursor, limit=500)
+                if events:
+                    latest_by_queue: dict[int, sqlite3.Row] = {}
+                    for row in events:
+                        latest_by_queue[int(row["queue_id"])] = row
+                    cursor = int(events[-1]["event_id"])
+                    removals = [
+                        queue_id
+                        for queue_id, row in latest_by_queue.items()
+                        if row["operation"] == "remove"
+                    ]
+                    upsert_ids = [
+                        queue_id
+                        for queue_id, row in latest_by_queue.items()
+                        if row["operation"] != "remove"
+                    ]
+                    upserts = [dict(row) for row in worker_queue_rows_by_id(conn, upsert_ids)]
+                    existing_ids = {int(row["queue_id"]) for row in upserts}
+                    removals.extend(queue_id for queue_id in upsert_ids if queue_id not in existing_ids)
+                    self.send_sse(
+                        "queue_delta",
+                        {
+                            "upserts": upserts,
+                            "removals": sorted(set(removals)),
+                            "total": worker_queue_count(conn),
+                        },
+                        cursor,
+                    )
+                    last_heartbeat = time.monotonic()
+                    continue
+                if time.monotonic() - last_heartbeat >= 15:
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+                    last_heartbeat = time.monotonic()
+                time.sleep(0.5)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        finally:
+            conn.close()
 
     def translate_path(self, path: str) -> str:
         path = urllib.parse.urlparse(path).path

@@ -1400,6 +1400,42 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_worker_queue_events_capture_add_update_and_remove(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="abc12345678",
+                        current_title="Example video",
+                        metadata_source="provided",
+                        priority=10,
+                    )
+                queue_row = conn.execute(
+                    "SELECT queue_id FROM worker_queue WHERE video_id = 'abc12345678'"
+                ).fetchone()
+                queue_id = int(queue_row["queue_id"])
+                first_cursor = core.worker_queue_event_cursor(conn)
+                events = core.worker_queue_events_after(conn, 0)
+                self.assertEqual([(row["queue_id"], row["operation"]) for row in events], [(queue_id, "upsert")])
+                self.assertEqual(
+                    [row["video_id"] for row in core.worker_queue_rows_by_id(conn, [queue_id])],
+                    ["abc12345678"],
+                )
+
+                with conn:
+                    conn.execute("UPDATE worker_queue SET priority = 2 WHERE queue_id = ?", (queue_id,))
+                    core.remove_worker_queue_entry(conn, queue_id)
+                later_events = core.worker_queue_events_after(conn, first_cursor)
+                self.assertEqual(
+                    [(row["queue_id"], row["operation"]) for row in later_events],
+                    [(queue_id, "upsert"), (queue_id, "remove")],
+                )
+                self.assertEqual(core.worker_queue_rows_by_id(conn, [queue_id]), [])
+            finally:
+                conn.close()
+
     def test_stopped_placeholder_recovery_keeps_its_queue_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

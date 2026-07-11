@@ -177,6 +177,41 @@ CREATE TABLE IF NOT EXISTS worker_queue (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS worker_queue_events (
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  queue_id INTEGER NOT NULL,
+  operation TEXT NOT NULL CHECK(operation IN ('upsert', 'remove')),
+  created_at TEXT NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS worker_queue_event_insert
+AFTER INSERT ON worker_queue
+BEGIN
+  INSERT INTO worker_queue_events(queue_id, operation, created_at)
+  VALUES (NEW.queue_id, 'upsert', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER IF NOT EXISTS worker_queue_event_update
+AFTER UPDATE ON worker_queue
+BEGIN
+  INSERT INTO worker_queue_events(queue_id, operation, created_at)
+  VALUES (NEW.queue_id, 'upsert', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER IF NOT EXISTS worker_queue_event_delete
+AFTER DELETE ON worker_queue
+BEGIN
+  INSERT INTO worker_queue_events(queue_id, operation, created_at)
+  VALUES (OLD.queue_id, 'remove', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER IF NOT EXISTS worker_queue_events_prune
+AFTER INSERT ON worker_queue_events
+WHEN NEW.event_id % 1000 = 0
+BEGIN
+  DELETE FROM worker_queue_events WHERE event_id < NEW.event_id - 100000;
+END;
+
 CREATE TABLE IF NOT EXISTS playlist_scan_worker_runs (
   run_id TEXT PRIMARY KEY,
   status TEXT NOT NULL DEFAULT '',

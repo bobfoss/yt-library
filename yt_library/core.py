@@ -4546,6 +4546,69 @@ def worker_queue_rows(
     return conn.execute(sql, params).fetchall()
 
 
+def worker_queue_rows_by_id(
+    conn: sqlite3.Connection,
+    queue_ids: Sequence[int],
+) -> list[sqlite3.Row]:
+    ids = sorted({int(queue_id) for queue_id in queue_ids if int(queue_id) > 0})
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    return conn.execute(
+        f"""
+        SELECT w.queue_id,
+               w.subject_key,
+               w.worker_type,
+               w.task_type,
+               w.video_id,
+               w.channel_id,
+               w.playlist_id,
+               w.channel_title,
+               w.current_title,
+               w.source_key,
+               w.playlist_count,
+               w.priority,
+               w.manual,
+               w.created_at,
+               w.updated_at,
+               p.title AS playlist_title,
+               p.video_count AS playlist_video_count,
+               COALESCE(ps.scan_status, '') AS scan_status,
+               COALESCE(ps.video_count, 0) AS video_count,
+               COALESCE(ps.unavailable_count, 0) AS unavailable_count
+        FROM worker_queue w
+        LEFT JOIN playlists p ON p.playlist_id = w.playlist_id
+        LEFT JOIN playlist_scans ps ON ps.playlist_id = w.playlist_id
+        WHERE w.queue_id IN ({placeholders})
+        ORDER BY w.priority, w.queue_id
+        """,
+        ids,
+    ).fetchall()
+
+
+def worker_queue_event_cursor(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COALESCE(MAX(event_id), 0) AS event_id FROM worker_queue_events").fetchone()
+    return int(row["event_id"] or 0)
+
+
+def worker_queue_events_after(
+    conn: sqlite3.Connection,
+    event_id: int,
+    *,
+    limit: int = 500,
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT event_id, queue_id, operation, created_at
+        FROM worker_queue_events
+        WHERE event_id > ?
+        ORDER BY event_id
+        LIMIT ?
+        """,
+        (max(0, int(event_id)), max(1, min(5000, int(limit)))),
+    ).fetchall()
+
+
 def worker_queue_count(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS count FROM worker_queue").fetchone()
     return int(row["count"] or 0)
@@ -5193,7 +5256,7 @@ def admin_status(
     live_history_worker: "LiveHistoryWorker | None" = None,
     queue_dispatcher: "WorkerQueueDispatcher | None" = None,
     include_logs: bool = True,
-    worker_queue_limit: int = 0,
+    worker_queue_limit: int = 500,
 ) -> dict[str, Any]:
     conn = connect(db_path)
     try:
@@ -5261,11 +5324,12 @@ def admin_status(
             ).fetchone()
         )
         worker_queue_count_value = worker_queue_count(conn)
-        worker_queue_limit = max(0, min(10000, int(worker_queue_limit or 0)))
-        worker_queue_preview_rows = [
-            dict(row)
-            for row in worker_queue_rows(conn, limit=worker_queue_limit)
-        ]
+        worker_queue_limit = max(0, min(10000, int(worker_queue_limit if worker_queue_limit is not None else 500)))
+        worker_queue_preview_rows = (
+            [dict(row) for row in worker_queue_rows(conn, limit=worker_queue_limit)]
+            if worker_queue_limit > 0
+            else []
+        )
         latest_metadata_run = conn.execute(
             """
             SELECT *

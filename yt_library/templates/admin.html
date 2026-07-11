@@ -69,6 +69,9 @@
     .queue-title h2 { font-size: 16px; margin: 0; }
     .queue-title span { color: var(--muted); font-size: 13px; }
     .queue-scroll, .log-scroll { height: 360px; min-height: 180px; overflow: auto; resize: vertical; }
+    .queue-scroll tr[data-queue-id] { height: 72px; }
+    .queue-cell { height: 54px; overflow: hidden; white-space: pre-line; }
+    .queue-spacer td { border: 0; padding: 0; }
     .time-col { width: 150px; }
     .level-col { width: 110px; }
     .video-col { width: 150px; }
@@ -235,8 +238,13 @@
 
     const queueState = {
       rows: [],
+      rowsById: new Map(),
       total: 0,
+      ready: false,
+      renderPending: false,
     };
+    const queueRowHeight = 72;
+    const queueOverscan = 10;
 
     function escapeHtml(value) {
       return String(value || '').replace(/[&<>"']/g, ch => ({
@@ -265,41 +273,120 @@
       return row.current_title || row.task_type || '';
     }
 
-    function queueScrollAnchor() {
-      const panelTop = fields.workerQueuePanel.getBoundingClientRect().top;
-      const row = [...fields.workerQueueRows.querySelectorAll('tr[data-queue-id]')]
-        .find(candidate => candidate.getBoundingClientRect().bottom > panelTop);
-      if (!row) return null;
-      return {
-        queueId: row.dataset.queueId,
-        offset: row.getBoundingClientRect().top - panelTop,
-      };
-    }
-
-    function restoreQueueScroll(anchor) {
-      if (!anchor) return;
-      const row = fields.workerQueueRows.querySelector(`tr[data-queue-id="${CSS.escape(anchor.queueId)}"]`);
-      if (!row) return;
-      const panelTop = fields.workerQueuePanel.getBoundingClientRect().top;
-      fields.workerQueuePanel.scrollTop += row.getBoundingClientRect().top - panelTop - anchor.offset;
-    }
-
-    function renderQueue(preserveScroll = false) {
-      const anchor = preserveScroll ? queueScrollAnchor() : null;
-      if (!queueState.rows.length) {
-        fields.workerQueueRows.innerHTML = '<tr><td colspan="5" class="message">No worker jobs queued.</td></tr>';
-        return;
-      }
-      fields.workerQueueRows.innerHTML = queueState.rows.map(row => `
+    function queueRowHtml(row) {
+      return `
         <tr data-queue-id="${escapeHtml(row.queue_id || '')}">
           <td>${escapeHtml(row.worker_type || '')}</td>
-          <td class="message">${escapeHtml(workerSubject(row))}</td>
-          <td class="message">${escapeHtml([`${row.task_type || ''}${row.manual ? ' manual' : ''}`, row.source_key || ''].filter(Boolean).join('\n'))}</td>
-          <td class="message">${escapeHtml(workerDetails(row))}</td>
+          <td class="message"><div class="queue-cell">${escapeHtml(workerSubject(row))}</div></td>
+          <td class="message"><div class="queue-cell">${escapeHtml([`${row.task_type || ''}${row.manual ? ' manual' : ''}`, row.source_key || ''].filter(Boolean).join('\n'))}</div></td>
+          <td class="message"><div class="queue-cell">${escapeHtml(workerDetails(row))}</div></td>
           <td><button class="remove-queue-entry" type="button" data-queue-id="${escapeHtml(row.queue_id || '')}">Remove</button></td>
         </tr>
-      `).join('');
-      restoreQueueScroll(anchor);
+      `;
+    }
+
+    function createQueueRow(row) {
+      const tbody = document.createElement('tbody');
+      tbody.innerHTML = queueRowHtml(row).trim();
+      return tbody.firstElementChild;
+    }
+
+    function compareQueueRows(left, right) {
+      return (Number(left.priority || 0) - Number(right.priority || 0))
+        || (Number(left.queue_id || 0) - Number(right.queue_id || 0));
+    }
+
+    function queueRowIndex(row) {
+      let low = 0;
+      let high = queueState.rows.length;
+      while (low < high) {
+        const middle = (low + high) >> 1;
+        if (compareQueueRows(queueState.rows[middle], row) < 0) low = middle + 1;
+        else high = middle;
+      }
+      return low;
+    }
+
+    function removeQueueRow(queueId) {
+      const id = Number(queueId);
+      const existing = queueState.rowsById.get(id);
+      if (!existing) return;
+      const index = queueState.rows.findIndex(row => Number(row.queue_id) === id);
+      if (index >= 0) queueState.rows.splice(index, 1);
+      queueState.rowsById.delete(id);
+    }
+
+    function insertQueueRow(row) {
+      const id = Number(row.queue_id || 0);
+      if (!id) return;
+      removeQueueRow(id);
+      queueState.rows.splice(queueRowIndex(row), 0, row);
+      queueState.rowsById.set(id, row);
+    }
+
+    function scheduleQueueRender() {
+      if (queueState.renderPending) return;
+      queueState.renderPending = true;
+      requestAnimationFrame(() => {
+        queueState.renderPending = false;
+        renderQueueWindow();
+      });
+    }
+
+    function renderQueueWindow() {
+      if (!queueState.rows.length) {
+        fields.workerQueueRows.innerHTML = queueState.ready
+          ? '<tr class="empty-queue-row"><td colspan="5" class="message">No worker jobs queued.</td></tr>'
+          : '';
+        return;
+      }
+      const visibleRows = Math.ceil(fields.workerQueuePanel.clientHeight / queueRowHeight);
+      const start = Math.max(0, Math.floor(fields.workerQueuePanel.scrollTop / queueRowHeight) - queueOverscan);
+      const end = Math.min(queueState.rows.length, start + visibleRows + queueOverscan * 2);
+      const fragment = document.createDocumentFragment();
+      if (start > 0) {
+        const spacer = document.createElement('tr');
+        spacer.className = 'queue-spacer';
+        spacer.innerHTML = `<td colspan="5" style="height:${start * queueRowHeight}px"></td>`;
+        fragment.appendChild(spacer);
+      }
+      for (const row of queueState.rows.slice(start, end)) fragment.appendChild(createQueueRow(row));
+      if (end < queueState.rows.length) {
+        const spacer = document.createElement('tr');
+        spacer.className = 'queue-spacer';
+        spacer.innerHTML = `<td colspan="5" style="height:${(queueState.rows.length - end) * queueRowHeight}px"></td>`;
+        fragment.appendChild(spacer);
+      }
+      fields.workerQueueRows.replaceChildren(fragment);
+    }
+
+    function resetQueueState(total = 0) {
+      queueState.rows = [];
+      queueState.rowsById.clear();
+      queueState.total = Number(total || 0);
+      queueState.ready = false;
+      fields.workerQueueRows.replaceChildren();
+      fields.commonQueueCount.textContent = queueState.total;
+    }
+
+    function applyQueueSnapshot(rows, total) {
+      for (const row of rows) {
+        const id = Number(row.queue_id || 0);
+        if (!id || queueState.rowsById.has(id)) continue;
+        queueState.rows.push(row);
+        queueState.rowsById.set(id, row);
+      }
+      queueState.total = Number(total || queueState.rowsById.size);
+      fields.commonQueueCount.textContent = queueState.total;
+      scheduleQueueRender();
+    }
+
+    function applyQueueDelta(payload) {
+      for (const queueId of payload.removals || []) removeQueueRow(queueId);
+      for (const row of payload.upserts || []) insertQueueRow(row);
+      queueState.total = Number(payload.total ?? queueState.rowsById.size);
+      fields.commonQueueCount.textContent = queueState.total;
+      scheduleQueueRender();
     }
 
     function render(data) {
@@ -353,8 +440,6 @@
         return div;
       }));
 
-      hydrateQueue(data.workerQueue || [], data.workerQueueCount || 0);
-
       const logs = [
         ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
         ...(data.metadataLogs || []).map(log => ({
@@ -376,17 +461,6 @@
     }
 
     let statusRequest = null;
-
-    function hydrateQueue(rows, total) {
-      queueState.total = total;
-      queueState.rows = rows;
-      renderQueue(true);
-    }
-
-    function resetQueueState() {
-      queueState.rows = [];
-      queueState.total = 0;
-    }
 
     let operationPollTimer = null;
     let operationPollsRemaining = 0;
@@ -419,7 +493,7 @@
         }
       }
       statusRequest = (async () => {
-        const endpoint = '/api/admin/status';
+        const endpoint = '/api/admin/status?queue_limit=0';
         const response = await fetch(endpoint, { cache: 'no-store' });
         if (!response.ok) throw new Error(`Status failed: ${response.status}`);
         render(await response.json());
@@ -438,7 +512,6 @@
       const response = await fetch(`${path}?${new URLSearchParams(params)}`, { method: 'POST' });
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);
       const payload = await response.json();
-      resetQueueState();
       await loadStatus({ force: true });
       scheduleActionPolls();
       return payload;
@@ -509,6 +582,38 @@
       fields.displayTimezone.value = detected;
       window.YTLibraryTime.persist(detected).catch(error => alert(error.message));
     });
+
+    function connectQueueEvents() {
+      const stream = new EventSource('/api/admin/queue/events');
+      stream.addEventListener('queue_reset', event => {
+        const payload = JSON.parse(event.data);
+        resetQueueState(payload.total || 0);
+      });
+      stream.addEventListener('queue_snapshot', event => {
+        const payload = JSON.parse(event.data);
+        applyQueueSnapshot(payload.rows || [], payload.total || 0);
+      });
+      stream.addEventListener('queue_ready', event => {
+        const payload = JSON.parse(event.data);
+        queueState.ready = true;
+        queueState.total = Number(payload.total || queueState.rowsById.size);
+        fields.commonQueueCount.textContent = queueState.total;
+        scheduleQueueRender();
+      });
+      stream.addEventListener('queue_delta', event => {
+        applyQueueDelta(JSON.parse(event.data));
+      });
+      stream.onerror = () => {
+        fields.commonQueueCount.title = 'Queue event stream reconnecting';
+      };
+      stream.onopen = () => {
+        fields.commonQueueCount.title = '';
+      };
+    }
+
+    connectQueueEvents();
+    fields.workerQueuePanel.addEventListener('scroll', scheduleQueueRender, { passive: true });
+    new ResizeObserver(scheduleQueueRender).observe(fields.workerQueuePanel);
     loadStatus({ force: true })
       .catch(error => { fields.playlistRunStatus.textContent = error.message; });
     setInterval(() => {
