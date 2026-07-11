@@ -225,6 +225,7 @@
       playlistRunStatus: document.getElementById('playlistRunStatus'),
       metadataRunStatus: document.getElementById('metadataRunStatus'),
       liveHistoryRunStatus: document.getElementById('liveHistoryRunStatus'),
+      startWorkerQueue: document.getElementById('startWorkerQueue'),
       stopWorkerQueue: document.getElementById('stopWorkerQueue'),
       workerQueueRows: document.getElementById('workerQueueRows'),
       workerQueuePanel: document.getElementById('workerQueuePanel'),
@@ -314,6 +315,7 @@
       fields.commonWorkerState.className = `value ${commonWorkerRunning ? 'running' : ''}`;
       fields.liveHistoryWorkerState.textContent = data.liveHistoryRunning ? 'running' : 'idle';
       fields.liveHistoryWorkerState.className = `value ${data.liveHistoryRunning ? 'running' : ''}`;
+      fields.startWorkerQueue.classList.toggle('primary', !commonWorkerRunning);
       fields.stopWorkerQueue.classList.toggle('danger', anyWorkerRunning);
 
       function runHtml(run, label) {
@@ -430,6 +432,9 @@
     }
 
     async function post(path, params = {}) {
+      if (path === '/api/admin/queue/start') {
+        fields.startWorkerQueue.classList.remove('primary');
+      }
       const response = await fetch(`${path}?${new URLSearchParams(params)}`, { method: 'POST' });
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);
       const payload = await response.json();
@@ -441,6 +446,7 @@
 
     async function stopWorkersNow() {
       fields.commonWorkerState.textContent = 'stopping';
+      fields.startWorkerQueue.classList.remove('primary');
       fields.stopWorkerQueue.classList.add('danger');
       const response = await fetch('/api/admin/queue/stop', { method: 'POST' });
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);
