@@ -1908,15 +1908,22 @@
       const localHref = localPlaylistHref(playlist.playlist_id);
       const playlistCount = playlistVideoCountLabel(playlist);
       const owner = playlistOwnerHtml(playlist);
-      const img = document.createElement('img');
-      img.className = 'thumb';
-      img.loading = 'lazy';
-      img.alt = '';
-      img.src = playlist.thumbnail_path ? `/${playlist.thumbnail_path}` : '';
       const thumbLink = document.createElement('a');
       thumbLink.className = 'thumb-link';
       thumbLink.href = localHref;
-      thumbLink.append(img);
+      if (playlist.thumbnail_path) {
+        const img = document.createElement('img');
+        img.className = 'thumb';
+        img.loading = 'lazy';
+        img.alt = '';
+        img.src = `/${playlist.thumbnail_path}`;
+        thumbLink.append(img);
+      } else {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'thumb';
+        placeholder.setAttribute('aria-hidden', 'true');
+        thumbLink.append(placeholder);
+      }
       const body = document.createElement('div');
       body.className = 'body';
       body.innerHTML = `

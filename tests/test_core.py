@@ -1129,6 +1129,77 @@ class SchemaTests(unittest.TestCase):
 
 
 class WorkerQueueTests(unittest.TestCase):
+    def test_playlist_worker_caches_playlist_thumbnail(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLexample', 'Example')")
+                    core.enqueue_playlist_scan_item(conn, "PLexample", manual=False)
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            header = {
+                "title": "Example",
+                "video_count": 1,
+                "has_video_count": True,
+                "visibility": "public",
+                "thumbnail_url": "https://example.test/playlist.jpg",
+            }
+            videos = [
+                {
+                    "playlist_id": "PLexample",
+                    "position": 1,
+                    "video_id": "abc12345678",
+                    "title": "Video",
+                    "channel_id": "",
+                    "channel": "",
+                    "duration_text": "1:00",
+                    "is_playable": 1,
+                    "availability": "LIVE",
+                    "url": "https://www.youtube.com/watch?v=abc12345678",
+                }
+            ]
+            opener = object()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=opener),
+                patch("yt_library.workers.request_text", return_value="header page"),
+                patch("yt_library.workers.extract_playlist_metadata", return_value=header),
+                patch("yt_library.workers.scan_playlist_ytdlp", return_value=(videos, {})),
+                patch("yt_library.workers.scan_playlist_videos") as scan_web,
+                patch("yt_library.workers.cache_thumbnail", return_value="thumbs/PLexample.jpg") as cache_thumb,
+                patch("yt_library.workers.enqueue_placeholder_recovery_targets", return_value={"inserted": 0}),
+            ):
+                worker._run(
+                    "test-playlist-thumbnail",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            scan_web.assert_not_called()
+            cache_thumb.assert_called_once_with(
+                opener,
+                "PLexample",
+                "https://example.test/playlist.jpg",
+                core.DEFAULT_THUMB_DIR,
+            )
+            conn = core.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLexample'"
+                ).fetchone()
+                self.assertEqual(row["thumbnail_url"], "https://example.test/playlist.jpg")
+                self.assertEqual(row["thumbnail_path"], "thumbs/PLexample.jpg")
+            finally:
+                conn.close()
+
     def test_playlist_worker_uses_web_fallback_after_short_ytdlp_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

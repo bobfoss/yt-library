@@ -442,6 +442,14 @@ class PlaylistScanWorker:
                         DEFAULT_VIDEO_THUMB_DIR,
                         referer_url=playlist_url,
                     )
+                thumbnail_url = str(playlist_metadata.get("thumbnail_url") or "").strip()
+                if thumbnail_url:
+                    playlist_metadata["thumbnail_path"] = cache_thumbnail(
+                        opener,
+                        playlist_id,
+                        thumbnail_url,
+                        DEFAULT_THUMB_DIR,
+                    )
                 header_expected_count = int(header_metadata.get("video_count") or 0)
                 expected_count = header_expected_count
                 exact_count_required = playlist_scan_requires_exact_count(
