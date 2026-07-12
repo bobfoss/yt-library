@@ -66,8 +66,11 @@
     .queue-title h2 { font-size: 16px; margin: 0; }
     .queue-title span { color: var(--muted); font-size: 13px; }
     .queue-scroll, .log-scroll { height: 360px; min-height: 180px; overflow: auto; resize: vertical; }
-    .queue-scroll tr[data-queue-id] { height: 72px; }
-    .queue-cell { height: 54px; overflow: hidden; white-space: pre-line; }
+    .queue-scroll tr[data-queue-id] { height: 44px; }
+    .queue-scroll td { padding-top: 6px; padding-bottom: 6px; }
+    .queue-scroll button { padding: 5px 8px; }
+    .queue-cell { max-height: 34px; overflow: hidden; white-space: pre-line; }
+    .queue-worker-cell { white-space: nowrap; }
     .queue-spacer td { border: 0; padding: 0; }
     .time-col { width: 150px; }
     .level-col { width: 110px; }
@@ -75,7 +78,7 @@
     .log-level-col { width: 170px; }
     .video-col { width: 150px; }
     .subject-col { width: 290px; }
-    .worker-col { width: 90px; }
+    .queue-worker-col { width: 180px; }
     .action-col { width: 100px; }
     .time-cell { white-space: nowrap; }
     .level-cell { white-space: nowrap; }
@@ -169,16 +172,25 @@
       </div>
       <table>
         <colgroup>
-          <col class="worker-col">
-          <col>
-          <col>
-          <col>
           <col class="action-col">
+          <col>
+          <col class="queue-worker-col">
+          <col>
+          <col>
         </colgroup>
-        <thead><tr><th>Worker</th><th>Subject</th><th>Source</th><th>Details</th><th>Action</th></tr></thead>
+        <thead><tr><th>Action</th><th>Subject</th><th>Worker</th><th>Source</th><th>Details</th></tr></thead>
       </table>
       <div class="queue-scroll" id="workerQueuePanel">
-        <table><tbody id="workerQueueRows"></tbody></table>
+        <table>
+          <colgroup>
+            <col class="action-col">
+            <col>
+            <col class="queue-worker-col">
+            <col>
+            <col>
+          </colgroup>
+          <tbody id="workerQueueRows"></tbody>
+        </table>
       </div>
     </section>
 
@@ -264,14 +276,18 @@
       return row.current_title || row.task_type || '';
     }
 
+    function workerLabel(row) {
+      return [row.worker_type || '', row.task_type || '', row.manual ? 'manual' : ''].filter(Boolean).join(' ');
+    }
+
     function queueRowHtml(row) {
       return `
         <tr data-queue-id="${escapeHtml(row.queue_id || '')}">
-          <td>${escapeHtml(row.worker_type || '')}</td>
-          <td class="message"><div class="queue-cell">${escapeHtml(workerSubject(row))}</div></td>
-          <td class="message"><div class="queue-cell">${escapeHtml([`${row.task_type || ''}${row.manual ? ' manual' : ''}`, row.source_key || ''].filter(Boolean).join('\n'))}</div></td>
-          <td class="message"><div class="queue-cell">${escapeHtml(workerDetails(row))}</div></td>
           <td><button class="remove-queue-entry" type="button" data-queue-id="${escapeHtml(row.queue_id || '')}">Remove</button></td>
+          <td class="message"><div class="queue-cell">${escapeHtml(workerSubject(row))}</div></td>
+          <td class="queue-worker-cell">${escapeHtml(workerLabel(row))}</td>
+          <td class="message"><div class="queue-cell">${escapeHtml(row.source_key || '')}</div></td>
+          <td class="message"><div class="queue-cell">${escapeHtml(workerDetails(row))}</div></td>
         </tr>
       `;
     }
