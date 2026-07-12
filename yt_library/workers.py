@@ -21,7 +21,11 @@ class MetadataWorker:
 
     def is_running(self) -> bool:
         with self._lock:
-            return bool(self._thread and self._thread.is_alive())
+            return bool(self._thread and self._thread.is_alive()) and not self._stop.is_set()
+
+    def is_stopping(self) -> bool:
+        with self._lock:
+            return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
 
     def start(
         self,
@@ -247,6 +251,18 @@ class MetadataWorker:
                             run_id,
                         ),
                     )
+                if self._stop.is_set():
+                    with conn:
+                        conn.execute(
+                            """
+                            UPDATE metadata_worker_runs
+                            SET status = 'stopped', finished_at = ?, message = ?
+                            WHERE run_id = ?
+                            """,
+                            (utc_now(), "Stop requested", run_id),
+                        )
+                        log_worker_event(conn, run_id, "warn", "Worker stopped by request")
+                    return
                 if delay and worker_queue_type_count(conn, "metadata") > 0:
                     time.sleep(delay)
             with conn:
@@ -287,7 +303,11 @@ class PlaylistScanWorker:
 
     def is_running(self) -> bool:
         with self._lock:
-            return bool(self._thread and self._thread.is_alive())
+            return bool(self._thread and self._thread.is_alive()) and not self._stop.is_set()
+
+    def is_stopping(self) -> bool:
+        with self._lock:
+            return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
 
     def start(
         self,
@@ -622,7 +642,11 @@ class LiveHistoryWorker:
 
     def is_running(self) -> bool:
         with self._lock:
-            return bool(self._thread and self._thread.is_alive())
+            return bool(self._thread and self._thread.is_alive()) and not self._stop.is_set()
+
+    def is_stopping(self) -> bool:
+        with self._lock:
+            return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
 
     def start(
         self,
@@ -814,7 +838,11 @@ class PlaceholderRecoveryWorker:
 
     def is_running(self) -> bool:
         with self._lock:
-            return bool(self._thread and self._thread.is_alive())
+            return bool(self._thread and self._thread.is_alive()) and not self._stop.is_set()
+
+    def is_stopping(self) -> bool:
+        with self._lock:
+            return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
 
     def blocked_reason(self) -> str:
         with self._lock:
@@ -945,7 +973,11 @@ class WorkerQueueDispatcher:
 
     def is_running(self) -> bool:
         with self._lock:
-            return bool(self._thread and self._thread.is_alive())
+            return bool(self._thread and self._thread.is_alive()) and not self._stop.is_set()
+
+    def is_stopping(self) -> bool:
+        with self._lock:
+            return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
 
     def start(self, db_path: Path, cookie_file: Path, thumb_dir: Path) -> dict[str, Any]:
         with self._lock:

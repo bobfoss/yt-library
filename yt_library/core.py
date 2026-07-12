@@ -5395,9 +5395,13 @@ def admin_status(
         conn.close()
     return {
         "metadataRunning": metadata_worker.is_running() if metadata_worker else False,
+        "metadataStopping": metadata_worker.is_stopping() if metadata_worker else False,
         "playlistScanRunning": playlist_worker.is_running() if playlist_worker else False,
+        "playlistScanStopping": playlist_worker.is_stopping() if playlist_worker else False,
         "liveHistoryRunning": live_history_worker.is_running() if live_history_worker else False,
+        "liveHistoryStopping": live_history_worker.is_stopping() if live_history_worker else False,
         "workerQueueRunning": queue_dispatcher.is_running() if queue_dispatcher else False,
+        "workerQueueStopping": queue_dispatcher.is_stopping() if queue_dispatcher else False,
         "counts": counts,
         "liveHistoryCounts": live_history_counts,
         "playlistCounts": playlist_counts,

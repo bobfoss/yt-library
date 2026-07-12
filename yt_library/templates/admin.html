@@ -134,7 +134,6 @@
           <div class="panel"><div class="metric">History rows</div><div id="historyRows" class="value">0</div></div>
           <div class="panel"><div class="metric">History video IDs</div><div id="historyVideos" class="value">0</div></div>
           <div class="panel"><div class="metric">Fetched history rows</div><div id="liveHistoryRows" class="value">0</div></div>
-          <div class="panel"><div class="metric">History fetch</div><div id="liveHistoryWorkerState" class="value">idle</div></div>
         </div>
         <div class="controls">
           <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
@@ -159,7 +158,7 @@
       <div class="queue-title"><h2>Worker queue</h2></div>
       <div class="grid">
         <div class="panel"><div class="metric">Queue</div><div id="commonQueueCount" class="value">0</div></div>
-        <div class="panel"><div class="metric">Worker</div><div id="commonWorkerState" class="value">idle</div></div>
+        <div class="panel"><div class="metric">Queue worker</div><div id="commonWorkerState" class="value">idle</div></div>
       </div>
       <div class="controls">
         <label>URL/video/channel/playlist ID<input id="providedQueueTarget" class="wide-input" type="text" placeholder="YouTube URL, local URL, video ID, channel ID, @handle, or playlist ID"></label>
@@ -224,7 +223,6 @@
       metadataForce: document.getElementById('metadataForce'),
       commonQueueCount: document.getElementById('commonQueueCount'),
       commonWorkerState: document.getElementById('commonWorkerState'),
-      liveHistoryWorkerState: document.getElementById('liveHistoryWorkerState'),
       playlistRunStatus: document.getElementById('playlistRunStatus'),
       metadataRunStatus: document.getElementById('metadataRunStatus'),
       liveHistoryRunStatus: document.getElementById('liveHistoryRunStatus'),
@@ -396,14 +394,12 @@
       fields.historyVideos.textContent = data.counts.distinct_history_videos || 0;
       fields.liveHistoryRows.textContent = data.liveHistoryCounts?.live_rows || 0;
       fields.commonQueueCount.textContent = data.workerQueueCount || 0;
-      const anyWorkerRunning = Boolean(data.workerQueueRunning || data.playlistScanRunning || data.metadataRunning || data.liveHistoryRunning);
-      const commonWorkerRunning = Boolean(data.workerQueueRunning || data.playlistScanRunning || data.metadataRunning || data.liveHistoryRunning);
-      fields.commonWorkerState.textContent = commonWorkerRunning ? 'running' : 'idle';
-      fields.commonWorkerState.className = `value ${commonWorkerRunning ? 'running' : ''}`;
-      fields.liveHistoryWorkerState.textContent = data.liveHistoryRunning ? 'running' : 'idle';
-      fields.liveHistoryWorkerState.className = `value ${data.liveHistoryRunning ? 'running' : ''}`;
-      fields.startWorkerQueue.classList.toggle('primary', !commonWorkerRunning);
-      fields.stopWorkerQueue.classList.toggle('danger', anyWorkerRunning);
+      const queueWorkerRunning = Boolean(data.workerQueueRunning);
+      const queueWorkerStopping = Boolean(data.workerQueueStopping);
+      fields.commonWorkerState.textContent = queueWorkerStopping ? 'stopping' : (queueWorkerRunning ? 'running' : 'idle');
+      fields.commonWorkerState.className = `value ${queueWorkerRunning || queueWorkerStopping ? 'running' : ''}`;
+      fields.startWorkerQueue.classList.toggle('primary', !queueWorkerRunning && !queueWorkerStopping);
+      fields.stopWorkerQueue.classList.toggle('danger', queueWorkerRunning || queueWorkerStopping);
 
       function runHtml(run, label) {
         return run ? `
