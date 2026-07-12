@@ -296,16 +296,50 @@
       return `__channel__:${channelId}`;
     }
 
-    function localPlaylistHref(playlistId) {
-      return `#playlist=${encodeURIComponent(playlistId)}`;
+    function paginationParams() {
+      const params = new URLSearchParams();
+      if (currentPage > 1) params.set('page', String(currentPage));
+      if (pageSize !== '100') params.set('size', pageSize);
+      return params;
     }
 
-    function localVideoHref(videoId) {
-      return `#video=${encodeURIComponent(videoId)}`;
+    function appendHashParams(base, params) {
+      const query = params.toString();
+      return query ? `${base}?${query}` : base;
     }
 
-    function localChannelHref(channelId) {
-      return `#channel=${encodeURIComponent(channelId)}`;
+    function hashParts(hash) {
+      const queryIndex = hash.indexOf('?');
+      return {
+        base: queryIndex >= 0 ? hash.slice(0, queryIndex) : hash,
+        params: new URLSearchParams(queryIndex >= 0 ? hash.slice(queryIndex + 1) : ''),
+      };
+    }
+
+    function applyPaginationParams(params) {
+      pageSize = params.get('size') || '100';
+      const page = Number(params.get('page') || 1);
+      currentPage = Number.isFinite(page) && page > 0 ? page : 1;
+    }
+
+    function currentHashHasPaginationParams() {
+      const { params } = hashParts(window.location.hash || '');
+      return params.has('page') || params.has('size');
+    }
+
+    function localPlaylistHref(playlistId, includePagination = false) {
+      const base = `#playlist=${encodeURIComponent(playlistId)}`;
+      return includePagination ? appendHashParams(base, paginationParams()) : base;
+    }
+
+    function localVideoHref(videoId, includePagination = false) {
+      const base = `#video=${encodeURIComponent(videoId)}`;
+      return includePagination ? appendHashParams(base, paginationParams()) : base;
+    }
+
+    function localChannelHref(channelId, includePagination = false) {
+      const base = `#channel=${encodeURIComponent(channelId)}`;
+      return includePagination ? appendHashParams(base, paginationParams()) : base;
     }
 
     const viewHashBySelection = new Map([
@@ -322,12 +356,13 @@
     const selectionByViewHash = new Map([...viewHashBySelection].map(([selection, hash]) => [hash, selection]));
     selectionByViewHash.set('all-videos', '__all_videos__');
 
-    function localViewHref(value) {
+    function localViewHref(value, includePagination = false) {
       if (value === '__search__') return searchHash();
       const viewHash = viewHashBySelection.get(value);
-      if (viewHash) return `#view=${viewHash}`;
-      if (value) return `#group=${encodeURIComponent(value)}`;
-      return '#view=all-playlists';
+      const base = viewHash
+        ? `#view=${viewHash}`
+        : (value ? `#group=${encodeURIComponent(value)}` : '#view=all-playlists');
+      return includePagination ? appendHashParams(base, paginationParams()) : base;
     }
 
     function searchFilterParamValue() {
@@ -381,6 +416,31 @@
       return true;
     }
 
+    function hrefForCurrentSelection(includePagination = false) {
+      if (selected.startsWith('__playlist__:')) {
+        return localPlaylistHref(selected.slice('__playlist__:'.length), includePagination);
+      }
+      if (selected.startsWith('__video__:')) {
+        return localVideoHref(selected.slice('__video__:'.length), includePagination);
+      }
+      if (selected.startsWith('__channel__:')) {
+        return localChannelHref(selected.slice('__channel__:'.length), includePagination);
+      }
+      return localViewHref(selected, includePagination);
+    }
+
+    function updateCurrentHash(replace = false) {
+      if (selected === '__search__') return updateSearchHash(replace);
+      const href = hrefForCurrentSelection(true);
+      if (window.location.hash === href) return false;
+      if (replace) {
+        history.replaceState(null, '', href);
+      } else {
+        window.location.hash = href;
+      }
+      return true;
+    }
+
     function syncSearchHashAndRender() {
       if (selected === '__search__') {
         updateSearchHash(true);
@@ -395,24 +455,26 @@
         applySearchHash(hash);
         return '__search__';
       }
-      if (hash.startsWith('#playlist=')) {
-        const playlistId = decodeURIComponent(hash.slice('#playlist='.length));
+      const { base, params } = hashParts(hash);
+      applyPaginationParams(params);
+      if (base.startsWith('#playlist=')) {
+        const playlistId = decodeURIComponent(base.slice('#playlist='.length));
         if (playlistId) return playlistSelection(playlistId);
       }
-      if (hash.startsWith('#video=')) {
-        const videoId = decodeURIComponent(hash.slice('#video='.length));
+      if (base.startsWith('#video=')) {
+        const videoId = decodeURIComponent(base.slice('#video='.length));
         if (videoId) return videoSelection(videoId);
       }
-      if (hash.startsWith('#channel=')) {
-        const channelId = decodeURIComponent(hash.slice('#channel='.length));
+      if (base.startsWith('#channel=')) {
+        const channelId = decodeURIComponent(base.slice('#channel='.length));
         if (channelId) return channelSelection(channelId);
       }
-      if (hash.startsWith('#view=')) {
-        const view = decodeURIComponent(hash.slice('#view='.length));
+      if (base.startsWith('#view=')) {
+        const view = decodeURIComponent(base.slice('#view='.length));
         if (selectionByViewHash.has(view)) return selectionByViewHash.get(view);
       }
-      if (hash.startsWith('#group=')) {
-        const groupKey = decodeURIComponent(hash.slice('#group='.length));
+      if (base.startsWith('#group=')) {
+        const groupKey = decodeURIComponent(base.slice('#group='.length));
         if (groupKey) return groupKey;
       }
       return '';
@@ -933,6 +995,7 @@
     function renderPager(pageInfo) {
       bottomPager.hidden = !pageInfo.total;
       bottomPager.innerHTML = pagerHtml(pageInfo, true);
+      if (currentHashHasPaginationParams()) updateCurrentHash(true);
     }
 
     function hidePager() {
@@ -2346,7 +2409,7 @@
       const page = Number(direction);
       if (Number.isFinite(page) && page > 0) currentPage = page;
       scrollResultsToTop();
-      if (selected === '__search__') updateSearchHash(true);
+      if (updateCurrentHash(false)) return;
       render();
     }
     function handlePagerChange(event) {
@@ -2356,7 +2419,7 @@
       pageSize = target.value || '100';
       currentPage = 1;
       scrollResultsToTop();
-      if (selected === '__search__') updateSearchHash(true);
+      if (updateCurrentHash(false)) return;
       render();
     }
     bottomPager.addEventListener('click', handlePagerClick);
@@ -2428,7 +2491,6 @@
     syncSearchForFilters();
     window.addEventListener('hashchange', () => {
       selected = selectionFromHash();
-      if (selected !== '__search__') currentPage = 1;
       channelDetailTab = 'playlists';
       if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
       if (selected !== '__search__') search.value = '';

@@ -128,6 +128,39 @@
     let timer = null;
     let requestId = 0;
 
+    function applyUrlState() {
+      const params = new URLSearchParams(window.location.search);
+      input.value = params.get('q') || '';
+      pageSize = params.get('size') || '250';
+      const page = Number(params.get('page') || 1);
+      currentPage = Number.isFinite(page) && page > 0 ? page : 1;
+    }
+
+    function historyUrl() {
+      const params = new URLSearchParams();
+      const query = input.value.trim();
+      if (query) params.set('q', query);
+      if (currentPage > 1) params.set('page', String(currentPage));
+      if (pageSize !== '250') params.set('size', pageSize);
+      return `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
+    }
+
+    function updateUrl(replace = false) {
+      const url = historyUrl();
+      if (`${window.location.pathname}${window.location.search}` === url) return false;
+      if (replace) {
+        history.replaceState(null, '', url);
+      } else {
+        history.pushState(null, '', url);
+      }
+      return true;
+    }
+
+    function currentUrlHasPaginationParams() {
+      const params = new URLSearchParams(window.location.search);
+      return params.has('page') || params.has('size');
+    }
+
     function escapeHtml(value) {
       return String(value || '').replace(/[&<>"']/g, ch => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -367,6 +400,7 @@
       const pageCount = Number.isFinite(size) ? Math.max(1, Math.ceil(filtered / size)) : 1;
       currentPage = Number.isFinite(size) ? Math.min(Math.max(1, currentPage), pageCount) : 1;
       renderPager({ page: currentPage, pageCount, start, end, total: filtered });
+      if (currentUrlHasPaginationParams()) updateUrl(true);
     }
 
     async function load() {
@@ -391,6 +425,7 @@
     function schedule() {
       clearTimeout(timer);
       currentPage = 1;
+      updateUrl(true);
       timer = setTimeout(() => load().catch(error => {
         meta.textContent = error.message;
         refresh.disabled = false;
@@ -401,6 +436,7 @@
     input.addEventListener('input', schedule);
     refresh.addEventListener('click', () => {
       currentPage = 1;
+      updateUrl(true);
       load().catch(error => meta.textContent = error.message);
     });
     bottomPager.addEventListener('click', event => {
@@ -410,6 +446,7 @@
       if (!Number.isFinite(page) || page <= 0) return;
       currentPage = page;
       scrollResultsToTop();
+      updateUrl(false);
       load().catch(error => meta.textContent = error.message);
     });
     bottomPager.addEventListener('change', event => {
@@ -418,8 +455,15 @@
       pageSize = target.value || '250';
       currentPage = 1;
       scrollResultsToTop();
+      updateUrl(false);
       load().catch(error => meta.textContent = error.message);
     });
+    window.addEventListener('popstate', () => {
+      applyUrlState();
+      scrollResultsToTop();
+      load().catch(error => meta.textContent = error.message);
+    });
+    applyUrlState();
     load().catch(error => {
       meta.textContent = error.message;
       refresh.disabled = false;
