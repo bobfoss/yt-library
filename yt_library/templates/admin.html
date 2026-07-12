@@ -425,8 +425,20 @@
         { label: 'Channels terminated', count: channelCounts.terminated || 0 },
         { label: 'Channel URLs missing', count: channelCounts.url_missing || 0 },
       ];
-      const videoMetadataCards = (data.metadataCounts || []).map(row => ({
-        label: `Video metadata: ${row.fetch_status || 'blank'}`,
+      const metadataStatusOrder = new Map([['ok', 0], ['', 1], ['no_metadata', 2]]);
+      const metadataStatusLabel = status => {
+        if (!status) return 'blank';
+        if (status === 'no_metadata') return 'missing';
+        return status;
+      };
+      const videoMetadataCards = [...(data.metadataCounts || [])].sort((left, right) => {
+        const leftStatus = left.fetch_status || '';
+        const rightStatus = right.fetch_status || '';
+        const leftRank = metadataStatusOrder.has(leftStatus) ? metadataStatusOrder.get(leftStatus) : 10;
+        const rightRank = metadataStatusOrder.has(rightStatus) ? metadataStatusOrder.get(rightStatus) : 10;
+        return leftRank - rightRank || String(leftStatus).localeCompare(String(rightStatus));
+      }).map(row => ({
+        label: `Videos ${metadataStatusLabel(row.fetch_status || '')}`,
         count: row.count,
       }));
       fields.metadataCounts.replaceChildren(...[...channelCards, ...videoMetadataCards].map(row => {
