@@ -71,11 +71,14 @@
     .queue-spacer td { border: 0; padding: 0; }
     .time-col { width: 150px; }
     .level-col { width: 110px; }
+    .log-time-col { width: 230px; }
+    .log-level-col { width: 170px; }
     .video-col { width: 150px; }
     .subject-col { width: 290px; }
     .worker-col { width: 90px; }
     .action-col { width: 100px; }
     .time-cell { white-space: nowrap; }
+    .level-cell { white-space: nowrap; }
     .log-panel { margin-top: 16px; }
     .message { overflow-wrap: anywhere; white-space: pre-line; }
     @media (max-width: 700px) {
@@ -182,8 +185,8 @@
     <section class="panel log-panel">
       <table>
         <colgroup>
-          <col class="time-col">
-          <col class="level-col">
+          <col class="log-time-col">
+          <col class="log-level-col">
           <col class="subject-col">
           <col>
         </colgroup>
@@ -192,8 +195,8 @@
       <div class="log-scroll">
         <table>
           <colgroup>
-            <col class="time-col">
-            <col class="level-col">
+            <col class="log-time-col">
+            <col class="log-level-col">
             <col class="subject-col">
             <col>
           </colgroup>
@@ -435,7 +438,7 @@
       fields.logs.innerHTML = logs.map(log => `
         <tr>
           <td class="time-cell">${fmtTime(log.created_at)}</td>
-          <td>${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
+          <td class="level-cell">${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
           <td class="time-cell">${escapeHtml(log.subject_id || '')}</td>
           <td class="message">${escapeHtml(log.message)}</td>
         </tr>
