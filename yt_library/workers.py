@@ -213,8 +213,20 @@ class MetadataWorker:
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                     status = "error"
                     error = str(exc)
+                channel_metadata: dict[str, str] = {}
+                channel_status = ""
+                channel_error = ""
+                if metadata_source != "channel" and status == "ok" and not self._stop.is_set():
+                    channel_metadata, channel_status, channel_error = fetch_new_channel_metadata_if_needed(
+                        conn,
+                        opener,
+                        thumb_dir,
+                        metadata,
+                    )
                 now = utc_now()
                 with conn:
+                    if channel_status:
+                        store_channel_metadata(conn, channel_metadata, channel_status, channel_error, updated_at=now)
                     if metadata_source == "channel":
                         store_channel_metadata(conn, metadata, status, error, updated_at=now)
                     else:
@@ -232,6 +244,19 @@ class MetadataWorker:
                             log_worker_event(conn, run_id, metadata_source, f"{status}: {channel_label} (via {title})", channel_label)
                         else:
                             log_worker_event(conn, run_id, metadata_source, f"{status}: {title}", video_id)
+                            if channel_status:
+                                discovered_channel_label = (
+                                    channel_metadata.get("channel")
+                                    or metadata.get("channel")
+                                    or video_metadata_channel_id(metadata)
+                                )
+                                log_worker_event(
+                                    conn,
+                                    run_id,
+                                    "channel",
+                                    f"{channel_status}: {discovered_channel_label} (discovered via {title})",
+                                    discovered_channel_label,
+                                )
                     if queue_id:
                         conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
                     remaining = worker_queue_type_count(conn, "metadata")

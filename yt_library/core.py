@@ -2970,6 +2970,50 @@ def store_channel_metadata(
     )
 
 
+def video_metadata_channel_id(metadata: dict[str, str]) -> str:
+    return (metadata.get("channel_id") or youtube_channel_id_from_url(metadata.get("channel_url", ""))).strip()
+
+
+def fetch_new_channel_metadata_if_needed(
+    conn: sqlite3.Connection,
+    opener: urllib.request.OpenerDirector,
+    thumb_dir: Path,
+    video_metadata: dict[str, str],
+) -> tuple[dict[str, str], str, str]:
+    channel_id = video_metadata_channel_id(video_metadata)
+    if not channel_id:
+        return {}, "", ""
+    if conn.execute("SELECT 1 FROM channels WHERE channel_id = ?", (channel_id,)).fetchone():
+        return {}, "", ""
+    try:
+        metadata = fetch_channel_metadata(
+            opener,
+            channel_id,
+            thumb_dir,
+            fallback_query=video_metadata.get("channel", ""),
+        )
+        status = (
+            "ok"
+            if metadata.get("channel")
+            or metadata.get("channel_url")
+            or metadata.get("channel_thumbnail_path")
+            else "no_metadata"
+        )
+        return metadata, status, ""
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        return (
+            {
+                "channel_id": channel_id,
+                "channel": video_metadata.get("channel", ""),
+                "channel_url": video_metadata.get("channel_url", ""),
+                "channel_thumbnail_url": video_metadata.get("channel_thumbnail_url", ""),
+                "channel_thumbnail_path": video_metadata.get("channel_thumbnail_path", ""),
+            },
+            "error",
+            str(exc),
+        )
+
+
 def fetch_provided_metadata(
     conn: sqlite3.Connection,
     opener: urllib.request.OpenerDirector,
@@ -3031,6 +3075,18 @@ def fetch_provided_metadata(
                 arch_status,
                 arch_error,
             )
+    channel_metadata: dict[str, str] = {}
+    channel_status = ""
+    channel_error = ""
+    if status == "ok":
+        channel_metadata, channel_status, channel_error = fetch_new_channel_metadata_if_needed(
+            conn,
+            opener,
+            thumb_dir,
+            metadata,
+        )
+    if channel_status:
+        store_channel_metadata(conn, channel_metadata, channel_status, channel_error, updated_at=now)
     store_video_metadata(conn, metadata, status, updated_at=now)
     return {
         "source": source,

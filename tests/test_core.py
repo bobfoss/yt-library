@@ -1755,6 +1755,165 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_metadata_worker_fetches_new_channel_metadata_discovered_from_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="abc12345678",
+                        current_title="Example video",
+                        metadata_source="history",
+                        priority=0,
+                    )
+            finally:
+                conn.close()
+
+            watch_metadata = {
+                "video_id": "abc12345678",
+                "title": "Example video",
+                "description": "",
+                "channel_id": "UCnewchannel12345678901",
+                "channel": "New Channel",
+                "channel_url": "https://www.youtube.com/channel/UCnewchannel12345678901",
+                "duration_text": "",
+                "view_count": "",
+                "upload_date": "",
+                "thumbnail_url": "",
+                "thumbnail_path": "",
+                "channel_thumbnail_url": "",
+                "channel_thumbnail_path": "",
+                "reaction": "",
+                "watch_progress_percent": "0",
+                "watch_resume_seconds": "0",
+                "yt_status": "OK",
+            }
+            channel_metadata = {
+                "channel_id": "UCnewchannel12345678901",
+                "channel": "New Channel",
+                "channel_url": "https://www.youtube.com/channel/UCnewchannel12345678901",
+                "channel_description": "About the new channel",
+                "channel_aliases": "",
+                "channel_thumbnail_url": "https://example.test/channel.jpg",
+                "channel_thumbnail_path": "video_thumbs/UCnewchannel12345678901.jpg",
+                "archivarix_channel_id": "",
+                "channel_status": "",
+                "channel_status_reason": "",
+            }
+
+            worker = MetadataWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.fetch_watch_metadata", return_value=watch_metadata),
+                patch("yt_library.core.fetch_channel_metadata", return_value=channel_metadata) as fetch_channel,
+            ):
+                worker._run(
+                    "test-new-channel",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=30,
+                    record_summary=False,
+                )
+
+            fetch_channel.assert_called_once()
+            conn = core.connect(db_path)
+            try:
+                channel = conn.execute(
+                    """
+                    SELECT title, description, fetch_status, fetched_at
+                    FROM channels
+                    WHERE channel_id = 'UCnewchannel12345678901'
+                    """
+                ).fetchone()
+                self.assertEqual(channel["title"], "New Channel")
+                self.assertEqual(channel["description"], "About the new channel")
+                self.assertEqual(channel["fetch_status"], "ok")
+                self.assertIsNotNone(channel["fetched_at"])
+                logs = conn.execute(
+                    "SELECT level, message FROM metadata_worker_log WHERE run_id = 'test-new-channel' ORDER BY id"
+                ).fetchall()
+                self.assertEqual([row["level"] for row in logs], ["history", "channel"])
+                self.assertIn("discovered via Example video", logs[1]["message"])
+            finally:
+                conn.close()
+
+    def test_metadata_worker_does_not_refetch_known_channel_discovered_from_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCknownchannel123456789", title="Known Channel")
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="abc12345678",
+                        current_title="Example video",
+                        metadata_source="history",
+                        priority=0,
+                    )
+            finally:
+                conn.close()
+
+            watch_metadata = {
+                "video_id": "abc12345678",
+                "title": "Example video",
+                "description": "",
+                "channel_id": "UCknownchannel123456789",
+                "channel": "Known Channel",
+                "channel_url": "https://www.youtube.com/channel/UCknownchannel123456789",
+                "duration_text": "",
+                "view_count": "",
+                "upload_date": "",
+                "thumbnail_url": "",
+                "thumbnail_path": "",
+                "channel_thumbnail_url": "",
+                "channel_thumbnail_path": "",
+                "reaction": "",
+                "watch_progress_percent": "0",
+                "watch_resume_seconds": "0",
+                "yt_status": "OK",
+            }
+
+            worker = MetadataWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.fetch_watch_metadata", return_value=watch_metadata),
+                patch("yt_library.core.fetch_channel_metadata") as fetch_channel,
+            ):
+                worker._run(
+                    "test-known-channel",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=30,
+                    record_summary=False,
+                )
+
+            fetch_channel.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                channel = conn.execute(
+                    """
+                    SELECT title, fetch_status, fetched_at
+                    FROM channels
+                    WHERE channel_id = 'UCknownchannel123456789'
+                    """
+                ).fetchone()
+                self.assertEqual(channel["title"], "Known Channel")
+                self.assertEqual(channel["fetch_status"], "")
+                self.assertIsNone(channel["fetched_at"])
+            finally:
+                conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
