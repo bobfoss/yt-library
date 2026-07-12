@@ -5469,6 +5469,17 @@ def admin_status(
         "liveHistoryStopping": live_history_worker.is_stopping() if live_history_worker else False,
         "workerQueueRunning": queue_dispatcher.is_running() if queue_dispatcher else False,
         "workerQueueStopping": queue_dispatcher.is_stopping() if queue_dispatcher else False,
+        "workerQueueStats": queue_dispatcher.stats(worker_queue_count_value)
+        if queue_dispatcher
+        else {
+            "started_at": "",
+            "elapsed_seconds": 0,
+            "eta_seconds": 0,
+            "eta_available": False,
+            "initial_count": 0,
+            "completed_count": 0,
+            "remaining_count": worker_queue_count_value,
+        },
         "counts": counts,
         "liveHistoryCounts": live_history_counts,
         "playlistCounts": playlist_counts,

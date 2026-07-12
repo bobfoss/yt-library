@@ -995,6 +995,10 @@ class WorkerQueueDispatcher:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._placeholder_block_reason = ""
+        self._started_at = ""
+        self._started_monotonic = 0.0
+        self._initial_count = 0
+        self._completed_count = 0
 
     def is_running(self) -> bool:
         with self._lock:
@@ -1004,11 +1008,36 @@ class WorkerQueueDispatcher:
         with self._lock:
             return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
 
+    def stats(self, remaining_count: int) -> dict[str, Any]:
+        with self._lock:
+            active = bool(self._thread and self._thread.is_alive())
+            elapsed = max(0.0, time.monotonic() - self._started_monotonic) if active and self._started_monotonic else 0.0
+            completed = self._completed_count
+            initial = self._initial_count
+            started_at = self._started_at if active else ""
+        remaining = max(0, int(remaining_count or 0))
+        eta_seconds = 0.0
+        if active and completed > 0:
+            eta_seconds = max(0.0, (elapsed / completed) * remaining)
+        return {
+            "started_at": started_at,
+            "elapsed_seconds": elapsed,
+            "eta_seconds": eta_seconds,
+            "eta_available": bool(active and completed > 0),
+            "initial_count": initial,
+            "completed_count": completed,
+            "remaining_count": remaining,
+        }
+
     def start(self, db_path: Path, cookie_file: Path, thumb_dir: Path) -> dict[str, Any]:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return {"started": False, "message": "Worker queue dispatcher already running"}
             self._stop.clear()
+            self._started_at = utc_now()
+            self._started_monotonic = time.monotonic()
+            self._initial_count = 0
+            self._completed_count = 0
             self._thread = threading.Thread(
                 target=self._run,
                 args=(db_path, cookie_file, thumb_dir),
@@ -1033,6 +1062,14 @@ class WorkerQueueDispatcher:
             "running": running,
             "message": "Worker queue dispatcher stop requested",
         }
+
+    def _mark_initial_count(self, count: int) -> None:
+        with self._lock:
+            self._initial_count = max(0, int(count or 0))
+
+    def _mark_completed(self) -> None:
+        with self._lock:
+            self._completed_count += 1
 
     def _wait_for_worker(self, worker: Any) -> None:
         while worker.is_running():
@@ -1065,6 +1102,11 @@ class WorkerQueueDispatcher:
             conn.close()
 
     def _run(self, db_path: Path, cookie_file: Path, thumb_dir: Path) -> None:
+        conn = connect(db_path)
+        try:
+            self._mark_initial_count(worker_queue_count(conn))
+        finally:
+            conn.close()
         while not self._stop.is_set():
             row = self._next_row(db_path)
             if not row:
@@ -1084,6 +1126,8 @@ class WorkerQueueDispatcher:
                 if not result.get("started") and not METADATA_WORKER.is_running():
                     time.sleep(0.5)
                 self._wait_for_worker(METADATA_WORKER)
+                if not self._stop.is_set():
+                    self._mark_completed()
             elif worker_type == "playlist":
                 result = PLAYLIST_SCAN_WORKER.start(
                     db_path,
@@ -1097,6 +1141,8 @@ class WorkerQueueDispatcher:
                 if not result.get("started") and not PLAYLIST_SCAN_WORKER.is_running():
                     time.sleep(0.5)
                 self._wait_for_worker(PLAYLIST_SCAN_WORKER)
+                if not self._stop.is_set():
+                    self._mark_completed()
             elif worker_type == "placeholder":
                 result = PLACEHOLDER_RECOVERY_WORKER.start(
                     db_path,
@@ -1120,6 +1166,7 @@ class WorkerQueueDispatcher:
                     finally:
                         conn.close()
                     self._placeholder_block_reason = reason
+                    self._mark_completed()
                     continue
                 self._placeholder_block_reason = ""
                 if not result.get("started") and not PLACEHOLDER_RECOVERY_WORKER.is_running():
@@ -1129,14 +1176,19 @@ class WorkerQueueDispatcher:
                 if reason:
                     self._placeholder_block_reason = reason
                     return
+                if not self._stop.is_set():
+                    self._mark_completed()
             elif worker_type == "history":
                 mode = "verify" if row.get("task_type") == "verify" else "recent"
                 result = LIVE_HISTORY_WORKER.start(db_path, cookie_file, mode=mode)
                 if not result.get("started") and not LIVE_HISTORY_WORKER.is_running():
                     time.sleep(0.5)
                 self._wait_for_worker(LIVE_HISTORY_WORKER)
+                if not self._stop.is_set():
+                    self._mark_completed()
             else:
                 self._drop_unknown_row(db_path, row)
+                self._mark_completed()
 
 
 WORKER_QUEUE_DISPATCHER = WorkerQueueDispatcher()
