@@ -1048,6 +1048,44 @@ class SchemaTests(unittest.TestCase):
             finally:
                 core.ROOT = original_root
 
+    def test_history_metadata_candidates_sort_by_latest_watch_date_descending(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    videos = [
+                        ("old12345678", "A alphabetically first", "2026-01-01T00:00:00Z"),
+                        ("new12345678", "Z alphabetically last", "2026-03-01T00:00:00Z"),
+                        ("mid12345678", "M alphabetically middle", "2026-02-01T00:00:00Z"),
+                    ]
+                    for video_id, title, watched_at in videos:
+                        core.upsert_video(conn, video_id, title=title, source="takeout")
+                        conn.execute(
+                            """
+                            INSERT INTO history_events(
+                              event_id, video_id, watched_at, watch_date, time_precision, source_type
+                            )
+                            VALUES (?, ?, ?, ?, 'exact', 'takeout')
+                            """,
+                            (f"takeout:{video_id}", video_id, watched_at, watched_at[:10]),
+                        )
+
+                candidates = core.metadata_queue_candidate_rows(conn, limit=10, stale_days=30)
+                self.assertEqual(
+                    [row["video_id"] for row in candidates],
+                    ["new12345678", "mid12345678", "old12345678"],
+                )
+
+                with conn:
+                    core.rebuild_metadata_queue(conn, stale_days=30)
+                queued = core.metadata_queue_rows(conn, limit=10)
+                self.assertEqual(
+                    [row["video_id"] for row in queued],
+                    ["new12345678", "mid12345678", "old12345678"],
+                )
+            finally:
+                conn.close()
+
     def test_save_playlist_scan_updates_playlist_metadata(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:

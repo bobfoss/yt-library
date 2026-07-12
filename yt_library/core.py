@@ -4820,7 +4820,8 @@ def metadata_queue_candidate_rows(
                  ch.fetch_status,
                  ch.fetched_at,
                  ch.title,
-                 ch.thumbnail_path
+                 ch.thumbnail_path,
+                 '' AS latest_history_at
           FROM channels ch
           UNION ALL
           SELECT v.video_id,
@@ -4833,17 +4834,27 @@ def metadata_queue_candidate_rows(
                  v.fetch_status,
                  v.fetched_at,
                  v.title,
-                 v.thumbnail_path
+                 v.thumbnail_path,
+                 COALESCE(h.latest_history_at, '') AS latest_history_at
           FROM videos v
           LEFT JOIN channels ch ON ch.channel_id = v.channel_id
           LEFT JOIN playlist_items pi ON pi.video_id = v.video_id
+          LEFT JOIN (
+            SELECT video_id, MAX(COALESCE(watched_at, watch_date, '')) AS latest_history_at
+            FROM history_events
+            GROUP BY video_id
+          ) h ON h.video_id = v.video_id
           GROUP BY v.video_id
         )
         SELECT video_id, channel_id, channel_title, playlist_count, current_title,
                metadata_source, priority
         FROM candidates
         {where}
-        ORDER BY priority, COALESCE(fetched_at, ''), current_title COLLATE NOCASE, video_id
+        ORDER BY priority,
+                 CASE WHEN metadata_source = 'history' THEN latest_history_at ELSE '' END DESC,
+                 CASE WHEN metadata_source = 'history' THEN '' ELSE COALESCE(fetched_at, '') END,
+                 current_title COLLATE NOCASE,
+                 video_id
     """
     if limit:
         sql += " LIMIT ? OFFSET ?"
