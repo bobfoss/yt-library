@@ -41,7 +41,6 @@
     .workstreams { display: grid; gap: 24px; margin-bottom: 18px; }
     .workstream { border-top: 1px solid var(--line); padding-top: 18px; }
     .workstream-header { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin-bottom: 12px; }
-    .workstream-header .status { justify-content: flex-end; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 12px; }
     .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; }
     .metric { color: var(--muted); font-size: 13px; }
@@ -58,8 +57,6 @@
     button.danger { background: #b91c1c; border-color: #dc2626; color: #fff; }
     button.danger:hover { background: #dc2626; color: #fff; }
     button:hover { background: var(--accent-soft); color: var(--ink); }
-    .status { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 14px; }
-    .badge { border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; }
     .running { color: var(--ok); }
     .warn { color: var(--warn); }
     table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
@@ -84,7 +81,6 @@
     @media (max-width: 700px) {
       main { padding: 16px; }
       header, .workstream-header { display: block; }
-      .workstream-header .status { justify-content: flex-start; margin-top: 8px; }
       .wide-input { width: min(100%, 720px); }
     }
   </style>
@@ -100,7 +96,6 @@
       <section class="workstream">
         <div class="workstream-header">
           <h2>Metadata</h2>
-          <div id="metadataRunStatus" class="status"></div>
         </div>
         <div class="controls">
           <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
@@ -113,7 +108,6 @@
       <section class="workstream">
         <div class="workstream-header">
           <h2>Playlists</h2>
-          <div id="playlistRunStatus" class="status"></div>
         </div>
         <div class="grid">
           <div class="panel"><div class="metric">Playlist count</div><div id="playlistRows" class="value">0</div></div>
@@ -128,7 +122,6 @@
       <section class="workstream">
         <div class="workstream-header">
           <h2>History</h2>
-          <div id="liveHistoryRunStatus" class="status"></div>
         </div>
         <div class="grid">
           <div class="panel"><div class="metric">History rows</div><div id="historyRows" class="value">0</div></div>
@@ -223,9 +216,6 @@
       metadataForce: document.getElementById('metadataForce'),
       commonQueueCount: document.getElementById('commonQueueCount'),
       commonWorkerState: document.getElementById('commonWorkerState'),
-      playlistRunStatus: document.getElementById('playlistRunStatus'),
-      metadataRunStatus: document.getElementById('metadataRunStatus'),
-      liveHistoryRunStatus: document.getElementById('liveHistoryRunStatus'),
       startWorkerQueue: document.getElementById('startWorkerQueue'),
       stopWorkerQueue: document.getElementById('stopWorkerQueue'),
       workerQueueRows: document.getElementById('workerQueueRows'),
@@ -400,22 +390,6 @@
       fields.commonWorkerState.className = `value ${queueWorkerRunning || queueWorkerStopping ? 'running' : ''}`;
       fields.startWorkerQueue.classList.toggle('primary', !queueWorkerRunning && !queueWorkerStopping);
       fields.stopWorkerQueue.classList.toggle('danger', queueWorkerRunning || queueWorkerStopping);
-
-      function runHtml(run, label) {
-        return run ? `
-          <span class="badge">${escapeHtml(label)}</span>
-          <span class="badge">${escapeHtml(run.status)}</span>
-          <span class="badge">${run.processed}/${run.total} processed</span>
-          <span class="badge">${run.found} ok</span>
-          <span class="badge ${run.failed ? 'warn' : ''}">${run.failed} failed</span>
-          <span class="badge">${escapeHtml(run.message)}</span>
-          <span class="badge">Started ${fmtTime(run.started_at)}</span>
-        ` : `<span class="badge">${escapeHtml(label)}: no runs yet</span>`;
-      }
-
-      fields.playlistRunStatus.innerHTML = runHtml(data.latestPlaylistScanRun, 'Playlist scan');
-      fields.metadataRunStatus.innerHTML = runHtml(data.latestMetadataRun, 'Metadata');
-      fields.liveHistoryRunStatus.innerHTML = runHtml(data.latestLiveHistoryRun, 'History');
 
       const channelCounts = data.channelCounts || {};
       const channelCards = [
