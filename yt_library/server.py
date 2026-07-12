@@ -380,14 +380,79 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(WORKER_QUEUE_DISPATCHER.stop())
             return
         if parsed.path == "/api/admin/history/import-takeout":
-            import_history(
-                argparse.Namespace(
-                    db=str(self.db_path),
-                    takeout=str(self.takeout_dir),
-                    history_key="",
+            run_id = uuid.uuid4().hex
+            started_at = utc_now()
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO live_history_worker_runs(
+                          run_id, status, started_at, requested_limit, message
+                        )
+                        VALUES (?, 'running', ?, 0, 'Takeout directory import started')
+                        """,
+                        (run_id, started_at),
+                    )
+                    log_live_history_event(conn, run_id, "info", "Takeout directory import started")
+            finally:
+                conn.close()
+            try:
+                import_stats = import_history(
+                    argparse.Namespace(
+                        db=str(self.db_path),
+                        takeout=str(self.takeout_dir),
+                        history_key="",
+                    )
                 )
-            )
-            self.send_json({"ok": True, "message": "Takeout history imported and reconciled"})
+            except SystemExit as exc:
+                message = str(exc)
+                conn = connect(self.db_path)
+                try:
+                    with conn:
+                        conn.execute(
+                            """
+                            UPDATE live_history_worker_runs
+                            SET status = 'error', finished_at = ?, failed = 1, message = ?
+                            WHERE run_id = ?
+                            """,
+                            (utc_now(), message, run_id),
+                        )
+                        log_live_history_event(conn, run_id, "error", message)
+                finally:
+                    conn.close()
+                self.send_json({"error": str(exc)}, status=400)
+                return
+            message = takeout_import_message(import_stats)
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        UPDATE live_history_worker_runs
+                        SET status = 'complete',
+                            finished_at = ?,
+                            total = ?,
+                            processed = ?,
+                            found = ?,
+                            skipped = ?,
+                            message = ?
+                        WHERE run_id = ?
+                        """,
+                        (
+                            utc_now(),
+                            import_stats["total_watch_rows"],
+                            import_stats["total_watch_rows"],
+                            import_stats["inserted_watch_rows"],
+                            import_stats["duplicate_watch_rows"],
+                            message,
+                            run_id,
+                        ),
+                    )
+                    log_live_history_event(conn, run_id, "info", message)
+            finally:
+                conn.close()
+            self.send_json({"ok": True, "run_id": run_id, "message": message, **import_stats})
             return
         if parsed.path == "/api/admin/history/reconcile":
             conn = connect(self.db_path)

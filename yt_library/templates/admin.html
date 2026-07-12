@@ -139,7 +139,7 @@
         <div class="controls">
           <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
           <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
-          <button id="importTakeoutHistory" type="button">Import Takeout history</button>
+          <button id="importTakeoutHistory" type="button">Import Takeout directory</button>
           <button id="reconcileHistory" type="button">Reconcile history</button>
         </div>
       </section>
@@ -559,7 +559,7 @@
       post('/api/admin/live-history/verify').catch(error => alert(error.message));
     });
     document.getElementById('importTakeoutHistory').addEventListener('click', () => {
-      if (!confirm('Import Takeout watch history and rebuild reconciliation? Existing Takeout rows for this history key will be replaced.')) return;
+      if (!confirm('Import all Takeout zips from the configured takeout directory and rebuild reconciliation? Existing Takeout rows will be kept and duplicates will be skipped.')) return;
       post('/api/admin/history/import-takeout').catch(error => alert(error.message));
     });
     document.getElementById('reconcileHistory').addEventListener('click', () => post('/api/admin/history/reconcile').catch(error => alert(error.message)));

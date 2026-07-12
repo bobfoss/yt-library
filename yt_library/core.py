@@ -5968,76 +5968,79 @@ def load_takeout_history_source(takeout_path: Path, requested_key: str = "") -> 
     return history_key, watch_text
 
 
-def import_history(args: argparse.Namespace) -> None:
+def load_takeout_history_sources(takeout_path: Path, requested_key: str = "") -> list[tuple[Path | None, str, str]]:
+    if requested_key:
+        source_zip = find_takeout_zip(takeout_path)
+        source_path = source_zip or takeout_path
+        history_key, watch_text = load_takeout_history_source(source_path, requested_key)
+        return [(source_zip, history_key, watch_text)]
+    zips = find_takeout_zips(takeout_path)
+    if zips:
+        sources = []
+        for zip_path in zips:
+            history_key, watch_text = load_takeout_history_source(zip_path, "")
+            sources.append((zip_path, history_key, watch_text))
+        return sources
+    history_key, watch_text = load_takeout_history_source(takeout_path, "")
+    return [(None, history_key, watch_text)]
+
+
+def existing_takeout_history_event_keys(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+    return {
+        (row["video_id"] or "", row["watched_at"] or "")
+        for row in conn.execute(
+            """
+            SELECT video_id, watched_at
+            FROM history_events
+            WHERE takeout_history_key IS NOT NULL
+            """
+        )
+    }
+
+
+def takeout_import_message(stats: dict[str, Any]) -> str:
+    keys = ", ".join(stats.get("imported_keys") or [])
+    return (
+        f"Takeout import: {stats['inserted_watch_rows']} new, "
+        f"{stats['duplicate_watch_rows']} duplicates skipped, "
+        f"{stats['total_watch_rows']} rows scanned from {keys}; "
+        f"{stats['reconciled_rows']} reconciled, {stats['matched_rows']} matched"
+    )
+
+
+def import_history(args: argparse.Namespace) -> dict[str, Any]:
     db_path = Path(args.db)
     takeout_path = Path(args.takeout)
     requested_key = getattr(args, "history_key", "") or ""
-    source_zip = find_takeout_zip(takeout_path)
-    sources = [load_takeout_history_source(source_zip or takeout_path, requested_key)]
+    sources = load_takeout_history_sources(takeout_path, requested_key)
 
     conn = connect(db_path)
     imported_at = utc_now()
     total_watch_rows = 0
+    inserted_watch_rows = 0
+    duplicate_watch_rows = 0
     distinct_video_ids: set[str] = set()
     imported_keys: list[str] = []
+    playlist_stats = {"playlists": 0, "items": 0, "unmatched": 0}
     with conn:
-        matched_live_rows = conn.execute(
-            """
-            SELECT video_id, watched_at, youtube_ordinal,
-                   watch_progress_percent, watch_resume_seconds, observed_at
-            FROM history_events
-            WHERE takeout_history_key IS NOT NULL AND youtube_ordinal IS NOT NULL
-            """
-        ).fetchall()
-        sync_takeout_subscriptions(conn, source_zip or takeout_path)
-        playlist_stats = (
-            import_takeout_playlists_zip(conn, source_zip)
-            if source_zip
-            else {"playlists": 0, "items": 0, "unmatched": 0}
-        )
-        conn.execute("DELETE FROM history_events WHERE takeout_history_key IS NOT NULL")
-        timezone_name = get_setting(conn, "display_timezone", DEFAULT_DISPLAY_TIMEZONE)
-        for row in matched_live_rows:
-            ordinal = row["youtube_ordinal"]
-            conn.execute(
-                """
-                INSERT INTO history_events(
-                  event_id, video_id, watched_at, watch_date, time_precision,
-                  source_type, match_type, youtube_ordinal,
-                  watch_progress_percent, watch_resume_seconds,
-                  observed_at, imported_at, updated_at
-                )
-                VALUES (?, ?, NULL, ?, 'date_only', 'youtube', 'youtube_only', ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(event_id) DO UPDATE SET
-                  video_id=excluded.video_id,
-                  watch_date=excluded.watch_date,
-                  time_precision=excluded.time_precision,
-                  source_type=excluded.source_type,
-                  match_type=excluded.match_type,
-                  youtube_ordinal=excluded.youtube_ordinal,
-                  watch_progress_percent=excluded.watch_progress_percent,
-                  watch_resume_seconds=excluded.watch_resume_seconds,
-                  observed_at=excluded.observed_at,
-                  updated_at=excluded.updated_at
-                """,
-                (
-                    f"youtube:{ordinal}",
-                    row["video_id"],
-                    local_date_for_utc_instant(row["watched_at"], timezone_name),
-                    ordinal,
-                    row["watch_progress_percent"],
-                    row["watch_resume_seconds"],
-                    row["observed_at"],
-                    imported_at,
-                    imported_at,
-                ),
-            )
-        for history_key, watch_text in sources:
+        sync_takeout_subscriptions(conn, takeout_path)
+        for zip_path, _history_key, _watch_text in sources:
+            if zip_path:
+                stats = import_takeout_playlists_zip(conn, zip_path)
+                playlist_stats["playlists"] += stats["playlists"]
+                playlist_stats["items"] += stats["items"]
+                playlist_stats["unmatched"] += stats["unmatched"]
+        existing_events = existing_takeout_history_event_keys(conn)
+        for _source_path, history_key, watch_text in sources:
             imported_keys.append(history_key)
             watch_rows = parse_takeout_watch_history_text(watch_text) if watch_text else []
             total_watch_rows += len(watch_rows)
             for position, row in enumerate(watch_rows, start=1):
                 watched_at_iso = takeout_watch_datetime(row["watched_at"])
+                event_key = (row["video_id"], watched_at_iso)
+                if event_key in existing_events:
+                    duplicate_watch_rows += 1
+                    continue
                 row_hash = history_row_hash(row)
                 if row["video_id"]:
                     distinct_video_ids.add(row["video_id"])
@@ -6081,14 +6084,28 @@ def import_history(args: argparse.Namespace) -> None:
                         imported_at,
                     ),
                 )
+                inserted_watch_rows += 1
+                existing_events.add(event_key)
         stats = rebuild_history_reconciliation(conn)
     conn.close()
+    result = {
+        "total_watch_rows": total_watch_rows,
+        "inserted_watch_rows": inserted_watch_rows,
+        "duplicate_watch_rows": duplicate_watch_rows,
+        "distinct_video_ids": len(distinct_video_ids),
+        "imported_keys": imported_keys,
+        "reconciled_rows": stats["rows"],
+        "matched_rows": stats["matched"],
+        "playlist_stats": playlist_stats,
+    }
     print(
-        f"Imported {total_watch_rows} watch history rows from {', '.join(imported_keys)} "
-        f"({len(distinct_video_ids)} distinct videos). "
+        f"Imported {inserted_watch_rows} new watch history rows from {', '.join(imported_keys)} "
+        f"({duplicate_watch_rows} duplicates skipped, {total_watch_rows} rows scanned, "
+        f"{len(distinct_video_ids)} distinct videos). "
         f"Reconciled {stats['rows']} rows ({stats['matched']} matched). "
         f"Loaded {playlist_stats['playlists']} playlists and {playlist_stats['items']} playlist items."
     )
+    return result
 
 
 def recover_unavailable_videos(args: argparse.Namespace) -> None:

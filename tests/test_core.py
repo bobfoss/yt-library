@@ -396,7 +396,7 @@ class CoreHelperTests(unittest.TestCase):
                         ),
                     )
 
-                core.import_history(
+                first_import = core.import_history(
                     argparse.Namespace(
                         db=str(db_path),
                         takeout=str(root),
@@ -429,7 +429,7 @@ class CoreHelperTests(unittest.TestCase):
                 finally:
                     conn.close()
 
-                core.import_history(
+                second_import = core.import_history(
                     argparse.Namespace(db=str(db_path), takeout=str(root), history_key="")
                 )
                 conn = core.connect(db_path)
@@ -447,6 +447,86 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(subscribed["subscribed"], 1)
         self.assertEqual(history_count, 1)
         self.assertEqual(matched_ordinal, 7)
+        self.assertEqual(first_import["inserted_watch_rows"], 1)
+        self.assertEqual(second_import["inserted_watch_rows"], 0)
+        self.assertEqual(second_import["duplicate_watch_rows"], 1)
+
+    def test_import_history_reads_all_takeout_zips_and_skips_duplicates(self) -> None:
+        original_root = core.ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            core.ROOT = root
+            try:
+                db_path = root / "library.sqlite3"
+                core.migrate_database(db_path)
+                duplicate = {
+                    "title": "Watched Duplicate Video",
+                    "titleUrl": "https://www.youtube.com/watch?v=dup123",
+                    "subtitles": [{"name": "Example Channel", "url": "https://www.youtube.com/channel/UCvmGOqGlxOgpZDoszBbWxmA"}],
+                    "time": "2026-07-04T05:27:45.123Z",
+                }
+                exports = [
+                    (
+                        "takeout-20260704T052745Z-001.zip",
+                        [
+                            duplicate,
+                            {
+                                "title": "Watched Older Video",
+                                "titleUrl": "https://www.youtube.com/watch?v=old123",
+                                "time": "2026-07-03T05:27:45.123Z",
+                            },
+                        ],
+                    ),
+                    (
+                        "takeout-20260705T052745Z-001.zip",
+                        [
+                            duplicate,
+                            {
+                                "title": "Watched Newer Video",
+                                "titleUrl": "https://www.youtube.com/watch?v=new123",
+                                "time": "2026-07-05T05:27:45.123Z",
+                            },
+                        ],
+                    ),
+                ]
+                for filename, rows in exports:
+                    with zipfile.ZipFile(root / filename, "w") as zf:
+                        zf.writestr(
+                            "Takeout/YouTube and YouTube Music/history/watch-history.json",
+                            json.dumps(rows),
+                        )
+
+                first_import = core.import_history(
+                    argparse.Namespace(db=str(db_path), takeout=str(root), history_key="")
+                )
+                second_import = core.import_history(
+                    argparse.Namespace(db=str(db_path), takeout=str(root), history_key="")
+                )
+                conn = core.connect(db_path)
+                try:
+                    rows = conn.execute(
+                        """
+                        SELECT video_id, watched_at, takeout_history_key
+                        FROM history_events
+                        WHERE takeout_history_key IS NOT NULL
+                        ORDER BY watched_at
+                        """
+                    ).fetchall()
+                finally:
+                    conn.close()
+            finally:
+                core.ROOT = original_root
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(first_import["inserted_watch_rows"], 3)
+        self.assertEqual(first_import["duplicate_watch_rows"], 1)
+        self.assertEqual(second_import["inserted_watch_rows"], 0)
+        self.assertEqual(second_import["duplicate_watch_rows"], 4)
+        self.assertEqual([row["video_id"] for row in rows], ["old123", "dup123", "new123"])
+        self.assertEqual(
+            sorted({row["takeout_history_key"] for row in rows}),
+            ["20260704T052745Z", "20260705T052745Z"],
+        )
 
     def test_extract_reaction_from_toggled_buttons(self) -> None:
         liked = {
