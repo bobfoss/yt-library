@@ -408,3 +408,38 @@ def history_search_data(
         "watch": rows,
         "totals": {**totals, "filtered_watch_rows": int(filtered or 0)},
     }
+
+
+def history_activity_data(
+    conn: sqlite3.Connection,
+    start_date: str = "",
+    end_date: str = "",
+) -> dict[str, Any]:
+    daily_rows = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT COALESCE(watch_date, substr(watched_at, 1, 10)) AS watch_date,
+                   COUNT(*) AS watch_count
+            FROM history_events
+            WHERE COALESCE(watch_date, substr(watched_at, 1, 10)) IS NOT NULL
+            GROUP BY COALESCE(watch_date, substr(watched_at, 1, 10))
+            ORDER BY watch_date DESC
+            """
+        )
+    ]
+    offset = 0
+    activity: list[dict[str, Any]] = []
+    for row in daily_rows:
+        watch_date = row["watch_date"]
+        watch_count = int(row["watch_count"] or 0)
+        if (not start_date or watch_date >= start_date) and (not end_date or watch_date <= end_date):
+            activity.append(
+                {
+                    "watch_date": watch_date,
+                    "watch_count": watch_count,
+                    "offset": offset,
+                }
+            )
+        offset += watch_count
+    return {"start_date": start_date, "end_date": end_date, "activity": activity}

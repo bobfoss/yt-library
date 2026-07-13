@@ -15,7 +15,7 @@ from typing import Any
 
 from .config import configured_display_timezone, effective_display_timezone, ensure_config_file, save_config
 from .core import *
-from .queries import fetch_app_data, history_search_data
+from .queries import fetch_app_data, history_activity_data, history_search_data
 from .templates import load_template
 from .workers import (
     LIVE_HISTORY_WORKER,
@@ -120,6 +120,17 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             conn = connect(self.db_path)
             try:
                 data = history_search_data(conn, query, limit=limit, offset=offset, channel_id=channel_id)
+            finally:
+                conn.close()
+            self.send_json(data)
+            return
+        if parsed.path == "/api/history/activity":
+            params = urllib.parse.parse_qs(parsed.query)
+            start_date = (params.get("start") or [""])[0]
+            end_date = (params.get("end") or [""])[0]
+            conn = connect(self.db_path)
+            try:
+                data = history_activity_data(conn, start_date=start_date, end_date=end_date)
             finally:
                 conn.close()
             self.send_json(data)

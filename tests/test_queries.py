@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from yt_library import core
-from yt_library.queries import fetch_app_data, history_search_data
+from yt_library.queries import fetch_app_data, history_activity_data, history_search_data
 
 
 class NormalizedReadModelTests(unittest.TestCase):
@@ -111,6 +111,31 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         rows = history_search_data(self.conn, "", channel_id="UC_history")["watch"]
         self.assertEqual([row["video_id"] for row in rows], ["history123"])
+
+    def test_history_activity_counts_days_and_includes_page_offsets(self) -> None:
+        self.add_video("activity123", "Activity Video")
+        self.conn.executemany(
+            """
+            INSERT INTO history_events(event_id, video_id, watched_at, watch_date, time_precision)
+            VALUES (?, 'activity123', ?, ?, 'exact')
+            """,
+            [
+                ("activity-new-1", "2026-07-05T17:00:00Z", "2026-07-05"),
+                ("activity-new-2", "2026-07-05T18:00:00Z", "2026-07-05"),
+                ("activity-mid", "2026-07-04T17:00:00Z", "2026-07-04"),
+                ("activity-old", "2026-06-30T17:00:00Z", "2026-06-30"),
+            ],
+        )
+
+        data = history_activity_data(self.conn, start_date="2026-07-01", end_date="2026-07-05")
+
+        self.assertEqual(
+            data["activity"],
+            [
+                {"watch_date": "2026-07-05", "watch_count": 2, "offset": 0},
+                {"watch_date": "2026-07-04", "watch_count": 1, "offset": 2},
+            ],
+        )
 
     def test_playlist_items_share_one_video_and_include_all_playlist_links(self) -> None:
         self.add_video("same123", "Same Video")

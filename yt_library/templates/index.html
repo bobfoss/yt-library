@@ -33,7 +33,7 @@
     body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); overflow: hidden; }
     .app { display: grid; grid-template-columns: 280px 1fr; height: 100vh; min-height: 0; }
     aside { border-right: 1px solid var(--line); background: var(--panel); padding: 18px 14px; position: sticky; top: 0; height: 100vh; overflow: auto; }
-    main { min-height: 0; padding: 24px; display: flex; flex-direction: column; }
+    main { min-width: 0; min-height: 0; padding: 24px; display: flex; flex-direction: column; }
     h1 { font-size: 20px; margin: 0 0 14px; }
     .home-title { color: var(--ink); text-decoration: none; display: inline-block; }
     .home-title:hover { color: var(--ink); text-decoration: none; }
@@ -52,6 +52,7 @@
     .group-section:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
     .group-section-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding: 0 10px 4px; }
     .count { color: var(--muted); font-size: 12px; margin-left: 8px; }
+    .view-top { flex: 0 0 auto; min-width: 0; }
     .toolbar { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
     .title { font-size: 28px; line-height: 1.1; margin: 0; }
     .title-link { color: var(--ink); text-decoration: none; }
@@ -79,6 +80,11 @@
     .pager .page-goto input { width: 72px; }
     .view-context { flex: 0 0 auto; min-height: 0; margin-bottom: 14px; }
     .view-context[hidden] { display: none; }
+    .view-top.history-top { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 760px) minmax(160px, 1fr); align-items: start; gap: 16px; margin-bottom: 14px; }
+    .view-top.history-top .toolbar { display: contents; }
+    .view-top.history-top .toolbar .title { grid-column: 1; grid-row: 1; }
+    .view-top.history-top .toolbar > .details { grid-column: 3; grid-row: 1; justify-self: end; align-items: center; }
+    .view-top.history-top .view-context { grid-column: 2; grid-row: 1; margin-bottom: 0; }
     .results-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
     .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
@@ -144,6 +150,29 @@
     .history-row .body { padding: 10px 12px; }
     .history-row .description { -webkit-line-clamp: 2; }
     .history-row .details.playlist-sources { margin-top: 5px; }
+    .history-row.history-jump-target { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .history-heatmap { width: min(100%, 760px); min-width: 0; margin: 0 auto; }
+    .history-heatmap-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
+    .history-heatmap-title { color: var(--muted); font-size: 12px; }
+    .history-heatmap-nav { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+    .history-heatmap-nav button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 1px solid var(--line); border-radius: 6px; padding: 0; background: var(--panel); color: var(--ink); font: inherit; font-size: 17px; line-height: 1; cursor: pointer; }
+    .history-heatmap-nav button:hover:not(:disabled) { background: var(--accent-soft); }
+    .history-heatmap-nav button:disabled { opacity: .4; cursor: default; }
+    .history-heatmap-range { min-width: 112px; text-align: center; font-variant-numeric: tabular-nums; }
+    .history-heatmap-scroll { max-width: 100%; overflow-x: auto; padding: 2px 1px 5px; }
+    .history-heatmap-months,
+    .history-heatmap-weeks { display: grid; grid-template-columns: repeat(53, 11px); column-gap: 3px; width: max-content; min-width: 100%; }
+    .history-heatmap-months { min-height: 17px; color: var(--muted); font-size: 11px; }
+    .history-heatmap-month { white-space: nowrap; }
+    .history-heatmap-week { display: grid; grid-template-rows: repeat(7, 11px); gap: 3px; }
+    .history-heatmap-day { width: 11px; height: 11px; border: 0; border-radius: 2px; padding: 0; background: color-mix(in srgb, var(--line) 48%, transparent); }
+    button.history-heatmap-day { cursor: pointer; }
+    button.history-heatmap-day:hover,
+    button.history-heatmap-day:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+    .history-heatmap-day.level-1 { background: color-mix(in srgb, var(--accent) 30%, var(--panel)); }
+    .history-heatmap-day.level-2 { background: color-mix(in srgb, var(--accent) 48%, var(--panel)); }
+    .history-heatmap-day.level-3 { background: color-mix(in srgb, var(--accent) 68%, var(--panel)); }
+    .history-heatmap-day.level-4 { background: var(--accent); }
     .video-title { color: var(--ink); font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
     .playlist-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
     .playlist-link:hover { text-decoration: underline; }
@@ -160,6 +189,9 @@
       main { padding: 18px 14px; }
       .results-scroll { flex: none; overflow: visible; padding-right: 0; }
       .toolbar { display: block; }
+      .view-top.history-top { display: block; margin-bottom: 0; }
+      .view-top.history-top .toolbar { display: block; }
+      .view-top.history-top .view-context { margin-bottom: 14px; }
       .title { font-size: 24px; margin-bottom: 6px; }
       .video-detail .detail-layout { grid-template-columns: 1fr; }
       .channel-detail .detail-layout { grid-template-columns: 1fr; }
@@ -189,14 +221,16 @@
       <nav id="groups"></nav>
     </aside>
     <main>
-      <div class="toolbar">
-        <h2 id="view-title" class="title">All playlists</h2>
-        <div class="details">
-          <button id="refresh" class="refresh" type="button">Refresh</button>
-          <div id="view-meta" class="meta"></div>
+      <div id="view-top" class="view-top">
+        <div class="toolbar">
+          <h2 id="view-title" class="title">All playlists</h2>
+          <div class="details">
+            <button id="refresh" class="refresh" type="button">Refresh</button>
+            <div id="view-meta" class="meta"></div>
+          </div>
         </div>
+        <section id="view-context" class="view-context" hidden></section>
       </div>
-      <section id="view-context" class="view-context" hidden></section>
       <div class="results-scroll">
         <section id="grid" class="grid"></section>
         <div id="empty" class="empty" hidden aria-live="polite">No playlists match.</div>
@@ -227,7 +261,10 @@
     let currentPage = 1;
     let pageSize = '100';
     let historyPageState = { key: '', loading: false, data: null };
+    let historyActivityState = { key: '', loading: false, data: null };
+    let historyActivityYearOffset = 0;
     let historySearchState = { key: '', loading: false, data: null };
+    let pendingHistoryDate = '';
     let channelHistoryCounts = new Map();
     let channelDetailTab = 'playlists';
     let channelsManuallyDisabled = false;
@@ -250,6 +287,7 @@
     const meta = document.getElementById('view-meta');
     const bottomPager = document.getElementById('bottom-pager');
     const resultsScroll = document.querySelector('.results-scroll');
+    const viewTop = document.getElementById('view-top');
     const viewContext = document.getElementById('view-context');
 
     async function loadData() {
@@ -259,6 +297,7 @@
       if (!response.ok) throw new Error(`Data refresh failed: ${response.status}`);
       data = await response.json();
       historyPageState = { key: '', loading: false, data: null };
+      historyActivityState = { key: '', loading: false, data: null };
       historySearchState = { key: '', loading: false, data: null };
       channelHistoryCounts = new Map();
       playlists = new Map(data.playlists.map(p => [p.playlist_id, p]));
@@ -1122,20 +1161,220 @@
       return request;
     }
 
+    function localDateKey(date) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
+    function historyActivityRange() {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const targetYear = today.getFullYear() - historyActivityYearOffset;
+      const lastDayOfTargetMonth = new Date(targetYear, today.getMonth() + 1, 0).getDate();
+      const end = new Date(targetYear, today.getMonth(), Math.min(today.getDate(), lastDayOfTargetMonth));
+      const start = new Date(end);
+      start.setDate(start.getDate() - start.getDay() - (52 * 7));
+      return { start, end, startKey: localDateKey(start), endKey: localDateKey(end) };
+    }
+
+    async function fetchHistoryActivity() {
+      const range = historyActivityRange();
+      const key = `${range.startKey}:${range.endKey}`;
+      if (historyActivityState.key === key && historyActivityState.data) return historyActivityState.data;
+      if (historyActivityState.key === key && historyActivityState.loading) return historyActivityState.loading;
+      const params = new URLSearchParams({ start: range.startKey, end: range.endKey });
+      const request = fetch(`/api/history/activity?${params}`, { cache: 'no-store' })
+        .then(response => {
+          if (!response.ok) throw new Error(`History activity fetch failed: ${response.status}`);
+          return response.json();
+        })
+        .then(payload => {
+          if (historyActivityState.key === key) {
+            historyActivityState = { key, loading: false, data: payload };
+          }
+          return payload;
+        })
+        .catch(error => {
+          if (historyActivityState.key === key) {
+            historyActivityState = { key: '', loading: false, data: null };
+          }
+          throw error;
+        });
+      historyActivityState = { key, loading: request, data: null };
+      return request;
+    }
+
+    function heatmapLevel(count, sortedCounts) {
+      if (!count || !sortedCounts.length) return 0;
+      const threshold = fraction => sortedCounts[Math.floor((sortedCounts.length - 1) * fraction)];
+      if (count <= threshold(.25)) return 1;
+      if (count <= threshold(.5)) return 2;
+      if (count <= threshold(.75)) return 3;
+      return 4;
+    }
+
+    function historyHeatmapFor(payload) {
+      const range = historyActivityRange();
+      const activity = new Map((payload.activity || []).map(day => [day.watch_date, day]));
+      const sortedCounts = [...activity.values()]
+        .map(day => Number(day.watch_count || 0))
+        .filter(Boolean)
+        .sort((left, right) => left - right);
+      const heatmap = document.createElement('section');
+      heatmap.className = 'history-heatmap';
+      heatmap.setAttribute('aria-label', 'Views by day');
+      const header = document.createElement('div');
+      header.className = 'history-heatmap-header';
+      const heading = document.createElement('div');
+      heading.className = 'history-heatmap-title';
+      heading.textContent = 'Views';
+      const nav = document.createElement('div');
+      nav.className = 'history-heatmap-nav';
+      const previous = document.createElement('button');
+      previous.type = 'button';
+      previous.dataset.historyYearShift = '1';
+      previous.title = 'Previous year';
+      previous.setAttribute('aria-label', 'Previous year');
+      previous.textContent = '<';
+      const rangeLabel = document.createElement('span');
+      rangeLabel.className = 'history-heatmap-range';
+      const rangeDateLabel = date => date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+      rangeLabel.textContent = `${rangeDateLabel(range.start)} - ${rangeDateLabel(range.end)}`;
+      const next = document.createElement('button');
+      next.type = 'button';
+      next.dataset.historyYearShift = '-1';
+      next.title = 'Next year';
+      next.setAttribute('aria-label', 'Next year');
+      next.textContent = '>';
+      next.disabled = historyActivityYearOffset === 0;
+      nav.append(previous, rangeLabel, next);
+      header.append(heading, nav);
+      const scroll = document.createElement('div');
+      scroll.className = 'history-heatmap-scroll';
+      const months = document.createElement('div');
+      months.className = 'history-heatmap-months';
+      const weeks = document.createElement('div');
+      weeks.className = 'history-heatmap-weeks';
+      const seenMonths = new Set();
+      for (let weekIndex = 0; weekIndex < 53; weekIndex += 1) {
+        const weekStart = new Date(range.start);
+        weekStart.setDate(weekStart.getDate() + (weekIndex * 7));
+        const monthDate = new Date(weekStart);
+        for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
+          const candidate = new Date(weekStart);
+          candidate.setDate(candidate.getDate() + dayIndex);
+          if (candidate.getDate() === 1) {
+            monthDate.setTime(candidate.getTime());
+            break;
+          }
+        }
+        const monthKey = `${monthDate.getFullYear()}-${monthDate.getMonth()}`;
+        if (!seenMonths.has(monthKey)) {
+          seenMonths.add(monthKey);
+          const label = document.createElement('span');
+          label.className = 'history-heatmap-month';
+          label.style.gridColumn = String(weekIndex + 1);
+          label.textContent = monthDate.toLocaleDateString(undefined, { month: 'short' });
+          months.append(label);
+        }
+        const week = document.createElement('div');
+        week.className = 'history-heatmap-week';
+        for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
+          const date = new Date(weekStart);
+          date.setDate(date.getDate() + dayIndex);
+          const dateKey = localDateKey(date);
+          const day = activity.get(dateKey);
+          const count = Number(day?.watch_count || 0);
+          const label = `${date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}: ${count} ${count === 1 ? 'view' : 'views'}`;
+          const cell = document.createElement(count && date <= range.end ? 'button' : 'span');
+          cell.className = `history-heatmap-day level-${heatmapLevel(count, sortedCounts)}`;
+          cell.title = label;
+          cell.setAttribute('aria-label', label);
+          if (cell instanceof HTMLButtonElement) {
+            cell.type = 'button';
+            cell.dataset.historyDate = dateKey;
+            cell.dataset.historyOffset = String(Number(day.offset || 0));
+          }
+          week.append(cell);
+        }
+        weeks.append(week);
+      }
+      scroll.append(months, weeks);
+      heatmap.append(header, scroll);
+      return heatmap;
+    }
+
+    async function shiftHistoryActivityYear(delta) {
+      const nextOffset = Math.max(0, historyActivityYearOffset + delta);
+      if (nextOffset === historyActivityYearOffset) return;
+      const heatmap = viewContext.querySelector('.history-heatmap');
+      if (!(heatmap instanceof HTMLElement)) {
+        historyActivityYearOffset = nextOffset;
+        await render();
+        return;
+      }
+      const previousOffset = historyActivityYearOffset;
+      historyActivityYearOffset = nextOffset;
+      heatmap.setAttribute('aria-busy', 'true');
+      for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
+        button.disabled = true;
+      }
+      try {
+        const activity = await fetchHistoryActivity();
+        if (selected === '__history__' && heatmap.isConnected) {
+          heatmap.replaceWith(historyHeatmapFor(activity));
+        }
+      } catch (error) {
+        historyActivityYearOffset = previousOffset;
+        heatmap.removeAttribute('aria-busy');
+        for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
+          button.disabled = button.dataset.historyYearShift === '-1' && historyActivityYearOffset === 0;
+        }
+        throw error;
+      }
+    }
+
+    function scrollToPendingHistoryDate() {
+      if (!pendingHistoryDate) return;
+      const date = pendingHistoryDate;
+      pendingHistoryDate = '';
+      requestAnimationFrame(() => {
+        const row = grid.querySelector(`[data-watch-date="${CSS.escape(date)}"]`);
+        if (!(row instanceof HTMLElement)) return;
+        row.classList.add('history-jump-target');
+        row.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        window.setTimeout(() => row.classList.remove('history-jump-target'), 1800);
+      });
+    }
+
+    async function jumpToHistoryDate(date, offset) {
+      const size = pageSizeNumber();
+      const effectiveSize = Number.isFinite(size) ? size : 1000;
+      currentPage = Math.floor(Math.max(0, offset) / effectiveSize) + 1;
+      pendingHistoryDate = date;
+      if (updateCurrentHash(false)) return;
+      await render();
+    }
+
     async function renderHistoryView() {
       title.textContent = 'History';
       meta.textContent = 'Loading history...';
       grid.className = 'history-list';
       empty.hidden = true;
-      const payload = await fetchHistoryPage();
+      const [payload, activity] = await Promise.all([fetchHistoryPage(), fetchHistoryActivity()]);
       const rows = payload.watch || [];
       const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
       const pageInfo = remotePageInfo(total, rows.length);
       meta.textContent = `${total} watches`;
+      viewContext.hidden = false;
+      viewContext.replaceChildren(historyHeatmapFor(activity));
       renderPager(pageInfo);
       grid.replaceChildren(...rows.map(historyRowCardFor));
       empty.hidden = rows.length !== 0;
       empty.textContent = 'No history rows match.';
+      scrollToPendingHistoryDate();
     }
 
     function scrollResultsToTop() {
@@ -1694,11 +1933,15 @@
         return;
       }
       const query = search.value.trim().toLowerCase();
+      viewTop.classList.toggle('history-top', selected === '__history__');
       stopSearchProgress();
       empty.textContent = 'No playlists match.';
-      hidePager();
-      viewContext.replaceChildren();
-      viewContext.hidden = true;
+      const preserveHistoryChrome = selected === '__history__' && Boolean(viewContext.querySelector('.history-heatmap'));
+      if (!preserveHistoryChrome) {
+        hidePager();
+        viewContext.replaceChildren();
+        viewContext.hidden = true;
+      }
       for (const button of groupsEl.querySelectorAll('.group')) {
         button.classList.toggle('active', button.dataset.key === selected);
       }
@@ -2206,6 +2449,7 @@
         playlistSourcesHtml: playlistSourceLinksHtml(video),
       });
       article.classList.add('history-row');
+      if (video.watch_date) article.dataset.watchDate = video.watch_date;
       if (!article.querySelector('.thumb-wrap')) {
         const placeholder = document.createElement('div');
         placeholder.className = 'thumb-wrap';
@@ -2338,6 +2582,19 @@
     });
     searchNav?.addEventListener('click', () => setSelected('__search__'));
     viewContext.addEventListener('click', event => {
+      const yearShift = event.target.closest('[data-history-year-shift]');
+      if (yearShift instanceof HTMLButtonElement && !yearShift.disabled) {
+        const delta = Number(yearShift.dataset.historyYearShift || 0);
+        if (delta) void shiftHistoryActivityYear(delta);
+        return;
+      }
+      const historyDay = event.target.closest('[data-history-date]');
+      if (historyDay instanceof HTMLButtonElement) {
+        const date = historyDay.dataset.historyDate || '';
+        const offset = Number(historyDay.dataset.historyOffset || 0);
+        if (date) void jumpToHistoryDate(date, offset);
+        return;
+      }
       const target = event.target.closest('[data-channel-tab]');
       if (!(target instanceof HTMLButtonElement)) return;
       channelDetailTab = target.dataset.channelTab || 'playlists';
