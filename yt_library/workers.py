@@ -10,6 +10,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from .config import effective_display_timezone
 from .core import *
 
 class MetadataWorker:
@@ -678,6 +679,7 @@ class LiveHistoryWorker:
         db_path: Path,
         cookie_file: Path,
         mode: str,
+        timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
     ) -> dict[str, Any]:
         with self._lock:
             if self._thread and self._thread.is_alive():
@@ -686,7 +688,7 @@ class LiveHistoryWorker:
             self._run_id = uuid.uuid4().hex
             self._thread = threading.Thread(
                 target=self._run,
-                args=(self._run_id, db_path, cookie_file, mode),
+                args=(self._run_id, db_path, cookie_file, mode, timezone_name),
                 daemon=True,
             )
             self._thread.start()
@@ -706,6 +708,7 @@ class LiveHistoryWorker:
         db_path: Path,
         cookie_file: Path,
         mode: str,
+        timezone_name: str,
     ) -> None:
         conn = connect(db_path)
         mode = "verify" if mode == "verify" else "recent"
@@ -759,7 +762,6 @@ class LiveHistoryWorker:
             final_message = ""
             while not self._stop.is_set():
                 end = start + batch_size - 1
-                timezone_name = get_setting(conn, "display_timezone", DEFAULT_DISPLAY_TIMEZONE)
                 rows = fetch_youtube_history_web(
                     cookie_file,
                     limit=batch_size,
@@ -771,7 +773,7 @@ class LiveHistoryWorker:
                     existing_ids = youtube_occurrence_sequence(conn, start, len(rows))
                     overlap_offset = find_feed_overlap(fetched_ids, existing_ids) if mode == "recent" else None
                     inserted, existing, batch_last_video_id = save_youtube_history_events(conn, rows, start)
-                    reconcile_stats = rebuild_history_reconciliation(conn)
+                    reconcile_stats = rebuild_history_reconciliation(conn, timezone_name)
                     seen = len(rows)
                     processed += seen
                     inserted_total += inserted
@@ -1029,7 +1031,13 @@ class WorkerQueueDispatcher:
             "remaining_count": remaining,
         }
 
-    def start(self, db_path: Path, cookie_file: Path, thumb_dir: Path) -> dict[str, Any]:
+    def start(
+        self,
+        db_path: Path,
+        cookie_file: Path,
+        thumb_dir: Path,
+        config_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return {"started": False, "message": "Worker queue dispatcher already running"}
@@ -1040,7 +1048,7 @@ class WorkerQueueDispatcher:
             self._completed_count = 0
             self._thread = threading.Thread(
                 target=self._run,
-                args=(db_path, cookie_file, thumb_dir),
+                args=(db_path, cookie_file, thumb_dir, effective_display_timezone(config_data or {})),
                 daemon=True,
             )
             self._thread.start()
@@ -1101,7 +1109,7 @@ class WorkerQueueDispatcher:
         finally:
             conn.close()
 
-    def _run(self, db_path: Path, cookie_file: Path, thumb_dir: Path) -> None:
+    def _run(self, db_path: Path, cookie_file: Path, thumb_dir: Path, timezone_name: str) -> None:
         conn = connect(db_path)
         try:
             self._mark_initial_count(worker_queue_count(conn))
@@ -1180,7 +1188,7 @@ class WorkerQueueDispatcher:
                     self._mark_completed()
             elif worker_type == "history":
                 mode = "verify" if row.get("task_type") == "verify" else "recent"
-                result = LIVE_HISTORY_WORKER.start(db_path, cookie_file, mode=mode)
+                result = LIVE_HISTORY_WORKER.start(db_path, cookie_file, mode=mode, timezone_name=timezone_name)
                 if not result.get("started") and not LIVE_HISTORY_WORKER.is_running():
                     time.sleep(0.5)
                 self._wait_for_worker(LIVE_HISTORY_WORKER)

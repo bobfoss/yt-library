@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .config import ensure_config_file, save_config
+from .config import configured_display_timezone, effective_display_timezone, ensure_config_file, save_config
 from .core import *
 from .queries import fetch_app_data, history_search_data
 from .templates import load_template
@@ -29,6 +29,7 @@ INDEX_HTML = load_template("index.html")
 HISTORY_HTML = load_template("history.html")
 ADMIN_HTML = load_template("admin.html")
 TIMEZONE_JS = load_template("timezone.js")
+
 
 class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -190,9 +191,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             conn = connect(self.db_path)
             try:
                 with conn:
-                    set_setting(conn, "display_timezone", value)
                     self.config_data["display_timezone"] = value
                     save_config(self.config_data)
+                    refresh_exact_history_dates(conn, value)
             finally:
                 conn.close()
             self.send_json({"ok": True, "displayTimezone": value})
@@ -213,7 +214,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         }
             finally:
                 conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+            )
             self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/queue/add-target":
@@ -284,7 +290,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": removed, "removed": removed})
             return
         if parsed.path == "/api/admin/queue/start":
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+            )
             self.send_json({"ok": True, "dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/queue/stop":
@@ -310,7 +321,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         }
             finally:
                 conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+            )
             self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/playlists/reconcile":
@@ -367,7 +383,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     enqueue_history_task(conn, "recent", priority=0, manual=True)
             finally:
                 conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+            )
             self.send_json({"dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/live-history/verify":
@@ -377,7 +398,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     enqueue_history_task(conn, "verify", priority=0, manual=True)
             finally:
                 conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(self.db_path, self.cookie_file, self.video_thumbs)
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+            )
             self.send_json({"dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/live-history/stop":
@@ -407,6 +433,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         db=str(self.db_path),
                         takeout=str(self.takeout_dir),
                         history_key="",
+                        config_data=self.config_data,
                     )
                 )
             except SystemExit as exc:
@@ -462,7 +489,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             conn = connect(self.db_path)
             try:
                 with conn:
-                    stats = rebuild_history_reconciliation(conn)
+                    stats = rebuild_history_reconciliation(conn, effective_display_timezone(self.config_data))
             finally:
                 conn.close()
             self.send_json({"ok": True, **stats})
@@ -474,15 +501,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path != "/api/settings/timezone":
             self.send_error(404, "Not found")
             return
-        conn = connect(self.db_path)
-        try:
-            with conn:
-                value = str(self.config_data.get("display_timezone") or DEFAULT_DISPLAY_TIMEZONE)
-                if not valid_timezone_name(value):
-                    value = DEFAULT_DISPLAY_TIMEZONE
-                set_setting(conn, "display_timezone", value)
-        finally:
-            conn.close()
+        value = ""
+        self.config_data["display_timezone"] = value
+        save_config(self.config_data)
         self.send_json({"ok": True, "displayTimezone": value})
 
     def render_page(self, template: str) -> bytes:
@@ -496,10 +517,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         return template.replace("</head>", scripts + "</head>").encode("utf-8")
 
     def display_timezone_name(self, conn: sqlite3.Connection) -> str:
-        configured = str(self.config_data.get("display_timezone") or DEFAULT_DISPLAY_TIMEZONE)
-        if not valid_timezone_name(configured):
-            configured = DEFAULT_DISPLAY_TIMEZONE
-        return get_setting(conn, "display_timezone", configured)
+        return configured_display_timezone(self.config_data)
 
     def send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -607,9 +625,6 @@ def serve(args: argparse.Namespace) -> None:
     conn = connect(db_path)
     try:
         conn.execute("SELECT 1 FROM playlists LIMIT 1")
-        with conn:
-            if not get_setting(conn, "display_timezone", ""):
-                set_setting(conn, "display_timezone", str(args.config_data.get("display_timezone") or DEFAULT_DISPLAY_TIMEZONE))
     except sqlite3.OperationalError as exc:
         raise SystemExit(f"Database schema migration failed: {exc}") from exc
     finally:

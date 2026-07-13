@@ -57,7 +57,7 @@ in the generated config file:
   "takeout_dir": "takeout",
   "host": "0.0.0.0",
   "port": 8765,
-  "display_timezone": "UTC"
+  "display_timezone": ""
 }
 ```
 
@@ -66,6 +66,8 @@ remains available for explicit setup or upgrade runs.
 
 The default host binds to all local network interfaces. Use the loopback URLs
 below when opening the app on this machine.
+If `display_timezone` is empty, the browser detects an IANA timezone on first
+load and saves it to the config file.
 
 Open:
 

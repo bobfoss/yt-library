@@ -33,7 +33,7 @@
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); }
     main { width: 100%; margin: 0 auto; padding: 24px; }
-    header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
     h1 { font-size: 28px; margin: 0; }
     h2 { font-size: 20px; margin: 0; }
     a { color: var(--accent); text-decoration: none; }
@@ -46,6 +46,8 @@
     .metric { color: var(--muted); font-size: 13px; }
     .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
     .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0 18px; }
+    .header-timezone { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: end; gap: 8px; }
+    .header-timezone label { text-align: left; }
     label { color: var(--muted); display: grid; gap: 5px; font-size: 13px; }
     input { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 8px 10px; font: inherit; width: 120px; }
     .wide-input { width: min(720px, calc(100vw - 360px)); }
@@ -87,6 +89,8 @@
     @media (max-width: 700px) {
       main { padding: 16px; }
       header, .workstream-header { display: block; }
+      .header-timezone { justify-content: flex-start; margin-top: 12px; }
+      .header-timezone label { text-align: left; }
       .wide-input { width: min(100%, 720px); }
     }
   </style>
@@ -95,7 +99,11 @@
   <main>
     <header>
       <h1>YT Library Admin</h1>
-      <nav><a href="/">Playlists</a></nav>
+      <div class="header-timezone">
+        <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>
+        <button id="saveTimezone" class="primary" type="button">Save</button>
+        <button id="detectTimezone" type="button">Use browser time zone</button>
+      </div>
     </header>
 
     <section class="workstreams">
@@ -139,15 +147,6 @@
           <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
           <button id="importTakeoutHistory" type="button">Import Takeout directory</button>
           <button id="reconcileHistory" type="button">Reconcile history</button>
-        </div>
-      </section>
-
-      <section class="workstream">
-        <div class="workstream-header"><h2>Time zone</h2></div>
-        <div class="controls">
-          <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>
-          <button id="saveTimezone" class="primary" type="button">Save</button>
-          <button id="detectTimezone" type="button">Use browser time zone</button>
         </div>
       </section>
 

@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from yt_library import cli
 from yt_library import core
-from yt_library.config import load_config
+from yt_library.config import configured_display_timezone, effective_display_timezone, load_config
 from yt_library.workers import MetadataWorker, PlaceholderRecoveryWorker, PlaylistScanWorker
 
 
@@ -408,7 +408,6 @@ class CoreHelperTests(unittest.TestCase):
                 conn = core.connect(db_path)
                 try:
                     with conn:
-                        core.set_setting(conn, "display_timezone", "America/Los_Angeles")
                         conn.execute(
                             """
                             INSERT INTO history_events(
@@ -420,7 +419,7 @@ class CoreHelperTests(unittest.TestCase):
                             )
                             """
                         )
-                        core.rebuild_history_reconciliation(conn)
+                        core.rebuild_history_reconciliation(conn, "America/Los_Angeles")
                     subscribed = conn.execute(
                         "SELECT title, subscribed FROM channels WHERE channel_id = ?",
                         ("UCsubscribed12345678901234",),
@@ -914,7 +913,7 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_timezone_setting_requires_iana_name(self) -> None:
+    def test_refresh_exact_history_dates_uses_iana_timezone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             conn = migrated_connection(Path(tmp) / "library.sqlite3")
             try:
@@ -931,14 +930,11 @@ class CoreHelperTests(unittest.TestCase):
                         )
                         """
                     )
-                    core.set_setting(conn, "display_timezone", "America/Los_Angeles")
-                self.assertEqual(core.get_setting(conn, "display_timezone"), "America/Los_Angeles")
+                    core.refresh_exact_history_dates(conn, "America/Los_Angeles")
                 watch_date = conn.execute(
                     "SELECT watch_date FROM history_events WHERE event_id = 'takeout:one'"
                 ).fetchone()[0]
                 self.assertEqual(watch_date, "2026-07-03")
-                with self.assertRaises(ValueError):
-                    core.set_setting(conn, "display_timezone", "Pacific Standard Time")
             finally:
                 conn.close()
 
@@ -1053,6 +1049,55 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("playlists", tables)
         self.assertIn("legacy_marker", tables)
         self.assertEqual(marker, "kept")
+
+    def test_migrate_removes_legacy_app_settings_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            raw = sqlite3.connect(db_path)
+            try:
+                raw.execute(
+                    """
+                    CREATE TABLE app_settings (
+                      setting_key TEXT PRIMARY KEY,
+                      value TEXT NOT NULL,
+                      updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                raw.execute(
+                    """
+                    CREATE TABLE schema_migrations (
+                      version INTEGER PRIMARY KEY,
+                      applied_at TEXT NOT NULL
+                    )
+                    """
+                )
+                raw.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2026-07-01T00:00:00Z')")
+                raw.execute(
+                    """
+                    INSERT INTO app_settings(setting_key, value, updated_at)
+                    VALUES ('display_timezone', 'America/Los_Angeles', '2026-07-01T00:00:00Z')
+                    """
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                tables = {
+                    row["name"]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                schema_version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertNotIn("app_settings", tables)
+        self.assertEqual(schema_version, core.SCHEMA_VERSION)
 
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT
@@ -1363,6 +1408,18 @@ class ConfigTests(unittest.TestCase):
             )
             self.assertEqual(config["display_timezone"], "America/Los_Angeles")
 
+    def test_configured_display_timezone_rejects_invalid_names(self) -> None:
+        self.assertEqual(
+            configured_display_timezone({"display_timezone": "America/Los_Angeles"}),
+            "America/Los_Angeles",
+        )
+        self.assertEqual(configured_display_timezone({"display_timezone": ""}), "")
+        self.assertEqual(
+            configured_display_timezone({"display_timezone": "Pacific Standard Time"}),
+            "UTC",
+        )
+        self.assertEqual(effective_display_timezone({"display_timezone": ""}), "UTC")
+
     def test_migrate_creates_default_config_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"
@@ -1373,7 +1430,7 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(config_path.exists())
             self.assertTrue(db_path.exists())
             payload = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["display_timezone"], "UTC")
+            self.assertEqual(payload["display_timezone"], "")
             self.assertEqual(payload["host"], "0.0.0.0")
 
     def test_cli_defaults_to_serve_command(self) -> None:

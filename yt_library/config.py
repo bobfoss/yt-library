@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,8 +22,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "takeout_dir": "takeout",
     "host": "0.0.0.0",
     "port": 8765,
-    "display_timezone": "UTC",
+    "display_timezone": "",
 }
+
+
+def configured_display_timezone(config: dict[str, Any]) -> str:
+    value = str(config.get("display_timezone") or "").strip()
+    if not value:
+        return ""
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError):
+        return "UTC"
+    return value
+
+
+def effective_display_timezone(config: dict[str, Any]) -> str:
+    return configured_display_timezone(config) or "UTC"
 
 PATH_KEYS = {
     "database",

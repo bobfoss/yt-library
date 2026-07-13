@@ -33,6 +33,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .schema import load_schema
+from .config import effective_display_timezone
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
@@ -95,7 +96,7 @@ VIDEO_SOURCE_PRIORITY = {
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,12 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
     if current_version == SCHEMA_VERSION:
         return
     _bootstrap_database(conn)
+    if current_version < 2:
+        conn.execute("DROP TABLE IF EXISTS app_settings")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (2, utc_now()),
+        )
 
 
 def _schema_version(conn: sqlite3.Connection) -> int:
@@ -706,26 +713,6 @@ def valid_timezone_name(value: str) -> bool:
     return True
 
 
-def get_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
-    row = conn.execute("SELECT value FROM app_settings WHERE setting_key = ?", (key,)).fetchone()
-    return row["value"] if row else default
-
-
-def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
-    if key == "display_timezone" and not valid_timezone_name(value):
-        raise ValueError(f"Invalid IANA timezone: {value}")
-    conn.execute(
-        """
-        INSERT INTO app_settings(setting_key, value, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(setting_key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-        """,
-        (key, value, utc_now()),
-    )
-    if key == "display_timezone":
-        refresh_exact_history_dates(conn, value)
-
-
 def refresh_exact_history_dates(conn: sqlite3.Connection, timezone_name: str) -> None:
     rows = conn.execute(
         "SELECT event_id, watched_at FROM history_events WHERE time_precision = 'exact'"
@@ -737,15 +724,6 @@ def refresh_exact_history_dates(conn: sqlite3.Connection, timezone_name: str) ->
             for row in rows
         ],
     )
-
-
-def display_timezone(conn: sqlite3.Connection) -> ZoneInfo:
-    value = get_setting(conn, "display_timezone", DEFAULT_DISPLAY_TIMEZONE)
-    try:
-        return ZoneInfo(value)
-    except ZoneInfoNotFoundError:
-        return ZoneInfo(DEFAULT_DISPLAY_TIMEZONE)
-
 
 def load_cookie_jar(cookie_file: Path) -> http.cookiejar.MozillaCookieJar:
     jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
@@ -4246,9 +4224,11 @@ def history_row_hash(row: dict[str, str]) -> str:
     return hashlib.sha1(payload.encode("utf-8", "replace")).hexdigest()
 
 
-def rebuild_history_reconciliation(conn: sqlite3.Connection) -> dict[str, int]:
+def rebuild_history_reconciliation(
+    conn: sqlite3.Connection,
+    timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
+) -> dict[str, int]:
     now = utc_now()
-    timezone_name = get_setting(conn, "display_timezone", DEFAULT_DISPLAY_TIMEZONE)
     youtube_rows = conn.execute(
         """
         SELECT *
@@ -6213,7 +6193,8 @@ def import_history(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 inserted_watch_rows += 1
                 existing_events.add(event_key)
-        stats = rebuild_history_reconciliation(conn)
+        timezone_name = effective_display_timezone(getattr(args, "config_data", {}))
+        stats = rebuild_history_reconciliation(conn, timezone_name)
     conn.close()
     result = {
         "total_watch_rows": total_watch_rows,
