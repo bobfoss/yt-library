@@ -387,7 +387,7 @@ def history_search_data(
         row["time_quality_note"] = history_time_quality_note(row.get("time_quality") or "")
         row["history_badges"] = [
             value
-            for value in (row["source_label"], row["time_quality_label"], row["match_label"])
+            for value in (row["time_quality_label"],)
             if value
         ]
         row["watch_dates"] = [value for value in (row.pop("watch_dates_text", "") or "").split("|") if value]

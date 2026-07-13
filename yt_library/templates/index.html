@@ -792,6 +792,7 @@
     }
 
     function matchTypeLabel(video) {
+      if (video.source_type) return '';
       if (video.match_type === 'ambiguous_hidden_candidate') return '';
       const label = video.match_label || '';
       if (/^matched by\b/i.test(label)) return '';

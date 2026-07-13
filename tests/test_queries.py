@@ -66,6 +66,40 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertIsNone(row["watched_at"])
         self.assertEqual(row["watch_date"], "2026-07-04")
         self.assertEqual(row["time_quality"], "date_only")
+        self.assertEqual(row["source_label"], "YouTube")
+        self.assertEqual(row["match_label"], "YouTube only")
+        self.assertEqual(row["history_badges"], ["date only"])
+
+    def test_history_badges_hide_source_and_match_labels(self) -> None:
+        self.add_video("takeout123", "Takeout Only")
+        self.conn.execute(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watched_at, watch_date, time_precision, source_type, match_type
+            ) VALUES ('takeout:1', 'takeout123', '2026-07-04T05:27:45Z', '2026-07-04', 'exact', 'takeout', 'takeout_only')
+            """
+        )
+
+        row = history_search_data(self.conn, "", limit=1)["watch"][0]
+
+        self.assertEqual(row["source_label"], "Takeout")
+        self.assertEqual(row["match_label"], "Takeout only")
+        self.assertEqual(row["history_badges"], ["exact time"])
+
+        self.add_video("matched123", "Matched")
+        self.conn.execute(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watched_at, watch_date, time_precision, source_type, match_type
+            ) VALUES ('matched:1', 'matched123', '2026-07-05T05:27:45Z', '2026-07-05', 'exact', 'takeout_youtube', 'video_id_date')
+            """
+        )
+
+        matched = history_search_data(self.conn, "Matched", limit=1)["watch"][0]
+
+        self.assertEqual(matched["source_label"], "Takeout + YouTube")
+        self.assertEqual(matched["match_label"], "matched by video/date")
+        self.assertEqual(matched["history_badges"], ["exact time"])
 
     def test_history_search_filters_by_canonical_channel(self) -> None:
         self.add_video("history123", "History Channel Video", "UC_history")
