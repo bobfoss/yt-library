@@ -94,6 +94,8 @@ VIDEO_SOURCE_PRIORITY = {
     "metadata": 50,
 }
 
+LIKED_VIDEOS_PLAYLIST_ID = "LL"
+
 
 SCHEMA = load_schema()
 SCHEMA_VERSION = 2
@@ -1821,6 +1823,16 @@ def playlist_continuation_token(data: dict[str, Any]) -> str:
     for node in walk(data):
         if not isinstance(node, dict):
             continue
+        view_model = node.get("continuationItemViewModel")
+        if isinstance(view_model, dict):
+            token = (
+                view_model.get("continuationCommand", {})
+                .get("innertubeCommand", {})
+                .get("continuationCommand", {})
+                .get("token")
+            )
+            if isinstance(token, str) and token:
+                return token
         renderer = node.get("continuationItemRenderer")
         if not isinstance(renderer, dict):
             continue
@@ -3367,14 +3379,10 @@ def scan_playlist_videos(
             fallback = len(videos) + 1
             video = parse_video_renderer(playlist_id, renderer, fallback)
             add_video(video)
-
-    if not videos:
-        for lockup in video_lockup_renderers(initial_data):
+        for lockup in video_lockup_renderers(page_data):
             fallback = len(videos) + 1
             add_video(parse_video_lockup(playlist_id, lockup, fallback))
-
-    if not videos:
-        for renderer in shorts_lockup_renderers(initial_data):
+        for renderer in shorts_lockup_renderers(page_data):
             fallback = len(videos) + 1
             add_video(parse_shorts_lockup(playlist_id, renderer, fallback))
 
@@ -4482,6 +4490,61 @@ def save_playlist_scan(
     return len(videos), unavailable_count
 
 
+def save_liked_video_reactions(
+    conn: sqlite3.Connection,
+    videos: list[dict[str, Any]],
+    *,
+    replace: bool = True,
+) -> tuple[int, int]:
+    deduped: list[dict[str, Any]] = []
+    seen_video_ids: set[str] = set()
+    unavailable_count = 0
+    for video in videos:
+        video_id = str(video.get("video_id") or "").strip()
+        if not video_id or video_id in seen_video_ids:
+            if not video_id:
+                unavailable_count += 1
+            continue
+        seen_video_ids.add(video_id)
+        deduped.append(video)
+        if not video.get("is_playable", True):
+            unavailable_count += 1
+
+    now = utc_now()
+    if replace:
+        conn.execute(
+            "UPDATE videos SET reaction = '', updated_at = ? WHERE reaction = 'L'",
+            (now,),
+        )
+    for video in deduped:
+        video_id = str(video.get("video_id") or "").strip()
+        channel_id = upsert_channel(
+            conn,
+            str(video.get("channel_id") or ""),
+            title=str(video.get("channel") or ""),
+            source="playlist",
+            updated_at=now,
+        )
+        upsert_video(
+            conn,
+            video_id,
+            title=str(video.get("title") or ""),
+            channel_id=channel_id,
+            channel_title=str(video.get("channel") or ""),
+            duration_text=str(video.get("duration_text") or ""),
+            is_playable=video.get("is_playable"),
+            availability=str(video.get("availability") or ""),
+            source="playlist",
+            checked_at=now,
+            updated_at=now,
+        )
+        conn.execute(
+            "UPDATE videos SET reaction = 'L', updated_at = ? WHERE video_id = ?",
+            (now, video_id),
+        )
+    return len(deduped), unavailable_count
+
+
 def save_playlist_scan_error(
     conn: sqlite3.Connection,
     playlist_id: str,
@@ -4766,6 +4829,8 @@ def enqueue_playlist_scan_item(
     playlist_id = (playlist_id or "").strip()
     if not playlist_id:
         raise ValueError("Playlist queue item needs a playlist ID")
+    if playlist_id == LIKED_VIDEOS_PLAYLIST_ID:
+        title = "Liked videos"
     if not title:
         row = conn.execute(
             "SELECT title FROM playlists WHERE playlist_id = ?",
@@ -4859,8 +4924,17 @@ def rebuild_playlist_scan_queue(
 ) -> dict[str, int]:
     rows = playlist_scan_candidate_rows(conn, force=force, stale_days=stale_days)
     cleared = clear_playlist_scan_queue(conn)
-    inserted = 0
+    enqueue_playlist_scan_item(
+        conn,
+        LIKED_VIDEOS_PLAYLIST_ID,
+        title="Liked videos",
+        priority=0,
+        manual=False,
+    )
+    inserted = 1
     for index, row in enumerate(rows, start=1):
+        if row["playlist_id"] == LIKED_VIDEOS_PLAYLIST_ID:
+            continue
         enqueue_playlist_scan_item(
             conn,
             row["playlist_id"] or "",

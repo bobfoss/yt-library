@@ -339,6 +339,19 @@ class CoreHelperTests(unittest.TestCase):
 
         self.assertEqual(core.playlist_continuation_token(data), "playlist-token")
 
+    def test_playlist_continuation_reads_view_model_token(self) -> None:
+        data = {
+            "continuationItemViewModel": {
+                "continuationCommand": {
+                    "innertubeCommand": {
+                        "continuationCommand": {"token": "view-model-token"}
+                    }
+                }
+            }
+        }
+
+        self.assertEqual(core.playlist_continuation_token(data), "view-model-token")
+
     def test_parse_takeout_watch_history_json(self) -> None:
         rows = core.parse_takeout_watch_history_text(
             """
@@ -1294,6 +1307,78 @@ class SchemaTests(unittest.TestCase):
                     conn.close()
             finally:
                 core.ROOT = original_root
+
+    def test_liked_video_sync_replaces_likes_without_creating_playlist_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(conn, "oldliked123", title="Old like", source="metadata")
+                    core.upsert_video(conn, "disliked1234", title="Disliked", source="metadata")
+                    conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'oldliked123'")
+                    conn.execute("UPDATE videos SET reaction = 'D' WHERE video_id = 'disliked1234'")
+                    count, unavailable = core.save_liked_video_reactions(
+                        conn,
+                        [
+                            {
+                                "video_id": "newliked123",
+                                "title": "New like",
+                                "channel_id": "UC_liked",
+                                "channel": "Liked Channel",
+                                "is_playable": True,
+                            },
+                            {
+                                "video_id": "newliked123",
+                                "title": "Duplicate",
+                                "is_playable": True,
+                            },
+                        ],
+                    )
+                reactions = {
+                    row["video_id"]: row["reaction"]
+                    for row in conn.execute("SELECT video_id, reaction FROM videos")
+                }
+                self.assertEqual(count, 1)
+                self.assertEqual(unavailable, 0)
+                self.assertEqual(reactions["oldliked123"], "")
+                self.assertEqual(reactions["newliked123"], "L")
+                self.assertEqual(reactions["disliked1234"], "D")
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM playlists").fetchone()[0], 0)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM playlist_items").fetchone()[0], 0)
+
+                with conn:
+                    core.save_liked_video_reactions(
+                        conn,
+                        [{"video_id": "partial12345", "title": "Partial like", "is_playable": True}],
+                        replace=False,
+                    )
+                merged_reactions = {
+                    row["video_id"]: row["reaction"]
+                    for row in conn.execute("SELECT video_id, reaction FROM videos WHERE reaction <> ''")
+                }
+                self.assertEqual(merged_reactions["newliked123"], "L")
+                self.assertEqual(merged_reactions["partial12345"], "L")
+                self.assertEqual(merged_reactions["disliked1234"], "D")
+            finally:
+                conn.close()
+
+    def test_playlist_queue_rebuild_includes_liked_video_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLregular', 'Regular')")
+                    stats = core.rebuild_playlist_scan_queue(conn, force=True)
+                rows = core.playlist_scan_queue_rows(conn)
+                self.assertEqual(stats["inserted"], 2)
+                self.assertEqual([row["playlist_id"] for row in rows], ["LL", "PLregular"])
+                self.assertEqual(rows[0]["title"], "Liked videos")
+                with conn:
+                    core.clear_playlist_scan_queue(conn)
+                    core.enqueue_playlist_scan_item(conn, "LL", title="LL", manual=True)
+                self.assertEqual(core.playlist_scan_queue_rows(conn)[0]["title"], "Liked videos")
+            finally:
+                conn.close()
 
     def test_save_playlist_scan_error_preserves_existing_counts(self) -> None:
         original_root = core.ROOT

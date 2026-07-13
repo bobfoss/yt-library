@@ -309,6 +309,10 @@
       return row.playlist_title || row.current_title || row.video_id || row.channel_title || row.channel_id || row.playlist_id || row.subject_key || '';
     }
 
+    function playlistSubject(playlistId) {
+      return playlistId === 'LL' ? 'Liked videos' : (playlistId || '');
+    }
+
     function workerDetails(row) {
       if (row.worker_type === 'playlist') {
         return `${row.playlist_id || ''}\n${row.scan_status || 'unscanned'} ${row.video_count || 0}/${row.playlist_video_count || '?'}`;
@@ -491,7 +495,7 @@
       }));
 
       const logs = [
-        ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: log.playlist_id, source: 'playlist' })),
+        ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: playlistSubject(log.playlist_id), source: 'playlist' })),
         ...(data.metadataLogs || []).map(log => ({
           ...log,
           subject_id: log.video_id,

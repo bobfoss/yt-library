@@ -565,8 +565,20 @@ class PlaylistScanWorker:
                 with conn:
                     metadata_queued = 0
                     placeholder_queued = 0
-                    if status == "error":
+                    if status == "error" and playlist_id == LIKED_VIDEOS_PLAYLIST_ID:
+                        video_count = int(
+                            conn.execute("SELECT COUNT(*) FROM videos WHERE reaction = 'L'").fetchone()[0]
+                            or 0
+                        )
+                        unavailable_count = 0
+                    elif status == "error":
                         video_count, unavailable_count = save_playlist_scan_error(conn, playlist_id, error)
+                    elif playlist_id == LIKED_VIDEOS_PLAYLIST_ID:
+                        video_count, unavailable_count = save_liked_video_reactions(
+                            conn,
+                            videos,
+                            replace=not expected_count or len(videos) >= expected_count,
+                        )
                     else:
                         video_count, unavailable_count = save_playlist_scan(
                             conn,
@@ -579,11 +591,12 @@ class PlaylistScanWorker:
                         if bool(row["manual"]) and video_count:
                             metadata_result = enqueue_playlist_metadata_targets(conn, playlist_id)
                             metadata_queued = int(metadata_result["queued_count"])
-                        placeholder_result = enqueue_placeholder_recovery_targets(
-                            conn,
-                            playlist_id,
-                        )
-                        placeholder_queued = int(placeholder_result["inserted"])
+                        if playlist_id != LIKED_VIDEOS_PLAYLIST_ID:
+                            placeholder_result = enqueue_placeholder_recovery_targets(
+                                conn,
+                                playlist_id,
+                            )
+                            placeholder_queued = int(placeholder_result["inserted"])
                     processed += 1
                     if status == "error":
                         failed += 1
