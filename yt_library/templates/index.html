@@ -223,7 +223,7 @@
     <main>
       <div id="view-top" class="view-top">
         <div class="toolbar">
-          <h2 id="view-title" class="title">All playlists</h2>
+          <h2 id="view-title" class="title"></h2>
           <div class="details">
             <button id="refresh" class="refresh" type="button">Refresh</button>
             <div id="view-meta" class="meta"></div>
@@ -1928,7 +1928,7 @@
     async function render() {
       const generation = ++renderGeneration;
       if (!data) {
-        title.textContent = 'Loading';
+        title.textContent = '';
         meta.textContent = '';
         return;
       }
