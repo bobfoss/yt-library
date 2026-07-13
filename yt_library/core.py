@@ -95,6 +95,7 @@ VIDEO_SOURCE_PRIORITY = {
 
 
 SCHEMA = load_schema()
+SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -124,11 +125,12 @@ def connect(db_path: Path) -> sqlite3.Connection:
 
 
 def migrate_database(db_path: Path) -> None:
-    """Initialize the current schema for this local, fresh-install project."""
+    """Initialize or upgrade the database schema."""
     conn = connect(db_path)
     try:
         with _DATABASE_BOOTSTRAP_LOCK:
-            _bootstrap_database(conn)
+            with conn:
+                _migrate_database(conn)
     except Exception:
         conn.close()
         raise
@@ -138,7 +140,35 @@ def migrate_database(db_path: Path) -> None:
 
 def _bootstrap_database(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
-    conn.commit()
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+        (SCHEMA_VERSION, utc_now()),
+    )
+
+
+def _migrate_database(conn: sqlite3.Connection) -> None:
+    current_version = _schema_version(conn)
+    if current_version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Database schema version {current_version} is newer than this application supports ({SCHEMA_VERSION})"
+        )
+    if current_version == SCHEMA_VERSION:
+        return
+    _bootstrap_database(conn)
+
+
+def _schema_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'schema_migrations'
+        """
+    ).fetchone()
+    if not row:
+        return 0
+    value = conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()[0]
+    return int(value or 0)
 
 
 def normalize_playlist_visibility(value: str) -> str:
@@ -254,6 +284,15 @@ def watch_playability_value(metadata: dict[str, Any]) -> int | None:
         return 1
     if status in {"ERROR", "UNPLAYABLE", "LOGIN_REQUIRED", "LIVE_STREAM_OFFLINE"}:
         return 0
+    return None
+
+
+def storable_watch_playability_value(metadata: dict[str, Any]) -> int | None:
+    playability = watch_playability_value(metadata)
+    if playability != 0:
+        return playability
+    if (metadata.get("availability") or "").strip():
+        return playability
     return None
 
 
@@ -582,7 +621,7 @@ def upsert_video(
         canonical_availability = existing["availability"]
     progress = bounded_int(watch_progress_percent) if watch_progress_percent is not None else (existing["watch_progress_percent"] if existing else 0)
     resume = max(0, int(watch_resume_seconds or 0)) if watch_resume_seconds is not None else (existing["watch_resume_seconds"] if existing else 0)
-    last_seen = now if canonical_playability == 1 else (existing["last_seen_available_at"] if existing else None)
+    last_seen = now if incoming_playability == 1 else (existing["last_seen_available_at"] if existing else None)
     metadata_source = source if authoritative and source else (existing["metadata_source"] if existing else source)
     values = (
         canonical_title,
@@ -2834,7 +2873,18 @@ def store_video_metadata(
         source="metadata",
         updated_at=now,
     )
-    playability = watch_playability_value(metadata)
+    playability = storable_watch_playability_value(metadata)
+    recovered_availability = video_availability_from_recovery_status(metadata.get("yt_status", ""))
+    availability = (
+        normalize_video_availability(
+            metadata.get("video_id", ""),
+            metadata.get("availability", ""),
+            playability,
+            metadata.get("yt_status", ""),
+        )
+        if playability is not None or (metadata.get("availability") or "").strip() or recovered_availability
+        else ""
+    )
     upsert_video(
         conn,
         metadata.get("video_id", ""),
@@ -2850,12 +2900,7 @@ def store_video_metadata(
         watch_progress_percent=metadata.get("watch_progress_percent"),
         watch_resume_seconds=metadata.get("watch_resume_seconds"),
         is_playable=playability,
-        availability=normalize_video_availability(
-            metadata.get("video_id", ""),
-            metadata.get("availability", ""),
-            playability,
-            metadata.get("yt_status", ""),
-        ),
+        availability=availability,
         source="metadata",
         fetch_status=status,
         fetch_error=error,

@@ -140,6 +140,77 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
     for video in playlist_videos:
         video["playlist_links"] = playlist_links_by_video.get(video.get("video_id") or "", [])
 
+    standalone_videos = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT '' AS playlist_id,
+                   0 AS position,
+                   v.video_id,
+                   '' AS membership_state,
+                   '' AS unavailable_kind,
+                   '' AS source_quality,
+                   '' AS match_type,
+                   '' AS match_confidence,
+                   0 AS display_position,
+                   0 AS current_position,
+                   '' AS playlist_title,
+                   v.title,
+                   COALESCE(v.channel_id, '') AS channel_id,
+                   COALESCE(ch.title, '') AS channel,
+                   v.duration_text,
+                   COALESCE(v.is_playable, 0) AS is_playable,
+                   v.availability,
+                   v.title AS metadata_title,
+                   v.description AS metadata_description,
+                   COALESCE(v.channel_id, '') AS metadata_channel_id,
+                   COALESCE(ch.title, '') AS metadata_channel,
+                   v.duration_text AS metadata_duration,
+                   v.upload_date AS metadata_upload_date,
+                   v.thumbnail_path AS metadata_thumbnail_path,
+                   COALESCE(ch.thumbnail_path, '') AS metadata_channel_thumbnail_path,
+                   v.fetch_status AS metadata_fetch_status,
+                   v.reaction,
+                   COALESCE(NULLIF(v.watch_progress_percent, 0), hw.watch_progress_percent, 0) AS watch_progress_percent,
+                   COALESCE(NULLIF(v.watch_resume_seconds, 0), hw.watch_resume_seconds, 0) AS watch_resume_seconds,
+                   COALESCE(hw.watch_count, 0) AS watch_count,
+                   COALESCE(hw.watch_dates, '') AS watch_dates_text,
+                   COALESCE(vr.archivarix_status, '') AS recovered_status,
+                   vr.archive_capture_at,
+                   vr.media_available
+            FROM videos v
+            LEFT JOIN channels ch ON ch.channel_id = v.channel_id
+            LEFT JOIN video_recovery vr ON vr.video_id = v.video_id
+            LEFT JOIN (
+                SELECT video_id,
+                       MAX(watch_progress_percent) AS watch_progress_percent,
+                       MAX(watch_resume_seconds) AS watch_resume_seconds,
+                       COUNT(*) AS watch_count,
+                       GROUP_CONCAT(COALESCE(watch_date, substr(watched_at, 1, 10)), '|') AS watch_dates
+                FROM history_events
+                GROUP BY video_id
+            ) hw ON hw.video_id = v.video_id
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM playlist_items pi
+                WHERE pi.video_id = v.video_id
+            )
+            ORDER BY v.title COLLATE NOCASE, v.video_id
+            """
+        )
+    ]
+    for video in standalone_videos:
+        video_id = video.get("video_id") or ""
+        video["url"] = youtube_video_url(video_id)
+        video["playlist_url"] = ""
+        video["metadata_channel_url"] = youtube_channel_url(video.get("metadata_channel_id") or "")
+        video["archive_url"] = wayback_video_url(video_id, video.get("archive_capture_at"))
+        video["video_file_url"] = archivarix_media_url(video_id) if video.get("media_available") else ""
+        video["match_label"] = ""
+        video["match_note"] = ""
+        video["watch_dates"] = [value for value in (video.pop("watch_dates_text", "") or "").split("|") if value]
+        video["playlist_links"] = []
+
     unavailable_videos = [
         video
         for video in playlist_videos
@@ -159,6 +230,7 @@ def fetch_app_data(conn: sqlite3.Connection) -> dict[str, Any]:
         "playlists": playlists,
         "memberships": memberships,
         "playlistVideos": playlist_videos,
+        "standaloneVideos": standalone_videos,
         "channels": channels,
         "unavailableVideos": unavailable_videos,
         "historySummary": totals,

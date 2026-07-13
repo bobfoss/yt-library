@@ -13,7 +13,9 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
+from yt_library import cli
 from yt_library import core
+from yt_library.config import load_config
 from yt_library.workers import MetadataWorker, PlaceholderRecoveryWorker, PlaylistScanWorker
 
 
@@ -745,6 +747,96 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_metadata_error_playability_does_not_downgrade_known_public_video(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "vweQrjtAg0U",
+                        title="Playlist title",
+                        source="playlist",
+                        is_playable=1,
+                        availability="public",
+                        updated_at="2026-07-10T23:20:04Z",
+                    )
+                    core.store_video_metadata(
+                        conn,
+                        {
+                            "video_id": "vweQrjtAg0U",
+                            "title": "Metadata title",
+                            "channel_id": "UCddem5RlB3bQe99wyY49g0g",
+                            "channel": "PeriscopeFilm",
+                            "playability_status": "ERROR",
+                            "yt_status": "ERROR: Video unavailable",
+                            "watch_progress_percent": "0",
+                            "watch_resume_seconds": "0",
+                        },
+                        "ok",
+                        updated_at="2026-07-11T08:08:18Z",
+                    )
+
+                row = conn.execute(
+                    """
+                    SELECT title, is_playable, availability, fetched_at,
+                           last_seen_available_at, last_checked_at
+                    FROM videos
+                    WHERE video_id = 'vweQrjtAg0U'
+                    """
+                ).fetchone()
+                self.assertEqual(row["title"], "Metadata title")
+                self.assertEqual(row["is_playable"], 1)
+                self.assertEqual(row["availability"], "public")
+                self.assertEqual(row["fetched_at"], "2026-07-11T08:08:18Z")
+                self.assertEqual(row["last_seen_available_at"], "2026-07-10T23:20:04Z")
+                self.assertEqual(row["last_checked_at"], "2026-07-11T08:08:18Z")
+            finally:
+                conn.close()
+
+    def test_metadata_ok_playability_refreshes_known_public_seen_at(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "vweQrjtAg0U",
+                        title="Playlist title",
+                        source="playlist",
+                        is_playable=1,
+                        availability="public",
+                        updated_at="2026-07-10T23:20:04Z",
+                    )
+                    core.store_video_metadata(
+                        conn,
+                        {
+                            "video_id": "vweQrjtAg0U",
+                            "title": "Metadata title",
+                            "channel_id": "UCddem5RlB3bQe99wyY49g0g",
+                            "channel": "PeriscopeFilm",
+                            "playability_status": "OK",
+                            "yt_status": "OK",
+                            "watch_progress_percent": "0",
+                            "watch_resume_seconds": "0",
+                        },
+                        "ok",
+                        updated_at="2026-07-12T20:30:45Z",
+                    )
+
+                row = conn.execute(
+                    """
+                    SELECT is_playable, availability, last_seen_available_at
+                    FROM videos
+                    WHERE video_id = 'vweQrjtAg0U'
+                    """
+                ).fetchone()
+                self.assertEqual(row["is_playable"], 1)
+                self.assertEqual(row["availability"], "public")
+                self.assertEqual(row["last_seen_available_at"], "2026-07-12T20:30:45Z")
+            finally:
+                conn.close()
+
     def test_metadata_from_archivarix_video_includes_channel_metadata(self) -> None:
         metadata = core.metadata_from_archivarix_video(
             "Ax8Yn8DPZe0",
@@ -1244,6 +1336,55 @@ class SchemaTests(unittest.TestCase):
                     conn.close()
             finally:
                 core.ROOT = original_root
+
+
+class ConfigTests(unittest.TestCase):
+    def test_config_resolves_paths_relative_to_config_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "settings" / "yt_library.config.json"
+            config_path.parent.mkdir()
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "database": "data/library.sqlite3",
+                        "display_timezone": "America/Los_Angeles",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            from yt_library.config import config_path as resolve_config_path
+
+            self.assertEqual(
+                resolve_config_path(config, "database").resolve(),
+                (config_path.parent / "data" / "library.sqlite3").resolve(),
+            )
+            self.assertEqual(config["display_timezone"], "America/Los_Angeles")
+
+    def test_migrate_creates_default_config_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            db_path = Path(temp_dir) / "library.sqlite3"
+
+            cli.main(["--config", str(config_path), "migrate", "--db", str(db_path)])
+
+            self.assertTrue(config_path.exists())
+            self.assertTrue(db_path.exists())
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["display_timezone"], "UTC")
+
+    def test_cli_defaults_to_serve_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            with patch("yt_library.cli.serve") as serve:
+                result = cli.main(["--config", str(config_path)])
+
+            self.assertEqual(result, 0)
+            args = serve.call_args.args[0]
+            self.assertEqual(args.command, "serve")
+            self.assertEqual(Path(args.db).resolve(), (config_path.parent / "yt_library.sqlite3").resolve())
 
 
 class WorkerQueueTests(unittest.TestCase):

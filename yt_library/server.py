@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .config import ensure_config_file, save_config
 from .core import *
 from .queries import fetch_app_data, history_search_data
 from .templates import load_template
@@ -39,6 +40,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         cookie_file: Path,
         video_thumbs: Path,
         takeout_dir: Path,
+        config_data: dict[str, Any],
         directory: str | None = None,
         **kwargs,
     ):
@@ -46,6 +48,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         self.cookie_file = cookie_file
         self.video_thumbs = video_thumbs
         self.takeout_dir = takeout_dir
+        self.config_data = config_data
         super().__init__(*args, directory=directory, **kwargs)
 
     def do_GET(self) -> None:
@@ -89,7 +92,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/settings":
             conn = connect(self.db_path)
             try:
-                self.send_json({"displayTimezone": get_setting(conn, "display_timezone", "")})
+                self.send_json({"displayTimezone": self.display_timezone_name(conn)})
             finally:
                 conn.close()
             return
@@ -181,14 +184,15 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         params = urllib.parse.parse_qs(parsed.query)
         if parsed.path == "/api/settings/timezone":
             value = (params.get("value") or [""])[0].strip()
+            if not valid_timezone_name(value):
+                self.send_json({"error": f"Invalid IANA timezone: {value}"}, status=400)
+                return
             conn = connect(self.db_path)
             try:
                 with conn:
-                    try:
-                        set_setting(conn, "display_timezone", value)
-                    except ValueError as exc:
-                        self.send_json({"error": str(exc)}, status=400)
-                        return
+                    set_setting(conn, "display_timezone", value)
+                    self.config_data["display_timezone"] = value
+                    save_config(self.config_data)
             finally:
                 conn.close()
             self.send_json({"ok": True, "displayTimezone": value})
@@ -473,20 +477,29 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         conn = connect(self.db_path)
         try:
             with conn:
-                conn.execute("DELETE FROM app_settings WHERE setting_key = 'display_timezone'")
+                value = str(self.config_data.get("display_timezone") or DEFAULT_DISPLAY_TIMEZONE)
+                if not valid_timezone_name(value):
+                    value = DEFAULT_DISPLAY_TIMEZONE
+                set_setting(conn, "display_timezone", value)
         finally:
             conn.close()
-        self.send_json({"ok": True, "displayTimezone": ""})
+        self.send_json({"ok": True, "displayTimezone": value})
 
     def render_page(self, template: str) -> bytes:
         conn = connect(self.db_path)
         try:
-            timezone_name = get_setting(conn, "display_timezone", "")
+            timezone_name = self.display_timezone_name(conn)
         finally:
             conn.close()
         config = json.dumps({"displayTimezone": timezone_name}, ensure_ascii=False)
         scripts = f"<script>window.YT_LIBRARY_CONFIG={config};</script><script src=\"/timezone.js\"></script>"
         return template.replace("</head>", scripts + "</head>").encode("utf-8")
+
+    def display_timezone_name(self, conn: sqlite3.Connection) -> str:
+        configured = str(self.config_data.get("display_timezone") or DEFAULT_DISPLAY_TIMEZONE)
+        if not valid_timezone_name(configured):
+            configured = DEFAULT_DISPLAY_TIMEZONE
+        return get_setting(conn, "display_timezone", configured)
 
     def send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -589,13 +602,16 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
 
 def serve(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}. Run migrate or import first.")
+    ensure_config_file(args.config_data)
+    migrate_database(db_path)
     conn = connect(db_path)
     try:
         conn.execute("SELECT 1 FROM playlists LIMIT 1")
+        with conn:
+            if not get_setting(conn, "display_timezone", ""):
+                set_setting(conn, "display_timezone", str(args.config_data.get("display_timezone") or DEFAULT_DISPLAY_TIMEZONE))
     except sqlite3.OperationalError as exc:
-        raise SystemExit(f"Database schema is not initialized. Run migrate first: {exc}") from exc
+        raise SystemExit(f"Database schema migration failed: {exc}") from exc
     finally:
         conn.close()
     reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER)
@@ -607,6 +623,7 @@ def serve(args: argparse.Namespace) -> None:
             cookie_file=Path(args.cookies),
             video_thumbs=Path(args.video_thumbs),
             takeout_dir=Path(args.takeout),
+            config_data=args.config_data,
             directory=str(ROOT),
             **handler_kwargs,
         )

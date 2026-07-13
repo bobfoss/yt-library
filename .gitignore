@@ -5,6 +5,7 @@ __pycache__/
 # Local app state and generated caches
 *.sqlite3
 *.sqlite3-*
+yt_library.config.json
 thumbs/
 archivarix_thumbs/
 video_thumbs/

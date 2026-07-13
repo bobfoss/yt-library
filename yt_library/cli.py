@@ -3,18 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any
 
+from .config import config_int, config_path, ensure_config_file, load_config
 from .core import (
-    ARCHIVARIX_COOKIE_FILE,
-    COOKIE_FILE,
-    DEFAULT_ARCHIVARIX_THUMB_DIR,
-    DEFAULT_DB,
-    DEFAULT_THUMB_DIR,
-    DEFAULT_VIDEO_THUMB_DIR,
-    POCKETTUBE_EXPORT,
-    TAKEOUT_DIR,
     discover_current_playlists,
     import_history,
     import_playlists,
@@ -28,27 +22,45 @@ from .server import serve
 
 
 def migrate(args: argparse.Namespace) -> None:
+    ensure_config_file(args.config_data)
     migrate_database(Path(args.db))
     print(f"Migrated {args.db}")
 
+
+def _preparse_config(argv: list[str] | None) -> tuple[list[str] | None, dict[str, Any]]:
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", default=None)
+    known, _ = config_parser.parse_known_args(argv)
+    return argv, load_config(known.config)
+
+
+def _attach_config(args: argparse.Namespace, config: dict[str, Any]) -> argparse.Namespace:
+    args.config_data = config
+    return args
+
+
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    argv, config = _preparse_config(argv)
     parser = argparse.ArgumentParser(description="Import YouTube library data and browse it locally.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--config", default=str(config["_config_path"]), help="Path to the JSON configuration file")
+    subparsers = parser.add_subparsers(dest="command")
 
     import_parser = subparsers.add_parser("import", help="Import playlists and cache thumbnails")
-    import_parser.add_argument("--db", default=str(DEFAULT_DB))
-    import_parser.add_argument("--thumbs", default=str(DEFAULT_THUMB_DIR))
-    import_parser.add_argument("--cookies", default=str(COOKIE_FILE))
-    import_parser.add_argument("--pockettube", default=str(POCKETTUBE_EXPORT))
+    import_parser.add_argument("--db", default=str(config_path(config, "database")))
+    import_parser.add_argument("--thumbs", default=str(config_path(config, "thumbnail_dir")))
+    import_parser.add_argument("--cookies", default=str(config_path(config, "cookies")))
+    import_parser.add_argument("--pockettube", default=str(config_path(config, "pockettube_export")))
     import_parser.set_defaults(func=import_playlists)
 
     discover_parser = subparsers.add_parser(
         "discover-current",
         help="Discover current signed-in YouTube playlists and add ungrouped ones",
     )
-    discover_parser.add_argument("--db", default=str(DEFAULT_DB))
-    discover_parser.add_argument("--thumbs", default=str(DEFAULT_THUMB_DIR))
-    discover_parser.add_argument("--cookies", default=str(COOKIE_FILE))
+    discover_parser.add_argument("--db", default=str(config_path(config, "database")))
+    discover_parser.add_argument("--thumbs", default=str(config_path(config, "thumbnail_dir")))
+    discover_parser.add_argument("--cookies", default=str(config_path(config, "cookies")))
     discover_parser.add_argument("--browse-id", default="FEplaylist_aggregation")
     discover_parser.add_argument("--group-key", default="youtube-ungrouped")
     discover_parser.add_argument("--group-name", default="Ungrouped / YouTube")
@@ -56,8 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     discover_parser.set_defaults(func=discover_current_playlists)
 
     scan_parser = subparsers.add_parser("scan-hidden", help="Scan playlists for unavailable videos")
-    scan_parser.add_argument("--db", default=str(DEFAULT_DB))
-    scan_parser.add_argument("--cookies", default=str(COOKIE_FILE))
+    scan_parser.add_argument("--db", default=str(config_path(config, "database")))
+    scan_parser.add_argument("--cookies", default=str(config_path(config, "cookies")))
     scan_parser.add_argument("--limit", type=int, default=0, help="Scan only the first N playlists")
     scan_parser.set_defaults(func=scan_hidden)
 
@@ -65,20 +77,20 @@ def main(argv: list[str] | None = None) -> int:
         "archivarix-thumbnails",
         help="Search Archivarix for deleted video thumbnail candidates",
     )
-    archivarix_parser.add_argument("--db", default=str(DEFAULT_DB))
-    archivarix_parser.add_argument("--thumbs", default=str(DEFAULT_ARCHIVARIX_THUMB_DIR))
+    archivarix_parser.add_argument("--db", default=str(config_path(config, "database")))
+    archivarix_parser.add_argument("--thumbs", default=str(config_path(config, "archivarix_thumbnail_dir")))
     archivarix_parser.add_argument("--limit", type=int, default=0, help="Search only the first N affected playlists")
     archivarix_parser.add_argument("--page-size", type=int, default=50)
     archivarix_parser.set_defaults(func=recover_archivarix_thumbnails)
 
     takeout_parser = subparsers.add_parser("import-takeout", help="Import current playlists from an extracted Takeout")
-    takeout_parser.add_argument("--db", default=str(DEFAULT_DB))
-    takeout_parser.add_argument("--takeout", default=str(TAKEOUT_DIR))
+    takeout_parser.add_argument("--db", default=str(config_path(config, "database")))
+    takeout_parser.add_argument("--takeout", default=str(config_path(config, "takeout_dir")))
     takeout_parser.set_defaults(func=import_takeout_playlists)
 
     history_parser = subparsers.add_parser("import-history", help="Import YouTube Takeout watch/search history")
-    history_parser.add_argument("--db", default=str(DEFAULT_DB))
-    history_parser.add_argument("--takeout", default=str(TAKEOUT_DIR))
+    history_parser.add_argument("--db", default=str(config_path(config, "database")))
+    history_parser.add_argument("--takeout", default=str(config_path(config, "takeout_dir")))
     history_parser.add_argument("--history-key", default="")
     history_parser.set_defaults(func=import_history)
 
@@ -86,9 +98,9 @@ def main(argv: list[str] | None = None) -> int:
         "recover-missing-thumbnails",
         help="Recover Archivarix metadata for exact unavailable video IDs",
     )
-    recover_missing_parser.add_argument("--db", default=str(DEFAULT_DB))
-    recover_missing_parser.add_argument("--thumbs", default=str(DEFAULT_ARCHIVARIX_THUMB_DIR))
-    recover_missing_parser.add_argument("--archivarix-cookies", default=str(ARCHIVARIX_COOKIE_FILE))
+    recover_missing_parser.add_argument("--db", default=str(config_path(config, "database")))
+    recover_missing_parser.add_argument("--thumbs", default=str(config_path(config, "archivarix_thumbnail_dir")))
+    recover_missing_parser.add_argument("--archivarix-cookies", default=str(config_path(config, "archivarix_cookies")))
     recover_missing_parser.add_argument("--video-id", default="")
     recover_missing_parser.add_argument("--limit", type=int, default=0)
     recover_missing_parser.add_argument("--only-missing", action="store_true")
@@ -99,19 +111,22 @@ def main(argv: list[str] | None = None) -> int:
     recover_missing_parser.set_defaults(func=recover_unavailable_videos)
 
     migrate_parser = subparsers.add_parser("migrate", help="Initialize the current database schema")
-    migrate_parser.add_argument("--db", default=str(DEFAULT_DB))
+    migrate_parser.add_argument("--db", default=str(config_path(config, "database")))
     migrate_parser.set_defaults(func=migrate)
 
     serve_parser = subparsers.add_parser("serve", help="Serve the library manager")
-    serve_parser.add_argument("--db", default=str(DEFAULT_DB))
-    serve_parser.add_argument("--cookies", default=str(COOKIE_FILE))
-    serve_parser.add_argument("--video-thumbs", default=str(DEFAULT_VIDEO_THUMB_DIR))
-    serve_parser.add_argument("--takeout", default=str(TAKEOUT_DIR))
-    serve_parser.add_argument("--host", default="0.0.0.0")
-    serve_parser.add_argument("--port", type=int, default=8765)
+    serve_parser.add_argument("--db", default=str(config_path(config, "database")))
+    serve_parser.add_argument("--cookies", default=str(config_path(config, "cookies")))
+    serve_parser.add_argument("--video-thumbs", default=str(config_path(config, "video_thumbnail_dir")))
+    serve_parser.add_argument("--takeout", default=str(config_path(config, "takeout_dir")))
+    serve_parser.add_argument("--host", default=str(config["host"]))
+    serve_parser.add_argument("--port", type=int, default=config_int(config, "port"))
     serve_parser.set_defaults(func=serve)
 
     args = parser.parse_args(argv)
+    if args.command is None:
+        args = parser.parse_args([*(argv or []), "serve"])
+    _attach_config(args, config)
     if args.command not in {"serve", "migrate"}:
         migrate_database(Path(args.db))
     args.func(args)

@@ -107,6 +107,26 @@ class NormalizedReadModelTests(unittest.TestCase):
             ],
         )
 
+    def test_fetch_app_data_includes_standalone_history_video_metadata(self) -> None:
+        self.add_video("historyonly1", "History Only Video", "UC_history")
+        self.conn.execute(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watched_at, watch_date, time_precision, source_type, match_type
+            ) VALUES ('historyonly-event', 'historyonly1', '2026-07-02T16:00:00Z', '2026-07-02', 'exact', 'takeout', 'takeout_only')
+            """
+        )
+        self.conn.commit()
+
+        data = fetch_app_data(self.conn)
+        standalone = data["standaloneVideos"]
+
+        self.assertEqual([row["video_id"] for row in standalone], ["historyonly1"])
+        self.assertEqual(standalone[0]["metadata_title"], "History Only Video")
+        self.assertEqual(standalone[0]["watch_count"], 1)
+        self.assertEqual(standalone[0]["playlist_links"], [])
+        self.assertEqual(data["playlistVideos"], [])
+
     def test_fetch_app_data_marks_dominant_owner_and_generates_urls(self) -> None:
         core.upsert_channel(self.conn, "UC_owner", title="Library Owner")
         self.conn.executemany(

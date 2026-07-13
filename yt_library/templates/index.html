@@ -760,7 +760,7 @@
 
     function likedVideos() {
       const byId = new Map();
-      for (const video of data.playlistVideos || []) {
+      for (const video of [...(data.playlistVideos || []), ...(data.standaloneVideos || [])]) {
         if (String(video.reaction || '').toUpperCase() !== 'L') continue;
         const key = video.video_id || `${video.playlist_id}:${video.position}`;
         if (!byId.has(key)) byId.set(key, video);
@@ -1533,7 +1533,10 @@
     }
 
     function videoRowsById(videoId) {
-      return (data.playlistVideos || []).filter(video => video.video_id === videoId);
+      return [
+        ...(data.playlistVideos || []).filter(video => video.video_id === videoId),
+        ...(data.standaloneVideos || []).filter(video => video.video_id === videoId),
+      ];
     }
 
     function channelById(channelId) {

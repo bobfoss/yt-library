@@ -25,14 +25,15 @@ python -m pip install -r requirements.txt
 $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
 python -m py_compile @files
 python -m unittest discover -s tests -v
-python yt_library_manager.py migrate --db yt_library.sqlite3
-python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout takeout
-python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout takeout
+python yt_library_manager.py
+python yt_library_manager.py migrate
+python yt_library_manager.py import-history
 ```
 
 - `py_compile` catches syntax errors without running workers.
-- `migrate` initializes the current schema from `yt_library/schema.sql`. This project supports only the current local/fresh-install schema while it is in early development; stale databases from older schema eras should be rebuilt or re-imported instead of upgraded through historical migration code. Run `migrate` deliberately before starting a server after schema changes; normal connections and requests never initialize schema objects.
-- `serve` starts the local browser/admin UI and requires an already-migrated database.
+- With no command, `yt_library_manager.py` creates `yt_library.config.json` if needed, initializes or migrates the configured database, and serves the local browser/admin UI.
+- `migrate` initializes or upgrades the configured schema from the migration path in `yt_library/core.py`.
+- `serve` starts the local browser/admin UI and initializes or migrates the configured database before listening.
 - `import-history` imports Takeout watch history zips from the selected path and rebuilds reconciliation.
 
 This repo is normally operated from PowerShell. Avoid Bash-only syntax such as `python - <<'PY'` here-docs. Prefer PowerShell-safe forms like `python -c "..."`, checked-in or temporary helper scripts when warranted, or explicit PowerShell here-strings piped intentionally. This project does not use `ENVIRONMENT.md`.

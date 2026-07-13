@@ -23,6 +23,7 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 - `yt_library/templates/` contains the browser, history, and admin HTML.
 - `tests/` contains the basic `unittest` suite for pure helpers, schema bootstrap, and read models.
 - `requirements.txt` lists Python dependencies.
+- `yt_library.config.json` is the local runtime configuration file, generated on first setup or serve.
 - `AGENTS.md` contains contributor guidance.
 - Runtime data such as `yt_library.sqlite3`, cookie files, Takeout zip exports, thumbnail folders, and logs should stay local and uncommitted.
 
@@ -37,16 +38,31 @@ Keep a Netscape-format YouTube cookie file in the project directory or pass its 
 ## Run Locally
 
 ```powershell
-python yt_library_manager.py migrate --db yt_library.sqlite3
-python yt_library_manager.py serve --host 0.0.0.0 --port 8765 --db yt_library.sqlite3 --cookies "YT cookies.txt" --video-thumbs video_thumbs --takeout takeout
+python yt_library_manager.py
 ```
 
-Run `migrate` deliberately when creating a fresh local database after schema
-changes. This project is still early and supports only the current local install:
-historical database upgrades are intentionally not maintained. If a database was
-created against an older schema era, rebuild or re-import it instead of expecting
-`migrate` to repair it. The server and ordinary requests do not initialize schema
-objects automatically.
+With no command, the app creates `yt_library.config.json` if needed, initializes
+or migrates `yt_library.sqlite3`, and serves the local UI. Defaults can be edited
+in the generated config file:
+
+```json
+{
+  "database": "yt_library.sqlite3",
+  "cookies": "YT cookies.txt",
+  "archivarix_cookies": "archivarix.net cookies.txt",
+  "pockettube_export": "youtube_playlist_manager_2026-07-02-17_13.json",
+  "thumbnail_dir": "thumbs",
+  "archivarix_thumbnail_dir": "archivarix_thumbs",
+  "video_thumbnail_dir": "video_thumbs",
+  "takeout_dir": "takeout",
+  "host": "127.0.0.1",
+  "port": 8765,
+  "display_timezone": "UTC"
+}
+```
+
+Existing command-line options still work as one-off overrides, and `migrate`
+remains available for explicit setup or upgrade runs.
 
 Open:
 
@@ -60,7 +76,8 @@ Open:
 $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
 python -m py_compile @files
 python -m unittest discover -s tests -v
-python yt_library_manager.py import-history --db yt_library.sqlite3 --takeout takeout
+python yt_library_manager.py migrate
+python yt_library_manager.py import-history
 git diff --check
 ```
 
@@ -74,7 +91,7 @@ The test suite uses the Python standard library `unittest` runner, so there is n
 
 Takeout history is the authoritative source for exact watch times. Live YouTube history is useful for recent observations and ordering, but it may only provide date-level data. Reconciled history rows use compact `source_type`, `match_type`, and `time_quality` values so fetch time is not mistaken for watch time.
 
-The database stores canonical video metadata once in `videos`; playlist membership and history events link to that entity. Metadata revisions are intentionally discarded, except that the last useful state is retained when a video becomes unavailable. Exact timestamps use ISO 8601 UTC. The UI detects the browser timezone once when no preference exists, and Admin can override it.
+The database stores canonical video metadata once in `videos`; playlist membership and history events link to that entity. Metadata revisions are intentionally discarded, except that the last useful state is retained when a video becomes unavailable. Exact timestamps use ISO 8601 UTC. The configured display timezone lives in `yt_library.config.json`; the UI can update it from Admin.
 
 ## Security
 
