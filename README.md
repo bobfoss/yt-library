@@ -55,7 +55,7 @@ in the generated config file:
   "archivarix_thumbnail_dir": "archivarix_thumbs",
   "video_thumbnail_dir": "video_thumbs",
   "takeout_dir": "takeout",
-  "host": "127.0.0.1",
+  "host": "0.0.0.0",
   "port": 8765,
   "display_timezone": "UTC"
 }
@@ -63,6 +63,9 @@ in the generated config file:
 
 Existing command-line options still work as one-off overrides, and `migrate`
 remains available for explicit setup or upgrade runs.
+
+The default host binds to all local network interfaces. Use the loopback URLs
+below when opening the app on this machine.
 
 Open:
 

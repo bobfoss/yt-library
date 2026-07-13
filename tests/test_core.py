@@ -1374,6 +1374,7 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(db_path.exists())
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["display_timezone"], "UTC")
+            self.assertEqual(payload["host"], "0.0.0.0")
 
     def test_cli_defaults_to_serve_command(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1385,6 +1386,7 @@ class ConfigTests(unittest.TestCase):
             args = serve.call_args.args[0]
             self.assertEqual(args.command, "serve")
             self.assertEqual(Path(args.db).resolve(), (config_path.parent / "yt_library.sqlite3").resolve())
+            self.assertEqual(args.host, "0.0.0.0")
 
 
 class WorkerQueueTests(unittest.TestCase):
