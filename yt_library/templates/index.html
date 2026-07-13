@@ -71,8 +71,8 @@
     .pager button:hover:not(:disabled) { background: var(--accent-soft); }
     .pager button:disabled { opacity: .45; cursor: default; }
     .pager button.current { background: var(--accent-soft); color: var(--ink); font-weight: 650; }
-    .pager .page-jumps { display: inline-flex; align-items: center; gap: 8px; }
-    .pager .page-jumps button, .pager .ellipsis, .pager .page-placeholder { min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; }
+    .pager .page-jumps { --page-slot-width: 42px; display: inline-flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+    .pager .page-jumps button, .pager .ellipsis, .pager .page-placeholder { flex: 0 0 var(--page-slot-width); width: var(--page-slot-width); min-width: var(--page-slot-width); min-height: 32px; display: inline-flex; align-items: center; justify-content: center; }
     .pager .ellipsis { color: var(--muted); border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
     .pager .page-placeholder { visibility: hidden; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
     .pager .page-goto { display: inline-flex; align-items: center; gap: 6px; }
