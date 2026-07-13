@@ -66,7 +66,7 @@
     .view-sort select { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
     .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; color: var(--muted); font-size: 14px; margin: 0 0 14px; }
     .pager.bottom { margin: 18px 0 0; }
-    .pager button, .pager select { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
+    .pager button, .pager select, .pager input { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
     .pager button { cursor: pointer; }
     .pager button:hover:not(:disabled) { background: var(--accent-soft); }
     .pager button:disabled { opacity: .45; cursor: default; }
@@ -75,6 +75,8 @@
     .pager .page-jumps button, .pager .ellipsis, .pager .page-placeholder { min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; }
     .pager .ellipsis { color: var(--muted); border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
     .pager .page-placeholder { visibility: hidden; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; }
+    .pager .page-goto { display: inline-flex; align-items: center; gap: 6px; }
+    .pager .page-goto input { width: 72px; }
     .view-context { flex: 0 0 auto; min-height: 0; margin-bottom: 14px; }
     .view-context[hidden] { display: none; }
     .results-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
@@ -975,6 +977,18 @@
       `;
     }
 
+    function pageGotoHtml(pageInfo) {
+      if (pageInfo.pageCount <= 1) return '';
+      return `
+        <form class="page-goto" data-page-goto>
+          <label>Go to
+            <input type="number" data-page-goto-input min="1" max="${pageInfo.pageCount}" value="${pageInfo.page}" inputmode="numeric">
+          </label>
+          <button type="submit">Go</button>
+        </form>
+      `;
+    }
+
     function pagerHtml(pageInfo, includePageSize = false) {
       if (!pageInfo.total) return '';
       const pageSizes = ['50', '100', '250', '500', 'all'];
@@ -989,6 +1003,7 @@
         ${sizeHtml}
         <span>Showing ${pageInfo.start}-${pageInfo.end} of ${pageInfo.total}</span>
         ${pageJumpHtml(pageInfo)}
+        ${pageGotoHtml(pageInfo)}
       `;
     }
 
@@ -2425,8 +2440,23 @@
       if (updateCurrentHash(false)) return;
       render();
     }
+    function handlePagerSubmit(event) {
+      const target = event.target;
+      if (!(target instanceof HTMLFormElement) || target.dataset.pageGoto === undefined) return;
+      event.preventDefault();
+      const input = target.querySelector('[data-page-goto-input]');
+      if (!(input instanceof HTMLInputElement)) return;
+      const page = Number(input.value);
+      const maxPage = Number(input.max || 0);
+      if (!Number.isFinite(page) || page < 1) return;
+      currentPage = maxPage > 0 ? Math.min(page, maxPage) : page;
+      scrollResultsToTop();
+      if (updateCurrentHash(false)) return;
+      render();
+    }
     bottomPager.addEventListener('click', handlePagerClick);
     bottomPager.addEventListener('change', handlePagerChange);
+    bottomPager.addEventListener('submit', handlePagerSubmit);
     if (channelsFilter) {
       channelsFilter.addEventListener('change', () => {
         channelsFilter.indeterminate = false;
