@@ -278,13 +278,14 @@
     let historyPageState = { key: '', loading: false, data: null };
     let historyActivityState = { key: '', loading: false, data: null };
     let historyActivityYearOffset = 0;
-    let historySearchState = { key: '', loading: false, data: null };
+    let omniSearchState = { key: '', data: null, promise: null };
     let pendingHistoryDate = '';
     let channelHistoryCounts = new Map();
     let channelDetailTab = 'playlists';
     let channelsManuallyDisabled = false;
     let renderGeneration = 0;
     let searchProgressTimer = null;
+    let searchInputTimer = null;
     const search = document.getElementById('search');
     const searchNav = document.getElementById('search-nav');
     const refresh = document.getElementById('refresh');
@@ -313,7 +314,7 @@
       data = await response.json();
       historyPageState = { key: '', loading: false, data: null };
       historyActivityState = { key: '', loading: false, data: null };
-      historySearchState = { key: '', loading: false, data: null };
+      omniSearchState = { key: '', data: null, promise: null };
       channelHistoryCounts = new Map();
       playlists = new Map(data.playlists.map(p => [p.playlist_id, p]));
       channels = new Map((data.channels || []).map(channel => [channel.channel_id, channel]));
@@ -832,49 +833,6 @@
       return sorted;
     }
 
-    function searchResultTitle(result) {
-      const item = result.item || {};
-      if (result.kind === 'playlist') return item.title || item.playlist_id || '';
-      if (result.kind === 'channel') return item.title || item.channel_id || '';
-      return displayVideoTitle(item);
-    }
-
-    function searchResultDate(result) {
-      const item = result.item || {};
-      const value = result.kind === 'history'
-        ? (item.watched_at || item.best_watch_time || item.watch_date || item.added_at || '')
-        : result.kind === 'playlist'
-          ? (item.updated_at || '')
-          : result.kind === 'channel'
-            ? (item.updated_at || item.fetched_at || '')
-            : (item.added_at || item.metadata_upload_date || item.metadata_published_at || item.published_at || '');
-      const time = typeof value === 'number' ? value : Date.parse(value);
-      return Number.isFinite(time) ? time : 0;
-    }
-
-    function searchResultWatchCount(result) {
-      return Number((result.item || {}).watch_count || 0);
-    }
-
-    function sortedSearchResults(rows) {
-      const sorted = [...rows];
-      const byTitle = (a, b) => searchResultTitle(a).localeCompare(searchResultTitle(b), undefined, { sensitivity: 'base' });
-      if (searchResultsSort === 'title') {
-        sorted.sort((a, b) => byTitle(a, b) || a.score - b.score);
-      } else if (searchResultsSort === 'newest') {
-        sorted.sort((a, b) => searchResultDate(b) - searchResultDate(a) || byTitle(a, b));
-      } else if (searchResultsSort === 'oldest') {
-        sorted.sort((a, b) => searchResultDate(a) - searchResultDate(b) || byTitle(a, b));
-      } else if (searchResultsSort === 'most_watched') {
-        sorted.sort((a, b) => searchResultWatchCount(b) - searchResultWatchCount(a) || byTitle(a, b));
-      } else if (searchResultsSort === 'type') {
-        sorted.sort((a, b) => a.kind.localeCompare(b.kind, undefined, { sensitivity: 'base' }) || byTitle(a, b));
-      } else {
-        sorted.sort((a, b) => a.score - b.score || byTitle(a, b));
-      }
-      return sorted;
-    }
-
     function pageSizeNumber() {
       if (pageSize === 'all') return Infinity;
       const value = Number(pageSize || 100);
@@ -956,7 +914,7 @@
 
     function pagerHtml(pageInfo, includePageSize = false) {
       if (!pageInfo.total) return '';
-      const pageSizes = ['50', '100', '250', '500', 'all'];
+      const pageSizes = ['50', '100', '250', '500'];
       const sizeHtml = includePageSize ? `
         <label>Page size
           <select data-page-size>
@@ -1025,9 +983,9 @@
       }, 280);
     }
 
-    function remotePageInfo(total, rowsLength) {
+    function remotePageInfo(total, rowsLength, remoteLimit = 0) {
       const size = pageSizeNumber();
-      const effectiveSize = Number.isFinite(size) ? size : 1000;
+      const effectiveSize = remoteLimit || (Number.isFinite(size) ? size : 1000);
       const pageCount = Math.max(1, Math.ceil(total / effectiveSize));
       currentPage = Math.min(Math.max(1, currentPage), pageCount);
       const start = total ? (currentPage - 1) * effectiveSize + 1 : 0;
@@ -1470,184 +1428,31 @@
       return `<a class="playlist-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Archivarix</a>`;
     }
 
-    function historySearchKey(query) {
-      return `${query}\u0000${pageSize}`;
-    }
-
-    async function fetchHistorySearchRows(query) {
-      const key = historySearchKey(query);
-      if (historySearchState.key === key && historySearchState.data) return historySearchState.data.watch || [];
-      if (historySearchState.key === key && historySearchState.loading) return historySearchState.data?.watch || [];
-      historySearchState = { key, loading: true, data: historySearchState.key === key ? historySearchState.data : null };
-      const params = new URLSearchParams({ q: query, limit: '500', offset: '0' });
-      const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
-      if (!response.ok) throw new Error(`History search failed: ${response.status}`);
-      const payload = await response.json();
-      if (historySearchState.key === key) {
-        historySearchState = { key, loading: false, data: payload };
-      }
-      return payload.watch || [];
-    }
-
-    async function buildOmniResults(query) {
-      const filters = activeSearchFilters();
-      const results = [];
-      const seenVideoKeys = new Set();
-      const searchTitles = filters.has('videos');
-      const searchDescriptions = filters.has('descriptions');
-      const searchTextFields = searchTitles || searchDescriptions;
-      if (filters.has('playlists')) {
-        for (const playlist of data.playlists) {
-          const titleHit = searchTitles && includesQuery([
-            playlist.title,
-            playlist.owner_channel_title,
-            playlist.owner_channel_id,
-            playlist.owner_channel_url,
-            playlist.visibility,
-            playlist.playlist_id,
-          ].join(' '), query);
-          const descriptionHit = searchDescriptions && includesQuery(playlist.description, query);
-          if (titleHit || descriptionHit) {
-            results.push({ kind: 'playlist', score: titleHit ? 0 : 2, item: playlist });
-          }
-        }
-      }
-      if (filters.has('channels_subscribed') || filters.has('channels_unsubscribed')) {
-        for (const channel of data.channels || []) {
-          const subscribed = isSubscribedChannel(channel);
-          if (subscribed && !filters.has('channels_subscribed')) continue;
-          if (!subscribed && !filters.has('channels_unsubscribed')) continue;
-          const titleHit = searchTitles && includesQuery(`${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.status}`, query);
-          const descriptionHit = searchDescriptions && includesQuery(`${channel.description} ${channel.status_reason}`, query);
-          if (titleHit || descriptionHit) {
-            results.push({ kind: 'channel', score: titleHit ? 0 : 2, item: channel });
-          }
-        }
-      }
-      const searchPlaylistVideos = filters.has('playlist_videos');
-      const searchHistoryVideos = filters.has('history_videos');
-      const searchUnavailableVideos = filters.has('unavailable_videos');
-      if (searchTextFields && searchPlaylistVideos) {
-        for (const video of data.playlistVideos || []) {
-          if (isUnavailablePlaylistVideo(video) && !searchUnavailableVideos) continue;
-          const titleHit = searchTitles && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.match_label} ${video.match_note} ${video.video_id} ${video.playlist_title}`, query);
-          const descriptionHit = searchDescriptions && includesQuery(video.metadata_description, query);
-          if (titleHit || descriptionHit) {
-            const key = video.video_id ? `video:${video.video_id}` : `playlist-row:${video.playlist_id}:${video.position}`;
-            if (!seenVideoKeys.has(key)) {
-              seenVideoKeys.add(key);
-              results.push({ kind: 'video', score: titleHit ? 1 : 3, item: video, matchedDescription: descriptionHit && !titleHit });
-            }
-          }
-        }
-      }
-      if (searchTextFields && searchHistoryVideos) {
-        const seenHistoryKeys = new Set();
-        for (const video of await fetchHistorySearchRows(query)) {
-          const titleHit = searchTitles && includesQuery(`${displayVideoTitle(video)} ${displayVideoChannel(video)} ${reactionLabel(video)} ${video.video_id}`, query);
-          const descriptionHit = searchDescriptions && includesQuery(video.metadata_description, query);
-          if (!titleHit && !descriptionHit) continue;
-          const key = video.video_id ? `history:${video.video_id}` : `history-row:${video.reconciled_id}`;
-          if (seenHistoryKeys.has(key)) continue;
-          seenHistoryKeys.add(key);
-          results.push({ kind: 'history', score: titleHit ? 2 : 4, item: video, matchedDescription: descriptionHit && !titleHit });
-        }
-      }
-      return results;
-    }
-
-    function resultIsUnavailable(result) {
-      if (result.kind === 'history') return false;
-      if (result.kind !== 'video') return false;
-      return isUnavailablePlaylistVideo(result.item);
-    }
-
-    function resultUsesVideoAvailabilityFilter(result) {
-      return result.kind === 'video' || result.kind === 'history';
-    }
-
-    function filterSearchResultsByAvailability(rows) {
-      return rows.filter(result => {
-        if (!resultUsesVideoAvailabilityFilter(result)) return true;
-        const unavailable = resultIsUnavailable(result);
-        return unavailable ? searchResultVisibility.unavailable : true;
+    async function fetchOmniSearch(query) {
+      const size = pageSizeNumber();
+      const limit = Number.isFinite(size) ? size : 5000;
+      const offset = (currentPage - 1) * limit;
+      const params = new URLSearchParams({
+        q: query,
+        filters: searchFilterParamValue() || '__none__',
+        unavailable: searchResultVisibility.unavailable ? '1' : '0',
+        sort: searchResultsSort,
+        limit: String(limit),
+        offset: String(offset),
       });
-    }
-
-    function isVideoSearchResult(result) {
-      return result.kind === 'video' || result.kind === 'history';
-    }
-
-    function searchResultVideoId(result) {
-      return String((result.item || {}).video_id || '').trim();
-    }
-
-    function searchResultSourceRank(result) {
-      if (result.kind === 'video') return 0;
-      if (result.kind === 'history') return 1;
-      return 99;
-    }
-
-    function searchResultCompleteness(result) {
-      const item = result.item || {};
-      return [
-        'metadata_title',
-        'title',
-        'recovered_title',
-        'metadata_thumbnail_path',
-        'recovered_thumbnail_path',
-        'metadata_channel',
-        'channel',
-        'recovered_channel',
-        'metadata_description',
-        'recovered_description',
-        'duration_text',
-      ].reduce((score, key) => score + (item[key] ? 1 : 0), 0);
-    }
-
-    function betterVideoSearchResult(left, right) {
-      const leftRank = searchResultSourceRank(left);
-      const rightRank = searchResultSourceRank(right);
-      if (leftRank !== rightRank) return leftRank < rightRank ? left : right;
-      const leftScore = Number(left.score ?? 99);
-      const rightScore = Number(right.score ?? 99);
-      if (leftScore !== rightScore) return leftScore <= rightScore ? left : right;
-      return searchResultCompleteness(right) > searchResultCompleteness(left) ? right : left;
-    }
-
-    function mergeVideoSearchResult(winner, loser) {
-      return {
-        ...winner,
-        matchedDescription: Boolean(winner.matchedDescription || loser.matchedDescription),
-        score: Math.min(Number(winner.score ?? 99), Number(loser.score ?? 99)),
-      };
-    }
-
-    function dedupeSearchVideoResults(rows) {
-      const output = [];
-      const videoIndexes = new Map();
-      for (const result of rows) {
-        if (!isVideoSearchResult(result)) {
-          output.push(result);
-          continue;
+      const key = params.toString();
+      if (omniSearchState.key === key && omniSearchState.data) return omniSearchState.data;
+      if (omniSearchState.key === key && omniSearchState.promise) return omniSearchState.promise;
+      const promise = fetch(`/api/search?${params}`, { cache: 'no-store' }).then(async response => {
+        if (!response.ok) throw new Error(`Search failed: ${response.status}`);
+        const payload = await response.json();
+        if (omniSearchState.key === key) {
+          omniSearchState = { key, data: payload, promise: null };
         }
-        const videoId = searchResultVideoId(result);
-        if (!videoId) {
-          output.push(result);
-          continue;
-        }
-        const existingIndex = videoIndexes.get(videoId);
-        if (existingIndex === undefined) {
-          videoIndexes.set(videoId, output.length);
-          output.push(result);
-          continue;
-        }
-        const existing = output[existingIndex];
-        const better = betterVideoSearchResult(existing, result);
-        const loser = better === existing ? result : existing;
-        output[existingIndex] = mergeVideoSearchResult(better, loser);
-      }
-      return output;
+        return payload;
+      });
+      omniSearchState = { key, data: null, promise };
+      return promise;
     }
 
     function buttonFor(group, child=false) {
@@ -1861,8 +1666,13 @@
         selected === '__history__'
         || (selected.startsWith('__channel__:') && channelDetailTab === 'history')
       );
-      if (!preserveHistoryChrome) {
+      const preserveSearchPager = selected === '__search__'
+        && Boolean(omniSearchState.data)
+        && !bottomPager.hidden;
+      if (!preserveHistoryChrome && !preserveSearchPager) {
         hidePager();
+      }
+      if (!preserveHistoryChrome) {
         viewContext.replaceChildren();
         viewContext.hidden = true;
       }
@@ -1961,9 +1771,9 @@
         showSearchProgress();
         await new Promise(resolve => requestAnimationFrame(resolve));
         if (generation !== renderGeneration) return;
-        let allRows;
+        let payload;
         try {
-          allRows = await buildOmniResults(query);
+          payload = await fetchOmniSearch(query);
         } catch (error) {
           if (generation !== renderGeneration) return;
           stopSearchProgress();
@@ -1974,13 +1784,20 @@
         }
         if (generation !== renderGeneration) return;
         stopSearchProgress();
-        const rows = sortedSearchResults(dedupeSearchVideoResults(filterSearchResultsByAvailability(allRows))).slice(0, 500);
+        const rows = payload.results || [];
+        const total = Number(payload.total || 0);
+        const remoteLimit = Number(payload.limit || pageSizeNumber() || 100);
+        currentPage = Math.floor(Number(payload.offset || 0) / remoteLimit) + 1;
         title.textContent = 'Search results';
         meta.innerHTML = `
-          <span>${rows.length} shown</span>
+          <span>${total} results</span>
           ${searchResultsSortHtml()}
         `;
-        renderPagedGrid(rows, searchResultCardFor, 'No results match.');
+        renderPager(remotePageInfo(total, rows.length, remoteLimit));
+        grid.className = 'grid';
+        grid.replaceChildren(...rows.map(searchResultCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No results match.';
         return;
       }
       if (selected.startsWith('__playlist__:')) {
@@ -2461,6 +2278,10 @@
     }
 
     search.addEventListener('input', () => {
+      if (searchInputTimer !== null) {
+        clearTimeout(searchInputTimer);
+        searchInputTimer = null;
+      }
       currentPage = 1;
       if (search.value.trim()) {
         const wasSearchHash = window.location.hash === '#search' || window.location.hash.startsWith('#search?');
@@ -2468,7 +2289,10 @@
         renderGroups();
         const changed = updateSearchHash(wasSearchHash);
         if (changed && !wasSearchHash) return;
-        render();
+        searchInputTimer = setTimeout(() => {
+          searchInputTimer = null;
+          render();
+        }, 250);
         return;
       }
       if (selected === '__search__') {

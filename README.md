@@ -97,7 +97,7 @@ git diff --check
 
 ## Testing
 
-The test suite uses the Python standard library `unittest` runner, so there is no separate test dependency. Current coverage focuses on stable, local behavior: date/time normalization, reaction extraction, Takeout watch-history parsing, fresh SQLite schema bootstrap, and history search filtering/sorting. Tests must not use real cookies, network requests, or personal runtime databases.
+The test suite uses the Python standard library `unittest` runner, so there is no separate test dependency. Current coverage focuses on stable, local behavior: date/time normalization, reaction extraction, Takeout watch-history parsing, fresh SQLite schema bootstrap, and omni/history search filtering, deduplication, sorting, and paging. Tests must not use real cookies, network requests, or personal runtime databases.
 
 ## Data Notes
 

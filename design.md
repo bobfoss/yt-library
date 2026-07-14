@@ -28,6 +28,8 @@ Primary surfaces:
 - `/history`: single-column watch history search, sorted by descending watch date, with pagination and metadata-enhanced cards.
 - `/admin`: status dashboard and worker control plane for metadata, playlist scans, placeholder recovery, and history.
 
+Omni-search uses `/api/search` as its single read model. The server applies title/description and source filters, folds playlist and history evidence into one canonical video result, includes unresolved unavailable memberships, globally sorts and counts videos/channels/playlists, and only then returns the requested page. The browser does not merge a separate history result set.
+
 SQLite is the source of truth for local state. Cached thumbnails and avatars are derived local assets. Cookie files, Takeout zips, databases, logs, and thumbnail folders are private runtime data and should remain uncommitted.
 
 ## Data Sources

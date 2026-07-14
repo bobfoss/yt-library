@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from yt_library import core
-from yt_library.queries import fetch_app_data, history_activity_data, history_search_data
+from yt_library.queries import fetch_app_data, history_activity_data, history_search_data, omni_search_data
 
 
 class NormalizedReadModelTests(unittest.TestCase):
@@ -31,6 +31,113 @@ class NormalizedReadModelTests(unittest.TestCase):
             channel_id=channel_id or "",
             source="metadata",
         )
+
+    def test_omni_search_deduplicates_sources_counts_and_pages_globally(self) -> None:
+        self.add_video("shared123", "Needle Shared Video", "UC_needle")
+        self.add_video("history123", "Needle History Video")
+        self.conn.execute(
+            "UPDATE channels SET title = 'Needle Channel', subscribed = 1 WHERE channel_id = 'UC_needle'"
+        )
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title, owner_channel_id) VALUES ('PLneedle', 'Needle Playlist', 'UC_needle')"
+        )
+        self.conn.execute(
+            """
+            INSERT INTO playlist_items(playlist_id, position, video_id, membership_state)
+            VALUES ('PLneedle', 1, 'shared123', 'current')
+            """
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES (?, ?, ?, 'date_only')
+            """,
+            [
+                ("shared-history", "shared123", "2026-07-01"),
+                ("history-only", "history123", "2026-07-02"),
+            ],
+        )
+        self.conn.commit()
+
+        data = omni_search_data(self.conn, "needle", sort="type", limit=20)
+
+        self.assertEqual(data["counts"], {"videos": 2, "channels": 1, "playlists": 1})
+        self.assertEqual(data["total"], 4)
+        self.assertEqual([result["kind"] for result in data["results"]], ["video", "video", "channel", "playlist"])
+        video_ids = [result["item"]["video_id"] for result in data["results"] if result["kind"] == "video"]
+        self.assertEqual(sorted(video_ids), ["history123", "shared123"])
+        shared = next(result["item"] for result in data["results"] if result["item"].get("video_id") == "shared123")
+        self.assertEqual(shared["watch_count"], 1)
+        self.assertEqual(shared["playlist_links"][0]["playlist_id"], "PLneedle")
+
+        page = omni_search_data(self.conn, "needle", sort="type", limit=2, offset=2)
+        self.assertEqual(page["total"], 4)
+        self.assertEqual(page["offset"], 2)
+        self.assertEqual([result["kind"] for result in page["results"]], ["channel", "playlist"])
+
+    def test_omni_search_applies_source_field_subscription_and_availability_filters(self) -> None:
+        self.add_video("description1", "Ordinary title", "UC_subscribed")
+        self.add_video("unavailable1", "Needle unavailable")
+        self.conn.execute(
+            "UPDATE videos SET description = 'Needle in description' WHERE video_id = 'description1'"
+        )
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 0, availability = 'private' WHERE video_id = 'unavailable1'"
+        )
+        self.conn.execute(
+            "UPDATE channels SET title = 'Needle subscribed', subscribed = 1 WHERE channel_id = 'UC_subscribed'"
+        )
+        self.conn.execute("INSERT INTO channels(channel_id, title, subscribed) VALUES ('UC_other', 'Needle other', 0)")
+        self.conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLfilters', 'Filter playlist')")
+        self.conn.executemany(
+            """
+            INSERT INTO playlist_items(playlist_id, position, video_id, membership_state)
+            VALUES ('PLfilters', ?, ?, 'current')
+            """,
+            [(1, "description1"), (2, "unavailable1")],
+        )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES ('description-history', 'description1', '2026-07-03', 'date_only')
+            """
+        )
+        self.conn.commit()
+
+        descriptions = omni_search_data(
+            self.conn,
+            "needle",
+            filters={"descriptions", "history_videos"},
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in descriptions["results"]],
+            ["description1"],
+        )
+
+        subscribed = omni_search_data(
+            self.conn,
+            "needle",
+            filters={"videos", "channels_subscribed"},
+        )
+        self.assertEqual(
+            [result["item"]["channel_id"] for result in subscribed["results"]],
+            ["UC_subscribed"],
+        )
+
+        available_only = omni_search_data(
+            self.conn,
+            "needle",
+            filters={"videos", "playlist_videos", "unavailable_videos"},
+            include_unavailable=False,
+        )
+        self.assertEqual(available_only["results"], [])
+        with_unavailable = omni_search_data(
+            self.conn,
+            "needle",
+            filters={"videos", "playlist_videos", "unavailable_videos"},
+            include_unavailable=True,
+        )
+        self.assertEqual(with_unavailable["results"][0]["item"]["video_id"], "unavailable1")
 
     def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:
         self.add_video("old123", "Old Router Video")

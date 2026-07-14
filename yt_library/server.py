@@ -15,7 +15,7 @@ from typing import Any
 
 from .config import configured_display_timezone, effective_display_timezone, ensure_config_file, save_config
 from .core import *
-from .queries import fetch_app_data, history_activity_data, history_search_data
+from .queries import fetch_app_data, history_activity_data, history_search_data, omni_search_data
 from .templates import load_template
 from .workers import (
     LIVE_HISTORY_WORKER,
@@ -112,6 +112,44 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             conn = connect(self.db_path)
             try:
                 data = fetch_app_data(conn)
+            finally:
+                conn.close()
+            self.send_json(data)
+            return
+        if parsed.path == "/api/search":
+            params = urllib.parse.parse_qs(parsed.query)
+            query = (params.get("q") or [""])[0]
+            filter_value = (params.get("filters") or [""])[0]
+            filters = (
+                set()
+                if filter_value == "__none__"
+                else ({value for value in filter_value.split(",") if value} if filter_value else None)
+            )
+            include_unavailable = (params.get("unavailable") or ["1"])[0].strip().lower() not in {
+                "0",
+                "false",
+                "no",
+            }
+            sort = (params.get("sort") or ["relevance"])[0]
+            try:
+                limit = max(1, min(5000, int((params.get("limit") or ["100"])[0] or 100)))
+            except ValueError:
+                limit = 100
+            try:
+                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+            except ValueError:
+                offset = 0
+            conn = connect(self.db_path)
+            try:
+                data = omni_search_data(
+                    conn,
+                    query,
+                    filters=filters,
+                    include_unavailable=include_unavailable,
+                    sort=sort,
+                    limit=limit,
+                    offset=offset,
+                )
             finally:
                 conn.close()
             self.send_json(data)
