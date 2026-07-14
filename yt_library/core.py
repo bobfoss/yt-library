@@ -821,7 +821,7 @@ def youtube_cookie_diagnostics(cookie_file: Path, now: float | None = None) -> s
     except (OSError, http.cookiejar.LoadError) as exc:
         return f"cookie_file=unreadable; error={type(exc).__name__}"
     unexpired = [cookie for cookie in sessions if cookie.expires is None or cookie.expires > now]
-    session_cookies = sum(cookie.expires is None for cookie in sessions)
+    non_expiring_auth_cookies = sum(cookie.expires is None for cookie in sessions)
     expirations = [int(cookie.expires) for cookie in unexpired if cookie.expires is not None]
     earliest_expiry = (
         datetime.fromtimestamp(min(expirations), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -830,7 +830,7 @@ def youtube_cookie_diagnostics(cookie_file: Path, now: float | None = None) -> s
     )
     return (
         f"auth_cookies={len(sessions)}; unexpired={len(unexpired)}; "
-        f"session_cookies={session_cookies}; earliest_expiry={earliest_expiry}"
+        f"non_expiring_auth_cookies={non_expiring_auth_cookies}; earliest_expiry={earliest_expiry}"
     )
 
 
