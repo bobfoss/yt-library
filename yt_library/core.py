@@ -826,6 +826,14 @@ def youtube_page_requires_login(html_text: str) -> bool:
     return any(marker in (html_text or "") for marker in markers)
 
 
+class YouTubeAuthenticationError(RuntimeError):
+    pass
+
+
+def youtube_page_is_authenticated(html_text: str) -> bool:
+    return bool(re.search(r'"LOGGED_IN"\s*:\s*true', html_text or ""))
+
+
 def load_cookie_opener(cookie_file: Path) -> urllib.request.OpenerDirector:
     jar = load_cookie_jar(cookie_file)
     return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
@@ -2649,9 +2657,12 @@ def fetch_channel_metadata(
     channel_id: str,
     thumb_dir: Path,
     fallback_query: str = "",
+    require_authenticated: bool = False,
 ) -> dict[str, str]:
     channel_url = youtube_channel_url(channel_id)
     page = request_text(opener, channel_url)
+    if require_authenticated and not youtube_page_is_authenticated(page):
+        raise YouTubeAuthenticationError("YouTube login session is not accepted by YouTube")
     metadata = extract_channel_page_metadata(page, channel_id)
     if not (metadata.get("channel") and metadata.get("channel_thumbnail_url")):
         search_terms = [
@@ -2667,6 +2678,8 @@ def fetch_channel_metadata(
             seen_terms.add(term_key)
             search_url = "https://www.youtube.com/results?" + urllib.parse.urlencode({"search_query": term})
             search_page = request_text(opener, search_url)
+            if require_authenticated and not youtube_page_is_authenticated(search_page):
+                raise YouTubeAuthenticationError("YouTube login session is not accepted by YouTube")
             search_metadata = extract_channel_search_metadata(search_page, channel_id, fallback_query or term)
             metadata = merge_channel_metadata(metadata, search_metadata)
             if metadata.get("channel") and metadata.get("channel_thumbnail_url"):
@@ -2767,9 +2780,12 @@ def fetch_watch_metadata(
     opener: urllib.request.OpenerDirector,
     video_id: str,
     thumb_dir: Path,
+    require_authenticated: bool = False,
 ) -> dict[str, str]:
     watch_url = f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}"
     page = request_text(opener, watch_url)
+    if require_authenticated and not youtube_page_is_authenticated(page):
+        raise YouTubeAuthenticationError("YouTube login session is not accepted by YouTube")
     metadata = extract_watch_metadata(page, video_id)
     if not bounded_int(metadata.get("watch_progress_percent")) and not int(metadata.get("watch_resume_seconds") or 0):
         try:
@@ -3014,6 +3030,7 @@ def fetch_new_channel_metadata_if_needed(
     opener: urllib.request.OpenerDirector,
     thumb_dir: Path,
     video_metadata: dict[str, str],
+    require_authenticated: bool = False,
 ) -> tuple[dict[str, str], str, str]:
     channel_id = video_metadata_channel_id(video_metadata)
     if not channel_id:
@@ -3026,6 +3043,7 @@ def fetch_new_channel_metadata_if_needed(
             channel_id,
             thumb_dir,
             fallback_query=video_metadata.get("channel", ""),
+            require_authenticated=require_authenticated,
         )
         status = (
             "ok"
@@ -3884,46 +3902,76 @@ def enqueue_placeholder_recovery_targets(
         video_id = row["video_id"] or ""
         if not video_id:
             continue
-        subject_key = placeholder_queue_subject_key(video_id)
-        queued = conn.execute(
-            "SELECT 1 FROM worker_queue WHERE subject_key = ?",
-            (subject_key,),
-        ).fetchone()
-        conn.execute(
-            """
-            INSERT INTO worker_queue(
-              subject_key, worker_type, task_type, video_id, channel_id, playlist_id,
-              channel_title, current_title, source_key, playlist_count, priority, manual, created_at, updated_at
-            )
-            VALUES (?, 'placeholder', 'recover', ?, '', ?, '', ?, ?, ?, ?, 0, ?, ?)
-            ON CONFLICT(subject_key) DO UPDATE SET
-              playlist_id=excluded.playlist_id,
-              current_title=COALESCE(NULLIF(excluded.current_title, ''), worker_queue.current_title),
-              playlist_count=MAX(worker_queue.playlist_count, excluded.playlist_count),
-              updated_at=excluded.updated_at
-            """,
-            (
-                subject_key,
-                video_id,
-                playlist_id,
-                row["title"] or video_id,
-                "",
-                int(row["playlist_count"] or 0),
-                tail_priority,
-                now,
-                now,
-            ),
+        was_inserted = enqueue_placeholder_recovery_item(
+            conn,
+            video_id=video_id,
+            playlist_id=playlist_id,
+            current_title=row["title"] or video_id,
+            playlist_count=int(row["playlist_count"] or 0),
+            priority=tail_priority,
+            updated_at=now,
         )
-        if queued:
+        if not was_inserted:
             existing += 1
         else:
             inserted += 1
     return {"inserted": inserted, "existing": existing}
 
 
+def enqueue_placeholder_recovery_item(
+    conn: sqlite3.Connection,
+    *,
+    video_id: str,
+    playlist_id: str = "",
+    current_title: str = "",
+    source_key: str = "",
+    playlist_count: int = 0,
+    priority: int = 100,
+    updated_at: str = "",
+) -> bool:
+    video_id = (video_id or "").strip()
+    if not video_id:
+        return False
+    subject_key = placeholder_queue_subject_key(video_id)
+    queued = conn.execute(
+        "SELECT 1 FROM worker_queue WHERE subject_key = ?",
+        (subject_key,),
+    ).fetchone()
+    now = updated_at or utc_now()
+    conn.execute(
+        """
+        INSERT INTO worker_queue(
+          subject_key, worker_type, task_type, video_id, channel_id, playlist_id,
+          channel_title, current_title, source_key, playlist_count, priority, manual, created_at, updated_at
+        )
+        VALUES (?, 'placeholder', 'recover', ?, '', ?, '', ?, ?, ?, ?, 0, ?, ?)
+        ON CONFLICT(subject_key) DO UPDATE SET
+          playlist_id=COALESCE(NULLIF(excluded.playlist_id, ''), worker_queue.playlist_id),
+          current_title=COALESCE(NULLIF(excluded.current_title, ''), worker_queue.current_title),
+          source_key=COALESCE(NULLIF(excluded.source_key, ''), worker_queue.source_key),
+          playlist_count=MAX(worker_queue.playlist_count, excluded.playlist_count),
+          priority=MIN(worker_queue.priority, excluded.priority),
+          updated_at=excluded.updated_at
+        """,
+        (
+            subject_key,
+            video_id,
+            playlist_id or "",
+            current_title or video_id,
+            source_key or "",
+            max(0, int(playlist_count or 0)),
+            int(priority),
+            now,
+            now,
+        ),
+    )
+    return not bool(queued)
+
+
 def placeholder_worker_queue_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
+    queue_id: int = 0,
 ) -> list[sqlite3.Row]:
     sql = """
         SELECT queue_id, video_id, playlist_id, current_title, source_key, priority
@@ -3931,10 +3979,17 @@ def placeholder_worker_queue_rows(
         WHERE worker_type = 'placeholder'
         ORDER BY priority, queue_id
     """
+    params: list[Any] = []
+    if queue_id:
+        sql = sql.replace(
+            "WHERE worker_type = 'placeholder'",
+            "WHERE worker_type = 'placeholder' AND queue_id = ?",
+        )
+        params.append(queue_id)
     if limit:
         sql += " LIMIT ?"
-        return conn.execute(sql, (limit,)).fetchall()
-    return conn.execute(sql).fetchall()
+        params.append(limit)
+    return conn.execute(sql, params).fetchall()
 
 
 def archive_capture_timestamp(url: str) -> str | None:
@@ -5084,6 +5139,7 @@ def metadata_queue_rows(
     offset: int = 0,
     force: bool = False,
     stale_days: int = 30,
+    queue_id: int = 0,
 ) -> list[sqlite3.Row]:
     del force, stale_days
     sql = """
@@ -5105,6 +5161,12 @@ def metadata_queue_rows(
         ORDER BY priority, queue_id
     """
     params: list[Any] = []
+    if queue_id:
+        sql = sql.replace(
+            "WHERE worker_type = 'metadata'",
+            "WHERE worker_type = 'metadata' AND queue_id = ?",
+        )
+        params.append(queue_id)
     if limit:
         sql += " LIMIT ?"
         params.append(limit)

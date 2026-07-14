@@ -56,7 +56,11 @@ in the generated config file:
   "takeout_dir": "takeout",
   "host": "0.0.0.0",
   "port": 8765,
-  "display_timezone": ""
+  "display_timezone": "",
+  "youtube_request_interval_seconds": 0.5,
+  "youtube_max_in_flight": 10,
+  "archivarix_request_interval_seconds": 3.0,
+  "archivarix_max_in_flight": 1
 }
 ```
 
@@ -67,6 +71,9 @@ The default host binds to all local network interfaces. Use the loopback URLs
 below when opening the app on this machine.
 If `display_timezone` is empty, the browser detects an IANA timezone on first
 load and saves it to the config file.
+The request interval settings control how often each site's next task may launch.
+The matching `max_in_flight` settings cap concurrent tasks; long Archivarix
+lookups therefore do not delay the YouTube launch cadence.
 
 Open:
 

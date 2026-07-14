@@ -10,7 +10,14 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from .config import effective_display_timezone
+from .config import (
+    config_path,
+    configured_archivarix_max_in_flight,
+    configured_archivarix_request_interval,
+    configured_youtube_max_in_flight,
+    configured_youtube_request_interval,
+    effective_display_timezone,
+)
 from .core import *
 
 class MetadataWorker:
@@ -29,6 +36,10 @@ class MetadataWorker:
         with self._lock:
             return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
 
+    def is_alive(self) -> bool:
+        with self._lock:
+            return bool(self._thread and self._thread.is_alive())
+
     def blocked_reason(self) -> str:
         with self._lock:
             return self._blocked_reason
@@ -43,6 +54,7 @@ class MetadataWorker:
         force: bool,
         stale_days: int,
         record_summary: bool = True,
+        queue_id: int = 0,
     ) -> dict[str, Any]:
         with self._lock:
             if self._thread and self._thread.is_alive():
@@ -62,6 +74,7 @@ class MetadataWorker:
                     force,
                     stale_days,
                     record_summary,
+                    queue_id,
                 ),
                 daemon=True,
             )
@@ -86,10 +99,11 @@ class MetadataWorker:
         force: bool,
         stale_days: int,
         record_summary: bool,
+        target_queue_id: int = 0,
     ) -> None:
         conn = connect(db_path)
         try:
-            initial_total = worker_queue_type_count(conn, "metadata")
+            initial_total = 1 if target_queue_id else worker_queue_type_count(conn, "metadata")
             run_total = min(initial_total, limit) if limit else initial_total
             with conn:
                 conn.execute(
@@ -118,7 +132,12 @@ class MetadataWorker:
             found = 0
             failed = 0
             while True:
-                rows = metadata_queue_rows(conn, force=force, stale_days=stale_days)
+                rows = metadata_queue_rows(
+                    conn,
+                    force=force,
+                    stale_days=stale_days,
+                    queue_id=target_queue_id,
+                )
                 if not rows:
                     break
                 if limit and processed >= limit:
@@ -137,7 +156,7 @@ class MetadataWorker:
                         log_worker_event(conn, run_id, "warn", "Worker stopped by request")
                     return
                 if cookie_file.exists():
-                    session_valid, session_message = youtube_session_status(cookie_file, verify_remote=True)
+                    session_valid, session_message = youtube_session_status(cookie_file, verify_remote=False)
                     if not session_valid:
                         authentication_error = f"Metadata worker stopped: {session_message}"
                         with self._lock:
@@ -154,7 +173,7 @@ class MetadataWorker:
                             log_worker_event(conn, run_id, "error", authentication_error)
                         return
                 opener = load_cookie_opener(cookie_file)
-                queue_id = int(row["queue_id"]) if "queue_id" in row.keys() else 0
+                row_queue_id = int(row["queue_id"]) if "queue_id" in row.keys() else 0
                 video_id = row["video_id"]
                 metadata_source = row["metadata_source"] if "metadata_source" in row.keys() else "history"
                 queued_channel_id = row["channel_id"] if "channel_id" in row.keys() else ""
@@ -187,6 +206,7 @@ class MetadataWorker:
                             queued_channel_id,
                             thumb_dir,
                             fallback_query=queued_channel_title,
+                            require_authenticated=cookie_file.exists(),
                         )
                         if not (
                             metadata.get("channel")
@@ -195,45 +215,29 @@ class MetadataWorker:
                         ):
                             status = "no_metadata"
                     else:
-                        metadata = fetch_watch_metadata(opener, video_id, thumb_dir)
+                        metadata = fetch_watch_metadata(
+                            opener,
+                            video_id,
+                            thumb_dir,
+                            require_authenticated=cookie_file.exists(),
+                        )
                         if not useful_video_metadata(metadata):
                             status = "no_metadata"
-                            try:
-                                archivarix_opener = load_cookie_opener(ARCHIVARIX_COOKIE_FILE)
-                                video, thumbnail_url, thumbnail_path, arch_status, arch_error = recover_archivarix_video(
-                                    video_id,
-                                    thumb_dir,
-                                    archivarix_opener,
-                                    refresh_metadata=True,
-                                    channel_cache={},
-                                )
-                            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-                                video = None
-                                thumbnail_url = ""
-                                thumbnail_path = ""
-                                arch_status = "error"
-                                arch_error = "Archivarix fallback failed"
-                            if video:
-                                channel_id = str(video.get("channelExternalId") or "")
-                                enrich_archivarix_video_channel(video, channel_id, archivarix_opener)
-                                if video.get("channelThumbnailUrl") and not video.get("channelThumbnailPath"):
-                                    video["channelThumbnailPath"] = cache_channel_thumbnail(
-                                        archivarix_opener,
-                                        channel_id or video_id,
-                                        str(video.get("channelThumbnailUrl") or ""),
-                                        thumb_dir,
-                                    )
-                                metadata = metadata_from_archivarix_video(video_id, video, thumbnail_url, thumbnail_path)
-                                status = "ok" if useful_video_metadata(metadata) else "no_metadata"
-                                save_video_recovery(
-                                    conn,
-                                    video_id,
-                                    video,
-                                    arch_status,
-                                    arch_error,
-                                    thumbnail_url,
-                                    thumbnail_path,
-                                )
+                except YouTubeAuthenticationError as exc:
+                    authentication_error = f"Metadata worker stopped: {exc}"
+                    with self._lock:
+                        self._blocked_reason = authentication_error
+                    with conn:
+                        conn.execute(
+                            """
+                            UPDATE metadata_worker_runs
+                            SET status = 'error', finished_at = ?, message = ?
+                            WHERE run_id = ?
+                            """,
+                            (utc_now(), authentication_error, run_id),
+                        )
+                        log_worker_event(conn, run_id, "error", authentication_error)
+                    return
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                     status = "error"
                     error = str(exc)
@@ -241,12 +245,29 @@ class MetadataWorker:
                 channel_status = ""
                 channel_error = ""
                 if metadata_source != "channel" and status == "ok" and not self._stop.is_set():
-                    channel_metadata, channel_status, channel_error = fetch_new_channel_metadata_if_needed(
-                        conn,
-                        opener,
-                        thumb_dir,
-                        metadata,
-                    )
+                    try:
+                        channel_metadata, channel_status, channel_error = fetch_new_channel_metadata_if_needed(
+                            conn,
+                            opener,
+                            thumb_dir,
+                            metadata,
+                            require_authenticated=cookie_file.exists(),
+                        )
+                    except YouTubeAuthenticationError as exc:
+                        authentication_error = f"Metadata worker stopped: {exc}"
+                        with self._lock:
+                            self._blocked_reason = authentication_error
+                        with conn:
+                            conn.execute(
+                                """
+                                UPDATE metadata_worker_runs
+                                SET status = 'error', finished_at = ?, message = ?
+                                WHERE run_id = ?
+                                """,
+                                (utc_now(), authentication_error, run_id),
+                            )
+                            log_worker_event(conn, run_id, "error", authentication_error)
+                        return
                 now = utc_now()
                 with conn:
                     if channel_status:
@@ -255,6 +276,16 @@ class MetadataWorker:
                         store_channel_metadata(conn, metadata, status, error, updated_at=now)
                     else:
                         store_video_metadata(conn, metadata, status, error, updated_at=now)
+                        if status == "no_metadata":
+                            enqueue_placeholder_recovery_item(
+                                conn,
+                                video_id=video_id,
+                                current_title=row["current_title"] or video_id,
+                                source_key=row["source_key"] or "",
+                                playlist_count=int(row["playlist_count"] or 0),
+                                priority=int(row["priority"] or 0),
+                                updated_at=now,
+                            )
                     processed += 1
                     channel_label = metadata.get("channel") or queued_channel_title or queued_channel_id or video_id
                     if status == "error":
@@ -281,8 +312,8 @@ class MetadataWorker:
                                     f"{channel_status}: {discovered_channel_label} (discovered via {title})",
                                     discovered_channel_label,
                                 )
-                    if queue_id:
-                        conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
+                    if row_queue_id:
+                        conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (row_queue_id,))
                     remaining = worker_queue_type_count(conn, "metadata")
                     conn.execute(
                         """
@@ -907,6 +938,10 @@ class PlaceholderRecoveryWorker:
         with self._lock:
             return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
 
+    def is_alive(self) -> bool:
+        with self._lock:
+            return bool(self._thread and self._thread.is_alive())
+
     def blocked_reason(self) -> str:
         with self._lock:
             return self._blocked_reason
@@ -916,6 +951,7 @@ class PlaceholderRecoveryWorker:
         db_path: Path,
         archivarix_cookie_file: Path,
         thumb_dir: Path,
+        queue_id: int = 0,
     ) -> dict[str, Any]:
         session_valid, session_message = archivarix_session_status(archivarix_cookie_file)
         if not session_valid:
@@ -931,7 +967,7 @@ class PlaceholderRecoveryWorker:
             self._blocked_reason = ""
             self._thread = threading.Thread(
                 target=self._run,
-                args=(db_path, archivarix_cookie_file, thumb_dir),
+                args=(db_path, archivarix_cookie_file, thumb_dir, queue_id),
                 daemon=True,
             )
             self._thread.start()
@@ -949,11 +985,12 @@ class PlaceholderRecoveryWorker:
         db_path: Path,
         archivarix_cookie_file: Path,
         thumb_dir: Path,
+        queue_id: int = 0,
     ) -> None:
         conn = connect(db_path)
         archivarix_opener = load_cookie_opener(archivarix_cookie_file)
         try:
-            rows = placeholder_worker_queue_rows(conn, limit=1)
+            rows = placeholder_worker_queue_rows(conn, limit=1, queue_id=queue_id)
             if not rows or self._stop.is_set():
                 return
             row = rows[0]
@@ -970,7 +1007,7 @@ class PlaceholderRecoveryWorker:
                     archivarix_opener,
                     refresh_metadata=True,
                     no_api=False,
-                    delay=3.0,
+                    delay=0.0,
                     channel_cache={},
                     stop_event=self._stop,
                     request_timeout=5,
@@ -1037,6 +1074,8 @@ class WorkerQueueDispatcher:
         self._started_monotonic = 0.0
         self._initial_count = 0
         self._completed_count = 0
+        self._metadata_workers: dict[int, tuple[MetadataWorker, str]] = {}
+        self._placeholder_workers: dict[int, PlaceholderRecoveryWorker] = {}
 
     def is_running(self) -> bool:
         with self._lock:
@@ -1053,6 +1092,8 @@ class WorkerQueueDispatcher:
             completed = self._completed_count
             initial = self._initial_count
             started_at = self._started_at if active else ""
+            youtube_in_flight = len(self._metadata_workers)
+            archivarix_in_flight = len(self._placeholder_workers)
         remaining = max(0, int(remaining_count or 0))
         eta_seconds = 0.0
         if active and completed > 0:
@@ -1065,6 +1106,8 @@ class WorkerQueueDispatcher:
             "initial_count": initial,
             "completed_count": completed,
             "remaining_count": remaining,
+            "youtube_in_flight": youtube_in_flight,
+            "archivarix_in_flight": archivarix_in_flight,
         }
 
     def start(
@@ -1074,6 +1117,7 @@ class WorkerQueueDispatcher:
         thumb_dir: Path,
         config_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        config = config_data or {}
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return {"started": False, "message": "Worker queue dispatcher already running"}
@@ -1082,9 +1126,22 @@ class WorkerQueueDispatcher:
             self._started_monotonic = time.monotonic()
             self._initial_count = 0
             self._completed_count = 0
+            self._metadata_workers = {}
+            self._placeholder_workers = {}
             self._thread = threading.Thread(
                 target=self._run,
-                args=(db_path, cookie_file, thumb_dir, effective_display_timezone(config_data or {})),
+                args=(
+                    db_path,
+                    cookie_file,
+                    thumb_dir,
+                    effective_display_timezone(config),
+                    config_path(config, "archivarix_cookies"),
+                    config_path(config, "archivarix_thumbnail_dir"),
+                    configured_youtube_request_interval(config),
+                    configured_youtube_max_in_flight(config),
+                    configured_archivarix_request_interval(config),
+                    configured_archivarix_max_in_flight(config),
+                ),
                 daemon=True,
             )
             self._thread.start()
@@ -1096,6 +1153,12 @@ class WorkerQueueDispatcher:
             if not thread or not thread.is_alive():
                 return {"stopping": False, "running": False, "message": "Worker queue dispatcher is not running"}
             self._stop.set()
+            metadata_workers = [worker for worker, _run_id in self._metadata_workers.values()]
+            placeholder_workers = list(self._placeholder_workers.values())
+            for worker in metadata_workers:
+                worker.stop()
+            for worker in placeholder_workers:
+                worker.stop()
             METADATA_WORKER.stop()
             PLAYLIST_SCAN_WORKER.stop()
             LIVE_HISTORY_WORKER.stop()
@@ -1111,9 +1174,20 @@ class WorkerQueueDispatcher:
         with self._lock:
             self._initial_count = max(0, int(count or 0))
 
-    def _mark_completed(self) -> None:
+    def _mark_completed(self, count: int = 1) -> None:
         with self._lock:
-            self._completed_count += 1
+            self._completed_count += max(0, int(count or 0))
+
+    def _metadata_run_processed(self, db_path: Path, run_id: str) -> int:
+        conn = connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT processed FROM metadata_worker_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            return int(row["processed"] or 0) if row else 0
+        finally:
+            conn.close()
 
     def _wait_for_worker(self, worker: Any) -> None:
         while worker.is_running():
@@ -1122,16 +1196,35 @@ class WorkerQueueDispatcher:
             else:
                 continue
 
-    def _next_row(self, db_path: Path) -> dict[str, Any] | None:
+    def _next_row(
+        self,
+        db_path: Path,
+        worker_types: tuple[str, ...] = (),
+        excluded_queue_ids: set[int] | None = None,
+    ) -> dict[str, Any] | None:
         conn = connect(db_path)
         try:
+            clauses: list[str] = []
+            params: list[Any] = []
+            if worker_types:
+                placeholders = ", ".join("?" for _ in worker_types)
+                clauses.append(f"worker_type IN ({placeholders})")
+                params.extend(worker_types)
+            excluded = sorted(excluded_queue_ids or set())
+            if excluded:
+                placeholders = ", ".join("?" for _ in excluded)
+                clauses.append(f"queue_id NOT IN ({placeholders})")
+                params.extend(excluded)
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             row = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM worker_queue
+                {where}
                 ORDER BY priority, queue_id
                 LIMIT 1
-                """
+                """,
+                params,
             ).fetchone()
             return dict(row) if row else None
         finally:
@@ -1145,96 +1238,179 @@ class WorkerQueueDispatcher:
         finally:
             conn.close()
 
-    def _run(self, db_path: Path, cookie_file: Path, thumb_dir: Path, timezone_name: str) -> None:
+    def _run(
+        self,
+        db_path: Path,
+        cookie_file: Path,
+        thumb_dir: Path,
+        timezone_name: str,
+        archivarix_cookie_file: Path,
+        archivarix_thumb_dir: Path,
+        youtube_interval: float,
+        youtube_max_in_flight: int,
+        archivarix_interval: float,
+        archivarix_max_in_flight: int,
+    ) -> None:
         conn = connect(db_path)
         try:
             self._mark_initial_count(worker_queue_count(conn))
         finally:
             conn.close()
-        while not self._stop.is_set():
-            row = self._next_row(db_path)
-            if not row:
-                return
-            worker_type = row.get("worker_type") or ""
-            if worker_type == "metadata":
-                result = METADATA_WORKER.start(
-                    db_path,
-                    cookie_file,
-                    thumb_dir,
-                    delay=1.0,
-                    limit=1,
-                    force=False,
-                    stale_days=30,
-                    record_summary=False,
-                )
-                if not result.get("started") and not METADATA_WORKER.is_running():
-                    time.sleep(0.5)
-                self._wait_for_worker(METADATA_WORKER)
-                if METADATA_WORKER.blocked_reason():
-                    return
-                if not self._stop.is_set():
-                    self._mark_completed()
-            elif worker_type == "playlist":
-                result = PLAYLIST_SCAN_WORKER.start(
-                    db_path,
-                    cookie_file,
-                    delay=0.0,
-                    limit=1,
-                    force=False,
-                    stale_days=7,
-                    record_summary=False,
-                )
-                if not result.get("started") and not PLAYLIST_SCAN_WORKER.is_running():
-                    time.sleep(0.5)
-                self._wait_for_worker(PLAYLIST_SCAN_WORKER)
-                if not self._stop.is_set():
-                    self._mark_completed()
-            elif worker_type == "placeholder":
-                result = PLACEHOLDER_RECOVERY_WORKER.start(
-                    db_path,
-                    ARCHIVARIX_COOKIE_FILE,
-                    DEFAULT_ARCHIVARIX_THUMB_DIR,
-                )
-                if result.get("blocked"):
-                    reason = str(result.get("message") or "unavailable")
-                    conn = connect(db_path)
-                    try:
-                        with conn:
-                            if reason != self._placeholder_block_reason:
-                                log_worker_event(
-                                    conn,
-                                    "",
-                                    "placeholder warn",
-                                    f"Automatic recovery skipped: {reason}",
-                                    row.get("video_id") or "",
-                                )
-                            remove_worker_queue_entry(conn, int(row.get("queue_id") or 0))
-                    finally:
-                        conn.close()
-                    self._placeholder_block_reason = reason
-                    self._mark_completed()
+        next_youtube_launch = time.monotonic()
+        next_archivarix_launch = time.monotonic()
+        archivarix_blocked = False
+        try:
+            while not self._stop.is_set():
+                authentication_blocked = False
+                with self._lock:
+                    metadata_workers = dict(self._metadata_workers)
+                    placeholder_workers = dict(self._placeholder_workers)
+
+                for queue_id, (worker, run_id) in metadata_workers.items():
+                    if worker.is_alive():
+                        continue
+                    self._mark_completed(self._metadata_run_processed(db_path, run_id))
+                    if worker.blocked_reason():
+                        authentication_blocked = True
+                    with self._lock:
+                        self._metadata_workers.pop(queue_id, None)
+
+                for queue_id, worker in placeholder_workers.items():
+                    if worker.is_alive():
+                        continue
+                    reason = worker.blocked_reason()
+                    if reason:
+                        self._placeholder_block_reason = reason
+                        archivarix_blocked = True
+                    else:
+                        self._mark_completed()
+                    with self._lock:
+                        self._placeholder_workers.pop(queue_id, None)
+
+                if authentication_blocked:
+                    self._stop.set()
+                    break
+
+                now = time.monotonic()
+                with self._lock:
+                    metadata_queue_ids = set(self._metadata_workers)
+                    placeholder_queue_ids = set(self._placeholder_workers)
+
+                if len(metadata_queue_ids) < youtube_max_in_flight and now >= next_youtube_launch:
+                    row = self._next_row(db_path, ("metadata",), metadata_queue_ids)
+                    if row:
+                        queue_id = int(row.get("queue_id") or 0)
+                        worker = MetadataWorker()
+                        result = worker.start(
+                            db_path,
+                            cookie_file,
+                            thumb_dir,
+                            delay=0.0,
+                            limit=1,
+                            force=False,
+                            stale_days=30,
+                            record_summary=False,
+                            queue_id=queue_id,
+                        )
+                        if result.get("started"):
+                            with self._lock:
+                                self._metadata_workers[queue_id] = (worker, str(result.get("run_id") or ""))
+                            next_youtube_launch = now + youtube_interval
+
+                if (
+                    not archivarix_blocked
+                    and len(placeholder_queue_ids) < archivarix_max_in_flight
+                    and now >= next_archivarix_launch
+                ):
+                    row = self._next_row(db_path, ("placeholder",), placeholder_queue_ids)
+                    if row:
+                        queue_id = int(row.get("queue_id") or 0)
+                        worker = PlaceholderRecoveryWorker()
+                        result = worker.start(
+                            db_path,
+                            archivarix_cookie_file,
+                            archivarix_thumb_dir,
+                            queue_id=queue_id,
+                        )
+                        if result.get("blocked"):
+                            reason = str(result.get("message") or "unavailable")
+                            conn = connect(db_path)
+                            try:
+                                with conn:
+                                    if reason != self._placeholder_block_reason:
+                                        log_worker_event(
+                                            conn,
+                                            "",
+                                            "placeholder warn",
+                                            f"Automatic recovery skipped: {reason}",
+                                            row.get("video_id") or "",
+                                        )
+                                    remove_worker_queue_entry(conn, queue_id)
+                            finally:
+                                conn.close()
+                            self._placeholder_block_reason = reason
+                            self._mark_completed()
+                        elif result.get("started"):
+                            self._placeholder_block_reason = ""
+                            with self._lock:
+                                self._placeholder_workers[queue_id] = worker
+                            next_archivarix_launch = now + archivarix_interval
+
+                with self._lock:
+                    has_active = bool(self._metadata_workers or self._placeholder_workers)
+                if has_active:
+                    self._stop.wait(0.05)
                     continue
-                self._placeholder_block_reason = ""
-                if not result.get("started") and not PLACEHOLDER_RECOVERY_WORKER.is_running():
-                    time.sleep(0.5)
-                self._wait_for_worker(PLACEHOLDER_RECOVERY_WORKER)
-                reason = PLACEHOLDER_RECOVERY_WORKER.blocked_reason()
-                if reason:
-                    self._placeholder_block_reason = reason
+
+                row = self._next_row(db_path)
+                if not row:
                     return
-                if not self._stop.is_set():
+                worker_type = row.get("worker_type") or ""
+                if worker_type == "placeholder" and archivarix_blocked:
+                    return
+                if worker_type in {"metadata", "placeholder"}:
+                    wait_until = next_youtube_launch if worker_type == "metadata" else next_archivarix_launch
+                    self._stop.wait(max(0.01, min(0.1, wait_until - time.monotonic())))
+                    continue
+                if worker_type == "playlist":
+                    result = PLAYLIST_SCAN_WORKER.start(
+                        db_path,
+                        cookie_file,
+                        delay=0.0,
+                        limit=1,
+                        force=False,
+                        stale_days=7,
+                        record_summary=False,
+                    )
+                    if not result.get("started") and not PLAYLIST_SCAN_WORKER.is_running():
+                        time.sleep(0.5)
+                    self._wait_for_worker(PLAYLIST_SCAN_WORKER)
+                    if not self._stop.is_set():
+                        self._mark_completed()
+                elif worker_type == "history":
+                    mode = "verify" if row.get("task_type") == "verify" else "recent"
+                    result = LIVE_HISTORY_WORKER.start(db_path, cookie_file, mode=mode, timezone_name=timezone_name)
+                    if not result.get("started") and not LIVE_HISTORY_WORKER.is_running():
+                        time.sleep(0.5)
+                    self._wait_for_worker(LIVE_HISTORY_WORKER)
+                    if not self._stop.is_set():
+                        self._mark_completed()
+                else:
+                    self._drop_unknown_row(db_path, row)
                     self._mark_completed()
-            elif worker_type == "history":
-                mode = "verify" if row.get("task_type") == "verify" else "recent"
-                result = LIVE_HISTORY_WORKER.start(db_path, cookie_file, mode=mode, timezone_name=timezone_name)
-                if not result.get("started") and not LIVE_HISTORY_WORKER.is_running():
-                    time.sleep(0.5)
-                self._wait_for_worker(LIVE_HISTORY_WORKER)
-                if not self._stop.is_set():
-                    self._mark_completed()
-            else:
-                self._drop_unknown_row(db_path, row)
-                self._mark_completed()
+        finally:
+            with self._lock:
+                metadata_workers = [worker for worker, _run_id in self._metadata_workers.values()]
+                placeholder_workers = list(self._placeholder_workers.values())
+            for worker in metadata_workers:
+                worker.stop()
+            for worker in placeholder_workers:
+                worker.stop()
+            while any(worker.is_alive() for worker in [*metadata_workers, *placeholder_workers]):
+                time.sleep(0.05)
+            with self._lock:
+                self._metadata_workers.clear()
+                self._placeholder_workers.clear()
 
 
 WORKER_QUEUE_DISPATCHER = WorkerQueueDispatcher()

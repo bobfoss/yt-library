@@ -22,6 +22,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "host": "0.0.0.0",
     "port": 8765,
     "display_timezone": "",
+    "youtube_request_interval_seconds": 0.5,
+    "youtube_max_in_flight": 10,
+    "archivarix_request_interval_seconds": 3.0,
+    "archivarix_max_in_flight": 1,
 }
 
 
@@ -38,6 +42,28 @@ def configured_display_timezone(config: dict[str, Any]) -> str:
 
 def effective_display_timezone(config: dict[str, Any]) -> str:
     return configured_display_timezone(config) or "UTC"
+
+
+def configured_youtube_request_interval(config: dict[str, Any]) -> float:
+    return max(
+        0.0,
+        float(config.get("youtube_request_interval_seconds", DEFAULT_CONFIG["youtube_request_interval_seconds"])),
+    )
+
+
+def configured_youtube_max_in_flight(config: dict[str, Any]) -> int:
+    return max(1, min(100, int(config.get("youtube_max_in_flight", DEFAULT_CONFIG["youtube_max_in_flight"]))))
+
+
+def configured_archivarix_request_interval(config: dict[str, Any]) -> float:
+    return max(
+        0.0,
+        float(config.get("archivarix_request_interval_seconds", DEFAULT_CONFIG["archivarix_request_interval_seconds"])),
+    )
+
+
+def configured_archivarix_max_in_flight(config: dict[str, Any]) -> int:
+    return max(1, min(20, int(config.get("archivarix_max_in_flight", DEFAULT_CONFIG["archivarix_max_in_flight"]))))
 
 PATH_KEYS = {
     "database",

@@ -15,8 +15,16 @@ from unittest.mock import patch
 
 from yt_library import cli
 from yt_library import core
-from yt_library.config import configured_display_timezone, effective_display_timezone, load_config
-from yt_library.workers import MetadataWorker, PlaceholderRecoveryWorker, PlaylistScanWorker
+from yt_library.config import (
+    configured_archivarix_max_in_flight,
+    configured_archivarix_request_interval,
+    configured_display_timezone,
+    configured_youtube_max_in_flight,
+    configured_youtube_request_interval,
+    effective_display_timezone,
+    load_config,
+)
+from yt_library.workers import MetadataWorker, PlaceholderRecoveryWorker, PlaylistScanWorker, WorkerQueueDispatcher
 
 
 def migrated_connection(db_path: Path):
@@ -105,6 +113,11 @@ class CoreHelperTests(unittest.TestCase):
             valid, message = core.youtube_session_status(Path("unused"), now=100, verify_remote=True)
             self.assertFalse(valid)
             self.assertIn("not accepted", message)
+
+    def test_youtube_page_authentication_uses_logged_in_state(self) -> None:
+        self.assertTrue(core.youtube_page_is_authenticated('ytcfg.set({"LOGGED_IN":true});'))
+        self.assertFalse(core.youtube_page_is_authenticated('ytcfg.set({"LOGGED_IN":false});'))
+        self.assertFalse(core.youtube_page_is_authenticated("ServiceLogin"))
 
     def test_history_date_from_relative_and_month_labels(self) -> None:
         today = date(2026, 7, 6)
@@ -1495,6 +1508,10 @@ class ConfigTests(unittest.TestCase):
                 (config_path.parent / "data" / "library.sqlite3").resolve(),
             )
             self.assertEqual(config["display_timezone"], "America/Los_Angeles")
+            self.assertEqual(configured_youtube_request_interval(config), 0.5)
+            self.assertEqual(configured_youtube_max_in_flight(config), 10)
+            self.assertEqual(configured_archivarix_request_interval(config), 3.0)
+            self.assertEqual(configured_archivarix_max_in_flight(config), 1)
             self.assertNotIn("cookies", config)
             self.assertNotIn("pockettube_export", config)
             self.assertEqual(
@@ -1513,6 +1530,11 @@ class ConfigTests(unittest.TestCase):
             "UTC",
         )
         self.assertEqual(effective_display_timezone({"display_timezone": ""}), "UTC")
+        self.assertEqual(configured_youtube_request_interval({"youtube_request_interval_seconds": -1}), 0.0)
+        self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 0}), 1)
+        self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 5000}), 100)
+        self.assertEqual(configured_archivarix_request_interval({"archivarix_request_interval_seconds": -1}), 0.0)
+        self.assertEqual(configured_archivarix_max_in_flight({"archivarix_max_in_flight": 5000}), 20)
 
     def test_migrate_creates_default_config_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1527,6 +1549,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["display_timezone"], "")
             self.assertEqual(payload["host"], "0.0.0.0")
             self.assertEqual(payload["youtube_cookies"], "YT cookies.txt")
+            self.assertEqual(payload["youtube_request_interval_seconds"], 0.5)
+            self.assertEqual(payload["youtube_max_in_flight"], 10)
+            self.assertEqual(payload["archivarix_request_interval_seconds"], 3.0)
+            self.assertEqual(payload["archivarix_max_in_flight"], 1)
             self.assertNotIn("cookies", payload)
             self.assertNotIn("pockettube_export", payload)
 
@@ -1545,6 +1571,133 @@ class ConfigTests(unittest.TestCase):
 
 
 class WorkerQueueTests(unittest.TestCase):
+    def test_dispatcher_caps_concurrent_metadata_tasks_from_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    for index in range(3):
+                        core.enqueue_metadata_item(
+                            conn,
+                            video_id=f"concurrent{index}",
+                            current_title=f"Concurrent {index}",
+                            metadata_source="history",
+                            priority=index,
+                        )
+            finally:
+                conn.close()
+
+            release = threading.Event()
+            two_started = threading.Event()
+            state_lock = threading.Lock()
+            active = 0
+            peak = 0
+            started = 0
+
+            def fetch_metadata(_opener, video_id, _thumb_dir, **_kwargs):
+                nonlocal active, peak, started
+                with state_lock:
+                    active += 1
+                    started += 1
+                    peak = max(peak, active)
+                    if started >= 2:
+                        two_started.set()
+                release.wait(2)
+                with state_lock:
+                    active -= 1
+                return {
+                    "video_id": video_id,
+                    "title": video_id,
+                    "duration_text": "1:00",
+                    "yt_status": "OK",
+                }
+
+            dispatcher = WorkerQueueDispatcher()
+            config = load_config(Path(temp_dir) / "config.json")
+            config.update(
+                {
+                    "youtube_request_interval_seconds": 0.0,
+                    "youtube_max_in_flight": 2,
+                    "archivarix_request_interval_seconds": 0.0,
+                    "archivarix_max_in_flight": 1,
+                }
+            )
+            with (
+                patch("yt_library.workers.fetch_watch_metadata", side_effect=fetch_metadata),
+                patch("yt_library.workers.fetch_new_channel_metadata_if_needed", return_value=({}, "", "")),
+            ):
+                result = dispatcher.start(
+                    db_path,
+                    Path(temp_dir) / "missing-youtube-cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    config,
+                )
+                self.assertTrue(result["started"])
+                self.assertTrue(two_started.wait(2))
+                time.sleep(0.1)
+                with state_lock:
+                    self.assertEqual(peak, 2)
+                    self.assertEqual(started, 2)
+                release.set()
+                deadline = time.time() + 3
+                while dispatcher.is_running() and time.time() < deadline:
+                    time.sleep(0.05)
+
+            self.assertFalse(dispatcher.is_running())
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_count(conn), 0)
+            finally:
+                conn.close()
+
+    def test_no_youtube_metadata_queues_archivarix_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="unavailable1",
+                        current_title="Unavailable example",
+                        metadata_source="history",
+                        priority=7,
+                    )
+            finally:
+                conn.close()
+
+            worker = MetadataWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.fetch_watch_metadata",
+                    return_value={"video_id": "unavailable1", "title": "", "yt_status": "ERROR"},
+                ),
+                patch("yt_library.workers.recover_archivarix_video") as recover,
+            ):
+                worker._run(
+                    "test-archivarix-handoff",
+                    db_path,
+                    Path(temp_dir) / "missing-youtube-cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=30,
+                    record_summary=False,
+                )
+
+            recover.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 0)
+                row = core.placeholder_worker_queue_rows(conn, limit=1)[0]
+                self.assertEqual(row["video_id"], "unavailable1")
+                self.assertEqual(row["priority"], 7)
+            finally:
+                conn.close()
+
     def test_metadata_worker_stops_when_cookie_authentication_expires(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
@@ -1587,10 +1740,13 @@ class WorkerQueueTests(unittest.TestCase):
             with (
                 patch(
                     "yt_library.workers.youtube_session_status",
-                    side_effect=[(True, ""), (False, "YouTube login session is not accepted by YouTube")],
+                    return_value=(True, ""),
                 ) as session_status,
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
-                patch("yt_library.workers.fetch_watch_metadata", return_value=metadata) as fetch_metadata,
+                patch(
+                    "yt_library.workers.fetch_watch_metadata",
+                    side_effect=[metadata, core.YouTubeAuthenticationError("YouTube login session is not accepted by YouTube")],
+                ) as fetch_metadata,
                 patch("yt_library.workers.fetch_new_channel_metadata_if_needed", return_value=({}, "", "")),
             ):
                 worker._run(
@@ -1606,7 +1762,7 @@ class WorkerQueueTests(unittest.TestCase):
                 )
 
             self.assertEqual(session_status.call_count, 2)
-            fetch_metadata.assert_called_once()
+            self.assertEqual(fetch_metadata.call_count, 2)
             self.assertIn("not accepted", worker.blocked_reason())
             conn = core.connect(db_path)
             try:
