@@ -714,6 +714,17 @@
       return video.metadata_duration || video.duration_text || '';
     }
 
+    function displayVideoUploadDate(video) {
+      const value = video.metadata_upload_date || '';
+      if (!value) return '';
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return value;
+      const timeZone = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
+      const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone }).format(parsed);
+      const time = new Intl.DateTimeFormat(undefined, { timeStyle: 'short', timeZone }).format(parsed);
+      return `${date} ${time}`;
+    }
+
     function youtubeWatchUrl(video) {
       if (!video.video_id) return '';
       const list = video.playlist_id ? `&list=${encodeURIComponent(video.playlist_id)}` : '';
@@ -1857,7 +1868,7 @@
             ${channelName ? `<div class="details">${creatorHtml(video.metadata_channel_thumbnail_path, channelName, channelUrl)}</div>` : ''}
             ${detailRowHtml([
               displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : '',
-              video.metadata_upload_date ? `<span>${escapeHtml(video.metadata_upload_date)}</span>` : '',
+              displayVideoUploadDate(video) ? `<span>${escapeHtml(displayVideoUploadDate(video))}</span>` : '',
               video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
               archivarixLinkHtml(video),
             ])}
@@ -1969,11 +1980,8 @@
           empty.textContent = 'No local metadata is available for this video.';
           return;
         }
-        title.textContent = displayVideoTitle(video);
-        meta.innerHTML = `
-          ${video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : ''}
-          ${video.watch_count ? `<span>${escapeHtml(video.watch_count)} ${Number(video.watch_count) === 1 ? 'watch' : 'watches'}</span>` : ''}
-        `;
+        title.textContent = 'Video';
+        meta.textContent = '';
         grid.replaceChildren(videoDetailCardFor(video));
         empty.hidden = true;
         return;
@@ -1989,7 +1997,7 @@
           empty.textContent = 'No local metadata is available for this channel.';
           return;
         }
-        title.textContent = channel.title || channel.channel_id;
+        title.textContent = 'Channel';
         const playlistRows = channelVideoRows(channelId);
         const historyCount = cachedChannelHistoryCount(channelId);
         const currentHeatmap = channelDetailTab === 'history'

@@ -19,7 +19,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "archivarix_thumbnail_dir": "archivarix_thumbs",
     "video_thumbnail_dir": "video_thumbs",
     "takeout_dir": "takeout",
-    "host": "0.0.0.0",
+    "host": "127.0.0.1",
     "port": 8765,
     "display_timezone": "",
     "youtube_request_interval_seconds": 0.5,

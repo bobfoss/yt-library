@@ -1547,7 +1547,7 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(db_path.exists())
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["display_timezone"], "")
-            self.assertEqual(payload["host"], "0.0.0.0")
+            self.assertEqual(payload["host"], "127.0.0.1")
             self.assertEqual(payload["youtube_cookies"], "YT cookies.txt")
             self.assertEqual(payload["youtube_request_interval_seconds"], 0.5)
             self.assertEqual(payload["youtube_max_in_flight"], 10)
@@ -1567,7 +1567,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(args.command, "serve")
             self.assertEqual(Path(args.db).resolve(), (config_path.parent / "yt_library.sqlite3").resolve())
             self.assertEqual(Path(args.cookies).resolve(), (config_path.parent / "YT cookies.txt").resolve())
-            self.assertEqual(args.host, "0.0.0.0")
+            self.assertEqual(args.host, "127.0.0.1")
 
 
 class WorkerQueueTests(unittest.TestCase):

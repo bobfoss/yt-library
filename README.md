@@ -54,7 +54,7 @@ in the generated config file:
   "archivarix_thumbnail_dir": "archivarix_thumbs",
   "video_thumbnail_dir": "video_thumbs",
   "takeout_dir": "takeout",
-  "host": "0.0.0.0",
+  "host": "127.0.0.1",
   "port": 8765,
   "display_timezone": "",
   "youtube_request_interval_seconds": 0.5,
@@ -67,8 +67,9 @@ in the generated config file:
 Existing command-line options still work as one-off overrides, and `migrate`
 remains available for explicit setup or upgrade runs.
 
-The default host binds to all local network interfaces. Use the loopback URLs
-below when opening the app on this machine.
+The default host binds only to the local loopback interface. To expose the app
+through Tailscale without binding other interfaces, set `host` to the machine's
+Tailscale IPv4 address.
 If `display_timezone` is empty, the browser detects an IANA timezone on first
 load and saves it to the config file.
 The request interval settings control how often each site's next task may launch.
