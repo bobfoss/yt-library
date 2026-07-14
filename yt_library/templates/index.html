@@ -1771,9 +1771,9 @@
       const videoSection = sectionFor('Videos');
       const allVideoRows = allPlaylistVideos();
       videoSection.appendChild(navButton('__all_videos__', 'Playlist videos', allVideoRows.length));
-      videoSection.appendChild(navButton('__history__', 'History', data.historySummary?.watch_rows || 0));
       const likedRows = likedVideos();
       videoSection.appendChild(navButton('__liked__', 'Liked videos', likedRows.length));
+      videoSection.appendChild(navButton('__history__', 'History', data.historySummary?.watch_rows || 0));
       const unavailablePlaylists = data.playlists.filter(playlist => (playlist.unavailable_count || 0) > 0);
 
       const channelSection = sectionFor('Channels');
