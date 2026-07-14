@@ -210,14 +210,14 @@
         <label class="filter"><input class="search-filter video-field-filter" type="checkbox" data-filter="videos" checked> Titles</label>
         <label class="filter"><input class="search-filter video-field-filter" type="checkbox" data-filter="descriptions" checked> Descriptions</label>
         <div class="filter-title">Search For</div>
-        <label class="filter"><input class="search-filter" type="checkbox" data-filter="playlists" checked> Playlists</label>
-        <label class="filter"><input class="search-filter" type="checkbox" data-filter="channels" checked> Channels</label>
-        <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_subscribed" checked> Subscribed</label>
-        <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_unsubscribed" checked> Non-subscribed</label>
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="videos_root" checked> Videos</label>
         <label class="filter child"><input class="search-filter video-source-filter" type="checkbox" data-filter="playlist_videos" checked> Playlist videos</label>
         <label class="filter child"><input class="search-filter video-source-filter" type="checkbox" data-filter="history_videos" checked> History</label>
         <label class="filter child"><input class="search-filter video-source-filter" type="checkbox" data-filter="unavailable_videos" checked> Unavailable</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="channels" checked> Channels</label>
+        <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_subscribed" checked> Subscribed</label>
+        <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_unsubscribed" checked> Non-subscribed</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="playlists" checked> Playlists</label>
       </div>
       <nav id="groups"></nav>
     </aside>
@@ -1783,11 +1783,9 @@
       const terminatedChannels = (data.channels || []).filter(isTerminatedChannel);
       channelSection.appendChild(navButton('__terminated_channels__', 'Terminated channels', terminatedChannels.length));
 
-      const metaSection = sectionFor('Meta');
-      metaSection.appendChild(navButton('__unavailable_playlists__', 'Playlists with unavailable', unavailablePlaylists.length));
-
       const pocketTubeSection = sectionFor('Playlists');
       pocketTubeSection.appendChild(navButton('', 'All playlists', data.playlists.length));
+      pocketTubeSection.appendChild(navButton('__unavailable_playlists__', 'Playlists with unavailable', unavailablePlaylists.length));
       for (const group of children.get('') || []) {
         pocketTubeSection.appendChild(buttonFor(group));
         for (const child of children.get(group.group_key) || []) {
