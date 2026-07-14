@@ -2183,25 +2183,30 @@
       }
       if (selected === '__subscribed_channels__') {
         title.textContent = 'Subscribed channels';
-        const rows = (data.channels || [])
+        const allRows = (data.channels || [])
           .filter(isSubscribedChannel)
           .filter(channel => {
             const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`.toLowerCase();
             return !query || haystack.includes(query);
           });
-        meta.textContent = `${rows.length} channels`;
+        const terminatedCount = allRows.filter(isTerminatedChannel).length;
+        const rows = sortedChannels(allRows.filter(channel => !isTerminatedChannel(channel) || channelVisibility.terminated));
+        meta.innerHTML = `
+          <label class="meta-filter"><input type="checkbox" data-channel-filter="terminated" ${channelVisibility.terminated ? 'checked' : ''}> <span class="badge">${terminatedCount} terminated</span></label>
+          ${channelSortHtml()}
+        `;
         renderPagedGrid(rows, channelCardFor, 'No subscribed channels match.');
         return;
       }
       if (selected === '__terminated_channels__') {
         title.textContent = 'Terminated channels';
-        const rows = (data.channels || [])
+        const rows = sortedChannels((data.channels || [])
           .filter(isTerminatedChannel)
           .filter(channel => {
             const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`.toLowerCase();
             return !query || haystack.includes(query);
-          });
-        meta.textContent = `${rows.length} channels`;
+          }));
+        meta.innerHTML = `<span>${rows.length} channels</span>${channelSortHtml()}`;
         renderPagedGrid(rows, channelCardFor, 'No terminated channels match.');
         return;
       }
