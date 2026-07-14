@@ -86,6 +86,10 @@
     .level-cell { white-space: nowrap; }
     .log-panel { margin-top: 16px; }
     .message { overflow-wrap: anywhere; white-space: pre-line; }
+    .service-block { display: flex; justify-content: space-between; align-items: center; gap: 16px; border-left: 3px solid var(--warn); padding: 10px 12px; margin: 12px 0; background: color-mix(in srgb, var(--warn) 10%, transparent); }
+    .service-block[hidden] { display: none; }
+    .service-block strong { display: block; margin-bottom: 3px; }
+    .service-block .message { color: var(--muted); font-size: 13px; }
     @media (max-width: 700px) {
       main { padding: 16px; }
       header, .workstream-header { display: block; }
@@ -171,6 +175,10 @@
         <button id="stopWorkerQueue" type="button">Stop queue</button>
         <button id="refresh" type="button">Refresh status</button>
       </div>
+      <div id="archivarixBlock" class="service-block" hidden>
+        <div><strong>Archivarix paused</strong><div id="archivarixBlockMessage" class="message"></div></div>
+        <button id="retryArchivarix" type="button">Retry Archivarix</button>
+      </div>
       <table>
         <colgroup>
           <col class="action-col">
@@ -238,6 +246,8 @@
       stopWorkerQueue: document.getElementById('stopWorkerQueue'),
       workerQueueRows: document.getElementById('workerQueueRows'),
       workerQueuePanel: document.getElementById('workerQueuePanel'),
+      archivarixBlock: document.getElementById('archivarixBlock'),
+      archivarixBlockMessage: document.getElementById('archivarixBlockMessage'),
       displayTimezone: document.getElementById('displayTimezone'),
     };
     fields.displayTimezone.value = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
@@ -508,6 +518,11 @@
       syncQueueTiming(queueWorkerActive, queueStats);
       fields.startWorkerQueue.classList.toggle('primary', !queueWorkerRunning && !queueWorkerStopping);
       fields.stopWorkerQueue.classList.toggle('danger', queueWorkerRunning || queueWorkerStopping);
+      const archivarixBlock = data.archivarixBlock || {};
+      fields.archivarixBlock.hidden = !archivarixBlock.blocked;
+      fields.archivarixBlockMessage.textContent = archivarixBlock.blocked
+        ? `${archivarixBlock.message || 'Recovery is blocked.'}${archivarixBlock.blocked_at ? ` Blocked ${window.YTLibraryTime.format(archivarixBlock.blocked_at)}.` : ''}`
+        : '';
 
       const channelCounts = data.channelCounts || {};
       const channelCards = [
@@ -647,6 +662,7 @@
     document.getElementById('reconcileHistory').addEventListener('click', () => post('/api/admin/history/reconcile').catch(error => alert(error.message)));
     document.getElementById('reconcilePlaylists').addEventListener('click', () => post('/api/admin/playlists/reconcile').catch(error => alert(error.message)));
     document.getElementById('startWorkerQueue').addEventListener('click', () => post('/api/admin/queue/start').catch(error => alert(error.message)));
+    document.getElementById('retryArchivarix').addEventListener('click', () => post('/api/admin/archivarix/retry').catch(error => alert(error.message)));
     document.getElementById('rebuildWorkerQueue').addEventListener('click', () => post('/api/admin/queue/rebuild').catch(error => alert(error.message)));
     document.getElementById('clearWorkerQueue').addEventListener('click', () => {
       if (!confirm('Clear the worker queue? This will remove all pending metadata, playlist, and history jobs.')) return;

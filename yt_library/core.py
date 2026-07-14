@@ -98,7 +98,7 @@ LIKED_VIDEOS_PLAYLIST_ID = "LL"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -4878,6 +4878,66 @@ def worker_queue_type_count(conn: sqlite3.Connection, worker_type: str) -> int:
     return int(row["count"] or 0)
 
 
+def external_service_block(conn: sqlite3.Connection, service: str) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM external_service_blocks WHERE service = ?",
+        (service,),
+    ).fetchone()
+    if not row:
+        return {
+            "service": service,
+            "blocked": False,
+            "reason_code": "",
+            "message": "",
+            "blocked_at": "",
+            "retry_after": "",
+            "run_id": "",
+            "queue_id": 0,
+            "retry_eligible": False,
+            "manual_retry_required": False,
+        }
+    return {
+        **dict(row),
+        "blocked": True,
+        "retry_eligible": True,
+        "manual_retry_required": not bool(row["retry_after"]),
+    }
+
+
+def set_external_service_block(
+    conn: sqlite3.Connection,
+    service: str,
+    reason_code: str,
+    message: str,
+    *,
+    run_id: str = "",
+    queue_id: int = 0,
+    retry_after: str = "",
+) -> dict[str, Any]:
+    conn.execute(
+        """
+        INSERT INTO external_service_blocks(
+          service, reason_code, message, blocked_at, retry_after, run_id, queue_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(service) DO UPDATE SET
+          reason_code = excluded.reason_code,
+          message = excluded.message,
+          blocked_at = excluded.blocked_at,
+          retry_after = excluded.retry_after,
+          run_id = excluded.run_id,
+          queue_id = excluded.queue_id
+        """,
+        (service, reason_code, message, utc_now(), retry_after, run_id, queue_id),
+    )
+    return external_service_block(conn, service)
+
+
+def clear_external_service_block(conn: sqlite3.Connection, service: str) -> bool:
+    cursor = conn.execute("DELETE FROM external_service_blocks WHERE service = ?", (service,))
+    return cursor.rowcount > 0
+
+
 def clear_worker_queue_type(conn: sqlite3.Connection, worker_type: str) -> int:
     worker_type = (worker_type or "").strip()
     count = worker_queue_type_count(conn, worker_type)
@@ -5647,6 +5707,7 @@ def admin_status(
             LIMIT 1
             """
         ).fetchone()
+        archivarix_block = external_service_block(conn, "archivarix")
         metadata_logs: list[dict[str, Any]] = []
         playlist_logs: list[dict[str, Any]] = []
         live_history_logs: list[dict[str, Any]] = []
@@ -5732,6 +5793,7 @@ def admin_status(
         "latestPlaceholderRecoveryRun": (
             dict(latest_placeholder_recovery_run) if latest_placeholder_recovery_run else None
         ),
+        "archivarixBlock": archivarix_block,
         "logs": metadata_logs,
         "metadataLogs": metadata_logs,
         "playlistScanLogs": playlist_logs,

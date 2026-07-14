@@ -530,6 +530,22 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             )
             self.send_json({"ok": True, "dispatcher": dispatcher})
             return
+        if parsed.path == "/api/admin/archivarix/retry":
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    cleared = clear_external_service_block(conn, "archivarix")
+            finally:
+                conn.close()
+            WORKER_QUEUE_DISPATCHER.allow_archivarix_retry()
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+            )
+            self.send_json({"ok": True, "cleared": cleared, "dispatcher": dispatcher})
+            return
         if parsed.path == "/api/admin/queue/stop":
             result = {
                 "dispatcher": WORKER_QUEUE_DISPATCHER.stop(),

@@ -2365,6 +2365,11 @@ class WorkerQueueTests(unittest.TestCase):
             try:
                 self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
                 self.assertEqual(worker.blocked_reason(), "Archivarix daily search limit reached")
+                block = core.external_service_block(conn, "archivarix")
+                self.assertTrue(block["blocked"])
+                self.assertEqual(block["reason_code"], "rate_limited")
+                self.assertEqual(block["run_id"], "test-placeholder-rate-limited")
+                self.assertTrue(block["retry_eligible"])
                 run = conn.execute(
                     """
                     SELECT status, processed, failed, recovery_status, video_id, message
@@ -2399,6 +2404,7 @@ class WorkerQueueTests(unittest.TestCase):
                     status["placeholderRecoveryLogs"][0]["run_id"],
                     "test-placeholder-rate-limited",
                 )
+                self.assertTrue(status["archivarixBlock"]["blocked"])
             finally:
                 conn.close()
 
@@ -2449,6 +2455,63 @@ class WorkerQueueTests(unittest.TestCase):
                     tuple(run),
                     ("blocked", 0, 1, "authentication_error", "Archivarix cookie expired"),
                 )
+                block = core.external_service_block(conn, "archivarix")
+                self.assertEqual(block["reason_code"], "authentication_error")
+                self.assertEqual(block["queue_id"], 1)
+                with conn:
+                    self.assertTrue(core.clear_external_service_block(conn, "archivarix"))
+                self.assertFalse(core.external_service_block(conn, "archivarix")["blocked"])
+            finally:
+                conn.close()
+
+    def test_dispatcher_respects_persisted_archivarix_block_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO worker_queue(
+                          subject_key, worker_type, video_id, current_title,
+                          priority, created_at, updated_at
+                        )
+                        VALUES ('placeholder:abc12345678', 'placeholder', 'abc12345678',
+                                'Unavailable example', 0, ?, ?)
+                        """,
+                        (core.utc_now(), core.utc_now()),
+                    )
+                    core.set_external_service_block(
+                        conn,
+                        "archivarix",
+                        "rate_limited",
+                        "Archivarix daily search limit reached",
+                        run_id="prior-run",
+                        queue_id=1,
+                    )
+            finally:
+                conn.close()
+
+            dispatcher = WorkerQueueDispatcher()
+            with patch("yt_library.workers.PlaceholderRecoveryWorker.start") as start_placeholder:
+                dispatcher._run(
+                    db_path,
+                    Path(temp_dir) / "youtube-cookies.txt",
+                    Path(temp_dir) / "video-thumbs",
+                    "UTC",
+                    Path(temp_dir) / "archivarix-cookies.txt",
+                    Path(temp_dir) / "archivarix-thumbs",
+                    0.0,
+                    1,
+                    0.0,
+                    1,
+                )
+
+            start_placeholder.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
+                self.assertTrue(core.external_service_block(conn, "archivarix")["blocked"])
             finally:
                 conn.close()
 

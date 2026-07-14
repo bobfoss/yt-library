@@ -183,6 +183,16 @@ CREATE TABLE IF NOT EXISTS worker_queue_events (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS external_service_blocks (
+  service TEXT PRIMARY KEY,
+  reason_code TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT '',
+  blocked_at TEXT NOT NULL,
+  retry_after TEXT NOT NULL DEFAULT '',
+  run_id TEXT NOT NULL DEFAULT '',
+  queue_id INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TRIGGER IF NOT EXISTS worker_queue_event_insert
 AFTER INSERT ON worker_queue
 BEGIN

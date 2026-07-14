@@ -59,6 +59,13 @@ This review uses the current code as truth and ranks remaining cleanup by duplic
 - Placeholder recovery attempts now persist run IDs, lifecycle and recovery outcomes, and dedicated run-linked logs just like the other external workers.
 - Dispatcher site cadence, concurrency limits, queue priority, and per-request YouTube authentication checks are unchanged.
 
+### Archivarix Backoff And Retry Controls
+
+- Archivarix authentication and rate-limit failures persist a service block linked to the triggering placeholder run and queue item.
+- The dispatcher preserves blocked placeholder tasks and continues eligible YouTube, playlist, and history work.
+- Admin shows the block reason and local time and provides a deliberate retry action after credentials or quota state changes.
+- Service restarts retain the block, and Archivarix does not retry automatically without an explicit retry request.
+
 ## Removal Gate
 
 Remove a vestigial candidate only when all are true:
@@ -70,15 +77,11 @@ Remove a vestigial candidate only when all are true:
 
 ## Ranked Remaining Cleanup
 
-### 1. Archivarix Backoff And Retry Controls
-
-Archivarix 429 and quota responses stop further recovery dispatch for the current run, but the blocked state and retry path are not explicit enough in Admin. Expose the reason and retry eligibility, preserve pending tasks, and provide a deliberate retry action after credentials or quota state change. Do not automatically hammer a rate-limited endpoint.
-
-### 2. Collection Card Duplication
+### 1. Collection Card Duplication
 
 Playlist and channel cards share some framing but still have meaningfully different content. Revisit only after the video-card renderer settles.
 
-### 3. Foreign Playlist Continuation Extraction
+### 2. Foreign Playlist Continuation Extraction
 
 Foreign playlists can expose fewer rows than their reported count. Continue preserving the best nonzero scan and logging reported versus exposed counts. Investigate continuation behavior only with a concrete fixture and never synthesize unavailable rows from a count gap.
 
@@ -91,8 +94,5 @@ Foreign playlists can expose fewer rows than their reported count. Continue pres
 
 ## Suggested Order
 
-1. Add explicit Archivarix backoff and retry controls.
-2. Reassess collection-card duplication after the shared video-card renderer has settled.
-3. Investigate foreign playlist continuations only with a reproducible fixture.
-4. Revisit collection cards.
-5. Investigate foreign playlist continuation extraction when a reproducible fixture is available.
+1. Reassess collection-card duplication after the shared video-card renderer has settled.
+2. Investigate foreign playlist continuation extraction when a reproducible fixture is available.

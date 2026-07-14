@@ -1042,6 +1042,14 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
             if not session_valid:
                 self._set_blocked_reason(session_message)
                 with conn:
+                    set_external_service_block(
+                        conn,
+                        "archivarix",
+                        "authentication_error",
+                        session_message,
+                        run_id=run_id,
+                        queue_id=queue_id,
+                    )
                     self._finish_run(
                         conn,
                         run_id,
@@ -1099,6 +1107,14 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                 if status == "rate_limited":
                     message = error or "Archivarix daily search limit reached"
                     self._set_blocked_reason(message)
+                    set_external_service_block(
+                        conn,
+                        "archivarix",
+                        "rate_limited",
+                        message,
+                        run_id=run_id,
+                        queue_id=queue_id,
+                    )
                     self._finish_run(
                         conn,
                         run_id,
@@ -1164,6 +1180,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         self._completed_count = 0
         self._metadata_workers: dict[int, tuple[MetadataWorker, str]] = {}
         self._placeholder_workers: dict[int, tuple[PlaceholderRecoveryWorker, str]] = {}
+        self._archivarix_retry_requested = threading.Event()
 
     def stats(self, remaining_count: int) -> dict[str, Any]:
         with self._lock:
@@ -1205,6 +1222,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             self._completed_count = 0
             self._metadata_workers = {}
             self._placeholder_workers = {}
+            self._archivarix_retry_requested.clear()
 
         return self._start_background(
             self._run,
@@ -1248,6 +1266,10 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             "running": running,
             "message": "Worker queue dispatcher stop requested",
         }
+
+    def allow_archivarix_retry(self) -> None:
+        self._placeholder_block_reason = ""
+        self._archivarix_retry_requested.set()
 
     def _mark_initial_count(self, count: int) -> None:
         with self._lock:
@@ -1337,9 +1359,19 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             conn.close()
         next_youtube_launch = time.monotonic()
         next_archivarix_launch = time.monotonic()
-        archivarix_blocked = False
+        conn = connect(db_path)
+        try:
+            block = external_service_block(conn, "archivarix")
+        finally:
+            conn.close()
+        archivarix_blocked = bool(block["blocked"])
+        self._placeholder_block_reason = str(block["message"])
         try:
             while not self._stop.is_set():
+                if self._archivarix_retry_requested.is_set():
+                    self._archivarix_retry_requested.clear()
+                    archivarix_blocked = False
+                    self._placeholder_block_reason = ""
                 authentication_blocked = False
                 with self._lock:
                     metadata_workers = dict(self._metadata_workers)
@@ -1443,12 +1475,13 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     self._stop.wait(0.05)
                     continue
 
-                row = self._next_row(db_path)
+                row = self._next_row(
+                    db_path,
+                    ("metadata", "playlist", "history") if archivarix_blocked else (),
+                )
                 if not row:
                     return
                 worker_type = row.get("worker_type") or ""
-                if worker_type == "placeholder" and archivarix_blocked:
-                    return
                 if worker_type in {"metadata", "placeholder"}:
                     wait_until = next_youtube_launch if worker_type == "metadata" else next_archivarix_launch
                     self._stop.wait(max(0.01, min(0.1, wait_until - time.monotonic())))
