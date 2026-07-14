@@ -44,6 +44,7 @@ This review uses the current code as truth and ranks remaining cleanup by duplic
 - Internal Takeout/YouTube source and match badges are retained in data where needed but are not rendered to users.
 - Video and channel detail pages avoid repeated headings, and exact video timestamps render in the configured display timezone.
 - Omni-search is server-owned: SQLite filters source and text fields, deduplicates canonical videos across playlist/history evidence, ranks all entity types, counts the complete result set, and returns the requested page.
+- The browser no longer blocks on a whole-library `/api/data` snapshot. A lightweight bootstrap supplies navigation counts, while playlist, video, channel, and detail read models return only the requested page and hydrate only visible cards.
 
 ### Shared Video Card Rendering
 

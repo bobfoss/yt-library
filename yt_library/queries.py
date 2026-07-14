@@ -276,6 +276,424 @@ def dominant_owner_key(counts: dict[str, int]) -> str:
     return top_key if top_count >= 5 and top_count >= max(2, next_count * 3) else ""
 
 
+def library_bootstrap_data(conn: sqlite3.Connection) -> dict[str, Any]:
+    groups = [
+        dict(row)
+        for row in conn.execute("SELECT * FROM groups ORDER BY COALESCE(parent_key, ''), position, name")
+    ]
+    memberships = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT gp.group_key, gp.playlist_id, gp.position
+            FROM group_playlists gp
+            JOIN playlists p ON p.playlist_id = gp.playlist_id
+            ORDER BY gp.group_key, gp.position, p.title COLLATE NOCASE
+            """
+        )
+    ]
+    counts = dict(
+        conn.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM playlists) AS playlists,
+              (SELECT COUNT(*) FROM playlists p
+                 JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
+                WHERE ps.unavailable_count > 0) AS unavailable_playlists,
+              (SELECT COUNT(DISTINCT video_id) FROM playlist_items WHERE video_id IS NOT NULL)
+                + (SELECT COUNT(*) FROM playlist_items WHERE video_id IS NULL) AS playlist_videos,
+              (SELECT COUNT(*) FROM videos WHERE upper(reaction) = 'L') AS liked_videos,
+              (SELECT COUNT(*) FROM history_events) AS history,
+              (SELECT COUNT(*) FROM channels) AS channels,
+              (SELECT COUNT(*) FROM channels WHERE subscribed = 1) AS subscribed_channels,
+              (SELECT COUNT(*) FROM channels WHERE lower(status) IN ('terminated', 'deleted')) AS terminated_channels
+            """
+        ).fetchone()
+    )
+    return {"groups": groups, "memberships": memberships, "counts": counts}
+
+
+def _playlist_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT p.*,
+                   COALESCE(s.video_count, 0) AS scanned_video_count,
+                   COALESCE(s.unavailable_count, 0) AS unavailable_count,
+                   s.scanned_at,
+                   COALESCE(s.scan_status, '') AS scan_status,
+                   COALESCE(ch.title, '') AS owner_channel_title,
+                   COALESCE(ch.thumbnail_path, '') AS owner_channel_thumbnail_path,
+                   COALESCE(ch.status, '') AS owner_channel_status
+            FROM playlists p
+            LEFT JOIN playlist_scans s ON s.playlist_id = p.playlist_id
+            LEFT JOIN channels ch ON ch.channel_id = p.owner_channel_id
+            ORDER BY p.title COLLATE NOCASE
+            """
+        )
+    ]
+    for playlist in rows:
+        playlist["url"] = youtube_playlist_url(playlist.get("playlist_id", ""))
+        playlist["owner_channel_url"] = youtube_channel_url(playlist.get("owner_channel_id", ""))
+    mark_library_owner_playlists(rows)
+    return rows
+
+
+def _playlist_visibility_category(playlist: dict[str, Any]) -> str:
+    visibility = str(playlist.get("visibility") or "").strip().lower()
+    if visibility in {"private", "public", "unlisted"}:
+        return visibility
+    if str(playlist.get("owner_channel_id") or "").strip() and not int(playlist.get("is_library_owner") or 0):
+        return "others"
+    return "unknown"
+
+
+def playlist_list_data(
+    conn: sqlite3.Connection,
+    *,
+    query: str = "",
+    visibilities: set[str] | None = None,
+    sort: str = "title",
+    unavailable_only: bool = False,
+    group_key: str = "",
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    rows = _playlist_rows(conn)
+    query = query.strip().casefold()
+    if query:
+        rows = [
+            row
+            for row in rows
+            if query
+            in " ".join(
+                str(row.get(key) or "")
+                for key in (
+                    "title",
+                    "owner_channel_title",
+                    "owner_channel_id",
+                    "visibility",
+                    "description",
+                    "playlist_id",
+                )
+            ).casefold()
+        ]
+    if group_key:
+        group_ids = {
+            row["playlist_id"]
+            for row in conn.execute(
+                """
+                SELECT gp.playlist_id
+                FROM group_playlists gp
+                WHERE gp.group_key = ?
+                   OR gp.group_key IN (SELECT group_key FROM groups WHERE parent_key = ?)
+                """,
+                (group_key, group_key),
+            )
+        }
+        rows = [row for row in rows if row.get("playlist_id") in group_ids]
+    if unavailable_only:
+        rows = [row for row in rows if int(row.get("unavailable_count") or 0) > 0]
+    counts = {
+        category: sum(1 for row in rows if _playlist_visibility_category(row) == category)
+        for category in ("private", "public", "unlisted", "others", "unknown")
+    }
+    if visibilities is not None:
+        rows = [row for row in rows if _playlist_visibility_category(row) in visibilities]
+    if sort == "title_desc":
+        rows.sort(key=lambda row: str(row.get("title") or row.get("playlist_id") or "").casefold(), reverse=True)
+    elif sort == "newest_updated":
+        rows.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+    elif sort == "oldest_updated":
+        rows.sort(key=lambda row: str(row.get("updated_at") or ""))
+    elif sort == "most_videos":
+        rows.sort(
+            key=lambda row: (-int(row.get("scanned_video_count") or 0), str(row.get("title") or "").casefold())
+        )
+    elif sort == "most_unavailable":
+        rows.sort(
+            key=lambda row: (-int(row.get("unavailable_count") or 0), str(row.get("title") or "").casefold())
+        )
+    else:
+        rows.sort(key=lambda row: str(row.get("title") or row.get("playlist_id") or "").casefold())
+    limit = max(1, min(int(limit), 500))
+    total = len(rows)
+    offset = max(0, int(offset))
+    if total and offset >= total:
+        offset = ((total - 1) // limit) * limit
+    return {
+        "results": rows[offset : offset + limit],
+        "total": total,
+        "counts": counts,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def playlist_detail_data(conn: sqlite3.Connection, playlist_id: str) -> dict[str, Any] | None:
+    return next((row for row in _playlist_rows(conn) if row.get("playlist_id") == playlist_id), None)
+
+
+def _video_candidate_rows(
+    conn: sqlite3.Connection,
+    *,
+    scope: str,
+    playlist_id: str = "",
+    channel_id: str = "",
+    query: str = "",
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"query": f"%{_omni_like_pattern(query.strip())[1:-1]}%"}
+    query_clause = """
+      AND (
+        :query = '%%'
+        OR lower(COALESCE(v.title, '') || ' ' || COALESCE(v.description, '') || ' ' ||
+                 COALESCE(ch.title, '') || ' ' || COALESCE(v.video_id, '')) LIKE :query ESCAPE '\\'
+      )
+    """
+    history_cte = """
+      WITH history_stats AS (
+        SELECT video_id,
+               COUNT(*) AS watch_count,
+               MAX(COALESCE(watched_at, watch_date)) AS latest_watch_at
+        FROM history_events
+        GROUP BY video_id
+      )
+    """
+    if scope == "liked":
+        sql = history_cte + f"""
+          SELECT v.video_id, v.title, v.title AS metadata_title, v.upload_date AS metadata_upload_date,
+                 v.updated_at, '' AS playlist_id, '' AS playlist_title, 0 AS position,
+                 '' AS membership_state, '' AS unavailable_kind, '' AS source_quality,
+                 '' AS match_type, '' AS match_confidence, '' AS added_at,
+                 COALESCE(v.is_playable, 0) AS is_playable, v.availability,
+                 COALESCE(hs.watch_count, 0) AS watch_count,
+                 COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
+                 100 AS completeness_score
+          FROM videos v
+          LEFT JOIN channels ch ON ch.channel_id = v.channel_id
+          LEFT JOIN history_stats hs ON hs.video_id = v.video_id
+          WHERE upper(v.reaction) = 'L'
+          {query_clause}
+        """
+    else:
+        where = []
+        if playlist_id:
+            where.append("pi.playlist_id = :playlist_id")
+            params["playlist_id"] = playlist_id
+        if channel_id:
+            where.append("v.channel_id = :channel_id")
+            params["channel_id"] = channel_id
+        sql = history_cte + f"""
+          SELECT pi.video_id, COALESCE(v.title, 'Unavailable video') AS title,
+                 COALESCE(v.title, 'Unavailable video') AS metadata_title,
+                 COALESCE(v.upload_date, '') AS metadata_upload_date,
+                 COALESCE(v.updated_at, pi.updated_at) AS updated_at,
+                 pi.playlist_id, p.title AS playlist_title, pi.position,
+                 pi.membership_state, pi.unavailable_kind, pi.source_quality,
+                 pi.match_type, pi.match_confidence, COALESCE(pi.added_at, '') AS added_at,
+                 COALESCE(v.is_playable, 0) AS is_playable,
+                 CASE WHEN pi.video_id IS NULL THEN pi.unavailable_kind ELSE v.availability END AS availability,
+                 COALESCE(hs.watch_count, 0) AS watch_count,
+                 COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
+                 (CASE WHEN v.thumbnail_path != '' THEN 12 ELSE 0 END
+                   + CASE WHEN v.title != '' THEN 8 ELSE 0 END
+                   + CASE WHEN ch.title != '' THEN 5 ELSE 0 END
+                   + CASE WHEN v.description != '' THEN 4 ELSE 0 END
+                   + CASE WHEN COALESCE(v.is_playable, 0) = 1 THEN 2 ELSE 0 END) AS completeness_score
+          FROM playlist_items pi
+          JOIN playlists p ON p.playlist_id = pi.playlist_id
+          LEFT JOIN videos v ON v.video_id = pi.video_id
+          LEFT JOIN channels ch ON ch.channel_id = v.channel_id
+          LEFT JOIN history_stats hs ON hs.video_id = pi.video_id
+          WHERE {' AND '.join(where) if where else '1 = 1'}
+          {query_clause}
+        """
+    rows = [dict(row) for row in conn.execute(sql, params)]
+    if playlist_id:
+        return rows
+    deduplicated: dict[str, dict[str, Any]] = {}
+    unresolved: list[dict[str, Any]] = []
+    for row in rows:
+        video_id = row.get("video_id") or ""
+        if not video_id:
+            unresolved.append(row)
+            continue
+        current = deduplicated.get(video_id)
+        if current is None or int(row.get("completeness_score") or 0) > int(current.get("completeness_score") or 0):
+            deduplicated[video_id] = row
+    return [*deduplicated.values(), *unresolved]
+
+
+def _video_is_unavailable(item: dict[str, Any]) -> bool:
+    if not item.get("video_id") or not int(item.get("is_playable") or 0):
+        return True
+    status = str(item.get("recovered_status") or "")
+    return status == "NOT_FOUND" or status.startswith("DELETED_")
+
+
+def video_collection_data(
+    conn: sqlite3.Connection,
+    *,
+    scope: str = "playlist",
+    playlist_id: str = "",
+    channel_id: str = "",
+    query: str = "",
+    include_videos: bool = True,
+    include_unavailable: bool = True,
+    sort: str = "newest_added",
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    candidates = _video_candidate_rows(
+        conn,
+        scope=scope,
+        playlist_id=playlist_id,
+        channel_id=channel_id,
+        query=query,
+    )
+    available_count = sum(1 for item in candidates if not _video_is_unavailable(item))
+    unavailable_count = len(candidates) - available_count
+    candidates = [
+        item
+        for item in candidates
+        if (include_unavailable if _video_is_unavailable(item) else include_videos)
+    ]
+    title_key = lambda item: str(item.get("metadata_title") or item.get("title") or item.get("video_id") or "").casefold()
+    if sort == "oldest_added":
+        candidates.sort(key=lambda item: (str(item.get("added_at") or item.get("metadata_upload_date") or ""), title_key(item)))
+    elif sort == "most_watched":
+        candidates.sort(key=lambda item: (-int(item.get("watch_count") or 0), title_key(item)))
+    elif sort == "playlist_order":
+        candidates.sort(
+            key=lambda item: (
+                str(item.get("playlist_title") or "").casefold(),
+                int(item.get("position") or 0),
+                str(item.get("video_id") or ""),
+            )
+        )
+    elif sort == "title":
+        candidates.sort(key=title_key)
+    else:
+        candidates.sort(
+            key=lambda item: (str(item.get("added_at") or item.get("metadata_upload_date") or ""), title_key(item)),
+            reverse=True,
+        )
+    limit = max(1, min(int(limit), 500))
+    total = len(candidates)
+    offset = max(0, int(offset))
+    if total and offset >= total:
+        offset = ((total - 1) // limit) * limit
+    page_candidates = candidates[offset : offset + limit]
+    exact_memberships = {
+        (item.get("video_id") or "", index): {
+            key: item.get(key)
+            for key in (
+                "playlist_id",
+                "playlist_title",
+                "position",
+                "membership_state",
+                "unavailable_kind",
+                "source_quality",
+                "match_type",
+                "match_confidence",
+                "added_at",
+                "availability",
+            )
+        }
+        for index, item in enumerate(page_candidates)
+    }
+    wrappers = [_omni_result("video", 0, dict(item), matched_description=False) for item in page_candidates]
+    _hydrate_omni_videos(conn, wrappers)
+    _add_omni_video_links(conn, wrappers)
+    results = []
+    for index, wrapper in enumerate(wrappers):
+        item = wrapper["item"]
+        if playlist_id:
+            item.update(exact_memberships.get((item.get("video_id") or "", index), {}))
+            item["url"] = youtube_video_url(item.get("video_id") or "", playlist_id)
+            item["playlist_url"] = youtube_playlist_url(playlist_id)
+        item.pop("completeness_score", None)
+        results.append(item)
+    return {
+        "results": results,
+        "total": total,
+        "counts": {"videos": available_count, "unavailable": unavailable_count},
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def channel_list_data(
+    conn: sqlite3.Connection,
+    *,
+    query: str = "",
+    categories: set[str] | None = None,
+    subscribed_only: bool = False,
+    sort: str = "title",
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    pattern = _omni_like_pattern(query.strip())
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT *
+            FROM channels
+            WHERE :pattern = '%%'
+               OR lower(title || ' ' || channel_id || ' ' || aliases || ' ' || description || ' ' ||
+                        status || ' ' || status_reason) LIKE :pattern ESCAPE '\\'
+            """,
+            {"pattern": pattern},
+        )
+    ]
+    for row in rows:
+        row["url"] = youtube_channel_url(row.get("channel_id") or "")
+    if subscribed_only:
+        rows = [row for row in rows if int(row.get("subscribed") or 0) == 1]
+    def category(row: dict[str, Any]) -> str:
+        if str(row.get("status") or "").lower() in {"terminated", "deleted"}:
+            return "terminated"
+        return "subscribed" if int(row.get("subscribed") or 0) else "non_subscribed"
+    counts = {key: sum(1 for row in rows if category(row) == key) for key in ("subscribed", "non_subscribed", "terminated")}
+    if categories is not None:
+        rows = [row for row in rows if category(row) in categories]
+    if sort == "title_desc":
+        rows.sort(key=lambda row: str(row.get("title") or row.get("channel_id") or "").casefold(), reverse=True)
+    elif sort == "newest_updated":
+        rows.sort(key=lambda row: str(row.get("updated_at") or row.get("fetched_at") or ""), reverse=True)
+    elif sort == "oldest_updated":
+        rows.sort(key=lambda row: str(row.get("updated_at") or row.get("fetched_at") or ""))
+    else:
+        rows.sort(key=lambda row: str(row.get("title") or row.get("channel_id") or "").casefold())
+    limit = max(1, min(int(limit), 500))
+    total = len(rows)
+    offset = max(0, int(offset))
+    if total and offset >= total:
+        offset = ((total - 1) // limit) * limit
+    return {"results": rows[offset : offset + limit], "total": total, "counts": counts, "limit": limit, "offset": offset}
+
+
+def channel_detail_data(conn: sqlite3.Connection, channel_id: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM channels WHERE channel_id = ?", (channel_id,)).fetchone()
+    if row is None:
+        return None
+    item = dict(row)
+    item["url"] = youtube_channel_url(channel_id)
+    return item
+
+
+def video_detail_data(conn: sqlite3.Connection, video_id: str) -> dict[str, Any] | None:
+    exists = conn.execute("SELECT 1 FROM videos WHERE video_id = ?", (video_id,)).fetchone()
+    if exists is None:
+        return None
+    wrappers = [_omni_result("video", 0, {"video_id": video_id}, matched_description=False)]
+    _hydrate_omni_videos(conn, wrappers)
+    _add_omni_video_links(conn, wrappers)
+    return wrappers[0]["item"]
+
+
 OMNI_SEARCH_FILTERS = {
     "videos",
     "descriptions",

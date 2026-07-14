@@ -22,6 +22,8 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 - `yt_library/schema.sql` is the SQLite schema, loaded by `yt_library/schema.py`.
 - `yt_library/templates/` contains the browser, history, and admin HTML.
 - `tests/` contains the basic `unittest` suite for pure helpers, schema bootstrap, and read models.
+
+The browser loads a small navigation bootstrap, then requests playlists, videos, channels, details, search results, and history as separate server-paginated read models. It does not preload the complete video and channel catalog.
 - `requirements.txt` lists Python dependencies.
 - `yt_library.config.json` is the local runtime configuration file, generated on first setup or serve.
 - `AGENTS.md` contains contributor guidance.
@@ -97,7 +99,7 @@ git diff --check
 
 ## Testing
 
-The test suite uses the Python standard library `unittest` runner, so there is no separate test dependency. Current coverage focuses on stable, local behavior: date/time normalization, reaction extraction, Takeout watch-history parsing, fresh SQLite schema bootstrap, and omni/history search filtering, deduplication, sorting, and paging. Tests must not use real cookies, network requests, or personal runtime databases.
+The test suite uses the Python standard library `unittest` runner, so there is no separate test dependency. Current coverage focuses on stable, local behavior: date/time normalization, reaction extraction, Takeout watch-history parsing, fresh SQLite schema bootstrap, bootstrap/list/detail read models, and omni/history search filtering, deduplication, sorting, and paging. Tests must not use real cookies, network requests, or personal runtime databases.
 
 ## Data Notes
 

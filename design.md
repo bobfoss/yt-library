@@ -30,6 +30,8 @@ Primary surfaces:
 
 Omni-search uses `/api/search` as its single read model. The server applies title/description and source filters, folds playlist and history evidence into one canonical video result, includes unresolved unavailable memberships, globally sorts and counts videos/channels/playlists, and only then returns the requested page. The browser does not merge a separate history result set.
 
+The main browser is also view-driven. `/api/bootstrap` returns only navigation structure and aggregate counts; playlist, video, channel, and detail endpoints fetch the current view's rows from SQLite with server-side filtering, sorting, and pagination. The browser caches completed request keys for navigation within the session and preserves the currently rendered view while a new page is loading. It does not download a whole-library metadata snapshot during startup.
+
 SQLite is the source of truth for local state. Cached thumbnails and avatars are derived local assets. Cookie files, Takeout zips, databases, logs, and thumbnail folders are private runtime data and should remain uncommitted.
 
 ## Data Sources

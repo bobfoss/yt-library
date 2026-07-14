@@ -253,11 +253,8 @@
     const watchSparklineHtml = (video, detail = false) => VideoCard.watchSparklineHtml(video, { detail });
 
     let data = null;
-    let playlists = new Map();
-    let channels = new Map();
     let memberships = new Map();
     let children = new Map();
-    let playlistVideos = new Map();
 
     let selected = '';
     let playlistVisibility = { videos: true, unavailable: true };
@@ -279,6 +276,7 @@
     let historyActivityState = { key: '', loading: false, data: null };
     let historyActivityYearOffset = 0;
     let omniSearchState = { key: '', data: null, promise: null };
+    let viewDataCache = new Map();
     let pendingHistoryDate = '';
     let channelHistoryCounts = new Map();
     let channelDetailTab = 'playlists';
@@ -286,6 +284,7 @@
     let renderGeneration = 0;
     let searchProgressTimer = null;
     let searchInputTimer = null;
+    let playlistSearchTimer = null;
     const search = document.getElementById('search');
     const searchNav = document.getElementById('search-nav');
     const refresh = document.getElementById('refresh');
@@ -309,20 +308,14 @@
     async function loadData() {
       refresh.disabled = true;
       refresh.textContent = 'Refreshing';
-      const response = await fetch('/api/data', { cache: 'no-store' });
+      const response = await fetch('/api/bootstrap', { cache: 'no-store' });
       if (!response.ok) throw new Error(`Data refresh failed: ${response.status}`);
       data = await response.json();
       historyPageState = { key: '', loading: false, data: null };
       historyActivityState = { key: '', loading: false, data: null };
       omniSearchState = { key: '', data: null, promise: null };
+      viewDataCache = new Map();
       channelHistoryCounts = new Map();
-      playlists = new Map(data.playlists.map(p => [p.playlist_id, p]));
-      channels = new Map((data.channels || []).map(channel => [channel.channel_id, channel]));
-      playlistVideos = new Map();
-      for (const video of data.playlistVideos || []) {
-        if (!playlistVideos.has(video.playlist_id)) playlistVideos.set(video.playlist_id, []);
-        playlistVideos.get(video.playlist_id).push(video);
-      }
       memberships = new Map();
       for (const item of data.memberships) {
         if (!memberships.has(item.group_key)) memberships.set(item.group_key, []);
@@ -339,6 +332,37 @@
       render();
       refresh.disabled = false;
       refresh.textContent = 'Refresh';
+    }
+
+    async function fetchViewData(path) {
+      const cached = viewDataCache.get(path);
+      if (cached?.data) return cached.data;
+      if (cached?.promise) return cached.promise;
+      const promise = fetch(path, { cache: 'no-store' }).then(async response => {
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || `View fetch failed: ${response.status}`);
+        }
+        const payload = await response.json();
+        viewDataCache.set(path, { data: payload, promise: null });
+        return payload;
+      }).catch(error => {
+        viewDataCache.delete(path);
+        throw error;
+      });
+      viewDataCache.set(path, { data: null, promise });
+      return promise;
+    }
+
+    function remoteListPath(path, params = {}) {
+      const size = pageSizeNumber();
+      const limit = Number.isFinite(size) ? size : 500;
+      const queryParams = new URLSearchParams({
+        ...params,
+        limit: String(limit),
+        offset: String((currentPage - 1) * limit),
+      });
+      return `${path}?${queryParams}`;
     }
 
     function playlistSelection(playlistId) {
@@ -584,18 +608,6 @@
       return new Set([...own, ...nested]).size;
     }
 
-    function groupPlaylistIds(groupKey) {
-      if (!groupKey) {
-        return data.playlists.map(playlist => playlist.playlist_id);
-      }
-      const ids = [];
-      for (const id of memberships.get(groupKey) || []) ids.push(id);
-      for (const child of children.get(groupKey) || []) {
-        for (const id of memberships.get(child.group_key) || []) ids.push(id);
-      }
-      return [...new Set(ids)];
-    }
-
     function activeSearchFilters() {
       return new Set(
         searchFilters
@@ -744,18 +756,6 @@
       return `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}${list}`;
     }
 
-    function likedVideos() {
-      const byId = new Map();
-      for (const video of [...(data.playlistVideos || []), ...(data.standaloneVideos || [])]) {
-        if (String(video.reaction || '').toUpperCase() !== 'L') continue;
-        const key = video.video_id || `${video.playlist_id}:${video.position}`;
-        if (!byId.has(key)) byId.set(key, video);
-      }
-      return [...byId.values()].sort((a, b) =>
-        displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' })
-      );
-    }
-
     function matchTypeLabel(video) {
       if (video.source_type) return '';
       if (video.match_type === 'ambiguous_hidden_candidate') return '';
@@ -774,63 +774,6 @@
 
     function wasRemovedByMeFromPlaylist(video) {
       return wasRemovedFromPlaylist(video) && !isUnavailablePlaylistVideo(video);
-    }
-
-    function hasActivePlaylistLink(video) {
-      if (Array.isArray(video.playlist_links) && video.playlist_links.length) {
-        return video.playlist_links.some(link => link && link.playlist_id && link.title && !link.removed);
-      }
-      return Boolean(video.playlist_id && video.playlist_title && !wasRemovedByMeFromPlaylist(video));
-    }
-
-    function metadataCompletenessScore(video) {
-      return (video.metadata_thumbnail_path ? 12 : 0)
-        + (usefulMetadataTitle(video) ? 8 : 0)
-        + (displayVideoChannel(video) ? 5 : 0)
-        + (video.metadata_description ? 4 : 0)
-        + (Number(video.is_playable || 0) ? 2 : 0);
-    }
-
-    function allPlaylistVideos() {
-      const byVideo = new Map();
-      const rowOnly = [];
-      for (const video of data.playlistVideos || []) {
-        if (!video.video_id) {
-          rowOnly.push(video);
-          continue;
-        }
-        const existing = byVideo.get(video.video_id);
-        if (!existing || metadataCompletenessScore(video) > metadataCompletenessScore(existing)) {
-          byVideo.set(video.video_id, video);
-        }
-      }
-      return [...byVideo.values(), ...rowOnly];
-    }
-
-    function sortableVideoDate(video) {
-      const value = video.added_at || video.metadata_published_at || video.published_at || '';
-      const time = Date.parse(value);
-      return Number.isFinite(time) ? time : 0;
-    }
-
-    function playlistOrderKey(video) {
-      return `${video.playlist_title || ''}\u0000${String(video.position || '').padStart(8, '0')}\u0000${video.video_id || ''}`;
-    }
-
-    function sortedPlaylistVideos(rows, sortValue) {
-      const sorted = [...rows];
-      if (sortValue === 'newest_added') {
-        sorted.sort((a, b) => sortableVideoDate(b) - sortableVideoDate(a) || displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
-      } else if (sortValue === 'oldest_added') {
-        sorted.sort((a, b) => sortableVideoDate(a) - sortableVideoDate(b) || displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
-      } else if (sortValue === 'most_watched') {
-        sorted.sort((a, b) => Number(b.watch_count || 0) - Number(a.watch_count || 0) || displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
-      } else if (sortValue === 'playlist_order') {
-        sorted.sort((a, b) => playlistOrderKey(a).localeCompare(playlistOrderKey(b), undefined, { sensitivity: 'base' }));
-      } else {
-        sorted.sort((a, b) => displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' }));
-      }
-      return sorted;
     }
 
     function pageSizeNumber() {
@@ -991,6 +934,12 @@
       const start = total ? (currentPage - 1) * effectiveSize + 1 : 0;
       const end = total ? Math.min(total, start + rowsLength - 1) : 0;
       return { pageRows: [], page: currentPage, pageCount, start, end, total };
+    }
+
+    function remotePayloadPageInfo(payload, rowsLength) {
+      const limit = Number(payload.limit || pageSizeNumber() || 100);
+      currentPage = Math.floor(Number(payload.offset || 0) / limit) + 1;
+      return remotePageInfo(Number(payload.total || 0), rowsLength, limit);
     }
 
     async function fetchHistoryPage(channelId = '') {
@@ -1307,21 +1256,6 @@
       `;
     }
 
-    function sortedChannels(rows) {
-      return [...rows].sort((left, right) => {
-        const leftUpdated = Date.parse(left.updated_at || left.fetched_at || '') || 0;
-        const rightUpdated = Date.parse(right.updated_at || right.fetched_at || '') || 0;
-        if (channelViewSort === 'newest_updated' && rightUpdated !== leftUpdated) return rightUpdated - leftUpdated;
-        if (channelViewSort === 'oldest_updated' && leftUpdated !== rightUpdated) return leftUpdated - rightUpdated;
-        const titleCompare = String(left.title || left.channel_id).localeCompare(
-          String(right.title || right.channel_id),
-          undefined,
-          { sensitivity: 'base' },
-        );
-        return channelViewSort === 'title_desc' ? -titleCompare : titleCompare;
-      });
-    }
-
     function channelSortHtml() {
       const options = [
         ['title', 'Name A-Z'],
@@ -1336,29 +1270,6 @@
           </select>
         </label>
       `;
-    }
-
-    function sortedPlaylists(rows) {
-      return [...rows].sort((left, right) => {
-        const leftUpdated = Date.parse(left.updated_at || '') || 0;
-        const rightUpdated = Date.parse(right.updated_at || '') || 0;
-        if (allPlaylistsSort === 'newest_updated' && rightUpdated !== leftUpdated) return rightUpdated - leftUpdated;
-        if (allPlaylistsSort === 'oldest_updated' && leftUpdated !== rightUpdated) return leftUpdated - rightUpdated;
-        if (allPlaylistsSort === 'most_videos') {
-          const countDelta = Number(right.scanned_video_count || 0) - Number(left.scanned_video_count || 0);
-          if (countDelta) return countDelta;
-        }
-        if (allPlaylistsSort === 'most_unavailable') {
-          const countDelta = Number(right.unavailable_count || 0) - Number(left.unavailable_count || 0);
-          if (countDelta) return countDelta;
-        }
-        const titleCompare = String(left.title || left.playlist_id).localeCompare(
-          String(right.title || right.playlist_id),
-          undefined,
-          { sensitivity: 'base' },
-        );
-        return allPlaylistsSort === 'title_desc' ? -titleCompare : titleCompare;
-      });
     }
 
     function playlistSortHtml() {
@@ -1455,6 +1366,44 @@
       return promise;
     }
 
+    async function fetchPlaylistList({ unavailableOnly = false, groupKey = '' } = {}) {
+      const visibility = Object.entries(playlistListVisibility)
+        .filter(([, enabled]) => enabled)
+        .map(([key]) => key)
+        .join(',');
+      const path = remoteListPath('/api/playlists', {
+        visibility: visibility || '__none__',
+        sort: unavailableOnly ? 'most_unavailable' : allPlaylistsSort,
+        unavailable_only: unavailableOnly ? '1' : '0',
+        group_key: groupKey,
+      });
+      return fetchViewData(path);
+    }
+
+    async function fetchVideoCollection({ scope = 'playlist', playlistId = '', channelId = '', sort = 'newest_added', query = '', visibility = playlistVisibility } = {}) {
+      const base = playlistId
+        ? `/api/playlists/${encodeURIComponent(playlistId)}/videos`
+        : '/api/videos';
+      const path = remoteListPath(base, {
+        scope,
+        channel_id: channelId,
+        q: query,
+        videos: visibility.videos ? '1' : '0',
+        unavailable: visibility.unavailable ? '1' : '0',
+        sort,
+      });
+      return fetchViewData(path);
+    }
+
+    async function fetchChannelList(categories, subscribedOnly = false) {
+      const path = remoteListPath('/api/channels', {
+        categories: categories.join(','),
+        subscribed_only: subscribedOnly ? '1' : '0',
+        sort: channelViewSort,
+      });
+      return fetchViewData(path);
+    }
+
     function buttonFor(group, child=false) {
       const button = document.createElement('button');
       button.className = `group ${child ? 'child' : ''}`;
@@ -1487,62 +1436,26 @@
     function renderGroups() {
       if (!data) return;
       groupsEl.replaceChildren();
+      const counts = data.counts || {};
       const videoSection = sectionFor('Videos');
-      const allVideoRows = allPlaylistVideos();
-      videoSection.appendChild(navButton('__all_videos__', 'Playlist videos', allVideoRows.length));
-      const likedRows = likedVideos();
-      videoSection.appendChild(navButton('__liked__', 'Liked videos', likedRows.length));
-      videoSection.appendChild(navButton('__history__', 'History', data.historySummary?.watch_rows || 0));
-      const unavailablePlaylists = data.playlists.filter(playlist => (playlist.unavailable_count || 0) > 0);
+      videoSection.appendChild(navButton('__all_videos__', 'Playlist videos', counts.playlist_videos || 0));
+      videoSection.appendChild(navButton('__liked__', 'Liked videos', counts.liked_videos || 0));
+      videoSection.appendChild(navButton('__history__', 'History', counts.history || 0));
 
       const channelSection = sectionFor('Channels');
-      channelSection.appendChild(navButton('__channels__', 'Channels', (data.channels || []).length));
-      const subscribedChannels = (data.channels || []).filter(isSubscribedChannel);
-      channelSection.appendChild(navButton('__subscribed_channels__', 'Subscribed channels', subscribedChannels.length));
-      const terminatedChannels = (data.channels || []).filter(isTerminatedChannel);
-      channelSection.appendChild(navButton('__terminated_channels__', 'Terminated channels', terminatedChannels.length));
+      channelSection.appendChild(navButton('__channels__', 'Channels', counts.channels || 0));
+      channelSection.appendChild(navButton('__subscribed_channels__', 'Subscribed channels', counts.subscribed_channels || 0));
+      channelSection.appendChild(navButton('__terminated_channels__', 'Terminated channels', counts.terminated_channels || 0));
 
       const pocketTubeSection = sectionFor('Playlists');
-      pocketTubeSection.appendChild(navButton('', 'All playlists', data.playlists.length));
-      pocketTubeSection.appendChild(navButton('__unavailable_playlists__', 'Playlists with unavailable', unavailablePlaylists.length));
+      pocketTubeSection.appendChild(navButton('', 'All playlists', counts.playlists || 0));
+      pocketTubeSection.appendChild(navButton('__unavailable_playlists__', 'Playlists with unavailable', counts.unavailable_playlists || 0));
       for (const group of children.get('') || []) {
         pocketTubeSection.appendChild(buttonFor(group));
         for (const child of children.get(group.group_key) || []) {
           pocketTubeSection.appendChild(buttonFor(child, true));
         }
       }
-    }
-
-    function videoRowsById(videoId) {
-      return [
-        ...(data.playlistVideos || []).filter(video => video.video_id === videoId),
-        ...(data.standaloneVideos || []).filter(video => video.video_id === videoId),
-      ];
-    }
-
-    function channelById(channelId) {
-      return (data.channels || []).find(channel => channel.channel_id === channelId) || null;
-    }
-
-    function channelVideoRows(channelId) {
-      const byVideo = new Map();
-      for (const video of data.playlistVideos || []) {
-        if (!video.video_id) continue;
-        const matchesChannel = video.metadata_channel_id === channelId || video.channel_id === channelId || video.metadata_channel_url?.includes(channelId);
-        if (!matchesChannel) continue;
-        if (!byVideo.has(video.video_id)) byVideo.set(video.video_id, video);
-      }
-      return [...byVideo.values()].sort((a, b) =>
-        displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' })
-      );
-    }
-
-    function primaryVideoForDetail(videoId) {
-      const playlistRows = videoRowsById(videoId);
-      if (playlistRows.length) {
-        return playlistRows.find(video => video.metadata_description) || playlistRows[0];
-      }
-      return null;
     }
 
     function videoDetailCardFor(video) {
@@ -1666,10 +1579,11 @@
         selected === '__history__'
         || (selected.startsWith('__channel__:') && channelDetailTab === 'history')
       );
-      const preserveSearchPager = selected === '__search__'
-        && Boolean(omniSearchState.data)
-        && !bottomPager.hidden;
-      if (!preserveHistoryChrome && !preserveSearchPager) {
+      const preserveRemotePager = !bottomPager.hidden && (
+        (selected === '__search__' && Boolean(omniSearchState.data))
+        || (selected !== '__search__' && viewDataCache.size > 0)
+      );
+      if (!preserveHistoryChrome && !preserveRemotePager) {
         hidePager();
       }
       if (!preserveHistoryChrome) {
@@ -1682,34 +1596,47 @@
       searchNav?.classList.toggle('active', selected === '__search__');
       if (selected.startsWith('__video__:')) {
         const videoId = selected.slice('__video__:'.length);
-        const video = primaryVideoForDetail(videoId);
-        if (!video) {
+        title.textContent = 'Video';
+        meta.textContent = '';
+        let video;
+        try {
+          video = await fetchViewData(`/api/videos/${encodeURIComponent(videoId)}`);
+        } catch (error) {
+          if (generation !== renderGeneration) return;
           title.textContent = 'Video not found';
           meta.textContent = videoId;
           grid.replaceChildren();
           empty.hidden = false;
-          empty.textContent = 'No local metadata is available for this video.';
+          empty.textContent = error.message;
           return;
         }
-        title.textContent = 'Video';
-        meta.textContent = '';
+        if (generation !== renderGeneration) return;
+        hidePager();
         grid.replaceChildren(videoDetailCardFor(video));
         empty.hidden = true;
         return;
       }
       if (selected.startsWith('__channel__:')) {
         const channelId = selected.slice('__channel__:'.length);
-        const channel = channelById(channelId);
-        if (!channel) {
+        title.textContent = 'Channel';
+        let channel;
+        let playlistSummary;
+        try {
+          [channel, playlistSummary] = await Promise.all([
+            fetchViewData(`/api/channels/${encodeURIComponent(channelId)}`),
+            fetchViewData(`/api/videos?channel_id=${encodeURIComponent(channelId)}&limit=1&offset=0&sort=title`),
+          ]);
+        } catch (error) {
+          if (generation !== renderGeneration) return;
           title.textContent = 'Channel not found';
           meta.textContent = channelId;
           grid.replaceChildren();
           empty.hidden = false;
-          empty.textContent = 'No local metadata is available for this channel.';
+          empty.textContent = error.message;
           return;
         }
-        title.textContent = 'Channel';
-        const playlistRows = channelVideoRows(channelId);
+        if (generation !== renderGeneration) return;
+        const playlistCount = Number(playlistSummary.total || 0);
         const historyCount = cachedChannelHistoryCount(channelId);
         const currentHeatmap = channelDetailTab === 'history'
           ? viewContext.querySelector(`.history-heatmap[data-history-channel-id="${CSS.escape(channelId)}"]`)
@@ -1717,7 +1644,7 @@
         viewContext.hidden = false;
         viewContext.replaceChildren(
           channelDetailCardFor(channel),
-          channelTabsFor(channelDetailTab, playlistRows.length, historyCount),
+          channelTabsFor(channelDetailTab, playlistCount, historyCount),
           ...(currentHeatmap ? [currentHeatmap] : []),
         );
         grid.className = channelDetailTab === 'history' ? 'history-list' : 'grid';
@@ -1731,9 +1658,10 @@
           ]);
           const rows = payload.watch || [];
           const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
+          if (generation !== renderGeneration) return;
           viewContext.replaceChildren(
             channelDetailCardFor(channel),
-            channelTabsFor('history', playlistRows.length, total),
+            channelTabsFor('history', playlistCount, total),
             historyHeatmapFor(activity),
           );
           const pageInfo = remotePageInfo(total, rows.length);
@@ -1744,10 +1672,14 @@
           empty.textContent = 'No history rows match this channel.';
           scrollToPendingHistoryDate();
         } else {
-          const pageInfo = pagedRows(playlistRows);
+          const payload = await fetchVideoCollection({ channelId, sort: 'title' });
+          if (generation !== renderGeneration) return;
+          const rows = payload.results || [];
+          const pageInfo = remotePageInfo(Number(payload.total || 0), rows.length, Number(payload.limit || 100));
           meta.textContent = '';
-          grid.replaceChildren(...pageInfo.pageRows.map(playlistVideoCardFor));
-          empty.hidden = playlistRows.length !== 0;
+          renderPager(pageInfo);
+          grid.replaceChildren(...rows.map(playlistVideoCardFor));
+          empty.hidden = rows.length !== 0;
           empty.textContent = 'No playlist videos match this channel.';
           if (historyCount === null) {
             void fetchChannelHistoryCount(channelId).then(() => {
@@ -1803,36 +1735,30 @@
       if (selected.startsWith('__playlist__:')) {
         const playlistId = selected.slice('__playlist__:'.length);
         resetPlaylistVisibilityFor(playlistId);
-        const playlist = playlists.get(playlistId);
-        if (!playlist) {
+        let playlist;
+        let payload;
+        try {
+          [playlist, payload] = await Promise.all([
+            fetchViewData(`/api/playlists/${encodeURIComponent(playlistId)}`),
+            fetchVideoCollection({
+              playlistId,
+              sort: playlistViewSort,
+              query: playlistPageSearch.trim(),
+            }),
+          ]);
+        } catch (error) {
+          if (generation !== renderGeneration) return;
           title.textContent = 'Playlist not found';
           meta.textContent = playlistId;
           grid.replaceChildren();
           empty.hidden = false;
+          empty.textContent = error.message;
           return;
         }
-        const allRows = (playlistVideos.get(playlistId) || []).filter(video => {
-          const haystack = `${video.title} ${video.channel} ${video.availability} ${video.video_id}`.toLowerCase();
-          return !query || haystack.includes(query);
-        }).filter(video => {
-          const playlistQuery = playlistPageSearch.trim().toLowerCase();
-          if (!playlistQuery) return true;
-          const haystack = [
-            video.title,
-            video.metadata_title,
-            video.current_title,
-            video.recovered_title,
-            video.metadata_description,
-            video.recovered_description,
-          ].join(' ').toLowerCase();
-          return haystack.includes(playlistQuery);
-        });
-        const videoCount = allRows.filter(video => !isUnavailablePlaylistVideo(video)).length;
-        const hiddenCount = allRows.length - videoCount;
-        const rows = sortedPlaylistVideos(allRows.filter(video => {
-          const unavailable = isUnavailablePlaylistVideo(video);
-          return unavailable ? playlistVisibility.unavailable : playlistVisibility.videos;
-        }), playlistViewSort);
+        if (generation !== renderGeneration) return;
+        const rows = payload.results || [];
+        const videoCount = Number(payload.counts?.videos || 0);
+        const hiddenCount = Number(payload.counts?.unavailable || 0);
         title.innerHTML = `
           <span class="title-with-action">
             <span>${escapeHtml(playlist.title)}</span>
@@ -1845,25 +1771,31 @@
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
           ${videoSortHtml(playlistViewSort, 'playlist')}
         `;
-        renderPagedGrid(rows, video => playlistVideoCardFor(video, { showPosition: true }), playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.');
+        renderPager(remotePayloadPageInfo(payload, rows.length));
+        grid.className = 'grid';
+        grid.replaceChildren(...rows.map(video => playlistVideoCardFor(video, { showPosition: true })));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.';
         return;
       }
       if (selected === '__all_videos__') {
         resetPlaylistVisibilityFor('__all_videos__');
-        const allRows = allPlaylistVideos().filter(video => isUnavailablePlaylistVideo(video) || hasActivePlaylistLink(video));
-        const hiddenCount = allRows.filter(isUnavailablePlaylistVideo).length;
-        const videoCount = allRows.length - hiddenCount;
-        const rows = sortedPlaylistVideos(allRows.filter(video => {
-          const unavailable = isUnavailablePlaylistVideo(video);
-          return unavailable ? playlistVisibility.unavailable : playlistVisibility.videos;
-        }), allVideosSort);
+        const payload = await fetchVideoCollection({ sort: allVideosSort });
+        if (generation !== renderGeneration) return;
+        const rows = payload.results || [];
+        const hiddenCount = Number(payload.counts?.unavailable || 0);
+        const videoCount = Number(payload.counts?.videos || 0);
         title.textContent = 'Playlist videos';
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
           ${videoSortHtml(allVideosSort, 'all')}
         `;
-        renderPagedGrid(rows, playlistVideoCardFor, 'No playlist videos match.');
+        renderPager(remotePayloadPageInfo(payload, rows.length));
+        grid.className = 'grid';
+        grid.replaceChildren(...rows.map(playlistVideoCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No playlist videos match.';
         return;
       }
       if (selected === '__history__') {
@@ -1872,107 +1804,111 @@
       }
       if (selected === '__hidden__') {
         title.textContent = 'Unavailable videos';
-        const rows = data.unavailableVideos.filter(video => {
-          const haystack = `${video.title} ${video.channel} ${video.availability} ${video.playlist_title} ${video.video_id}`.toLowerCase();
-          return !query || haystack.includes(query);
-        });
-        meta.textContent = `${rows.length} shown`;
-        renderPagedGrid(rows, hiddenVideoCardFor, 'No unavailable videos match.');
+        const payload = await fetchVideoCollection({ visibility: { videos: false, unavailable: true } });
+        if (generation !== renderGeneration) return;
+        const rows = payload.results || [];
+        meta.textContent = `${payload.total || 0} shown`;
+        renderPager(remotePayloadPageInfo(payload, rows.length));
+        grid.replaceChildren(...rows.map(hiddenVideoCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No unavailable videos match.';
         return;
       }
       if (selected === '__liked__') {
         title.textContent = 'Liked videos';
-        const allRows = likedVideos().filter(video => {
-          const haystack = `${displayVideoTitle(video)} ${displayVideoChannel(video)} ${video.metadata_description} ${video.playlist_title} ${video.video_id}`.toLowerCase();
-          return !query || haystack.includes(query);
-        });
-        const unavailableCount = allRows.filter(isUnavailablePlaylistVideo).length;
-        const videoCount = allRows.length - unavailableCount;
-        const rows = sortedPlaylistVideos(allRows.filter(video => {
-          const unavailable = isUnavailablePlaylistVideo(video);
-          return unavailable ? likedVideosVisibility.unavailable : likedVideosVisibility.videos;
-        }), likedVideosSort);
+        const payload = await fetchVideoCollection({ scope: 'liked', sort: likedVideosSort, visibility: likedVideosVisibility });
+        if (generation !== renderGeneration) return;
+        const rows = payload.results || [];
+        const unavailableCount = Number(payload.counts?.unavailable || 0);
+        const videoCount = Number(payload.counts?.videos || 0);
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-liked-filter="videos" ${likedVideosVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
           <label class="meta-filter"><input type="checkbox" data-liked-filter="unavailable" ${likedVideosVisibility.unavailable ? 'checked' : ''}> <span class="badge">${unavailableCount} unavailable</span></label>
           ${videoSortHtml(likedVideosSort, 'liked')}
         `;
-        renderPagedGrid(rows, playlistVideoCardFor, 'No liked videos match the selected filters.');
+        renderPager(remotePayloadPageInfo(payload, rows.length));
+        grid.className = 'grid';
+        grid.replaceChildren(...rows.map(playlistVideoCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No liked videos match the selected filters.';
         return;
       }
       if (selected === '__channels__') {
         title.textContent = 'Channels';
-        const allRows = (data.channels || []).filter(channel => {
-          const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`.toLowerCase();
-          return !query || haystack.includes(query);
-        });
-        const subscribedCount = allRows.filter(channel => channelVisibilityCategory(channel) === 'subscribed').length;
-        const nonSubscribedCount = allRows.filter(channel => channelVisibilityCategory(channel) === 'non_subscribed').length;
-        const terminatedCount = allRows.filter(channel => channelVisibilityCategory(channel) === 'terminated').length;
-        const rows = sortedChannels(allRows.filter(channel => channelVisibility[channelVisibilityCategory(channel)]));
+        const categories = Object.entries(channelVisibility).filter(([, enabled]) => enabled).map(([key]) => key);
+        const payload = await fetchChannelList(categories);
+        if (generation !== renderGeneration) return;
+        const rows = payload.results || [];
+        const subscribedCount = Number(payload.counts?.subscribed || 0);
+        const nonSubscribedCount = Number(payload.counts?.non_subscribed || 0);
+        const terminatedCount = Number(payload.counts?.terminated || 0);
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-channel-filter="subscribed" ${channelVisibility.subscribed ? 'checked' : ''}> <span>${subscribedCount} subscribed</span></label>
           <label class="meta-filter"><input type="checkbox" data-channel-filter="non_subscribed" ${channelVisibility.non_subscribed ? 'checked' : ''}> <span>${nonSubscribedCount} non-subscribed</span></label>
           <label class="meta-filter"><input type="checkbox" data-channel-filter="terminated" ${channelVisibility.terminated ? 'checked' : ''}> <span class="badge">${terminatedCount} terminated</span></label>
           ${channelSortHtml()}
         `;
-        renderPagedGrid(rows, channelCardFor, 'No channels match.');
+        renderPager(remotePayloadPageInfo(payload, rows.length));
+        grid.className = 'grid';
+        grid.replaceChildren(...rows.map(channelCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No channels match.';
         return;
       }
       if (selected === '__subscribed_channels__') {
         title.textContent = 'Subscribed channels';
-        const allRows = (data.channels || [])
-          .filter(isSubscribedChannel)
-          .filter(channel => {
-            const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`.toLowerCase();
-            return !query || haystack.includes(query);
-          });
-        const terminatedCount = allRows.filter(isTerminatedChannel).length;
-        const rows = sortedChannels(allRows.filter(channel => !isTerminatedChannel(channel) || channelVisibility.terminated));
+        const categories = ['subscribed', ...(channelVisibility.terminated ? ['terminated'] : [])];
+        const payload = await fetchChannelList(categories, true);
+        if (generation !== renderGeneration) return;
+        const rows = payload.results || [];
+        const terminatedCount = Number(payload.counts?.terminated || 0);
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-channel-filter="terminated" ${channelVisibility.terminated ? 'checked' : ''}> <span class="badge">${terminatedCount} terminated</span></label>
           ${channelSortHtml()}
         `;
-        renderPagedGrid(rows, channelCardFor, 'No subscribed channels match.');
+        renderPager(remotePayloadPageInfo(payload, rows.length));
+        grid.className = 'grid';
+        grid.replaceChildren(...rows.map(channelCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No subscribed channels match.';
         return;
       }
       if (selected === '__terminated_channels__') {
         title.textContent = 'Terminated channels';
-        const rows = sortedChannels((data.channels || [])
-          .filter(isTerminatedChannel)
-          .filter(channel => {
-            const haystack = `${channel.title} ${channel.channel_id} ${channel.url} ${channel.aliases} ${channel.description} ${channel.status} ${channel.status_reason}`.toLowerCase();
-            return !query || haystack.includes(query);
-          }));
-        meta.innerHTML = `<span>${rows.length} channels</span>${channelSortHtml()}`;
-        renderPagedGrid(rows, channelCardFor, 'No terminated channels match.');
+        const payload = await fetchChannelList(['terminated']);
+        if (generation !== renderGeneration) return;
+        const rows = payload.results || [];
+        meta.innerHTML = `<span>${payload.total || 0} channels</span>${channelSortHtml()}`;
+        renderPager(remotePayloadPageInfo(payload, rows.length));
+        grid.className = 'grid';
+        grid.replaceChildren(...rows.map(channelCardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No terminated channels match.';
         return;
       }
       if (selected === '__unavailable_playlists__') {
         title.textContent = 'Playlists with unavailable videos';
-        const rows = data.playlists
-          .filter(playlist => (playlist.unavailable_count || 0) > 0)
-          .filter(playlist => {
-            const haystack = playlistSearchText(playlist).toLowerCase();
-            return !query || haystack.includes(query);
-          })
-          .sort((a, b) =>
-            (b.unavailable_count || 0) - (a.unavailable_count || 0)
-            || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
-          );
-        meta.textContent = `${rows.length} playlists`;
-        renderPagedGrid(rows, cardFor, 'No playlists with unavailable videos match.');
+        const payload = await fetchPlaylistList({ unavailableOnly: true });
+        if (generation !== renderGeneration) return;
+        const rows = payload.results || [];
+        meta.textContent = `${payload.total || 0} playlists`;
+        renderPager(remotePayloadPageInfo(payload, rows.length));
+        grid.className = 'grid';
+        grid.replaceChildren(...rows.map(cardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No playlists with unavailable videos match.';
         return;
       }
       if (selected === '') {
         title.textContent = 'All playlists';
-        const allRows = data.playlists || [];
-        const privateCount = allRows.filter(playlist => playlistVisibilityCategory(playlist) === 'private').length;
-        const publicCount = allRows.filter(playlist => playlistVisibilityCategory(playlist) === 'public').length;
-        const unlistedCount = allRows.filter(playlist => playlistVisibilityCategory(playlist) === 'unlisted').length;
-        const othersCount = allRows.filter(playlist => playlistVisibilityCategory(playlist) === 'others').length;
-        const unknownCount = allRows.filter(playlist => playlistVisibilityCategory(playlist) === 'unknown').length;
-        const rows = sortedPlaylists(allRows.filter(playlist => playlistListVisibility[playlistVisibilityCategory(playlist)]));
+        const payload = await fetchPlaylistList();
+        if (generation !== renderGeneration) return;
+        const rows = payload.results || [];
+        const privateCount = Number(payload.counts?.private || 0);
+        const publicCount = Number(payload.counts?.public || 0);
+        const unlistedCount = Number(payload.counts?.unlisted || 0);
+        const othersCount = Number(payload.counts?.others || 0);
+        const unknownCount = Number(payload.counts?.unknown || 0);
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="private" ${playlistListVisibility.private ? 'checked' : ''}> ${visibilityFilterLabelHtml('private', privateCount)}</label>
           <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="public" ${playlistListVisibility.public ? 'checked' : ''}> ${visibilityFilterLabelHtml('public', publicCount)}</label>
@@ -1981,18 +1917,24 @@
           <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="unknown" ${playlistListVisibility.unknown ? 'checked' : ''}> <span>${unknownCount} unknown</span></label>
           ${playlistSortHtml()}
         `;
-        renderPagedGrid(rows, cardFor, 'No playlists match the selected visibility filters.');
+        renderPager(remotePayloadPageInfo(payload, rows.length));
+        grid.className = 'grid';
+        grid.replaceChildren(...rows.map(cardFor));
+        empty.hidden = rows.length !== 0;
+        empty.textContent = 'No playlists match the selected visibility filters.';
         return;
       }
       const group = data.groups.find(g => g.group_key === selected);
       title.textContent = group ? group.name : 'All playlists';
-      const ids = groupPlaylistIds(selected);
-      const rows = ids.map(id => playlists.get(id)).filter(Boolean).filter(p => {
-        const haystack = playlistSearchText(p).toLowerCase();
-        return !query || haystack.includes(query);
-      });
-      meta.textContent = `${rows.length} shown`;
-      renderPagedGrid(rows, cardFor, 'No playlists match.');
+      const payload = await fetchPlaylistList({ groupKey: selected });
+      if (generation !== renderGeneration) return;
+      const rows = payload.results || [];
+      meta.textContent = `${payload.total || 0} shown`;
+      renderPager(remotePayloadPageInfo(payload, rows.length));
+      grid.className = 'grid';
+      grid.replaceChildren(...rows.map(cardFor));
+      empty.hidden = rows.length !== 0;
+      empty.textContent = 'No playlists match.';
     }
 
     function cardFor(playlist, options = {}) {
@@ -2074,50 +2016,12 @@
           thumbnail_path: playlist.owner_channel_thumbnail_path || '',
         };
       }
-      const visibility = String(playlist.visibility || '').trim();
-      if (!visibility) return {};
-      return libraryOwnerChannelForDisplay();
-    }
-
-    function libraryOwnerChannelForDisplay() {
-      const counts = new Map();
-      for (const playlist of data.playlists || []) {
-        if (!Number(playlist.is_library_owner || 0) || !playlist.owner_channel_id) continue;
-        counts.set(playlist.owner_channel_id, (counts.get(playlist.owner_channel_id) || 0) + 1);
-      }
-      let bestId = '';
-      let bestCount = 0;
-      for (const [channelId, count] of counts.entries()) {
-        if (count > bestCount) {
-          bestId = channelId;
-          bestCount = count;
-        }
-      }
-      const channel = bestId ? channels.get(bestId) : null;
-      if (!channel) return {};
-      return {
-        title: channel.title || '',
-        channel_id: channel.channel_id || '',
-        url: channel.url || '',
-        thumbnail_path: channel.thumbnail_path || '',
-      };
+      return {};
     }
 
     function cleanPlaylistOwnerName(value) {
       const text = String(value || '').trim();
       return text.toLowerCase().startsWith('by ') ? text.slice(3).trim() : text;
-    }
-
-    function playlistSearchText(playlist) {
-      return [
-        playlist.title,
-        playlist.owner_channel_title,
-        playlist.owner_channel_id,
-        playlist.owner_channel_url,
-        playlist.visibility,
-        playlist.description,
-        playlist.playlist_id,
-      ].join(' ');
     }
 
     function videoCardFor(options) {
@@ -2400,12 +2304,17 @@
       playlistPageSearch = target.value;
       const cursor = target.selectionStart ?? target.value.length;
       currentPage = 1;
-      render();
-      const replacement = meta.querySelector('[data-playlist-page-search]');
-      if (replacement instanceof HTMLInputElement) {
-        replacement.focus();
-        replacement.setSelectionRange(cursor, cursor);
-      }
+      if (playlistSearchTimer !== null) clearTimeout(playlistSearchTimer);
+      playlistSearchTimer = setTimeout(() => {
+        playlistSearchTimer = null;
+        void render().then(() => {
+          const replacement = meta.querySelector('[data-playlist-page-search]');
+          if (replacement instanceof HTMLInputElement) {
+            replacement.focus();
+            replacement.setSelectionRange(cursor, cursor);
+          }
+        });
+      }, 250);
     });
     function handlePagerClick(event) {
       const target = event.target;

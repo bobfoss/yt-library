@@ -15,7 +15,18 @@ from typing import Any
 
 from .config import configured_display_timezone, effective_display_timezone, ensure_config_file, save_config
 from .core import *
-from .queries import fetch_app_data, history_activity_data, history_search_data, omni_search_data
+from .queries import (
+    channel_detail_data,
+    channel_list_data,
+    history_activity_data,
+    history_search_data,
+    library_bootstrap_data,
+    omni_search_data,
+    playlist_detail_data,
+    playlist_list_data,
+    video_collection_data,
+    video_detail_data,
+)
 from .templates import load_template
 from .workers import (
     LIVE_HISTORY_WORKER,
@@ -108,13 +119,165 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             finally:
                 conn.close()
             return
-        if parsed.path == "/api/data":
+        if parsed.path == "/api/bootstrap":
             conn = connect(self.db_path)
             try:
-                data = fetch_app_data(conn)
+                data = library_bootstrap_data(conn)
             finally:
                 conn.close()
             self.send_json(data)
+            return
+        if parsed.path == "/api/playlists":
+            params = urllib.parse.parse_qs(parsed.query)
+            visibility_value = (params.get("visibility") or [""])[0]
+            visibilities = (
+                {value for value in visibility_value.split(",") if value}
+                if visibility_value
+                else None
+            )
+            try:
+                limit = max(1, min(500, int((params.get("limit") or ["100"])[0] or 100)))
+                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+            except ValueError:
+                limit, offset = 100, 0
+            conn = connect(self.db_path)
+            try:
+                data = playlist_list_data(
+                    conn,
+                    query=(params.get("q") or [""])[0],
+                    visibilities=visibilities,
+                    sort=(params.get("sort") or ["title"])[0],
+                    unavailable_only=(params.get("unavailable_only") or ["0"])[0] == "1",
+                    group_key=(params.get("group_key") or [""])[0],
+                    limit=limit,
+                    offset=offset,
+                )
+            finally:
+                conn.close()
+            self.send_json(data)
+            return
+        if parsed.path.startswith("/api/playlists/"):
+            suffix = parsed.path[len("/api/playlists/") :]
+            is_videos = suffix.endswith("/videos")
+            playlist_id = urllib.parse.unquote(suffix[: -len("/videos")] if is_videos else suffix)
+            conn = connect(self.db_path)
+            try:
+                if is_videos:
+                    params = urllib.parse.parse_qs(parsed.query)
+                    try:
+                        limit = max(1, min(500, int((params.get("limit") or ["100"])[0] or 100)))
+                        offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+                    except ValueError:
+                        limit, offset = 100, 0
+                    data = video_collection_data(
+                        conn,
+                        playlist_id=playlist_id,
+                        query=(params.get("q") or [""])[0],
+                        include_videos=(params.get("videos") or ["1"])[0] != "0",
+                        include_unavailable=(params.get("unavailable") or ["1"])[0] != "0",
+                        sort=(params.get("sort") or ["playlist_order"])[0],
+                        limit=limit,
+                        offset=offset,
+                    )
+                else:
+                    data = playlist_detail_data(conn, playlist_id)
+            finally:
+                conn.close()
+            if data is None:
+                self.send_json({"error": "Playlist not found"}, status=404)
+            else:
+                self.send_json(data)
+            return
+        if parsed.path == "/api/videos":
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = max(1, min(500, int((params.get("limit") or ["100"])[0] or 100)))
+                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+            except ValueError:
+                limit, offset = 100, 0
+            conn = connect(self.db_path)
+            try:
+                data = video_collection_data(
+                    conn,
+                    scope=(params.get("scope") or ["playlist"])[0],
+                    channel_id=(params.get("channel_id") or [""])[0],
+                    query=(params.get("q") or [""])[0],
+                    include_videos=(params.get("videos") or ["1"])[0] != "0",
+                    include_unavailable=(params.get("unavailable") or ["1"])[0] != "0",
+                    sort=(params.get("sort") or ["newest_added"])[0],
+                    limit=limit,
+                    offset=offset,
+                )
+            finally:
+                conn.close()
+            self.send_json(data)
+            return
+        if parsed.path.startswith("/api/videos/"):
+            video_id = urllib.parse.unquote(parsed.path[len("/api/videos/") :])
+            conn = connect(self.db_path)
+            try:
+                data = video_detail_data(conn, video_id)
+            finally:
+                conn.close()
+            if data is None:
+                self.send_json({"error": "Video not found"}, status=404)
+            else:
+                self.send_json(data)
+            return
+        if parsed.path == "/api/channels":
+            params = urllib.parse.parse_qs(parsed.query)
+            category_value = (params.get("categories") or [""])[0]
+            categories = {value for value in category_value.split(",") if value} if category_value else None
+            try:
+                limit = max(1, min(500, int((params.get("limit") or ["100"])[0] or 100)))
+                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+            except ValueError:
+                limit, offset = 100, 0
+            conn = connect(self.db_path)
+            try:
+                data = channel_list_data(
+                    conn,
+                    query=(params.get("q") or [""])[0],
+                    categories=categories,
+                    subscribed_only=(params.get("subscribed_only") or ["0"])[0] == "1",
+                    sort=(params.get("sort") or ["title"])[0],
+                    limit=limit,
+                    offset=offset,
+                )
+            finally:
+                conn.close()
+            self.send_json(data)
+            return
+        if parsed.path.startswith("/api/channels/"):
+            suffix = parsed.path[len("/api/channels/") :]
+            is_videos = suffix.endswith("/videos")
+            channel_id = urllib.parse.unquote(suffix[: -len("/videos")] if is_videos else suffix)
+            conn = connect(self.db_path)
+            try:
+                if is_videos:
+                    params = urllib.parse.parse_qs(parsed.query)
+                    try:
+                        limit = max(1, min(500, int((params.get("limit") or ["100"])[0] or 100)))
+                        offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+                    except ValueError:
+                        limit, offset = 100, 0
+                    data = video_collection_data(
+                        conn,
+                        channel_id=channel_id,
+                        include_videos=True,
+                        include_unavailable=True,
+                        sort=(params.get("sort") or ["title"])[0],
+                        limit=limit,
+                        offset=offset,
+                    )
+                else:
+                    data = channel_detail_data(conn, channel_id)
+            finally:
+                conn.close()
+            if data is None:
+                self.send_json({"error": "Channel not found"}, status=404)
+            else:
+                self.send_json(data)
             return
         if parsed.path == "/api/search":
             params = urllib.parse.parse_qs(parsed.query)

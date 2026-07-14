@@ -8,7 +8,7 @@ This repository is a Python web app for browsing, enriching, and reconciling a p
 - `yt_library/core.py` contains schema bootstrap, importers, parsers, metadata fetchers, and reconciliation logic.
 - `yt_library/server.py` contains HTTP routing and local API endpoints.
 - `yt_library/workers.py` contains background worker orchestration.
-- `yt_library/queries.py` contains read models for the browser, unified omni-search, and history search.
+- `yt_library/queries.py` contains paginated browser list/detail read models, unified omni-search, and history search.
 - `yt_library/schema.sql` is the SQLite schema, loaded by `yt_library/schema.py`.
 - `yt_library/templates/` contains the browser, history, and admin HTML.
 - `tests/` contains the standard-library `unittest` suite for helpers, schema bootstrap, and read models.
@@ -91,7 +91,7 @@ python -m unittest discover -s tests -v
 git diff --check
 ```
 
-Current tests cover pure helpers, Takeout watch-history parsing, fresh temporary SQLite schema bootstrap, and omni/history search read models. Keep tests local-only: do not require real cookies, network access, personal Takeout zips, or the live `yt_library.sqlite3`.
+Current tests cover pure helpers, Takeout watch-history parsing, fresh temporary SQLite schema bootstrap, browser bootstrap/list/detail read models, and omni/history search read models. Keep tests local-only: do not require real cookies, network access, personal Takeout zips, or the live `yt_library.sqlite3`.
 
 For schema, import, or worker changes, also verify a fresh temporary database initializes from `schema.sql`; when using a local copy of `yt_library.sqlite3`, treat old-schema failures as rebuild/re-import work rather than migration bugs. Smoke test `/api/admin/status` and `/api/history/search?limit=1`.
 

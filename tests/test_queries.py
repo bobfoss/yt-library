@@ -6,7 +6,17 @@ import unittest
 from pathlib import Path
 
 from yt_library import core
-from yt_library.queries import fetch_app_data, history_activity_data, history_search_data, omni_search_data
+from yt_library.queries import (
+    channel_list_data,
+    fetch_app_data,
+    history_activity_data,
+    history_search_data,
+    library_bootstrap_data,
+    omni_search_data,
+    playlist_list_data,
+    video_collection_data,
+    video_detail_data,
+)
 
 
 class NormalizedReadModelTests(unittest.TestCase):
@@ -138,6 +148,72 @@ class NormalizedReadModelTests(unittest.TestCase):
             include_unavailable=True,
         )
         self.assertEqual(with_unavailable["results"][0]["item"]["video_id"], "unavailable1")
+
+    def test_library_bootstrap_contains_counts_without_card_collections(self) -> None:
+        self.add_video("liked1", "Liked", "UC_subscribed")
+        self.conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'liked1'")
+        self.conn.execute("UPDATE channels SET subscribed = 1 WHERE channel_id = 'UC_subscribed'")
+        self.conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLone', 'One')")
+        self.conn.execute(
+            "INSERT INTO playlist_items(playlist_id, position, video_id) VALUES ('PLone', 1, 'liked1')"
+        )
+        self.conn.execute(
+            "INSERT INTO history_events(event_id, video_id, watch_date, time_precision) VALUES ('watch1', 'liked1', '2026-07-01', 'date_only')"
+        )
+        self.conn.commit()
+
+        data = library_bootstrap_data(self.conn)
+
+        self.assertEqual(set(data), {"groups", "memberships", "counts"})
+        self.assertEqual(data["counts"]["playlists"], 1)
+        self.assertEqual(data["counts"]["playlist_videos"], 1)
+        self.assertEqual(data["counts"]["liked_videos"], 1)
+        self.assertEqual(data["counts"]["history"], 1)
+        self.assertEqual(data["counts"]["subscribed_channels"], 1)
+
+    def test_playlist_list_filters_sorts_and_pages_on_server(self) -> None:
+        self.conn.executemany(
+            "INSERT INTO playlists(playlist_id, title, visibility, video_count) VALUES (?, ?, ?, ?)",
+            [("PLz", "Zulu", "private", 2), ("PLa", "Alpha", "public", 5)],
+        )
+        self.conn.executemany(
+            "INSERT INTO playlist_scans(playlist_id, scanned_at, video_count, unavailable_count) VALUES (?, '2026-07-01', ?, ?)",
+            [("PLz", 2, 1), ("PLa", 5, 0)],
+        )
+        self.conn.commit()
+
+        data = playlist_list_data(self.conn, sort="most_videos", limit=1)
+
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(data["counts"]["private"], 1)
+        self.assertEqual(data["counts"]["public"], 1)
+        self.assertEqual([row["playlist_id"] for row in data["results"]], ["PLa"])
+        unavailable = playlist_list_data(self.conn, unavailable_only=True)
+        self.assertEqual([row["playlist_id"] for row in unavailable["results"]], ["PLz"])
+
+    def test_video_and_channel_collections_hydrate_only_requested_page(self) -> None:
+        self.add_video("available1", "Alpha", "UC_subscribed")
+        self.add_video("unavailable1", "Beta", "UC_other")
+        self.conn.execute("UPDATE channels SET subscribed = 1 WHERE channel_id = 'UC_subscribed'")
+        self.conn.execute("UPDATE videos SET is_playable = 1, reaction = 'L' WHERE video_id = 'available1'")
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 0, availability = 'private', reaction = 'L' WHERE video_id = 'unavailable1'"
+        )
+        self.conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLone', 'One')")
+        self.conn.executemany(
+            "INSERT INTO playlist_items(playlist_id, position, video_id) VALUES ('PLone', ?, ?)",
+            [(1, "available1"), (2, "unavailable1")],
+        )
+        self.conn.commit()
+
+        liked = video_collection_data(self.conn, scope="liked", include_unavailable=False, limit=1)
+        self.assertEqual(liked["counts"], {"videos": 1, "unavailable": 1})
+        self.assertEqual([row["video_id"] for row in liked["results"]], ["available1"])
+        self.assertIn("metadata_description", liked["results"][0])
+        channels = channel_list_data(self.conn, categories={"subscribed"})
+        self.assertEqual([row["channel_id"] for row in channels["results"]], ["UC_subscribed"])
+        detail = video_detail_data(self.conn, "available1")
+        self.assertEqual(detail["video_id"], "available1")
 
     def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:
         self.add_video("old123", "Old Router Video")
