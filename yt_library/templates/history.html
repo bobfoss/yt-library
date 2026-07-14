@@ -116,6 +116,10 @@
     <div id="bottomPager" class="pager" hidden></div>
   </div>
   <script>
+    const VideoCard = window.YTLibraryVideoCard;
+    const creatorHtml = VideoCard.creatorHtml;
+    const escapeHtml = VideoCard.escapeHtml;
+
     const input = document.getElementById('search');
     const refresh = document.getElementById('refresh');
     const meta = document.getElementById('meta');
@@ -161,103 +165,8 @@
       return params.has('page') || params.has('size');
     }
 
-    function escapeHtml(value) {
-      return String(value || '').replace(/[&<>"']/g, ch => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-      }[ch]));
-    }
-
     function displayTitle(row) {
       return row.metadata_title || row.title || row.video_id;
-    }
-
-    function creatorHtml(path, name, url) {
-      if (!name) return '';
-      const avatar = path ? `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">` : '';
-      const content = `${avatar}<span class="creator-name">${escapeHtml(name)}</span>`;
-      return url
-        ? `<a class="creator-link creator-chip" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${content}</a>`
-        : `<span class="creator-chip">${content}</span>`;
-    }
-
-    function watchProgressPercent(row) {
-      const value = Number(row.watch_progress_percent || 0);
-      if (!Number.isFinite(value) || value <= 0) return 0;
-      return Math.max(1, Math.min(100, Math.round(value)));
-    }
-
-    function watchedLineHtml(row) {
-      const progress = watchProgressPercent(row);
-      const count = Number(row.watch_count || 0);
-      const countText = Number.isFinite(count) && count > 0 ? ` · ${count} ${count === 1 ? 'watch' : 'watches'}` : '';
-      if (!progress && !countText) return '';
-      const progressText = progress ? ` ${progress}%` : '';
-      return `<div class="watched-line">Watched${progressText}${countText}</div>`;
-    }
-
-    function watchDates(row) {
-      return (Array.isArray(row.watch_dates) ? row.watch_dates : [])
-        .map(value => String(value || '').slice(0, 10))
-        .filter(value => /^\d{4}-\d{2}-\d{2}$/.test(value))
-        .sort();
-    }
-
-    function watchSparklineHtml(row) {
-      const dates = watchDates(row);
-      if (!dates.length) return '';
-      const times = dates.map(date => Date.parse(`${date}T00:00:00Z`)).filter(Number.isFinite);
-      if (!times.length) return '';
-      const min = Math.min(...times);
-      const max = Math.max(...times);
-      const span = Math.max(1, max - min);
-      const bucketCount = Math.min(22, Math.max(1, Math.ceil(Math.sqrt(times.length) * 1.6)));
-      const buckets = new Map();
-      for (const time of times) {
-        const index = span === 1 ? 0 : Math.min(bucketCount - 1, Math.floor(((time - min) / span) * bucketCount));
-        const bucket = buckets.get(index) || { count: 0, time };
-        bucket.count += 1;
-        bucket.time = Math.max(bucket.time, time);
-        buckets.set(index, bucket);
-      }
-      const width = 112;
-      const height = 14;
-      const padding = 5;
-      const latestIndex = [...buckets.entries()].sort((a, b) => b[1].time - a[1].time)[0]?.[0];
-      const maxCount = Math.max(...[...buckets.values()].map(bucket => bucket.count));
-      const dots = [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([index, bucket]) => {
-        const x = bucketCount === 1 ? width - padding : padding + (index / (bucketCount - 1)) * (width - padding * 2);
-        const radius = Math.min(4.2, 1.8 + Math.sqrt(bucket.count / maxCount) * 2.4);
-        const latest = index === latestIndex ? ' latest' : '';
-        return `<circle class="spark-dot${latest}" cx="${x.toFixed(1)}" cy="${(height / 2).toFixed(1)}" r="${radius.toFixed(1)}"></circle>`;
-      }).join('');
-      const title = `${times.length} ${times.length === 1 ? 'watch' : 'watches'} from ${dates[0]} to ${dates[dates.length - 1]}`;
-      return `<svg class="watch-sparkline" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(title)}"><title>${escapeHtml(title)}</title>${dots}</svg>`;
-    }
-
-    function reactionLabel(row) {
-      const reaction = String(row.reaction || '').trim().toUpperCase();
-      if (reaction === 'L') return 'Liked';
-      if (reaction === 'D') return 'Disliked';
-      return '';
-    }
-
-    function thumbIconHtml(kind, active) {
-      const classes = `reaction-icon ${kind}${active ? ' active' : ''}`;
-      return `
-        <svg class="${classes}" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M7 10v11H3V10h4Zm4.8 11H19c.9 0 1.7-.6 1.9-1.5l1.1-6.2c.2-1.2-.7-2.3-1.9-2.3h-5.4l.8-3.8c.1-.6 0-1.2-.4-1.6L14.2 4 8.7 9.5c-.5.5-.7 1.1-.7 1.8V19c0 1.1.9 2 2 2h1.8Z"></path>
-        </svg>
-      `;
-    }
-
-    function reactionIconsHtml(row) {
-      const reaction = String(row.reaction || '').trim().toUpperCase();
-      return `
-        <div class="reaction-line" title="${escapeHtml(reactionLabel(row) || 'No like/dislike captured')}">
-          ${thumbIconHtml('like', reaction === 'L')}
-          ${thumbIconHtml('dislike', reaction === 'D')}
-        </div>
-      `;
     }
 
     function pageSizeNumber() {
@@ -330,55 +239,33 @@
       document.querySelector('.results-scroll')?.scrollTo({ top: 0 });
     }
 
-    function thumbnailWithProgress(path, row) {
-      const wrap = document.createElement('div');
-      wrap.className = 'thumb-wrap';
-      const img = document.createElement('img');
-      img.className = 'thumb';
-      img.loading = 'lazy';
-      img.alt = '';
-      img.src = `/${path}`;
-      wrap.append(img);
-      const progress = watchProgressPercent(row);
-      if (progress) {
-        const bar = document.createElement('div');
-        bar.className = 'watch-progress';
-        bar.style.width = `${progress}%`;
-        wrap.append(bar);
-      }
-      return wrap;
-    }
-
     function watchCard(row) {
-      const article = document.createElement('article');
-      article.className = row.metadata_thumbnail_path ? 'card' : 'card no-thumb';
-      if (row.metadata_thumbnail_path) {
-        article.append(thumbnailWithProgress(row.metadata_thumbnail_path, row));
-      }
-      const body = document.createElement('div');
-      body.className = 'body';
       const watchUrl = row.video_id ? `https://www.youtube.com/watch?v=${encodeURIComponent(row.video_id)}` : row.url;
       const channelName = row.metadata_channel || row.channel || '';
       const channelUrl = row.metadata_channel_url || '';
       const watchedLabel = row.time_quality === 'exact'
         ? window.YTLibraryTime.format(row.watched_at)
         : (row.watch_date || '');
-      body.innerHTML = `
-        <a class="title" href="${watchUrl}" target="_blank" rel="noreferrer">${escapeHtml(displayTitle(row))}</a>
-        <div class="details">
-          ${watchedLabel ? `<span>${escapeHtml(watchedLabel)}</span>` : ''}
-          ${(row.history_badges || []).map(label => `<span class="badge">${escapeHtml(label)}</span>`).join('')}
-          ${creatorHtml(row.metadata_channel_thumbnail_path, channelName, channelUrl)}
-          ${row.video_id ? `<span>${escapeHtml(row.video_id)}</span>` : ''}
-          ${row.metadata_fetch_status === 'error' ? '<span class="badge">metadata error</span>' : ''}
-        </div>
-        ${watchedLineHtml(row)}
-        ${watchSparklineHtml(row)}
-        ${reactionIconsHtml(row)}
-        ${row.metadata_description ? `<div class="description">${escapeHtml(row.metadata_description)}</div>` : ''}
-      `;
-      article.append(body);
-      return article;
+      return VideoCard.create({
+        thumbnailPath: row.metadata_thumbnail_path,
+        progressVideo: row,
+        noThumbnailClass: 'no-thumb',
+        title: displayTitle(row),
+        titleHref: watchUrl,
+        titleTarget: '_blank',
+        titleClass: 'title',
+        details: [
+          watchedLabel ? `<span>${escapeHtml(watchedLabel)}</span>` : '',
+          ...(row.history_badges || []).map(label => `<span class="badge">${escapeHtml(label)}</span>`),
+          creatorHtml(row.metadata_channel_thumbnail_path, channelName, channelUrl),
+          row.video_id ? `<span>${escapeHtml(row.video_id)}</span>` : '',
+          row.metadata_fetch_status === 'error' ? '<span class="badge">metadata error</span>' : '',
+        ],
+        watchedHtml: VideoCard.watchedLineHtml(row),
+        sparklineHtml: VideoCard.watchSparklineHtml(row, { width: 112, maxBuckets: 22, bucketScale: 1.6 }),
+        reactionHtml: VideoCard.reactionIconsHtml(row),
+        description: row.metadata_description,
+      });
     }
 
     function render() {

@@ -44,6 +44,12 @@ This review uses the current code as truth and ranks remaining cleanup by duplic
 - Internal Takeout/YouTube source and match badges are retained in data where needed but are not rendered to users.
 - Video and channel detail pages avoid repeated headings, and exact video timestamps render in the configured display timezone.
 
+### Shared Video Card Rendering
+
+- `video-card.js` owns video-card DOM construction, thumbnails, progress, creator chips, watch summaries, sparklines, reactions, details, and descriptions.
+- The main browser and standalone history page provide thin row adapters to the shared renderer.
+- Page-specific CSS remains responsible for layout, so standalone history keeps wide horizontal cards while playlist and search views keep compact grids.
+
 ## Removal Gate
 
 Remove a vestigial candidate only when all are true:
@@ -55,27 +61,23 @@ Remove a vestigial candidate only when all are true:
 
 ## Ranked Remaining Cleanup
 
-### 1. History Video Card Duplication
-
-`index.html` and `history.html` still implement separate versions of the same video-card vocabulary. Extract shared card helpers into one browser-side module and validate playlist, history, unavailable, progress, reaction, and description rendering.
-
-### 2. Worker Lifecycle Duplication
+### 1. Worker Lifecycle Duplication
 
 Metadata, playlist, history, recovery, and dispatcher classes repeat run status, stop handling, counters, logs, and completion/error updates. Introduce a narrow lifecycle helper while keeping fetch/parse/save behavior worker-specific. Preserve the dispatcher's independent site cadence and per-request authentication behavior.
 
-### 3. Unified Server-Side Omni Search
+### 2. Unified Server-Side Omni Search
 
 The browser still combines client-side library data with server-paged history results. Add one server-side search endpoint that ranks, deduplicates, counts, and pages playlists, channels, canonical videos, unavailable memberships, and history events.
 
-### 4. Archivarix Backoff And Retry Controls
+### 3. Archivarix Backoff And Retry Controls
 
 Archivarix 429 and quota responses stop further recovery dispatch for the current run, but the blocked state and retry path are not explicit enough in Admin. Expose the reason and retry eligibility, preserve pending tasks, and provide a deliberate retry action after credentials or quota state change. Do not automatically hammer a rate-limited endpoint.
 
-### 5. Collection Card Duplication
+### 4. Collection Card Duplication
 
 Playlist and channel cards share some framing but still have meaningfully different content. Revisit only after the video-card renderer settles.
 
-### 6. Foreign Playlist Continuation Extraction
+### 5. Foreign Playlist Continuation Extraction
 
 Foreign playlists can expose fewer rows than their reported count. Continue preserving the best nonzero scan and logging reported versus exposed counts. Investigate continuation behavior only with a concrete fixture and never synthesize unavailable rows from a count gap.
 
@@ -88,9 +90,8 @@ Foreign playlists can expose fewer rows than their reported count. Continue pres
 
 ## Suggested Order
 
-1. Share video-card rendering.
-2. Extract worker lifecycle helpers.
-3. Add unified server-side search.
-4. Add explicit Archivarix backoff and retry controls.
-5. Revisit collection cards.
-6. Investigate foreign playlist continuation extraction when a reproducible fixture is available.
+1. Extract worker lifecycle helpers.
+2. Add unified server-side search.
+3. Add explicit Archivarix backoff and retry controls.
+4. Revisit collection cards.
+5. Investigate foreign playlist continuation extraction when a reproducible fixture is available.

@@ -240,6 +240,18 @@
     </main>
   </div>
   <script>
+    const VideoCard = window.YTLibraryVideoCard;
+    const badgeRowsHtml = VideoCard.badgeRowsHtml;
+    const creatorHtml = VideoCard.creatorHtml;
+    const detailRowHtml = VideoCard.detailRowHtml;
+    const escapeHtml = VideoCard.escapeHtml;
+    const reactionIconsHtml = VideoCard.reactionIconsHtml;
+    const reactionLabel = VideoCard.reactionLabel;
+    const thumbnailWithProgress = VideoCard.thumbnailWithProgress;
+    const watchProgressPercent = VideoCard.watchProgressPercent;
+    const watchedLineHtml = VideoCard.watchedLineHtml;
+    const watchSparklineHtml = (video, detail = false) => VideoCard.watchSparklineHtml(video, { detail });
+
     let data = null;
     let playlists = new Map();
     let channels = new Map();
@@ -731,88 +743,6 @@
       return `https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}${list}`;
     }
 
-    function watchProgressPercent(video) {
-      const value = Number(video.watch_progress_percent || 0);
-      if (!Number.isFinite(value) || value <= 0) return 0;
-      return Math.max(1, Math.min(100, Math.round(value)));
-    }
-
-    function watchedLineHtml(video) {
-      const progress = watchProgressPercent(video);
-      const count = Number(video.watch_count || 0);
-      const countText = Number.isFinite(count) && count > 0 ? ` · ${count} ${count === 1 ? 'watch' : 'watches'}` : '';
-      if (!progress && !countText) return '';
-      const progressText = progress ? ` ${progress}%` : '';
-      return `<div class="watched-line">Watched${progressText}${countText}</div>`;
-    }
-
-    function watchDates(video) {
-      return (Array.isArray(video.watch_dates) ? video.watch_dates : [])
-        .map(value => String(value || '').slice(0, 10))
-        .filter(value => /^\d{4}-\d{2}-\d{2}$/.test(value))
-        .sort();
-    }
-
-    function watchSparklineHtml(video, detail = false) {
-      const dates = watchDates(video);
-      if (!dates.length) return '';
-      const times = dates.map(date => Date.parse(`${date}T00:00:00Z`)).filter(Number.isFinite);
-      if (!times.length) return '';
-      const min = Math.min(...times);
-      const max = Math.max(...times);
-      const span = Math.max(1, max - min);
-      const bucketCount = Math.min(detail ? 36 : 18, Math.max(1, Math.ceil(Math.sqrt(times.length) * (detail ? 2.2 : 1.4))));
-      const buckets = new Map();
-      for (const time of times) {
-        const index = span === 1 ? 0 : Math.min(bucketCount - 1, Math.floor(((time - min) / span) * bucketCount));
-        const bucket = buckets.get(index) || { count: 0, time };
-        bucket.count += 1;
-        bucket.time = Math.max(bucket.time, time);
-        buckets.set(index, bucket);
-      }
-      const width = detail ? 260 : 86;
-      const height = detail ? 18 : 14;
-      const padding = detail ? 8 : 5;
-      const latestIndex = [...buckets.entries()].sort((a, b) => b[1].time - a[1].time)[0]?.[0];
-      const maxCount = Math.max(...[...buckets.values()].map(bucket => bucket.count));
-      const dots = [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([index, bucket]) => {
-        const x = bucketCount === 1
-          ? width - padding
-          : padding + (index / (bucketCount - 1)) * (width - padding * 2);
-        const radius = Math.min(detail ? 5.5 : 4.2, (detail ? 2.2 : 1.8) + Math.sqrt(bucket.count / maxCount) * (detail ? 3.3 : 2.4));
-        const latest = index === latestIndex ? ' latest' : '';
-        return `<circle class="spark-dot${latest}" cx="${x.toFixed(1)}" cy="${(height / 2).toFixed(1)}" r="${radius.toFixed(1)}"></circle>`;
-      }).join('');
-      const title = `${times.length} ${times.length === 1 ? 'watch' : 'watches'} from ${dates[0]} to ${dates[dates.length - 1]}`;
-      return `<svg class="watch-sparkline${detail ? ' detail' : ''}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(title)}"><title>${escapeHtml(title)}</title>${dots}</svg>`;
-    }
-
-    function reactionLabel(video) {
-      const reaction = String(video.reaction || '').trim().toUpperCase();
-      if (reaction === 'L') return 'Liked';
-      if (reaction === 'D') return 'Disliked';
-      return '';
-    }
-
-    function thumbIconHtml(kind, active) {
-      const classes = `reaction-icon ${kind}${active ? ' active' : ''}`;
-      return `
-        <svg class="${classes}" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M7 10v11H3V10h4Zm4.8 11H19c.9 0 1.7-.6 1.9-1.5l1.1-6.2c.2-1.2-.7-2.3-1.9-2.3h-5.4l.8-3.8c.1-.6 0-1.2-.4-1.6L14.2 4 8.7 9.5c-.5.5-.7 1.1-.7 1.8V19c0 1.1.9 2 2 2h1.8Z"></path>
-        </svg>
-      `;
-    }
-
-    function reactionIconsHtml(video) {
-      const reaction = String(video.reaction || '').trim().toUpperCase();
-      return `
-        <div class="reaction-line" title="${escapeHtml(reactionLabel(video) || 'No like/dislike captured')}">
-          ${thumbIconHtml('like', reaction === 'L')}
-          ${thumbIconHtml('dislike', reaction === 'D')}
-        </div>
-      `;
-    }
-
     function likedVideos() {
       const byId = new Map();
       for (const video of [...(data.playlistVideos || []), ...(data.standaloneVideos || [])]) {
@@ -823,25 +753,6 @@
       return [...byId.values()].sort((a, b) =>
         displayVideoTitle(a).localeCompare(displayVideoTitle(b), undefined, { sensitivity: 'base' })
       );
-    }
-
-    function thumbnailWithProgress(path, video) {
-      const wrap = document.createElement('div');
-      wrap.className = 'thumb-wrap';
-      const img = document.createElement('img');
-      img.className = 'thumb';
-      img.loading = 'lazy';
-      img.alt = '';
-      img.src = `/${path}`;
-      wrap.append(img);
-      const progress = watchProgressPercent(video);
-      if (progress) {
-        const bar = document.createElement('div');
-        bar.className = 'watch-progress';
-        bar.style.width = `${progress}%`;
-        wrap.append(bar);
-      }
-      return wrap;
     }
 
     function matchTypeLabel(video) {
@@ -1557,16 +1468,6 @@
       const url = archivarixVideoUrl(video);
       if (!url || !shouldShowArchivarixLink(video)) return '';
       return `<a class="playlist-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Archivarix</a>`;
-    }
-
-    function creatorHtml(path, name, url) {
-      if (!name) return '';
-      const avatar = path ? `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">` : '';
-      const content = `${avatar}<span class="creator-name">${escapeHtml(name)}</span>`;
-      const attrs = String(url || '').startsWith('#') ? '' : ' target="_blank" rel="noreferrer"';
-      return url
-        ? `<a class="creator-link creator-chip" href="${escapeHtml(url)}"${attrs}>${content}</a>`
-        : `<span class="creator-chip">${content}</span>`;
     }
 
     function historySearchKey(query) {
@@ -2402,56 +2303,8 @@
       ].join(' ');
     }
 
-    function detailRowHtml(items, className = 'details') {
-      const filtered = items.filter(Boolean);
-      return filtered.length ? `<div class="${className}">${filtered.join('')}</div>` : '';
-    }
-
-    function badgeRowsHtml(badges) {
-      return detailRowHtml(
-        badges
-          .filter(badge => badge && badge.label)
-          .map(badge => {
-            const title = badge.title ? ` title="${escapeHtml(badge.title)}"` : '';
-            return `<span class="badge"${title}>${escapeHtml(badge.label)}</span>`;
-          }),
-        'details badge-lines'
-      );
-    }
-
     function videoCardFor(options) {
-      const article = document.createElement('article');
-      article.className = 'card';
-      if (options.thumbnailPath) {
-        article.append(thumbnailWithProgress(options.thumbnailPath, options.progressVideo || {}));
-      }
-      const body = document.createElement('div');
-      body.className = 'body';
-      const localTitleHtml = options.localUrl
-        ? `<a class="playlist-title" href="${escapeHtml(options.localUrl)}">${escapeHtml(options.title)}</a>`
-        : '';
-      const externalTitleHtml = options.externalUrl
-        ? `<a class="external-link" href="${escapeHtml(options.externalUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(options.title)} on YouTube">${externalLinkSvg()}</a>`
-        : '';
-      const titleHtml = (localTitleHtml || externalTitleHtml)
-        ? `<div class="title-row">${localTitleHtml || `<div class="video-title">${escapeHtml(options.title)}</div>`}${externalTitleHtml}</div>`
-        : `<div class="video-title">${escapeHtml(options.title)}</div>`;
-      body.innerHTML = `
-        ${options.resultKind ? `<div class="result-kind">${escapeHtml(options.resultKind)}</div>` : ''}
-        ${options.position ? `<div class="position">#${escapeHtml(options.position)}</div>` : ''}
-        ${titleHtml}
-        ${badgeRowsHtml(options.badges || [])}
-        ${options.channelHtml ? `<div class="details">${options.channelHtml}</div>` : ''}
-        ${detailRowHtml(options.details || [])}
-        ${options.watchedHtml || ''}
-        ${options.sparklineHtml || ''}
-        ${options.reactionHtml || ''}
-        ${options.description ? `<div class="description">${escapeHtml(options.description)}</div>` : ''}
-        ${detailRowHtml(options.sources || [])}
-        ${options.playlistSourcesHtml || ''}
-      `;
-      article.append(body);
-      return article;
+      return VideoCard.create({ ...options, externalIconHtml: externalLinkSvg() });
     }
 
     function playlistVideoCardFor(video, options = {}) {
@@ -2605,12 +2458,6 @@
           `<a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>`,
         ],
       });
-    }
-
-    function escapeHtml(value) {
-      return String(value || '').replace(/[&<>"']/g, ch => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-      }[ch]));
     }
 
     search.addEventListener('input', () => {

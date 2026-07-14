@@ -29,6 +29,7 @@ INDEX_HTML = load_template("index.html")
 HISTORY_HTML = load_template("history.html")
 ADMIN_HTML = load_template("admin.html")
 TIMEZONE_JS = load_template("timezone.js")
+VIDEO_CARD_JS = load_template("video-card.js")
 
 
 class LibraryHandler(http.server.SimpleHTTPRequestHandler):
@@ -56,6 +57,15 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/timezone.js":
             body = TIMEZONE_JS.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/video-card.js":
+            body = VIDEO_CARD_JS.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/javascript; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
@@ -533,7 +543,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         finally:
             conn.close()
         config = json.dumps({"displayTimezone": timezone_name}, ensure_ascii=False)
-        scripts = f"<script>window.YT_LIBRARY_CONFIG={config};</script><script src=\"/timezone.js\"></script>"
+        scripts = (
+            f"<script>window.YT_LIBRARY_CONFIG={config};</script>"
+            '<script src="/timezone.js"></script>'
+            '<script src="/video-card.js"></script>'
+        )
         return template.replace("</head>", scripts + "</head>").encode("utf-8")
 
     def display_timezone_name(self, conn: sqlite3.Connection) -> str:

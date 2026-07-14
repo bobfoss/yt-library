@@ -20,7 +20,7 @@ The app is intentionally compact but no longer single-file. `yt_library_manager.
 - `yt_library/workers.py` owns in-process worker orchestration.
 - `yt_library/queries.py` owns read models for browser and history views.
 - `yt_library/schema.sql` is the canonical SQLite schema for fresh local databases.
-- `yt_library/templates/` contains the browser, history, and admin HTML.
+- `yt_library/templates/` contains the browser, history, and admin HTML plus shared browser-side modules for timezone and video-card rendering.
 
 Primary surfaces:
 
