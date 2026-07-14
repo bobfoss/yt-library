@@ -4753,6 +4753,46 @@ def worker_queue_events_after(
     ).fetchall()
 
 
+_WORKER_LOG_TABLES = {
+    "metadataLogs": "metadata_worker_log",
+    "playlistScanLogs": "playlist_scan_worker_log",
+    "liveHistoryLogs": "live_history_worker_log",
+}
+
+
+def worker_log_cursors(conn: sqlite3.Connection) -> dict[str, int]:
+    return {
+        name: int(
+            conn.execute(f"SELECT COALESCE(MAX(id), 0) AS id FROM {table}").fetchone()["id"] or 0
+        )
+        for name, table in _WORKER_LOG_TABLES.items()
+    }
+
+
+def worker_log_snapshot(conn: sqlite3.Connection, *, limit: int = 80) -> dict[str, list[sqlite3.Row]]:
+    row_limit = max(1, min(500, int(limit)))
+    return {
+        name: conn.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT ?", (row_limit,)).fetchall()
+        for name, table in _WORKER_LOG_TABLES.items()
+    }
+
+
+def worker_logs_after(
+    conn: sqlite3.Connection,
+    cursors: dict[str, int],
+    *,
+    limit: int = 500,
+) -> dict[str, list[sqlite3.Row]]:
+    row_limit = max(1, min(5000, int(limit)))
+    return {
+        name: conn.execute(
+            f"SELECT * FROM {table} WHERE id > ? ORDER BY id LIMIT ?",
+            (max(0, int(cursors.get(name, 0))), row_limit),
+        ).fetchall()
+        for name, table in _WORKER_LOG_TABLES.items()
+    }
+
+
 def worker_queue_count(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS count FROM worker_queue").fetchone()
     return int(row["count"] or 0)

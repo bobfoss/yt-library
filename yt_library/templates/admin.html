@@ -252,6 +252,10 @@
     const queueRowHeight = 72;
     const queueOverscan = 10;
     const statusPollMs = 30000;
+    const logState = {
+      rows: [],
+      keys: new Set(),
+    };
 
     function escapeHtml(value) {
       return String(value || '').replace(/[&<>"']/g, ch => ({
@@ -311,6 +315,47 @@
 
     function playlistSubject(playlistId) {
       return playlistId === 'LL' ? 'Liked videos' : (playlistId || '');
+    }
+
+    function normalizedLogs(data) {
+      return [
+        ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: playlistSubject(log.playlist_id), source: 'playlist' })),
+        ...(data.metadataLogs || []).map(log => ({
+          ...log,
+          subject_id: log.video_id,
+          source: String(log.level || '').startsWith('placeholder ') ? 'placeholder' : 'metadata',
+          level: String(log.level || '').replace(/^placeholder\s+/, ''),
+        })),
+        ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
+      ];
+    }
+
+    function renderLogs() {
+      fields.logs.innerHTML = logState.rows.map(log => `
+        <tr>
+          <td class="time-cell">${fmtTime(log.created_at)}</td>
+          <td class="level-cell">${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
+          <td class="time-cell">${escapeHtml(log.subject_id || '')}</td>
+          <td class="message">${escapeHtml(log.message)}</td>
+        </tr>
+      `).join('');
+    }
+
+    function applyLogs(data, reset = false) {
+      if (reset) {
+        logState.rows = [];
+        logState.keys.clear();
+      }
+      for (const log of normalizedLogs(data)) {
+        const key = `${log.source}:${log.id}`;
+        if (logState.keys.has(key)) continue;
+        logState.rows.push(log);
+        logState.keys.add(key);
+      }
+      logState.rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || ((b.id || 0) - (a.id || 0)));
+      logState.rows = logState.rows.slice(0, 120);
+      logState.keys = new Set(logState.rows.map(log => `${log.source}:${log.id}`));
+      renderLogs();
     }
 
     function workerDetails(row) {
@@ -494,24 +539,6 @@
         return div;
       }));
 
-      const logs = [
-        ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: playlistSubject(log.playlist_id), source: 'playlist' })),
-        ...(data.metadataLogs || []).map(log => ({
-          ...log,
-          subject_id: log.video_id,
-          source: String(log.level || '').startsWith('placeholder ') ? 'placeholder' : 'metadata',
-          level: String(log.level || '').replace(/^placeholder\s+/, ''),
-        })),
-        ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
-      ].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || ((b.id || 0) - (a.id || 0))).slice(0, 120);
-      fields.logs.innerHTML = logs.map(log => `
-        <tr>
-          <td class="time-cell">${fmtTime(log.created_at)}</td>
-          <td class="level-cell">${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
-          <td class="time-cell">${escapeHtml(log.subject_id || '')}</td>
-          <td class="message">${escapeHtml(log.message)}</td>
-        </tr>
-      `).join('');
     }
 
     let statusRequest = null;
@@ -547,7 +574,7 @@
         }
       }
       statusRequest = (async () => {
-        const endpoint = '/api/admin/status?queue_limit=0';
+        const endpoint = '/api/admin/status?queue_limit=0&include_logs=0';
         const response = await fetch(endpoint, { cache: 'no-store' });
         if (!response.ok) throw new Error(`Status failed: ${response.status}`);
         render(await response.json());
@@ -665,7 +692,24 @@
       };
     }
 
+    function connectLogEvents() {
+      const stream = new EventSource('/api/admin/logs/events');
+      stream.addEventListener('log_reset', event => {
+        applyLogs(JSON.parse(event.data), true);
+      });
+      stream.addEventListener('log_delta', event => {
+        applyLogs(JSON.parse(event.data));
+      });
+      stream.onerror = () => {
+        fields.logs.title = 'Log event stream reconnecting';
+      };
+      stream.onopen = () => {
+        fields.logs.title = '';
+      };
+    }
+
     connectQueueEvents();
+    connectLogEvents();
     fields.workerQueuePanel.addEventListener('scroll', scheduleQueueRender, { passive: true });
     new ResizeObserver(scheduleQueueRender).observe(fields.workerQueuePanel);
     loadStatus({ force: true })

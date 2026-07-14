@@ -2000,6 +2000,43 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_worker_log_cursors_snapshot_and_deltas(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO metadata_worker_log(run_id, created_at, level, video_id, message) "
+                        "VALUES ('run-1', '2026-07-13T12:00:00Z', 'video', 'abc12345678', 'first')"
+                    )
+                    conn.execute(
+                        "INSERT INTO playlist_scan_worker_log(run_id, created_at, level, playlist_id, message) "
+                        "VALUES ('run-1', '2026-07-13T12:00:01Z', 'info', 'PLexample', 'playlist')"
+                    )
+
+                cursors = core.worker_log_cursors(conn)
+                snapshot = core.worker_log_snapshot(conn)
+                self.assertEqual([row["message"] for row in snapshot["metadataLogs"]], ["first"])
+                self.assertEqual([row["message"] for row in snapshot["playlistScanLogs"]], ["playlist"])
+                self.assertEqual(snapshot["liveHistoryLogs"], [])
+
+                with conn:
+                    conn.execute(
+                        "INSERT INTO metadata_worker_log(run_id, created_at, level, video_id, message) "
+                        "VALUES ('run-1', '2026-07-13T12:00:02Z', 'video', 'def12345678', 'second')"
+                    )
+                    conn.execute(
+                        "INSERT INTO live_history_worker_log(run_id, created_at, level, video_id, message) "
+                        "VALUES ('run-1', '2026-07-13T12:00:03Z', 'info', 'ghi12345678', 'history')"
+                    )
+
+                deltas = core.worker_logs_after(conn, cursors)
+                self.assertEqual([row["message"] for row in deltas["metadataLogs"]], ["second"])
+                self.assertEqual(deltas["playlistScanLogs"], [])
+                self.assertEqual([row["message"] for row in deltas["liveHistoryLogs"]], ["history"])
+            finally:
+                conn.close()
+
     def test_stopped_placeholder_recovery_keeps_its_queue_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

@@ -163,6 +163,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/admin/queue/events":
             self.stream_worker_queue_events()
             return
+        if parsed.path == "/api/admin/logs/events":
+            self.stream_worker_log_events()
+            return
         if parsed.path == "/api/admin/queue":
             params = urllib.parse.parse_qs(parsed.query)
             queue_type = (params.get("type") or [""])[0]
@@ -609,6 +612,54 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                             "total": worker_queue_count(conn),
                         },
                         cursor,
+                    )
+                    last_heartbeat = time.monotonic()
+                    continue
+                if time.monotonic() - last_heartbeat >= 15:
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+                    last_heartbeat = time.monotonic()
+                time.sleep(0.5)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        finally:
+            conn.close()
+
+    def stream_worker_log_events(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        conn = connect(self.db_path)
+        try:
+            conn.execute("BEGIN")
+            cursors = worker_log_cursors(conn)
+            snapshot = worker_log_snapshot(conn)
+            conn.commit()
+            self.send_sse(
+                "log_reset",
+                {
+                    **{name: [dict(row) for row in rows] for name, rows in snapshot.items()},
+                    "cursors": cursors,
+                },
+            )
+
+            last_heartbeat = time.monotonic()
+            while True:
+                logs = worker_logs_after(conn, cursors, limit=500)
+                if any(logs.values()):
+                    for name, rows in logs.items():
+                        if rows:
+                            cursors[name] = int(rows[-1]["id"])
+                    self.send_sse(
+                        "log_delta",
+                        {
+                            **{name: [dict(row) for row in rows] for name, rows in logs.items()},
+                            "cursors": cursors,
+                        },
                     )
                     last_heartbeat = time.monotonic()
                     continue
