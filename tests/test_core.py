@@ -1532,6 +1532,83 @@ class ConfigTests(unittest.TestCase):
 
 
 class WorkerQueueTests(unittest.TestCase):
+    def test_metadata_worker_stops_when_cookie_authentication_expires(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            cookie_file = Path(temp_dir) / "cookies.txt"
+            cookie_file.write_text("provided", encoding="utf-8")
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    for index in range(2):
+                        core.enqueue_metadata_item(
+                            conn,
+                            video_id=f"authcheck{index}",
+                            current_title=f"Auth check {index}",
+                            metadata_source="history",
+                            priority=index,
+                        )
+            finally:
+                conn.close()
+
+            metadata = {
+                "video_id": "authcheck0",
+                "title": "Authenticated metadata",
+                "description": "",
+                "channel_id": "",
+                "channel": "",
+                "channel_url": "",
+                "duration_text": "1:00",
+                "view_count": "",
+                "upload_date": "",
+                "thumbnail_url": "",
+                "thumbnail_path": "",
+                "channel_thumbnail_url": "",
+                "channel_thumbnail_path": "",
+                "reaction": "L",
+                "watch_progress_percent": "0",
+                "watch_resume_seconds": "0",
+                "yt_status": "OK",
+            }
+            worker = MetadataWorker()
+            with (
+                patch(
+                    "yt_library.workers.youtube_session_status",
+                    side_effect=[(True, ""), (False, "YouTube login session is not accepted by YouTube")],
+                ) as session_status,
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.fetch_watch_metadata", return_value=metadata) as fetch_metadata,
+                patch("yt_library.workers.fetch_new_channel_metadata_if_needed", return_value=({}, "", "")),
+            ):
+                worker._run(
+                    "test-auth-expired",
+                    db_path,
+                    cookie_file,
+                    Path(temp_dir) / "thumbs",
+                    delay=0,
+                    limit=0,
+                    force=False,
+                    stale_days=30,
+                    record_summary=False,
+                )
+
+            self.assertEqual(session_status.call_count, 2)
+            fetch_metadata.assert_called_once()
+            self.assertIn("not accepted", worker.blocked_reason())
+            conn = core.connect(db_path)
+            try:
+                run = conn.execute(
+                    "SELECT status, processed, message FROM metadata_worker_runs WHERE run_id = 'test-auth-expired'"
+                ).fetchone()
+                self.assertEqual(run["status"], "error")
+                self.assertEqual(run["processed"], 1)
+                self.assertIn("not accepted", run["message"])
+                self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 1)
+                remaining = core.metadata_queue_rows(conn)[0]
+                self.assertEqual(remaining["video_id"], "authcheck1")
+            finally:
+                conn.close()
+
     def test_playlist_worker_caches_playlist_thumbnail(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

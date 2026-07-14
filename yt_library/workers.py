@@ -19,6 +19,7 @@ class MetadataWorker:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._run_id = ""
+        self._blocked_reason = ""
 
     def is_running(self) -> bool:
         with self._lock:
@@ -27,6 +28,10 @@ class MetadataWorker:
     def is_stopping(self) -> bool:
         with self._lock:
             return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
+
+    def blocked_reason(self) -> str:
+        with self._lock:
+            return self._blocked_reason
 
     def start(
         self,
@@ -43,6 +48,7 @@ class MetadataWorker:
             if self._thread and self._thread.is_alive():
                 return {"started": False, "run_id": self._run_id, "message": "Worker already running"}
             self._stop.clear()
+            self._blocked_reason = ""
             self._run_id = uuid.uuid4().hex
             self._thread = threading.Thread(
                 target=self._run,
@@ -82,7 +88,6 @@ class MetadataWorker:
         record_summary: bool,
     ) -> None:
         conn = connect(db_path)
-        opener = load_cookie_opener(cookie_file)
         try:
             initial_total = worker_queue_type_count(conn, "metadata")
             run_total = min(initial_total, limit) if limit else initial_total
@@ -131,6 +136,24 @@ class MetadataWorker:
                         )
                         log_worker_event(conn, run_id, "warn", "Worker stopped by request")
                     return
+                if cookie_file.exists():
+                    session_valid, session_message = youtube_session_status(cookie_file, verify_remote=True)
+                    if not session_valid:
+                        authentication_error = f"Metadata worker stopped: {session_message}"
+                        with self._lock:
+                            self._blocked_reason = authentication_error
+                        with conn:
+                            conn.execute(
+                                """
+                                UPDATE metadata_worker_runs
+                                SET status = 'error', finished_at = ?, message = ?
+                                WHERE run_id = ?
+                                """,
+                                (utc_now(), authentication_error, run_id),
+                            )
+                            log_worker_event(conn, run_id, "error", authentication_error)
+                        return
+                opener = load_cookie_opener(cookie_file)
                 queue_id = int(row["queue_id"]) if "queue_id" in row.keys() else 0
                 video_id = row["video_id"]
                 metadata_source = row["metadata_source"] if "metadata_source" in row.keys() else "history"
@@ -1147,6 +1170,8 @@ class WorkerQueueDispatcher:
                 if not result.get("started") and not METADATA_WORKER.is_running():
                     time.sleep(0.5)
                 self._wait_for_worker(METADATA_WORKER)
+                if METADATA_WORKER.blocked_reason():
+                    return
                 if not self._stop.is_set():
                     self._mark_completed()
             elif worker_type == "playlist":
