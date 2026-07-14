@@ -60,7 +60,7 @@ When using `Start-Process`, pass a single quoted argument string or otherwise ve
 
 SQLite can be held open by long-running ad hoc probes. If schema initialization or imports fail with `database is locked`, inspect local `python.exe`/`pwsh.exe` processes for stale diagnostic scripts before changing application code. Stop only the stale probe, not the active server, unless a server restart is needed.
 
-Metadata workers materialize their queue when a run starts. Queue priority changes, new source labels, or extractor fixes require stopping/restarting the metadata worker or restarting the service before the running worker will use the new ordering. A server restart interrupts active in-process workers.
+The unified dispatcher reads the next task from the persistent `worker_queue` before each launch. Priority changes and newly queued tasks can affect later dispatches during the same run, while already running tasks keep their original inputs. A server restart interrupts active in-process workers.
 
 YouTube creator avatars may appear in newer watch-page data under `avatarViewModel.image.sources`, not only older `videoOwnerRenderer` or `channelThumbnailWithLinkRenderer` thumbnail shapes. Keep the channel avatar extractor broad enough to handle both.
 

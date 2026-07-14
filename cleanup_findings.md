@@ -28,6 +28,22 @@ This review uses the current code as truth and ranks remaining cleanup by duplic
 - Stable YouTube and Archivarix URLs are generated from IDs and archive capture timestamps.
 - Schema, API, and template state use `unavailable` rather than the retired `hidden` compatibility names.
 
+### Configuration And Queue Operations
+
+- Runtime defaults live in `yt_library.config.json`; the database no longer contains `app_settings`.
+- New installs bind to `127.0.0.1` by default, while a specific Tailscale address can be configured for remote access.
+- YouTube and Archivarix cookie paths, launch intervals, and concurrency limits have explicit config keys.
+- The persistent queue dispatches tasks by priority and applies independent YouTube and Archivarix launch cadence and concurrency limits.
+- YouTube authentication is checked throughout metadata work so an expired cookie stops the run instead of silently degrading later tasks.
+- Admin queue and log views use incremental polling rather than repeatedly transferring full snapshots.
+
+### Browser Workflow
+
+- Liked videos are derived from canonical reaction metadata and have video-count, unavailable, and sort controls.
+- History and channel-history views have navigable activity heatmaps that remain stable across pagination and year changes.
+- Internal Takeout/YouTube source and match badges are retained in data where needed but are not rendered to users.
+- Video and channel detail pages avoid repeated headings, and exact video timestamps render in the configured display timezone.
+
 ## Removal Gate
 
 Remove a vestigial candidate only when all are true:
@@ -43,26 +59,38 @@ Remove a vestigial candidate only when all are true:
 
 `index.html` and `history.html` still implement separate versions of the same video-card vocabulary. Extract shared card helpers into one browser-side module and validate playlist, history, unavailable, progress, reaction, and description rendering.
 
-### 2. Unified Server-Side Omni Search
+### 2. Worker Lifecycle Duplication
+
+Metadata, playlist, history, recovery, and dispatcher classes repeat run status, stop handling, counters, logs, and completion/error updates. Introduce a narrow lifecycle helper while keeping fetch/parse/save behavior worker-specific. Preserve the dispatcher's independent site cadence and per-request authentication behavior.
+
+### 3. Unified Server-Side Omni Search
 
 The browser still combines client-side library data with server-paged history results. Add one server-side search endpoint that ranks, deduplicates, counts, and pages playlists, channels, canonical videos, unavailable memberships, and history events.
 
-### 3. Worker Lifecycle Duplication
+### 4. Archivarix Backoff And Retry Controls
 
-Metadata, playlist, history, recovery, and dispatcher classes repeat run status, stop handling, counters, logs, and completion/error updates. Introduce a narrow lifecycle helper while keeping fetch/parse/save behavior worker-specific.
+Archivarix 429 and quota responses stop further recovery dispatch for the current run, but the blocked state and retry path are not explicit enough in Admin. Expose the reason and retry eligibility, preserve pending tasks, and provide a deliberate retry action after credentials or quota state change. Do not automatically hammer a rate-limited endpoint.
 
-### 4. Collection Card Duplication
+### 5. Collection Card Duplication
 
 Playlist and channel cards share some framing but still have meaningfully different content. Revisit only after the video-card renderer settles.
 
-### 5. Foreign Playlist Continuation Extraction
+### 6. Foreign Playlist Continuation Extraction
 
 Foreign playlists can expose fewer rows than their reported count. Continue preserving the best nonzero scan and logging reported versus exposed counts. Investigate continuation behavior only with a concrete fixture and never synthesize unavailable rows from a count gap.
+
+## Deferred Decisions
+
+- PocketTube import is deferred and is not a current configuration concern. Revisit group ingestion as a new design rather than restoring the removed config directive.
+- Previous-database queue backfill remains a one-off recovery operation. Promote it to a supported command only if the workflow repeats and can define source-version and conflict rules.
+- `watch_resume_seconds` remains less trustworthy than the observed progress percentage. Do not expand resume-time behavior until additional examples explain the mismatch.
+- Foreign playlist continuation work remains fixture-driven; current best-nonzero preservation is the safe behavior.
 
 ## Suggested Order
 
 1. Share video-card rendering.
-2. Add unified server-side search.
-3. Extract worker lifecycle helpers.
-4. Revisit collection cards.
-5. Investigate foreign playlist continuation extraction.
+2. Extract worker lifecycle helpers.
+3. Add unified server-side search.
+4. Add explicit Archivarix backoff and retry controls.
+5. Revisit collection cards.
+6. Investigate foreign playlist continuation extraction when a reproducible fixture is available.

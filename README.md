@@ -1,6 +1,6 @@
 # YT Library Manager
 
-YT Library Manager is a local Python web app for browsing, enriching, and reconciling a personal YouTube library. It combines current playlist data, PocketTube organization, live YouTube history pulls, Takeout watch history, cached thumbnails, metadata fetches, and an admin dashboard into one local interface.
+YT Library Manager is a local Python web app for browsing, enriching, and reconciling a personal YouTube library. It combines current playlist data, live YouTube history pulls, Takeout watch history, cached thumbnails, metadata and recovery fetches, and an admin dashboard into one local interface.
 
 ## Features
 
@@ -10,7 +10,7 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 - Reconcile date-only live YouTube history observations with precise Takeout watch timestamps.
 - Cache video thumbnails and creator channel avatars locally.
 - Capture YouTube like/dislike reaction state during metadata fetches and expose a derived Liked videos view.
-- Monitor playlist scans, metadata fetches, history verification, and Takeout imports from the admin page.
+- Monitor and control the persistent queue for playlist scans, metadata fetches, history verification, and unavailable-video recovery from the admin page.
 
 ## Project Layout
 
