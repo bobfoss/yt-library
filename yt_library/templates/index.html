@@ -255,6 +255,8 @@
     let searchResultsSort = 'relevance';
     let playlistVisibilityPlaylistId = '';
     let allVideosSort = 'newest_added';
+    let likedVideosVisibility = { videos: true, unavailable: true };
+    let likedVideosSort = 'newest_added';
     let playlistViewSort = 'playlist_order';
     let allPlaylistsSort = 'title';
     let channelViewSort = 'title';
@@ -2154,12 +2156,22 @@
       }
       if (selected === '__liked__') {
         title.textContent = 'Liked videos';
-        const rows = likedVideos().filter(video => {
+        const allRows = likedVideos().filter(video => {
           const haystack = `${displayVideoTitle(video)} ${displayVideoChannel(video)} ${video.metadata_description} ${video.playlist_title} ${video.video_id}`.toLowerCase();
           return !query || haystack.includes(query);
         });
-        meta.textContent = `${rows.length} videos`;
-        renderPagedGrid(rows, playlistVideoCardFor, 'No liked videos have been captured yet.');
+        const unavailableCount = allRows.filter(isUnavailablePlaylistVideo).length;
+        const videoCount = allRows.length - unavailableCount;
+        const rows = sortedPlaylistVideos(allRows.filter(video => {
+          const unavailable = isUnavailablePlaylistVideo(video);
+          return unavailable ? likedVideosVisibility.unavailable : likedVideosVisibility.videos;
+        }), likedVideosSort);
+        meta.innerHTML = `
+          <label class="meta-filter"><input type="checkbox" data-liked-filter="videos" ${likedVideosVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
+          <label class="meta-filter"><input type="checkbox" data-liked-filter="unavailable" ${likedVideosVisibility.unavailable ? 'checked' : ''}> <span class="badge">${unavailableCount} unavailable</span></label>
+          ${videoSortHtml(likedVideosSort, 'liked')}
+        `;
+        renderPagedGrid(rows, playlistVideoCardFor, 'No liked videos match the selected filters.');
         return;
       }
       if (selected === '__channels__') {
@@ -2637,6 +2649,8 @@
       if (target instanceof HTMLSelectElement && target.dataset.videoSort !== undefined) {
         if (target.dataset.videoSort === 'playlist') {
           playlistViewSort = target.value || 'playlist_order';
+        } else if (target.dataset.videoSort === 'liked') {
+          likedVideosSort = target.value || 'newest_added';
         } else {
           allVideosSort = target.value || 'newest_added';
         }
@@ -2684,6 +2698,13 @@
       const playlistVisibilityFilter = target.dataset.playlistVisibilityFilter;
       if (playlistVisibilityFilter) {
         playlistListVisibility[playlistVisibilityFilter] = target.checked;
+        currentPage = 1;
+        render();
+        return;
+      }
+      const likedFilter = target.dataset.likedFilter;
+      if (likedFilter) {
+        likedVideosVisibility[likedFilter] = target.checked;
         currentPage = 1;
         render();
         return;
