@@ -48,9 +48,8 @@ in the generated config file:
 ```json
 {
   "database": "yt_library.sqlite3",
-  "cookies": "YT cookies.txt",
+  "youtube_cookies": "YT cookies.txt",
   "archivarix_cookies": "archivarix.net cookies.txt",
-  "pockettube_export": "youtube_playlist_manager_2026-07-02-17_13.json",
   "thumbnail_dir": "thumbs",
   "archivarix_thumbnail_dir": "archivarix_thumbs",
   "video_thumbnail_dir": "video_thumbs",

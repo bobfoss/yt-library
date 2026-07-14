@@ -1477,6 +1477,9 @@ class ConfigTests(unittest.TestCase):
                 json.dumps(
                     {
                         "database": "data/library.sqlite3",
+                        "youtube_cookies": "secrets/youtube.txt",
+                        "cookies": "legacy-cookies.txt",
+                        "pockettube_export": "legacy-pockettube.json",
                         "display_timezone": "America/Los_Angeles",
                     }
                 ),
@@ -1492,6 +1495,12 @@ class ConfigTests(unittest.TestCase):
                 (config_path.parent / "data" / "library.sqlite3").resolve(),
             )
             self.assertEqual(config["display_timezone"], "America/Los_Angeles")
+            self.assertNotIn("cookies", config)
+            self.assertNotIn("pockettube_export", config)
+            self.assertEqual(
+                resolve_config_path(config, "youtube_cookies").resolve(),
+                (config_path.parent / "secrets" / "youtube.txt").resolve(),
+            )
 
     def test_configured_display_timezone_rejects_invalid_names(self) -> None:
         self.assertEqual(
@@ -1517,6 +1526,9 @@ class ConfigTests(unittest.TestCase):
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["display_timezone"], "")
             self.assertEqual(payload["host"], "0.0.0.0")
+            self.assertEqual(payload["youtube_cookies"], "YT cookies.txt")
+            self.assertNotIn("cookies", payload)
+            self.assertNotIn("pockettube_export", payload)
 
     def test_cli_defaults_to_serve_command(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1528,6 +1540,7 @@ class ConfigTests(unittest.TestCase):
             args = serve.call_args.args[0]
             self.assertEqual(args.command, "serve")
             self.assertEqual(Path(args.db).resolve(), (config_path.parent / "yt_library.sqlite3").resolve())
+            self.assertEqual(Path(args.cookies).resolve(), (config_path.parent / "YT cookies.txt").resolve())
             self.assertEqual(args.host, "0.0.0.0")
 
 

@@ -13,9 +13,8 @@ DEFAULT_CONFIG_PATH = ROOT / "yt_library.config.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "database": "yt_library.sqlite3",
-    "cookies": "YT cookies.txt",
+    "youtube_cookies": "YT cookies.txt",
     "archivarix_cookies": "archivarix.net cookies.txt",
-    "pockettube_export": "youtube_playlist_manager_2026-07-02-17_13.json",
     "thumbnail_dir": "thumbs",
     "archivarix_thumbnail_dir": "archivarix_thumbs",
     "video_thumbnail_dir": "video_thumbs",
@@ -42,9 +41,8 @@ def effective_display_timezone(config: dict[str, Any]) -> str:
 
 PATH_KEYS = {
     "database",
-    "cookies",
+    "youtube_cookies",
     "archivarix_cookies",
-    "pockettube_export",
     "thumbnail_dir",
     "archivarix_thumbnail_dir",
     "video_thumbnail_dir",
@@ -59,7 +57,13 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
         loaded = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(loaded, dict):
             raise ValueError(f"Config file must contain a JSON object: {path}")
-        config.update({key: value for key, value in loaded.items() if value is not None})
+        config.update(
+            {
+                key: value
+                for key, value in loaded.items()
+                if key in DEFAULT_CONFIG and value is not None
+            }
+        )
     config["_config_path"] = str(path)
     return config
 

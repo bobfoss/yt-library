@@ -50,8 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     import_parser = subparsers.add_parser("import", help="Import playlists and cache thumbnails")
     import_parser.add_argument("--db", default=str(config_path(config, "database")))
     import_parser.add_argument("--thumbs", default=str(config_path(config, "thumbnail_dir")))
-    import_parser.add_argument("--cookies", default=str(config_path(config, "cookies")))
-    import_parser.add_argument("--pockettube", default=str(config_path(config, "pockettube_export")))
+    import_parser.add_argument("--cookies", default=str(config_path(config, "youtube_cookies")))
+    import_parser.add_argument("--pockettube", required=True)
     import_parser.set_defaults(func=import_playlists)
 
     discover_parser = subparsers.add_parser(
@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     discover_parser.add_argument("--db", default=str(config_path(config, "database")))
     discover_parser.add_argument("--thumbs", default=str(config_path(config, "thumbnail_dir")))
-    discover_parser.add_argument("--cookies", default=str(config_path(config, "cookies")))
+    discover_parser.add_argument("--cookies", default=str(config_path(config, "youtube_cookies")))
     discover_parser.add_argument("--browse-id", default="FEplaylist_aggregation")
     discover_parser.add_argument("--group-key", default="youtube-ungrouped")
     discover_parser.add_argument("--group-name", default="Ungrouped / YouTube")
@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
 
     scan_parser = subparsers.add_parser("scan-hidden", help="Scan playlists for unavailable videos")
     scan_parser.add_argument("--db", default=str(config_path(config, "database")))
-    scan_parser.add_argument("--cookies", default=str(config_path(config, "cookies")))
+    scan_parser.add_argument("--cookies", default=str(config_path(config, "youtube_cookies")))
     scan_parser.add_argument("--limit", type=int, default=0, help="Scan only the first N playlists")
     scan_parser.set_defaults(func=scan_hidden)
 
@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
 
     serve_parser = subparsers.add_parser("serve", help="Serve the library manager")
     serve_parser.add_argument("--db", default=str(config_path(config, "database")))
-    serve_parser.add_argument("--cookies", default=str(config_path(config, "cookies")))
+    serve_parser.add_argument("--cookies", default=str(config_path(config, "youtube_cookies")))
     serve_parser.add_argument("--video-thumbs", default=str(config_path(config, "video_thumbnail_dir")))
     serve_parser.add_argument("--takeout", default=str(config_path(config, "takeout_dir")))
     serve_parser.add_argument("--host", default=str(config["host"]))
