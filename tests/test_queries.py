@@ -113,7 +113,8 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual([row["video_id"] for row in rows], ["history123"])
 
     def test_history_activity_counts_days_and_includes_page_offsets(self) -> None:
-        self.add_video("activity123", "Activity Video")
+        self.add_video("activity123", "Activity Video", "UC_activity")
+        self.add_video("otheractivity", "Other Activity", "UC_other")
         self.conn.executemany(
             """
             INSERT INTO history_events(event_id, video_id, watched_at, watch_date, time_precision)
@@ -126,11 +127,31 @@ class NormalizedReadModelTests(unittest.TestCase):
                 ("activity-old", "2026-06-30T17:00:00Z", "2026-06-30"),
             ],
         )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(event_id, video_id, watched_at, watch_date, time_precision)
+            VALUES ('activity-other', 'otheractivity', '2026-07-05T19:00:00Z', '2026-07-05', 'exact')
+            """
+        )
 
         data = history_activity_data(self.conn, start_date="2026-07-01", end_date="2026-07-05")
 
         self.assertEqual(
             data["activity"],
+            [
+                {"watch_date": "2026-07-05", "watch_count": 3, "offset": 0},
+                {"watch_date": "2026-07-04", "watch_count": 1, "offset": 3},
+            ],
+        )
+        channel_data = history_activity_data(
+            self.conn,
+            start_date="2026-07-01",
+            end_date="2026-07-05",
+            channel_id="UC_activity",
+        )
+        self.assertEqual(channel_data["channel_id"], "UC_activity")
+        self.assertEqual(
+            channel_data["activity"],
             [
                 {"watch_date": "2026-07-05", "watch_count": 2, "offset": 0},
                 {"watch_date": "2026-07-04", "watch_count": 1, "offset": 2},

@@ -128,9 +128,15 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             params = urllib.parse.parse_qs(parsed.query)
             start_date = (params.get("start") or [""])[0]
             end_date = (params.get("end") or [""])[0]
+            channel_id = (params.get("channel_id") or [""])[0]
             conn = connect(self.db_path)
             try:
-                data = history_activity_data(conn, start_date=start_date, end_date=end_date)
+                data = history_activity_data(
+                    conn,
+                    start_date=start_date,
+                    end_date=end_date,
+                    channel_id=channel_id,
+                )
             finally:
                 conn.close()
             self.send_json(data)

@@ -414,18 +414,28 @@ def history_activity_data(
     conn: sqlite3.Connection,
     start_date: str = "",
     end_date: str = "",
+    channel_id: str = "",
 ) -> dict[str, Any]:
+    channel_id = channel_id.strip()
+    conditions = ["COALESCE(he.watch_date, substr(he.watched_at, 1, 10)) IS NOT NULL"]
+    params: list[Any] = []
+    if channel_id:
+        conditions.append("v.channel_id = ?")
+        params.append(channel_id)
+    where = " AND ".join(conditions)
     daily_rows = [
         dict(row)
         for row in conn.execute(
-            """
-            SELECT COALESCE(watch_date, substr(watched_at, 1, 10)) AS watch_date,
+            f"""
+            SELECT COALESCE(he.watch_date, substr(he.watched_at, 1, 10)) AS watch_date,
                    COUNT(*) AS watch_count
-            FROM history_events
-            WHERE COALESCE(watch_date, substr(watched_at, 1, 10)) IS NOT NULL
-            GROUP BY COALESCE(watch_date, substr(watched_at, 1, 10))
+            FROM history_events he
+            JOIN videos v ON v.video_id = he.video_id
+            WHERE {where}
+            GROUP BY COALESCE(he.watch_date, substr(he.watched_at, 1, 10))
             ORDER BY watch_date DESC
-            """
+            """,
+            params,
         )
     ]
     offset = 0
@@ -442,4 +452,4 @@ def history_activity_data(
                 }
             )
         offset += watch_count
-    return {"start_date": start_date, "end_date": end_date, "activity": activity}
+    return {"start_date": start_date, "end_date": end_date, "channel_id": channel_id, "activity": activity}

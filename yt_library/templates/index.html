@@ -124,6 +124,7 @@
     .channel-detail .title-row .video-title { flex: 1 1 auto; min-width: 0; }
     .channel-external-links { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; }
     .channel-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-top: 12px; }
+    .channel-tabs + .history-heatmap { margin-top: 14px; }
     .channel-tab { border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--muted); padding: 8px 12px; font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; }
     .channel-tab:hover, .channel-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
     .section-heading { grid-column: 1 / -1; color: var(--muted); font-size: 13px; margin: 8px 0 -4px; text-transform: uppercase; }
@@ -1179,12 +1180,13 @@
       return { start, end, startKey: localDateKey(start), endKey: localDateKey(end) };
     }
 
-    async function fetchHistoryActivity() {
+    async function fetchHistoryActivity(channelId = '') {
       const range = historyActivityRange();
-      const key = `${range.startKey}:${range.endKey}`;
+      const key = `${channelId}:${range.startKey}:${range.endKey}`;
       if (historyActivityState.key === key && historyActivityState.data) return historyActivityState.data;
       if (historyActivityState.key === key && historyActivityState.loading) return historyActivityState.loading;
       const params = new URLSearchParams({ start: range.startKey, end: range.endKey });
+      if (channelId) params.set('channel_id', channelId);
       const request = fetch(`/api/history/activity?${params}`, { cache: 'no-store' })
         .then(response => {
           if (!response.ok) throw new Error(`History activity fetch failed: ${response.status}`);
@@ -1224,6 +1226,7 @@
         .sort((left, right) => left - right);
       const heatmap = document.createElement('section');
       heatmap.className = 'history-heatmap';
+      heatmap.dataset.historyChannelId = payload.channel_id || '';
       heatmap.setAttribute('aria-label', 'Views by day');
       const header = document.createElement('div');
       header.className = 'history-heatmap-header';
@@ -1316,14 +1319,20 @@
         return;
       }
       const previousOffset = historyActivityYearOffset;
+      const channelId = heatmap.dataset.historyChannelId || '';
       historyActivityYearOffset = nextOffset;
       heatmap.setAttribute('aria-busy', 'true');
       for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
         button.disabled = true;
       }
       try {
-        const activity = await fetchHistoryActivity();
-        if (selected === '__history__' && heatmap.isConnected) {
+        const activity = await fetchHistoryActivity(channelId);
+        const channelHeatmapActive = Boolean(
+          channelId
+          && selected === channelSelection(channelId)
+          && channelDetailTab === 'history'
+        );
+        if ((selected === '__history__' || channelHeatmapActive) && heatmap.isConnected) {
           heatmap.replaceWith(historyHeatmapFor(activity));
         }
       } catch (error) {
@@ -1936,7 +1945,10 @@
       viewTop.classList.toggle('history-top', selected === '__history__');
       stopSearchProgress();
       empty.textContent = 'No playlists match.';
-      const preserveHistoryChrome = selected === '__history__' && Boolean(viewContext.querySelector('.history-heatmap'));
+      const preserveHistoryChrome = Boolean(viewContext.querySelector('.history-heatmap')) && (
+        selected === '__history__'
+        || (selected.startsWith('__channel__:') && channelDetailTab === 'history')
+      );
       if (!preserveHistoryChrome) {
         hidePager();
         viewContext.replaceChildren();
@@ -1980,23 +1992,38 @@
         title.textContent = channel.title || channel.channel_id;
         const playlistRows = channelVideoRows(channelId);
         const historyCount = cachedChannelHistoryCount(channelId);
+        const currentHeatmap = channelDetailTab === 'history'
+          ? viewContext.querySelector(`.history-heatmap[data-history-channel-id="${CSS.escape(channelId)}"]`)
+          : null;
         viewContext.hidden = false;
-        viewContext.replaceChildren(channelDetailCardFor(channel), channelTabsFor(channelDetailTab, playlistRows.length, historyCount));
+        viewContext.replaceChildren(
+          channelDetailCardFor(channel),
+          channelTabsFor(channelDetailTab, playlistRows.length, historyCount),
+          ...(currentHeatmap ? [currentHeatmap] : []),
+        );
         grid.className = channelDetailTab === 'history' ? 'history-list' : 'grid';
         if (channelDetailTab === 'history') {
           meta.textContent = 'Loading channel history...';
           grid.replaceChildren();
           empty.hidden = true;
-          const payload = await fetchHistoryPage(channelId);
+          const [payload, activity] = await Promise.all([
+            fetchHistoryPage(channelId),
+            fetchHistoryActivity(channelId),
+          ]);
           const rows = payload.watch || [];
           const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
-          viewContext.replaceChildren(channelDetailCardFor(channel), channelTabsFor('history', playlistRows.length, total));
+          viewContext.replaceChildren(
+            channelDetailCardFor(channel),
+            channelTabsFor('history', playlistRows.length, total),
+            historyHeatmapFor(activity),
+          );
           const pageInfo = remotePageInfo(total, rows.length);
           meta.textContent = '';
           renderPager(pageInfo);
           grid.replaceChildren(...rows.map(historyRowCardFor));
           empty.hidden = rows.length !== 0;
           empty.textContent = 'No history rows match this channel.';
+          scrollToPendingHistoryDate();
         } else {
           const pageInfo = pagedRows(playlistRows);
           meta.textContent = '';
@@ -2781,8 +2808,11 @@
     syncVideosParentFilter();
     syncSearchForFilters();
     window.addEventListener('hashchange', () => {
+      const previousSelection = selected;
       selected = selectionFromHash();
-      channelDetailTab = 'playlists';
+      if (selected !== previousSelection || !selected.startsWith('__channel__:')) {
+        channelDetailTab = 'playlists';
+      }
       if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
       if (selected !== '__search__') search.value = '';
       renderGroups();
