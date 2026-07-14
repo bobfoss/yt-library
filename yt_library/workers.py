@@ -1124,6 +1124,15 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
             archivarix_opener = load_cookie_opener(archivarix_cookie_file)
             status = "not_found"
             error = ""
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE placeholder_recovery_worker_runs
+                    SET request_started_at = ?
+                    WHERE run_id = ?
+                    """,
+                    (utc_now(), run_id),
+                )
             try:
                 video, thumbnail_url, thumbnail_path, status, error = recover_archivarix_video(
                     video_id,

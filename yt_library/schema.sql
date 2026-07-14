@@ -285,6 +285,7 @@ CREATE TABLE IF NOT EXISTS placeholder_recovery_worker_runs (
   queue_id INTEGER NOT NULL DEFAULT 0,
   video_id TEXT NOT NULL DEFAULT '',
   playlist_id TEXT NOT NULL DEFAULT '',
+  request_started_at TEXT,
   recovery_status TEXT NOT NULL DEFAULT '',
   message TEXT NOT NULL DEFAULT ''
 );

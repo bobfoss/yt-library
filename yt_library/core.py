@@ -98,7 +98,7 @@ LIKED_VIDEOS_PLAYLIST_ID = "LL"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -163,6 +163,27 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (2, utc_now()),
+        )
+    if current_version < 5:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(placeholder_recovery_worker_runs)")
+        }
+        if "request_started_at" not in columns:
+            conn.execute(
+                "ALTER TABLE placeholder_recovery_worker_runs ADD COLUMN request_started_at TEXT"
+            )
+        conn.execute(
+            """
+            UPDATE placeholder_recovery_worker_runs
+            SET request_started_at = started_at
+            WHERE request_started_at IS NULL
+              AND recovery_status NOT IN ('', 'authentication_error')
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (5, utc_now()),
         )
 
 
@@ -5811,6 +5832,19 @@ def admin_status(
             LIMIT 1
             """
         ).fetchone()
+        archivarix_request_counts = dict(
+            conn.execute(
+                """
+                SELECT
+                  COUNT(*) AS total,
+                  SUM(CASE WHEN request_started_at >= ? THEN 1 ELSE 0 END) AS last_24_hours,
+                  COALESCE(MAX(request_started_at), '') AS latest_at
+                FROM placeholder_recovery_worker_runs
+                WHERE request_started_at IS NOT NULL
+                """,
+                (utc_days_ago(1),),
+            ).fetchone()
+        )
         archivarix_block = external_service_block(conn, "archivarix")
         metadata_logs: list[dict[str, Any]] = []
         playlist_logs: list[dict[str, Any]] = []
@@ -5897,6 +5931,7 @@ def admin_status(
         "latestPlaceholderRecoveryRun": (
             dict(latest_placeholder_recovery_run) if latest_placeholder_recovery_run else None
         ),
+        "archivarixRequestCounts": archivarix_request_counts,
         "archivarixBlock": archivarix_block,
         "logs": metadata_logs,
         "metadataLogs": metadata_logs,

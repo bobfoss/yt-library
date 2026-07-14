@@ -170,6 +170,8 @@
         <div class="panel"><div class="metric">Queue worker</div><div id="commonWorkerState" class="value">idle</div></div>
         <div class="panel"><div class="metric">Run time</div><div id="workerQueueElapsed" class="value">-</div></div>
         <div class="panel"><div class="metric">ETA</div><div id="workerQueueEta" class="value">-</div></div>
+        <div class="panel"><div class="metric">Archivarix requests (24h)</div><div id="archivarixRequests24h" class="value">0</div></div>
+        <div class="panel"><div class="metric">Archivarix requests tracked</div><div id="archivarixRequestsTotal" class="value">0</div></div>
       </div>
       <div class="controls">
         <label>URL/video/channel/playlist ID<input id="providedQueueTarget" class="wide-input" type="text" placeholder="YouTube URL, local URL, video ID, channel ID, @handle, or playlist ID"></label>
@@ -275,6 +277,8 @@
       commonWorkerState: document.getElementById('commonWorkerState'),
       workerQueueElapsed: document.getElementById('workerQueueElapsed'),
       workerQueueEta: document.getElementById('workerQueueEta'),
+      archivarixRequests24h: document.getElementById('archivarixRequests24h'),
+      archivarixRequestsTotal: document.getElementById('archivarixRequestsTotal'),
       startWorkerQueue: document.getElementById('startWorkerQueue'),
       stopWorkerQueue: document.getElementById('stopWorkerQueue'),
       workerQueueRows: document.getElementById('workerQueueRows'),
@@ -567,6 +571,13 @@
       syncQueueTiming(queueWorkerActive, queueStats);
       fields.startWorkerQueue.classList.toggle('primary', !queueWorkerRunning && !queueWorkerStopping);
       fields.stopWorkerQueue.classList.toggle('danger', queueWorkerRunning || queueWorkerStopping);
+      const archivarixRequestCounts = data.archivarixRequestCounts || {};
+      fields.archivarixRequests24h.textContent = archivarixRequestCounts.last_24_hours || 0;
+      fields.archivarixRequestsTotal.textContent = archivarixRequestCounts.total || 0;
+      fields.archivarixRequests24h.title = archivarixRequestCounts.latest_at
+        ? `Latest request ${fmtTime(archivarixRequestCounts.latest_at)}`
+        : 'No tracked requests';
+      fields.archivarixRequestsTotal.title = fields.archivarixRequests24h.title;
       const archivarixBlock = data.archivarixBlock || {};
       fields.archivarixBlock.hidden = !archivarixBlock.blocked;
       fields.archivarixBlockMessage.textContent = archivarixBlock.blocked

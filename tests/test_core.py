@@ -1233,6 +1233,63 @@ class SchemaTests(unittest.TestCase):
         self.assertNotIn("app_settings", tables)
         self.assertEqual(schema_version, core.SCHEMA_VERSION)
 
+    def test_migrate_tracks_prior_archivarix_requests_from_placeholder_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            raw = sqlite3.connect(db_path)
+            try:
+                raw.executescript(
+                    """
+                    CREATE TABLE schema_migrations (
+                      version INTEGER PRIMARY KEY,
+                      applied_at TEXT NOT NULL
+                    );
+                    INSERT INTO schema_migrations(version, applied_at)
+                    VALUES (4, '2026-07-14T00:00:00Z');
+                    CREATE TABLE placeholder_recovery_worker_runs (
+                      run_id TEXT PRIMARY KEY,
+                      status TEXT NOT NULL DEFAULT '',
+                      started_at TEXT NOT NULL,
+                      finished_at TEXT,
+                      total INTEGER NOT NULL DEFAULT 1,
+                      processed INTEGER NOT NULL DEFAULT 0,
+                      found INTEGER NOT NULL DEFAULT 0,
+                      failed INTEGER NOT NULL DEFAULT 0,
+                      queue_id INTEGER NOT NULL DEFAULT 0,
+                      video_id TEXT NOT NULL DEFAULT '',
+                      playlist_id TEXT NOT NULL DEFAULT '',
+                      recovery_status TEXT NOT NULL DEFAULT '',
+                      message TEXT NOT NULL DEFAULT ''
+                    );
+                    INSERT INTO placeholder_recovery_worker_runs(
+                      run_id, status, started_at, recovery_status
+                    ) VALUES
+                      ('requested', 'complete', '2026-07-14T01:00:00Z', 'not_found'),
+                      ('auth-failed', 'blocked', '2026-07-14T02:00:00Z', 'authentication_error'),
+                      ('never-started', 'stopped', '2026-07-14T03:00:00Z', '');
+                    """
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT run_id, request_started_at
+                    FROM placeholder_recovery_worker_runs
+                    ORDER BY started_at
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(rows[0]["request_started_at"], "2026-07-14T01:00:00Z")
+        self.assertIsNone(rows[1]["request_started_at"])
+        self.assertIsNone(rows[2]["request_started_at"])
+
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2508,7 +2565,8 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertTrue(block["retry_eligible"])
                 run = conn.execute(
                     """
-                    SELECT status, processed, failed, recovery_status, video_id, message
+                    SELECT status, processed, failed, recovery_status, video_id,
+                           request_started_at, message
                     FROM placeholder_recovery_worker_runs
                     WHERE run_id = ?
                     """,
@@ -2522,9 +2580,11 @@ class WorkerQueueTests(unittest.TestCase):
                         1,
                         "rate_limited",
                         "abc12345678",
+                        run["request_started_at"],
                         "Archivarix daily search limit reached",
                     ),
                 )
+                self.assertTrue(run["request_started_at"])
                 logs = conn.execute(
                     "SELECT run_id, level, message FROM placeholder_recovery_worker_log WHERE run_id = ? ORDER BY id",
                     ("test-placeholder-rate-limited",),
@@ -2541,6 +2601,12 @@ class WorkerQueueTests(unittest.TestCase):
                     "test-placeholder-rate-limited",
                 )
                 self.assertTrue(status["archivarixBlock"]["blocked"])
+                self.assertEqual(status["archivarixRequestCounts"]["last_24_hours"], 1)
+                self.assertEqual(status["archivarixRequestCounts"]["total"], 1)
+                self.assertEqual(
+                    status["archivarixRequestCounts"]["latest_at"],
+                    run["request_started_at"],
+                )
             finally:
                 conn.close()
 
