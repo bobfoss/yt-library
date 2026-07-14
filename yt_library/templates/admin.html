@@ -326,6 +326,7 @@
           source: String(log.level || '').startsWith('placeholder ') ? 'placeholder' : 'metadata',
           level: String(log.level || '').replace(/^placeholder\s+/, ''),
         })),
+        ...(data.placeholderRecoveryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'placeholder' })),
         ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
       ];
     }

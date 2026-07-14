@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,8 @@ from .config import (
 )
 from .core import *
 
-class MetadataWorker:
+
+class _ThreadWorkerLifecycle:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -44,6 +46,66 @@ class MetadataWorker:
         with self._lock:
             return self._blocked_reason
 
+    def _set_blocked_reason(self, reason: str) -> None:
+        with self._lock:
+            self._blocked_reason = reason
+
+    def _start_background(
+        self,
+        target: Callable[..., None],
+        args_factory: Callable[[str], tuple[Any, ...]],
+        *,
+        started_message: str,
+        already_running_message: str,
+        create_run_id: bool = True,
+        reset_blocked_reason: bool = False,
+        before_start: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                result = {"started": False, "message": already_running_message}
+                if create_run_id:
+                    result["run_id"] = self._run_id
+                return result
+            self._stop.clear()
+            if reset_blocked_reason:
+                self._blocked_reason = ""
+            if create_run_id:
+                self._run_id = uuid.uuid4().hex
+            if before_start:
+                before_start()
+            self._thread = threading.Thread(
+                target=target,
+                args=args_factory(self._run_id),
+                daemon=True,
+            )
+            self._thread.start()
+            result = {"started": True, "message": started_message}
+            if create_run_id:
+                result["run_id"] = self._run_id
+            return result
+
+    def _request_stop(
+        self,
+        *,
+        not_running_message: str,
+        requested_message: str,
+        include_run_id: bool = True,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if not self._thread or not self._thread.is_alive():
+                return {"stopping": False, "message": not_running_message}
+            self._stop.set()
+            result = {"stopping": True, "message": requested_message}
+            if include_run_id:
+                result["run_id"] = self._run_id
+            return result
+
+
+class MetadataWorker(_ThreadWorkerLifecycle):
+    def __init__(self) -> None:
+        super().__init__()
+
     def start(
         self,
         db_path: Path,
@@ -56,37 +118,30 @@ class MetadataWorker:
         record_summary: bool = True,
         queue_id: int = 0,
     ) -> dict[str, Any]:
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return {"started": False, "run_id": self._run_id, "message": "Worker already running"}
-            self._stop.clear()
-            self._blocked_reason = ""
-            self._run_id = uuid.uuid4().hex
-            self._thread = threading.Thread(
-                target=self._run,
-                args=(
-                    self._run_id,
-                    db_path,
-                    cookie_file,
-                    thumb_dir,
-                    delay,
-                    limit,
-                    force,
-                    stale_days,
-                    record_summary,
-                    queue_id,
-                ),
-                daemon=True,
-            )
-            self._thread.start()
-            return {"started": True, "run_id": self._run_id, "message": "Worker started"}
+        return self._start_background(
+            self._run,
+            lambda run_id: (
+                run_id,
+                db_path,
+                cookie_file,
+                thumb_dir,
+                delay,
+                limit,
+                force,
+                stale_days,
+                record_summary,
+                queue_id,
+            ),
+            started_message="Worker started",
+            already_running_message="Worker already running",
+            reset_blocked_reason=True,
+        )
 
     def stop(self) -> dict[str, Any]:
-        with self._lock:
-            if not self._thread or not self._thread.is_alive():
-                return {"stopping": False, "message": "Worker is not running"}
-            self._stop.set()
-            return {"stopping": True, "run_id": self._run_id, "message": "Stop requested"}
+        return self._request_stop(
+            not_running_message="Worker is not running",
+            requested_message="Stop requested",
+        )
 
     def _run(
         self,
@@ -159,8 +214,7 @@ class MetadataWorker:
                     session_valid, session_message = youtube_session_status(cookie_file, verify_remote=False)
                     if not session_valid:
                         authentication_error = f"Metadata worker stopped: {session_message}"
-                        with self._lock:
-                            self._blocked_reason = authentication_error
+                        self._set_blocked_reason(authentication_error)
                         with conn:
                             conn.execute(
                                 """
@@ -225,8 +279,7 @@ class MetadataWorker:
                             status = "no_metadata"
                 except YouTubeAuthenticationError as exc:
                     authentication_error = f"Metadata worker stopped: {exc}"
-                    with self._lock:
-                        self._blocked_reason = authentication_error
+                    self._set_blocked_reason(authentication_error)
                     with conn:
                         conn.execute(
                             """
@@ -255,8 +308,7 @@ class MetadataWorker:
                         )
                     except YouTubeAuthenticationError as exc:
                         authentication_error = f"Metadata worker stopped: {exc}"
-                        with self._lock:
-                            self._blocked_reason = authentication_error
+                        self._set_blocked_reason(authentication_error)
                         with conn:
                             conn.execute(
                                 """
@@ -374,21 +426,7 @@ class MetadataWorker:
 METADATA_WORKER = MetadataWorker()
 
 
-class PlaylistScanWorker:
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
-        self._stop = threading.Event()
-        self._run_id = ""
-
-    def is_running(self) -> bool:
-        with self._lock:
-            return bool(self._thread and self._thread.is_alive()) and not self._stop.is_set()
-
-    def is_stopping(self) -> bool:
-        with self._lock:
-            return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
-
+class PlaylistScanWorker(_ThreadWorkerLifecycle):
     def start(
         self,
         db_path: Path,
@@ -399,25 +437,18 @@ class PlaylistScanWorker:
         stale_days: int,
         record_summary: bool = True,
     ) -> dict[str, Any]:
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return {"started": False, "run_id": self._run_id, "message": "Playlist scan already running"}
-            self._stop.clear()
-            self._run_id = uuid.uuid4().hex
-            self._thread = threading.Thread(
-                target=self._run,
-                args=(self._run_id, db_path, cookie_file, delay, limit, force, stale_days, record_summary),
-                daemon=True,
-            )
-            self._thread.start()
-            return {"started": True, "run_id": self._run_id, "message": "Playlist scan started"}
+        return self._start_background(
+            self._run,
+            lambda run_id: (run_id, db_path, cookie_file, delay, limit, force, stale_days, record_summary),
+            started_message="Playlist scan started",
+            already_running_message="Playlist scan already running",
+        )
 
     def stop(self) -> dict[str, Any]:
-        with self._lock:
-            if not self._thread or not self._thread.is_alive():
-                return {"stopping": False, "message": "Playlist scan is not running"}
-            self._stop.set()
-            return {"stopping": True, "run_id": self._run_id, "message": "Playlist scan stop requested"}
+        return self._request_stop(
+            not_running_message="Playlist scan is not running",
+            requested_message="Playlist scan stop requested",
+        )
 
     def _run(
         self,
@@ -726,21 +757,7 @@ class PlaylistScanWorker:
 PLAYLIST_SCAN_WORKER = PlaylistScanWorker()
 
 
-class LiveHistoryWorker:
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
-        self._stop = threading.Event()
-        self._run_id = ""
-
-    def is_running(self) -> bool:
-        with self._lock:
-            return bool(self._thread and self._thread.is_alive()) and not self._stop.is_set()
-
-    def is_stopping(self) -> bool:
-        with self._lock:
-            return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
-
+class LiveHistoryWorker(_ThreadWorkerLifecycle):
     def start(
         self,
         db_path: Path,
@@ -748,26 +765,19 @@ class LiveHistoryWorker:
         mode: str,
         timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
     ) -> dict[str, Any]:
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return {"started": False, "run_id": self._run_id, "message": "History fetch already running"}
-            self._stop.clear()
-            self._run_id = uuid.uuid4().hex
-            self._thread = threading.Thread(
-                target=self._run,
-                args=(self._run_id, db_path, cookie_file, mode, timezone_name),
-                daemon=True,
-            )
-            self._thread.start()
-            label = "Verify history" if mode == "verify" else "History fetch"
-            return {"started": True, "run_id": self._run_id, "message": f"{label} started"}
+        label = "Verify history" if mode == "verify" else "History fetch"
+        return self._start_background(
+            self._run,
+            lambda run_id: (run_id, db_path, cookie_file, mode, timezone_name),
+            started_message=f"{label} started",
+            already_running_message="History fetch already running",
+        )
 
     def stop(self) -> dict[str, Any]:
-        with self._lock:
-            if not self._thread or not self._thread.is_alive():
-                return {"stopping": False, "message": "History fetch is not running"}
-            self._stop.set()
-            return {"stopping": True, "run_id": self._run_id, "message": "History fetch stop requested"}
+        return self._request_stop(
+            not_running_message="History fetch is not running",
+            requested_message="History fetch stop requested",
+        )
 
     def _run(
         self,
@@ -923,29 +933,7 @@ class LiveHistoryWorker:
 LIVE_HISTORY_WORKER = LiveHistoryWorker()
 
 
-class PlaceholderRecoveryWorker:
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
-        self._stop = threading.Event()
-        self._blocked_reason = ""
-
-    def is_running(self) -> bool:
-        with self._lock:
-            return bool(self._thread and self._thread.is_alive()) and not self._stop.is_set()
-
-    def is_stopping(self) -> bool:
-        with self._lock:
-            return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
-
-    def is_alive(self) -> bool:
-        with self._lock:
-            return bool(self._thread and self._thread.is_alive())
-
-    def blocked_reason(self) -> str:
-        with self._lock:
-            return self._blocked_reason
-
+class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
     def start(
         self,
         db_path: Path,
@@ -953,51 +941,118 @@ class PlaceholderRecoveryWorker:
         thumb_dir: Path,
         queue_id: int = 0,
     ) -> dict[str, Any]:
-        session_valid, session_message = archivarix_session_status(archivarix_cookie_file)
-        if not session_valid:
-            return {
-                "started": False,
-                "blocked": True,
-                "message": session_message,
-            }
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return {"started": False, "message": "Placeholder recovery already running"}
-            self._stop.clear()
-            self._blocked_reason = ""
-            self._thread = threading.Thread(
-                target=self._run,
-                args=(db_path, archivarix_cookie_file, thumb_dir, queue_id),
-                daemon=True,
-            )
-            self._thread.start()
-            return {"started": True, "message": "Placeholder recovery started"}
+        return self._start_background(
+            self._run,
+            lambda run_id: (run_id, db_path, archivarix_cookie_file, thumb_dir, queue_id),
+            started_message="Placeholder recovery started",
+            already_running_message="Placeholder recovery already running",
+            reset_blocked_reason=True,
+        )
 
     def stop(self) -> dict[str, Any]:
-        with self._lock:
-            if not self._thread or not self._thread.is_alive():
-                return {"stopping": False, "message": "Placeholder recovery is not running"}
-            self._stop.set()
-            return {"stopping": True, "message": "Placeholder recovery stop requested"}
+        return self._request_stop(
+            not_running_message="Placeholder recovery is not running",
+            requested_message="Placeholder recovery stop requested",
+        )
+
+    @staticmethod
+    def _finish_run(
+        conn: sqlite3.Connection,
+        run_id: str,
+        *,
+        status: str,
+        message: str,
+        recovery_status: str = "",
+        processed: int = 0,
+        found: int = 0,
+        failed: int = 0,
+    ) -> None:
+        conn.execute(
+            """
+            UPDATE placeholder_recovery_worker_runs
+            SET status = ?, finished_at = ?, processed = ?, found = ?, failed = ?,
+                recovery_status = ?, message = ?
+            WHERE run_id = ?
+            """,
+            (status, utc_now(), processed, found, failed, recovery_status, message, run_id),
+        )
 
     def _run(
         self,
+        run_id: str,
         db_path: Path,
         archivarix_cookie_file: Path,
         thumb_dir: Path,
         queue_id: int = 0,
     ) -> None:
         conn = connect(db_path)
-        archivarix_opener = load_cookie_opener(archivarix_cookie_file)
+        video_id = ""
         try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO placeholder_recovery_worker_runs(
+                      run_id, status, started_at, total, queue_id, message
+                    )
+                    VALUES (?, 'running', ?, 1, ?, ?)
+                    """,
+                    (run_id, utc_now(), queue_id, "Placeholder recovery started"),
+                )
+                log_placeholder_recovery_event(conn, run_id, "info", "Placeholder recovery started")
             rows = placeholder_worker_queue_rows(conn, limit=1, queue_id=queue_id)
-            if not rows or self._stop.is_set():
+            if not rows:
+                with conn:
+                    conn.execute(
+                        "UPDATE placeholder_recovery_worker_runs SET total = 0 WHERE run_id = ?",
+                        (run_id,),
+                    )
+                    self._finish_run(
+                        conn,
+                        run_id,
+                        status="complete",
+                        message="No placeholder recovery item queued",
+                    )
+                    log_placeholder_recovery_event(
+                        conn,
+                        run_id,
+                        "info",
+                        "No placeholder recovery item queued",
+                    )
                 return
             row = rows[0]
             queue_id = int(row["queue_id"] or 0)
             playlist_id = row["playlist_id"] or ""
             video_id = row["video_id"]
             title = row["current_title"] or video_id
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE placeholder_recovery_worker_runs
+                    SET queue_id = ?, video_id = ?, playlist_id = ?
+                    WHERE run_id = ?
+                    """,
+                    (queue_id, video_id, playlist_id, run_id),
+                )
+            if self._stop.is_set():
+                with conn:
+                    self._finish_run(conn, run_id, status="stopped", message="Stop requested")
+                    log_placeholder_recovery_event(conn, run_id, "warn", "Stop requested", video_id)
+                return
+            session_valid, session_message = archivarix_session_status(archivarix_cookie_file)
+            if not session_valid:
+                self._set_blocked_reason(session_message)
+                with conn:
+                    self._finish_run(
+                        conn,
+                        run_id,
+                        status="blocked",
+                        message=session_message,
+                        recovery_status="authentication_error",
+                        failed=1,
+                    )
+                    log_placeholder_recovery_event(conn, run_id, "warn", session_message, video_id)
+                return
+            archivarix_opener = load_cookie_opener(archivarix_cookie_file)
             status = "not_found"
             error = ""
             try:
@@ -1016,6 +1071,15 @@ class PlaceholderRecoveryWorker:
                     channel_thumbnail_timeout=5,
                 )
                 if self._stop.is_set():
+                    with conn:
+                        self._finish_run(
+                            conn,
+                            run_id,
+                            status="stopped",
+                            message="Stop requested",
+                            recovery_status=status,
+                        )
+                        log_placeholder_recovery_event(conn, run_id, "warn", "Stop requested", video_id)
                     return
                 save_video_recovery(
                     conn,
@@ -1034,29 +1098,55 @@ class PlaceholderRecoveryWorker:
             with conn:
                 if status == "rate_limited":
                     message = error or "Archivarix daily search limit reached"
-                    with self._lock:
-                        self._blocked_reason = message
-                    log_worker_event(conn, "", "placeholder warn", message, video_id)
+                    self._set_blocked_reason(message)
+                    self._finish_run(
+                        conn,
+                        run_id,
+                        status="blocked",
+                        message=message,
+                        recovery_status=status,
+                        processed=1,
+                        failed=1,
+                    )
+                    log_placeholder_recovery_event(conn, run_id, "warn", message, video_id)
                     return
                 if status == "found":
-                    level = "placeholder found"
+                    level = "found"
                     message = f"found: {title}"
                 elif status == "thumbnail_only":
-                    level = "placeholder thumbnail"
+                    level = "thumbnail"
                     message = f"thumbnail only: {title}"
                 elif status == "not_found":
-                    level = "placeholder not found"
+                    level = "not found"
                     message = "not found"
                 else:
-                    level = "placeholder error"
+                    level = "error"
                     message = error or status
                 if queue_id:
                     conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
                 rebuild_playlist_reconciliation(conn, playlist_id)
-                log_worker_event(conn, "", level, message, video_id)
+                self._finish_run(
+                    conn,
+                    run_id,
+                    status="complete",
+                    message=message,
+                    recovery_status=status,
+                    processed=1,
+                    found=1 if status in {"found", "thumbnail_only"} else 0,
+                    failed=1 if status == "error" else 0,
+                )
+                log_placeholder_recovery_event(conn, run_id, level, message, video_id)
         except Exception as exc:
             with conn:
-                log_worker_event(conn, "", "placeholder error", f"Worker crashed: {exc}")
+                self._finish_run(
+                    conn,
+                    run_id,
+                    status="error",
+                    message=str(exc),
+                    recovery_status="error",
+                    failed=1,
+                )
+                log_placeholder_recovery_event(conn, run_id, "error", f"Worker crashed: {exc}", video_id)
         finally:
             conn.close()
 
@@ -1064,26 +1154,16 @@ class PlaceholderRecoveryWorker:
 PLACEHOLDER_RECOVERY_WORKER = PlaceholderRecoveryWorker()
 
 
-class WorkerQueueDispatcher:
+class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
-        self._stop = threading.Event()
+        super().__init__()
         self._placeholder_block_reason = ""
         self._started_at = ""
         self._started_monotonic = 0.0
         self._initial_count = 0
         self._completed_count = 0
         self._metadata_workers: dict[int, tuple[MetadataWorker, str]] = {}
-        self._placeholder_workers: dict[int, PlaceholderRecoveryWorker] = {}
-
-    def is_running(self) -> bool:
-        with self._lock:
-            return bool(self._thread and self._thread.is_alive()) and not self._stop.is_set()
-
-    def is_stopping(self) -> bool:
-        with self._lock:
-            return self._stop.is_set() and bool(self._thread and self._thread.is_alive())
+        self._placeholder_workers: dict[int, tuple[PlaceholderRecoveryWorker, str]] = {}
 
     def stats(self, remaining_count: int) -> dict[str, Any]:
         with self._lock:
@@ -1118,34 +1198,33 @@ class WorkerQueueDispatcher:
         config_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         config = config_data or {}
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return {"started": False, "message": "Worker queue dispatcher already running"}
-            self._stop.clear()
+        def prepare_run() -> None:
             self._started_at = utc_now()
             self._started_monotonic = time.monotonic()
             self._initial_count = 0
             self._completed_count = 0
             self._metadata_workers = {}
             self._placeholder_workers = {}
-            self._thread = threading.Thread(
-                target=self._run,
-                args=(
-                    db_path,
-                    cookie_file,
-                    thumb_dir,
-                    effective_display_timezone(config),
-                    config_path(config, "archivarix_cookies"),
-                    config_path(config, "archivarix_thumbnail_dir"),
-                    configured_youtube_request_interval(config),
-                    configured_youtube_max_in_flight(config),
-                    configured_archivarix_request_interval(config),
-                    configured_archivarix_max_in_flight(config),
-                ),
-                daemon=True,
-            )
-            self._thread.start()
-            return {"started": True, "message": "Worker queue dispatcher started"}
+
+        return self._start_background(
+            self._run,
+            lambda _run_id: (
+                db_path,
+                cookie_file,
+                thumb_dir,
+                effective_display_timezone(config),
+                config_path(config, "archivarix_cookies"),
+                config_path(config, "archivarix_thumbnail_dir"),
+                configured_youtube_request_interval(config),
+                configured_youtube_max_in_flight(config),
+                configured_archivarix_request_interval(config),
+                configured_archivarix_max_in_flight(config),
+            ),
+            started_message="Worker queue dispatcher started",
+            already_running_message="Worker queue dispatcher already running",
+            create_run_id=False,
+            before_start=prepare_run,
+        )
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
@@ -1154,7 +1233,7 @@ class WorkerQueueDispatcher:
                 return {"stopping": False, "running": False, "message": "Worker queue dispatcher is not running"}
             self._stop.set()
             metadata_workers = [worker for worker, _run_id in self._metadata_workers.values()]
-            placeholder_workers = list(self._placeholder_workers.values())
+            placeholder_workers = [worker for worker, _run_id in self._placeholder_workers.values()]
             for worker in metadata_workers:
                 worker.stop()
             for worker in placeholder_workers:
@@ -1264,7 +1343,7 @@ class WorkerQueueDispatcher:
                 authentication_blocked = False
                 with self._lock:
                     metadata_workers = dict(self._metadata_workers)
-                    placeholder_workers = dict(self._placeholder_workers)
+                placeholder_workers = dict(self._placeholder_workers)
 
                 for queue_id, (worker, run_id) in metadata_workers.items():
                     if worker.is_alive():
@@ -1275,7 +1354,7 @@ class WorkerQueueDispatcher:
                     with self._lock:
                         self._metadata_workers.pop(queue_id, None)
 
-                for queue_id, worker in placeholder_workers.items():
+                for queue_id, (worker, _run_id) in placeholder_workers.items():
                     if worker.is_alive():
                         continue
                     reason = worker.blocked_reason()
@@ -1345,15 +1424,17 @@ class WorkerQueueDispatcher:
                                             f"Automatic recovery skipped: {reason}",
                                             row.get("video_id") or "",
                                         )
-                                    remove_worker_queue_entry(conn, queue_id)
                             finally:
                                 conn.close()
                             self._placeholder_block_reason = reason
-                            self._mark_completed()
+                            archivarix_blocked = True
                         elif result.get("started"):
                             self._placeholder_block_reason = ""
                             with self._lock:
-                                self._placeholder_workers[queue_id] = worker
+                                self._placeholder_workers[queue_id] = (
+                                    worker,
+                                    str(result.get("run_id") or ""),
+                                )
                             next_archivarix_launch = now + archivarix_interval
 
                 with self._lock:
@@ -1401,7 +1482,7 @@ class WorkerQueueDispatcher:
         finally:
             with self._lock:
                 metadata_workers = [worker for worker, _run_id in self._metadata_workers.values()]
-                placeholder_workers = list(self._placeholder_workers.values())
+                placeholder_workers = [worker for worker, _run_id in self._placeholder_workers.values()]
             for worker in metadata_workers:
                 worker.stop()
             for worker in placeholder_workers:

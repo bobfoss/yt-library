@@ -33,6 +33,77 @@ def migrated_connection(db_path: Path):
 
 
 class CoreHelperTests(unittest.TestCase):
+    def test_placeholder_recovery_exposes_its_persisted_run_id(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        worker = PlaceholderRecoveryWorker()
+
+        def hold_worker(*_args) -> None:
+            entered.set()
+            release.wait(2)
+
+        with patch.object(worker, "_run", side_effect=hold_worker):
+            result = worker.start(Path("library.sqlite3"), Path("cookies.txt"), Path("thumbs"))
+            self.assertTrue(entered.wait(1))
+            self.assertTrue(result["started"])
+            self.assertTrue(result["run_id"])
+
+            stopped = worker.stop()
+            self.assertEqual(stopped["run_id"], result["run_id"])
+            release.set()
+            deadline = time.time() + 1
+            while worker.is_alive() and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(worker.is_alive())
+
+    def test_thread_worker_lifecycle_rejects_duplicate_start_and_reports_stopping(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        worker = MetadataWorker()
+
+        def hold_worker(*_args) -> None:
+            entered.set()
+            release.wait(2)
+
+        with patch.object(worker, "_run", side_effect=hold_worker):
+            first = worker.start(
+                Path("library.sqlite3"),
+                Path("cookies.txt"),
+                Path("thumbs"),
+                delay=0,
+                limit=1,
+                force=False,
+                stale_days=30,
+            )
+            self.assertTrue(entered.wait(1))
+            duplicate = worker.start(
+                Path("library.sqlite3"),
+                Path("cookies.txt"),
+                Path("thumbs"),
+                delay=0,
+                limit=1,
+                force=False,
+                stale_days=30,
+            )
+
+            self.assertTrue(first["started"])
+            self.assertFalse(duplicate["started"])
+            self.assertEqual(duplicate["run_id"], first["run_id"])
+            self.assertTrue(worker.is_running())
+
+            stopped = worker.stop()
+            self.assertTrue(stopped["stopping"])
+            self.assertEqual(stopped["run_id"], first["run_id"])
+            self.assertFalse(worker.is_running())
+            self.assertTrue(worker.is_stopping())
+            self.assertTrue(worker.is_alive())
+
+            release.set()
+            deadline = time.time() + 1
+            while worker.is_alive() and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(worker.is_alive())
+
     def test_archivarix_recovery_does_not_start_when_stop_is_requested(self) -> None:
         stop_event = threading.Event()
         stop_event.set()
@@ -2169,12 +2240,20 @@ class WorkerQueueTests(unittest.TestCase):
                         "INSERT INTO playlist_scan_worker_log(run_id, created_at, level, playlist_id, message) "
                         "VALUES ('run-1', '2026-07-13T12:00:01Z', 'info', 'PLexample', 'playlist')"
                     )
+                    conn.execute(
+                        "INSERT INTO placeholder_recovery_worker_log(run_id, created_at, level, video_id, message) "
+                        "VALUES ('run-2', '2026-07-13T12:00:02Z', 'found', 'placeholder1', 'recovered')"
+                    )
 
                 cursors = core.worker_log_cursors(conn)
                 snapshot = core.worker_log_snapshot(conn)
                 self.assertEqual([row["message"] for row in snapshot["metadataLogs"]], ["first"])
                 self.assertEqual([row["message"] for row in snapshot["playlistScanLogs"]], ["playlist"])
                 self.assertEqual(snapshot["liveHistoryLogs"], [])
+                self.assertEqual(
+                    [row["message"] for row in snapshot["placeholderRecoveryLogs"]],
+                    ["recovered"],
+                )
 
                 with conn:
                     conn.execute(
@@ -2190,6 +2269,7 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual([row["message"] for row in deltas["metadataLogs"]], ["second"])
                 self.assertEqual(deltas["playlistScanLogs"], [])
                 self.assertEqual([row["message"] for row in deltas["liveHistoryLogs"]], ["history"])
+                self.assertEqual(deltas["placeholderRecoveryLogs"], [])
             finally:
                 conn.close()
 
@@ -2216,18 +2296,36 @@ class WorkerQueueTests(unittest.TestCase):
                 return None, "", "", "stopped", "Stop requested"
 
             with (
+                patch("yt_library.workers.archivarix_session_status", return_value=(True, "")),
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
                 patch("yt_library.workers.recover_archivarix_video", side_effect=stop_during_recovery),
             ):
-                worker._run(db_path, Path(temp_dir) / "cookies.txt", Path(temp_dir) / "thumbs")
+                worker._run(
+                    "test-placeholder-stopped",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                )
 
             conn = core.connect(db_path)
             try:
                 self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
+                run = conn.execute(
+                    "SELECT status, video_id, message FROM placeholder_recovery_worker_runs WHERE run_id = ?",
+                    ("test-placeholder-stopped",),
+                ).fetchone()
+                self.assertEqual(tuple(run), ("stopped", "abc12345678", "Stop requested"))
                 logs = conn.execute(
-                    "SELECT * FROM metadata_worker_log WHERE level LIKE 'placeholder %'"
+                    "SELECT run_id, level, message FROM placeholder_recovery_worker_log WHERE run_id = ? ORDER BY id",
+                    ("test-placeholder-stopped",),
                 ).fetchall()
-                self.assertEqual(logs, [])
+                self.assertEqual(
+                    [tuple(row) for row in logs],
+                    [
+                        ("test-placeholder-stopped", "info", "Placeholder recovery started"),
+                        ("test-placeholder-stopped", "warn", "Stop requested"),
+                    ],
+                )
             finally:
                 conn.close()
 
@@ -2249,23 +2347,139 @@ class WorkerQueueTests(unittest.TestCase):
 
             worker = PlaceholderRecoveryWorker()
             with (
+                patch("yt_library.workers.archivarix_session_status", return_value=(True, "")),
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
                 patch(
                     "yt_library.workers.recover_archivarix_video",
                     return_value=(None, "", "", "rate_limited", "Archivarix daily search limit reached"),
                 ),
             ):
-                worker._run(db_path, Path(temp_dir) / "cookies.txt", Path(temp_dir) / "thumbs")
+                worker._run(
+                    "test-placeholder-rate-limited",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                )
 
             conn = core.connect(db_path)
             try:
                 self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
                 self.assertEqual(worker.blocked_reason(), "Archivarix daily search limit reached")
+                run = conn.execute(
+                    """
+                    SELECT status, processed, failed, recovery_status, video_id, message
+                    FROM placeholder_recovery_worker_runs
+                    WHERE run_id = ?
+                    """,
+                    ("test-placeholder-rate-limited",),
+                ).fetchone()
+                self.assertEqual(
+                    tuple(run),
+                    (
+                        "blocked",
+                        1,
+                        1,
+                        "rate_limited",
+                        "abc12345678",
+                        "Archivarix daily search limit reached",
+                    ),
+                )
                 logs = conn.execute(
-                    "SELECT level, message FROM metadata_worker_log WHERE level = 'placeholder warn'"
+                    "SELECT run_id, level, message FROM placeholder_recovery_worker_log WHERE run_id = ? ORDER BY id",
+                    ("test-placeholder-rate-limited",),
                 ).fetchall()
-                self.assertEqual(len(logs), 1)
-                self.assertEqual(logs[0]["message"], "Archivarix daily search limit reached")
+                self.assertEqual(logs[-1]["level"], "warn")
+                self.assertEqual(logs[-1]["message"], "Archivarix daily search limit reached")
+                status = core.admin_status(db_path, include_logs=True, worker_queue_limit=0)
+                self.assertEqual(
+                    status["latestPlaceholderRecoveryRun"]["run_id"],
+                    "test-placeholder-rate-limited",
+                )
+                self.assertEqual(
+                    status["placeholderRecoveryLogs"][0]["run_id"],
+                    "test-placeholder-rate-limited",
+                )
+            finally:
+                conn.close()
+
+    def test_placeholder_authentication_block_is_persisted_and_keeps_queue_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                candidate = {
+                    "video_id": "abc12345678",
+                    "title": "Unavailable example",
+                    "playlist_count": 1,
+                }
+                with patch("yt_library.core.playlist_placeholder_recovery_rows", return_value=[candidate]):
+                    with conn:
+                        core.enqueue_placeholder_recovery_targets(conn, "PLexample")
+            finally:
+                conn.close()
+
+            worker = PlaceholderRecoveryWorker()
+            with (
+                patch(
+                    "yt_library.workers.archivarix_session_status",
+                    return_value=(False, "Archivarix cookie expired"),
+                ),
+                patch("yt_library.workers.recover_archivarix_video") as recover,
+            ):
+                worker._run(
+                    "test-placeholder-auth-blocked",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                )
+
+            recover.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
+                run = conn.execute(
+                    """
+                    SELECT status, processed, failed, recovery_status, message
+                    FROM placeholder_recovery_worker_runs
+                    WHERE run_id = ?
+                    """,
+                    ("test-placeholder-auth-blocked",),
+                ).fetchone()
+                self.assertEqual(
+                    tuple(run),
+                    ("blocked", 0, 1, "authentication_error", "Archivarix cookie expired"),
+                )
+            finally:
+                conn.close()
+
+    def test_reconcile_worker_runs_interrupts_placeholder_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO placeholder_recovery_worker_runs(
+                          run_id, status, started_at, message
+                        )
+                        VALUES ('orphaned-placeholder', 'running', '2026-07-14T12:00:00Z', 'Started')
+                        """
+                    )
+            finally:
+                conn.close()
+
+            core.reconcile_worker_runs(db_path)
+
+            conn = core.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT status, finished_at, message FROM placeholder_recovery_worker_runs WHERE run_id = ?",
+                    ("orphaned-placeholder",),
+                ).fetchone()
+                self.assertEqual(row["status"], "interrupted")
+                self.assertTrue(row["finished_at"])
+                self.assertIn("interrupted by server restart", row["message"])
             finally:
                 conn.close()
 

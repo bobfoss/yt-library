@@ -70,12 +70,12 @@ Long-running and rate-sensitive tasks run as in-process background workers with 
 
 - Metadata tasks fetch channel pages directly when keyed by channel and watch pages/search cards when keyed by video. Each authenticated request verifies that YouTube still accepts the configured cookie; authentication failure stops further YouTube dispatch.
 - Playlist tasks scan playlists with yt-dlp first and fall back to the web parser when needed. They record reported, exposed, and unavailable counts without replacing a fuller scan with a short result.
-- Placeholder tasks query Archivarix for deleted/private/unavailable video IDs and preserve rate-limited tasks for a later retry.
+- Placeholder tasks query Archivarix for deleted/private/unavailable video IDs, persist each recovery attempt and its run-linked logs, and preserve rate-limited tasks for a later retry.
 - History tasks support recent fetch and full verification modes, fetching YouTube history in batches and reconciling after each batch.
 
 YouTube metadata and Archivarix recovery have independent launch intervals and `max_in_flight` limits from the config file, so a slow request to one site does not stall the other site's cadence. Playlist and history tasks remain worker-specific and run through the same prioritized queue. The dispatcher checks SQLite again before each launch, so priority changes and newly queued work can affect later dispatches without rebuilding an in-memory batch.
 
-Workers should be visible and interruptible from `/admin`. Queue counts, previews, timing estimates, stop buttons, and incrementally polled logs are part of the design, not just debugging conveniences. A server restart interrupts active in-process workers, so run status is reconciled on admin status reads.
+Workers should be visible and interruptible from `/admin`. Queue counts, previews, timing estimates, stop buttons, and incrementally polled logs are part of the design, not just debugging conveniences. A server restart interrupts active in-process workers, so unfinished metadata, playlist, history, and placeholder recovery runs are marked interrupted during startup.
 
 ## UI Goals
 

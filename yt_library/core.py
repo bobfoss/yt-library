@@ -98,7 +98,7 @@ LIKED_VIDEOS_PLAYLIST_ID = "LL"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -3831,6 +3831,22 @@ def log_live_history_event(
     )
 
 
+def log_placeholder_recovery_event(
+    conn: sqlite3.Connection,
+    run_id: str,
+    level: str,
+    message: str,
+    video_id: str = "",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO placeholder_recovery_worker_log(run_id, created_at, level, video_id, message)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (run_id, utc_now(), level, video_id, message),
+    )
+
+
 def playlist_placeholder_recovery_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
@@ -4812,6 +4828,7 @@ _WORKER_LOG_TABLES = {
     "metadataLogs": "metadata_worker_log",
     "playlistScanLogs": "playlist_scan_worker_log",
     "liveHistoryLogs": "live_history_worker_log",
+    "placeholderRecoveryLogs": "placeholder_recovery_worker_log",
 }
 
 
@@ -5622,9 +5639,18 @@ def admin_status(
             LIMIT 1
             """
         ).fetchone()
+        latest_placeholder_recovery_run = conn.execute(
+            """
+            SELECT *
+            FROM placeholder_recovery_worker_runs
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
         metadata_logs: list[dict[str, Any]] = []
         playlist_logs: list[dict[str, Any]] = []
         live_history_logs: list[dict[str, Any]] = []
+        placeholder_recovery_logs: list[dict[str, Any]] = []
         if include_logs:
             metadata_logs = [
                 dict(row)
@@ -5654,6 +5680,17 @@ def admin_status(
                     """
                     SELECT *
                     FROM live_history_worker_log
+                    ORDER BY id DESC
+                    LIMIT 80
+                    """
+                )
+            ]
+            placeholder_recovery_logs = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT *
+                    FROM placeholder_recovery_worker_log
                     ORDER BY id DESC
                     LIMIT 80
                     """
@@ -5692,20 +5729,28 @@ def admin_status(
         "latestMetadataRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestPlaylistScanRun": dict(latest_playlist_run) if latest_playlist_run else None,
         "latestLiveHistoryRun": dict(latest_live_history_run) if latest_live_history_run else None,
+        "latestPlaceholderRecoveryRun": (
+            dict(latest_placeholder_recovery_run) if latest_placeholder_recovery_run else None
+        ),
         "logs": metadata_logs,
         "metadataLogs": metadata_logs,
         "playlistScanLogs": playlist_logs,
         "liveHistoryLogs": live_history_logs,
+        "placeholderRecoveryLogs": placeholder_recovery_logs,
     }
 def reconcile_worker_runs(
     db_path: Path,
     metadata_worker: "MetadataWorker | None" = None,
     playlist_worker: "PlaylistScanWorker | None" = None,
     live_history_worker: "LiveHistoryWorker | None" = None,
+    placeholder_recovery_worker: "PlaceholderRecoveryWorker | None" = None,
 ) -> None:
     metadata_running = metadata_worker.is_running() if metadata_worker else False
     playlist_running = playlist_worker.is_running() if playlist_worker else False
     live_history_running = live_history_worker.is_running() if live_history_worker else False
+    placeholder_recovery_running = (
+        placeholder_recovery_worker.is_running() if placeholder_recovery_worker else False
+    )
     now = utc_now()
     conn = connect(db_path)
     try:
@@ -5742,6 +5787,20 @@ def reconcile_worker_runs(
                 conn.execute(
                     """
                     UPDATE live_history_worker_runs
+                    SET status = 'interrupted',
+                        finished_at = ?,
+                        message = CASE
+                          WHEN message = '' THEN 'Interrupted by server restart'
+                          ELSE message || ' (interrupted by server restart)'
+                        END
+                    WHERE status = 'running'
+                    """,
+                    (now,),
+                )
+            if not placeholder_recovery_running:
+                conn.execute(
+                    """
+                    UPDATE placeholder_recovery_worker_runs
                     SET status = 'interrupted',
                         finished_at = ?,
                         message = CASE

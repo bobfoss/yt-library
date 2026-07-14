@@ -20,6 +20,7 @@ from .templates import load_template
 from .workers import (
     LIVE_HISTORY_WORKER,
     METADATA_WORKER,
+    PLACEHOLDER_RECOVERY_WORKER,
     PLAYLIST_SCAN_WORKER,
     WORKER_QUEUE_DISPATCHER,
 )
@@ -711,7 +712,13 @@ def serve(args: argparse.Namespace) -> None:
         raise SystemExit(f"Database schema migration failed: {exc}") from exc
     finally:
         conn.close()
-    reconcile_worker_runs(db_path, METADATA_WORKER, PLAYLIST_SCAN_WORKER, LIVE_HISTORY_WORKER)
+    reconcile_worker_runs(
+        db_path,
+        METADATA_WORKER,
+        PLAYLIST_SCAN_WORKER,
+        LIVE_HISTORY_WORKER,
+        PLACEHOLDER_RECOVERY_WORKER,
+    )
 
     def handler(*handler_args, **handler_kwargs):
         return LibraryHandler(

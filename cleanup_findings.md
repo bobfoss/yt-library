@@ -50,6 +50,13 @@ This review uses the current code as truth and ranks remaining cleanup by duplic
 - The main browser and standalone history page provide thin row adapters to the shared renderer.
 - Page-specific CSS remains responsible for layout, so standalone history keeps wide horizontal cards while playlist and search views keep compact grids.
 
+### Shared Worker Lifecycle
+
+- A private lifecycle base owns worker locks, background threads, stop events, running/stopping state, blocked reasons, duplicate-start protection, and standard start/stop responses.
+- Metadata, playlist, history, placeholder recovery, and queue dispatcher workers retain their task-specific fetching, persistence, logging, and completion behavior.
+- Placeholder recovery attempts now persist run IDs, lifecycle and recovery outcomes, and dedicated run-linked logs just like the other external workers.
+- Dispatcher site cadence, concurrency limits, queue priority, and per-request YouTube authentication checks are unchanged.
+
 ## Removal Gate
 
 Remove a vestigial candidate only when all are true:
@@ -61,23 +68,19 @@ Remove a vestigial candidate only when all are true:
 
 ## Ranked Remaining Cleanup
 
-### 1. Worker Lifecycle Duplication
-
-Metadata, playlist, history, recovery, and dispatcher classes repeat run status, stop handling, counters, logs, and completion/error updates. Introduce a narrow lifecycle helper while keeping fetch/parse/save behavior worker-specific. Preserve the dispatcher's independent site cadence and per-request authentication behavior.
-
-### 2. Unified Server-Side Omni Search
+### 1. Unified Server-Side Omni Search
 
 The browser still combines client-side library data with server-paged history results. Add one server-side search endpoint that ranks, deduplicates, counts, and pages playlists, channels, canonical videos, unavailable memberships, and history events.
 
-### 3. Archivarix Backoff And Retry Controls
+### 2. Archivarix Backoff And Retry Controls
 
 Archivarix 429 and quota responses stop further recovery dispatch for the current run, but the blocked state and retry path are not explicit enough in Admin. Expose the reason and retry eligibility, preserve pending tasks, and provide a deliberate retry action after credentials or quota state change. Do not automatically hammer a rate-limited endpoint.
 
-### 4. Collection Card Duplication
+### 3. Collection Card Duplication
 
 Playlist and channel cards share some framing but still have meaningfully different content. Revisit only after the video-card renderer settles.
 
-### 5. Foreign Playlist Continuation Extraction
+### 4. Foreign Playlist Continuation Extraction
 
 Foreign playlists can expose fewer rows than their reported count. Continue preserving the best nonzero scan and logging reported versus exposed counts. Investigate continuation behavior only with a concrete fixture and never synthesize unavailable rows from a count gap.
 
@@ -90,8 +93,8 @@ Foreign playlists can expose fewer rows than their reported count. Continue pres
 
 ## Suggested Order
 
-1. Extract worker lifecycle helpers.
-2. Add unified server-side search.
-3. Add explicit Archivarix backoff and retry controls.
+1. Add unified server-side search.
+2. Add explicit Archivarix backoff and retry controls.
+3. Reassess collection-card duplication after the shared video-card renderer has settled.
 4. Revisit collection cards.
 5. Investigate foreign playlist continuation extraction when a reproducible fixture is available.
