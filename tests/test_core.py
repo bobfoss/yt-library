@@ -190,6 +190,43 @@ class CoreHelperTests(unittest.TestCase):
         self.assertFalse(core.youtube_page_is_authenticated('ytcfg.set({"LOGGED_IN":false});'))
         self.assertFalse(core.youtube_page_is_authenticated("ServiceLogin"))
 
+    def test_youtube_page_diagnostics_classify_authentication_challenges(self) -> None:
+        page = """
+        ytcfg.set({
+          "LOGGED_IN": false,
+          "INNERTUBE_CLIENT_NAME": "WEB",
+          "INNERTUBE_CLIENT_VERSION": "2.20260714.00.00"
+        });
+        var ytInitialPlayerResponse = {
+          "playabilityStatus": {
+            "status": "LOGIN_REQUIRED",
+            "reason": "Sign in to confirm you're not a bot"
+          }
+        };
+        <a href="https://accounts.google.com/ServiceLogin">Sign in</a>
+        """
+        diagnostics = core.youtube_page_diagnostics(page, "watch page")
+        self.assertIn("operation=watch page", diagnostics)
+        self.assertIn("logged_in=false", diagnostics)
+        self.assertIn("service_login", diagnostics)
+        self.assertIn("bot_check", diagnostics)
+        self.assertIn("player_status=LOGIN_REQUIRED", diagnostics)
+        self.assertIn("client=WEB", diagnostics)
+
+    def test_youtube_request_error_diagnostics_sanitize_http_failure(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://www.youtube.com/watch?v=private-id",
+            429,
+            "Too Many Requests",
+            {"Retry-After": "120", "Content-Type": "text/html; charset=utf-8"},
+            None,
+        )
+        diagnostics = core.youtube_request_error_diagnostics(error, "watch metadata")
+        self.assertIn("status=429", diagnostics)
+        self.assertIn("retry_after=120", diagnostics)
+        self.assertIn("content_type=text/html", diagnostics)
+        self.assertNotIn("private-id", diagnostics)
+
     def test_history_date_from_relative_and_month_labels(self) -> None:
         today = date(2026, 7, 6)
 
@@ -1722,6 +1759,89 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_youtube_authentication_block_does_not_stop_placeholder_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            youtube_cookie_file = Path(temp_dir) / "youtube-cookies.txt"
+            youtube_cookie_file.write_text("provided", encoding="utf-8")
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="authblocked1",
+                        current_title="Authentication blocked",
+                        metadata_source="history",
+                        priority=0,
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO worker_queue(
+                          subject_key, worker_type, video_id, current_title,
+                          priority, created_at, updated_at
+                        )
+                        VALUES ('placeholder:recoverme01', 'placeholder', 'recoverme01',
+                                'Recover me', 0, ?, ?)
+                        """,
+                        (core.utc_now(), core.utc_now()),
+                    )
+                    core.enqueue_playlist_scan_item(
+                        conn,
+                        "PLyoutubeBlocked",
+                        title="YouTube blocked playlist",
+                        priority=1,
+                    )
+                    core.enqueue_history_task(conn, "recent", priority=1)
+            finally:
+                conn.close()
+
+            dispatcher = WorkerQueueDispatcher()
+            with (
+                patch(
+                    "yt_library.workers.youtube_session_status",
+                    return_value=(False, "YouTube login session is not accepted by YouTube"),
+                ),
+                patch("yt_library.workers.archivarix_session_status", return_value=(True, "ok")),
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.recover_archivarix_video",
+                    return_value=(None, "", "", "not_found", ""),
+                ),
+            ):
+                dispatcher._run(
+                    db_path,
+                    youtube_cookie_file,
+                    Path(temp_dir) / "video-thumbs",
+                    "UTC",
+                    Path(temp_dir) / "archivarix-cookies.txt",
+                    Path(temp_dir) / "archivarix-thumbs",
+                    0.0,
+                    1,
+                    0.0,
+                    1,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 1)
+                self.assertEqual(core.worker_queue_type_count(conn, "playlist"), 1)
+                self.assertEqual(core.worker_queue_type_count(conn, "history"), 1)
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 0)
+                placeholder_run = conn.execute(
+                    """
+                    SELECT status, recovery_status, message
+                    FROM placeholder_recovery_worker_runs
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    tuple(placeholder_run),
+                    ("complete", "not_found", "not found"),
+                )
+            finally:
+                conn.close()
+
     def test_no_youtube_metadata_queues_archivarix_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
@@ -1816,7 +1936,13 @@ class WorkerQueueTests(unittest.TestCase):
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
                 patch(
                     "yt_library.workers.fetch_watch_metadata",
-                    side_effect=[metadata, core.YouTubeAuthenticationError("YouTube login session is not accepted by YouTube")],
+                    side_effect=[
+                        metadata,
+                        core.YouTubeAuthenticationError(
+                            "YouTube login session is not accepted by YouTube",
+                            "operation=watch page; logged_in=false; markers=bot_check",
+                        ),
+                    ],
                 ) as fetch_metadata,
                 patch("yt_library.workers.fetch_new_channel_metadata_if_needed", return_value=({}, "", "")),
             ):
@@ -1846,6 +1972,16 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 1)
                 remaining = core.metadata_queue_rows(conn)[0]
                 self.assertEqual(remaining["video_id"], "authcheck1")
+                debug_log = conn.execute(
+                    """
+                    SELECT level, video_id, message
+                    FROM metadata_worker_log
+                    WHERE run_id = 'test-auth-expired' AND level = 'debug'
+                    """
+                ).fetchone()
+                self.assertEqual(debug_log["video_id"], "authcheck1")
+                self.assertIn("operation=watch page", debug_log["message"])
+                self.assertIn("logged_in=false", debug_log["message"])
             finally:
                 conn.close()
 
@@ -2489,11 +2625,30 @@ class WorkerQueueTests(unittest.TestCase):
                         run_id="prior-run",
                         queue_id=1,
                     )
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="youtubeStillRuns",
+                        current_title="YouTube still runs",
+                        metadata_source="history",
+                        priority=1,
+                    )
             finally:
                 conn.close()
 
             dispatcher = WorkerQueueDispatcher()
-            with patch("yt_library.workers.PlaceholderRecoveryWorker.start") as start_placeholder:
+            with (
+                patch("yt_library.workers.PlaceholderRecoveryWorker.start") as start_placeholder,
+                patch(
+                    "yt_library.workers.fetch_watch_metadata",
+                    return_value={
+                        "video_id": "youtubeStillRuns",
+                        "title": "YouTube still runs",
+                        "duration_text": "1:00",
+                        "yt_status": "OK",
+                    },
+                ),
+                patch("yt_library.workers.fetch_new_channel_metadata_if_needed", return_value=({}, "", "")),
+            ):
                 dispatcher._run(
                     db_path,
                     Path(temp_dir) / "youtube-cookies.txt",
@@ -2511,6 +2666,7 @@ class WorkerQueueTests(unittest.TestCase):
             conn = core.connect(db_path)
             try:
                 self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
+                self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 0)
                 self.assertTrue(core.external_service_block(conn, "archivarix")["blocked"])
             finally:
                 conn.close()

@@ -49,7 +49,7 @@
     .header-timezone { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: end; gap: 8px; }
     .header-timezone label { text-align: left; }
     label { color: var(--muted); display: grid; gap: 5px; font-size: 13px; }
-    input { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 8px 10px; font: inherit; width: 120px; }
+    input, select { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 8px 10px; font: inherit; width: 120px; }
     .wide-input { width: min(720px, calc(100vw - 360px)); }
     .timezone-input { width: 260px; }
     label.checkbox { display: flex; flex-direction: row; align-items: center; gap: 7px; padding-bottom: 8px; }
@@ -85,7 +85,14 @@
     .time-cell { white-space: nowrap; }
     .level-cell { white-space: nowrap; }
     .log-panel { margin-top: 16px; }
+    .log-controls { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 10px; margin-bottom: 10px; }
+    .log-controls select { width: 150px; }
     .message { overflow-wrap: anywhere; white-space: pre-line; }
+    .run-summary { display: flex; justify-content: space-between; align-items: baseline; gap: 18px; border-top: 1px solid var(--line); padding: 12px 0; }
+    .run-summary-main { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+    .run-summary-main strong { font-size: 14px; }
+    .run-summary-details { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; text-align: right; }
+    .run-id { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
     .service-block { display: flex; justify-content: space-between; align-items: center; gap: 16px; border-left: 3px solid var(--warn); padding: 10px 12px; margin: 12px 0; background: color-mix(in srgb, var(--warn) 10%, transparent); }
     .service-block[hidden] { display: none; }
     .service-block strong { display: block; margin-bottom: 3px; }
@@ -173,11 +180,15 @@
         <button id="rebuildWorkerQueue" type="button">Rebuild queue</button>
         <button id="clearWorkerQueue" type="button">Clear queue</button>
         <button id="stopWorkerQueue" type="button">Stop queue</button>
+        <button id="retryArchivarix" type="button">Retry Archivarix</button>
         <button id="refresh" type="button">Refresh status</button>
       </div>
       <div id="archivarixBlock" class="service-block" hidden>
         <div><strong>Archivarix paused</strong><div id="archivarixBlockMessage" class="message"></div></div>
-        <button id="retryArchivarix" type="button">Retry Archivarix</button>
+      </div>
+      <div class="run-summary">
+        <div class="run-summary-main"><span class="metric">Placeholder recovery</span><strong id="placeholderRunStatus">No runs</strong></div>
+        <div id="placeholderRunDetails" class="run-summary-details"></div>
       </div>
       <table>
         <colgroup>
@@ -204,6 +215,26 @@
     </section>
 
     <section class="panel log-panel">
+      <div class="log-controls">
+        <label>Log source
+          <select id="logSourceFilter">
+            <option value="all">All sources</option>
+            <option value="metadata">Metadata</option>
+            <option value="playlist">Playlist</option>
+            <option value="history">History</option>
+            <option value="placeholder">Placeholder</option>
+          </select>
+        </label>
+        <label>Log level
+          <select id="logLevelFilter">
+            <option value="all">All levels</option>
+            <option value="info">Info</option>
+            <option value="warn">Warning</option>
+            <option value="error">Error</option>
+            <option value="debug">Debug</option>
+          </select>
+        </label>
+      </div>
       <table>
         <colgroup>
           <col class="log-time-col">
@@ -235,6 +266,8 @@
       liveHistoryRows: document.getElementById('liveHistoryRows'),
       metadataCounts: document.getElementById('metadataCounts'),
       logs: document.getElementById('logs'),
+      logSourceFilter: document.getElementById('logSourceFilter'),
+      logLevelFilter: document.getElementById('logLevelFilter'),
       providedQueueTarget: document.getElementById('providedQueueTarget'),
       metadataStaleDays: document.getElementById('metadataStaleDays'),
       metadataForce: document.getElementById('metadataForce'),
@@ -248,6 +281,8 @@
       workerQueuePanel: document.getElementById('workerQueuePanel'),
       archivarixBlock: document.getElementById('archivarixBlock'),
       archivarixBlockMessage: document.getElementById('archivarixBlockMessage'),
+      placeholderRunStatus: document.getElementById('placeholderRunStatus'),
+      placeholderRunDetails: document.getElementById('placeholderRunDetails'),
       displayTimezone: document.getElementById('displayTimezone'),
     };
     fields.displayTimezone.value = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
@@ -342,14 +377,28 @@
     }
 
     function renderLogs() {
-      fields.logs.innerHTML = logState.rows.map(log => `
+      const selectedSource = fields.logSourceFilter.value || 'all';
+      const selectedLevel = fields.logLevelFilter.value || 'all';
+      const rows = logState.rows.filter(log => (
+        (selectedSource === 'all' || log.source === selectedSource)
+        && (selectedLevel === 'all' || logSeverity(log.level) === selectedLevel)
+      ));
+      fields.logs.innerHTML = rows.length ? rows.map(log => `
         <tr>
           <td class="time-cell">${fmtTime(log.created_at)}</td>
           <td class="level-cell">${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
           <td class="time-cell">${escapeHtml(log.subject_id || '')}</td>
           <td class="message">${escapeHtml(log.message)}</td>
         </tr>
-      `).join('');
+      `).join('') : '<tr><td colspan="4" class="message">No log entries match these filters.</td></tr>';
+    }
+
+    function logSeverity(level) {
+      const tokens = String(level || '').toLowerCase().split(/\s+/);
+      if (tokens.includes('error')) return 'error';
+      if (tokens.includes('warn') || tokens.includes('warning')) return 'warn';
+      if (tokens.includes('debug')) return 'debug';
+      return 'info';
     }
 
     function applyLogs(data, reset = false) {
@@ -523,6 +572,30 @@
       fields.archivarixBlockMessage.textContent = archivarixBlock.blocked
         ? `${archivarixBlock.message || 'Recovery is blocked.'}${archivarixBlock.blocked_at ? ` Blocked ${window.YTLibraryTime.format(archivarixBlock.blocked_at)}.` : ''}`
         : '';
+      const placeholderRun = data.latestPlaceholderRecoveryRun;
+      if (placeholderRun) {
+        const status = placeholderRun.status || 'unknown';
+        const recoveryStatus = placeholderRun.recovery_status || '';
+        fields.placeholderRunStatus.textContent = recoveryStatus && recoveryStatus !== status
+          ? `${status} / ${recoveryStatus}`
+          : status;
+        fields.placeholderRunStatus.className = status === 'running'
+          ? 'running'
+          : (['blocked', 'error', 'interrupted'].includes(status) ? 'warn' : '');
+        const details = [
+          placeholderRun.run_id ? `Run ${placeholderRun.run_id}` : '',
+          placeholderRun.video_id ? `Video ${placeholderRun.video_id}` : '',
+          placeholderRun.started_at ? `Started ${fmtTime(placeholderRun.started_at)}` : '',
+          placeholderRun.message || '',
+        ].filter(Boolean);
+        fields.placeholderRunDetails.textContent = details.join(' | ');
+        fields.placeholderRunDetails.classList.toggle('run-id', Boolean(placeholderRun.run_id));
+      } else {
+        fields.placeholderRunStatus.textContent = 'No runs';
+        fields.placeholderRunStatus.className = '';
+        fields.placeholderRunDetails.textContent = '';
+        fields.placeholderRunDetails.classList.remove('run-id');
+      }
 
       const channelCounts = data.channelCounts || {};
       const channelCards = [
@@ -670,6 +743,8 @@
     });
     document.getElementById('stopWorkerQueue').addEventListener('click', () => stopWorkersNow().catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus({ force: true }).catch(error => alert(error.message)));
+    fields.logSourceFilter.addEventListener('change', renderLogs);
+    fields.logLevelFilter.addEventListener('change', renderLogs);
     document.getElementById('saveTimezone').addEventListener('click', () => {
       window.YTLibraryTime.persist(fields.displayTimezone.value.trim())
         .then(() => loadStatus({ force: true }))

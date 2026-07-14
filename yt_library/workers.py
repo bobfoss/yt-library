@@ -22,6 +22,14 @@ from .config import (
 from .core import *
 
 
+def youtube_authentication_debug_message(
+    exc: YouTubeAuthenticationError,
+    cookie_file: Path,
+) -> str:
+    parts = [exc.diagnostics, youtube_cookie_diagnostics(cookie_file)]
+    return "YouTube authentication diagnostics: " + " | ".join(part for part in parts if part)
+
+
 class _ThreadWorkerLifecycle:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -225,6 +233,12 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                                 (utc_now(), authentication_error, run_id),
                             )
                             log_worker_event(conn, run_id, "error", authentication_error)
+                            log_worker_event(
+                                conn,
+                                run_id,
+                                "debug",
+                                f"YouTube cookie diagnostics: {youtube_cookie_diagnostics(cookie_file)}",
+                            )
                         return
                 opener = load_cookie_opener(cookie_file)
                 row_queue_id = int(row["queue_id"]) if "queue_id" in row.keys() else 0
@@ -290,10 +304,18 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                             (utc_now(), authentication_error, run_id),
                         )
                         log_worker_event(conn, run_id, "error", authentication_error)
+                        log_worker_event(
+                            conn,
+                            run_id,
+                            "debug",
+                            youtube_authentication_debug_message(exc, cookie_file),
+                            queued_channel_id if metadata_source == "channel" else video_id,
+                        )
                     return
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                     status = "error"
-                    error = str(exc)
+                    operation = "channel metadata" if metadata_source == "channel" else "watch metadata"
+                    error = youtube_request_error_diagnostics(exc, operation)
                 channel_metadata: dict[str, str] = {}
                 channel_status = ""
                 channel_error = ""
@@ -319,6 +341,13 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                                 (utc_now(), authentication_error, run_id),
                             )
                             log_worker_event(conn, run_id, "error", authentication_error)
+                            log_worker_event(
+                                conn,
+                                run_id,
+                                "debug",
+                                youtube_authentication_debug_message(exc, cookie_file),
+                                video_metadata_channel_id(metadata) or video_id,
+                            )
                         return
                 now = utc_now()
                 with conn:
@@ -526,20 +555,29 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 playlist_metadata: dict[str, Any] = {}
                 header_metadata: dict[str, Any] = {}
                 header_page_requires_login = False
+                youtube_debug = ""
                 try:
                     playlist_url = f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}"
                     header_page = request_text(opener, playlist_url)
                     header_page_requires_login = youtube_page_requires_login(header_page)
                     header_metadata = extract_playlist_metadata(header_page, playlist_id)
-                except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+                except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                     header_metadata = {}
+                    youtube_debug = youtube_request_error_diagnostics(exc, "playlist header")
                 header_count_available = bool(header_metadata.get("has_video_count"))
                 if not header_count_available and header_page_requires_login:
                     status = "error"
                     error = "skipping: YouTube login session is not accepted by YouTube"
+                    youtube_debug = (
+                        youtube_page_diagnostics(header_page, "playlist header")
+                        + " | "
+                        + youtube_cookie_diagnostics(cookie_file)
+                    )
                 elif not header_count_available:
                     status = "error"
                     error = "skipping: YouTube playlist header count unavailable"
+                    if youtube_debug:
+                        error += "; request diagnostics logged at debug level"
                 else:
                     try:
                         videos, playlist_metadata = scan_playlist_ytdlp(playlist_id, cookie_file)
@@ -590,10 +628,11 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 )
                 previous_scan_count = int(row["video_count"] or 0)
                 if status == "ok" and (ytdlp_error or playlist_scan_is_incomplete(ytdlp_count, expected_count)):
-                    session_valid, _session_message = youtube_session_status(cookie_file, verify_remote=True)
+                    session_valid, session_message = youtube_session_status(cookie_file, verify_remote=True)
                     if not session_valid:
                         status = "error"
-                        error = "skipping: YouTube login session expired"
+                        error = f"skipping: {session_message}"
+                        youtube_debug = youtube_cookie_diagnostics(cookie_file)
                     else:
                         web_attempted = True
                         try:
@@ -686,6 +725,14 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     if status == "error":
                         failed += 1
                         log_playlist_scan_event(conn, run_id, "error", f"{title}: {error}", playlist_id)
+                        if youtube_debug:
+                            log_playlist_scan_event(
+                                conn,
+                                run_id,
+                                "debug",
+                                f"{title}: YouTube diagnostics: {youtube_debug}",
+                                playlist_id,
+                            )
                     else:
                         found += 1
                         reported_note = ""
@@ -916,6 +963,18 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                 )
                 log_live_history_event(conn, run_id, "info" if status == "complete" else "warn", final_message, last_video_id)
         except Exception as exc:
+            if isinstance(exc, YouTubeAuthenticationError):
+                error_message = str(exc)
+                debug_message = youtube_authentication_debug_message(exc, cookie_file)
+            elif isinstance(
+                exc,
+                (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError),
+            ):
+                error_message = youtube_request_error_diagnostics(exc, "history fetch")
+                debug_message = f"YouTube cookie diagnostics: {youtube_cookie_diagnostics(cookie_file)}"
+            else:
+                error_message = str(exc)
+                debug_message = ""
             with conn:
                 conn.execute(
                     """
@@ -923,9 +982,11 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                     SET status = 'error', finished_at = ?, message = ?
                     WHERE run_id = ?
                     """,
-                    (utc_now(), str(exc), run_id),
+                    (utc_now(), error_message, run_id),
                 )
-                log_live_history_event(conn, run_id, "error", f"History fetch crashed: {exc}")
+                log_live_history_event(conn, run_id, "error", f"History fetch crashed: {error_message}")
+                if debug_message:
+                    log_live_history_event(conn, run_id, "debug", debug_message)
         finally:
             conn.close()
 
@@ -1365,6 +1426,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         finally:
             conn.close()
         archivarix_blocked = bool(block["blocked"])
+        youtube_blocked = False
         self._placeholder_block_reason = str(block["message"])
         try:
             while not self._stop.is_set():
@@ -1399,15 +1461,24 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         self._placeholder_workers.pop(queue_id, None)
 
                 if authentication_blocked:
-                    self._stop.set()
-                    break
+                    youtube_blocked = True
+                    with self._lock:
+                        active_metadata_workers = [
+                            worker for worker, _run_id in self._metadata_workers.values()
+                        ]
+                    for worker in active_metadata_workers:
+                        worker.stop()
 
                 now = time.monotonic()
                 with self._lock:
                     metadata_queue_ids = set(self._metadata_workers)
                     placeholder_queue_ids = set(self._placeholder_workers)
 
-                if len(metadata_queue_ids) < youtube_max_in_flight and now >= next_youtube_launch:
+                if (
+                    not youtube_blocked
+                    and len(metadata_queue_ids) < youtube_max_in_flight
+                    and now >= next_youtube_launch
+                ):
                     row = self._next_row(db_path, ("metadata",), metadata_queue_ids)
                     if row:
                         queue_id = int(row.get("queue_id") or 0)
@@ -1475,10 +1546,14 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     self._stop.wait(0.05)
                     continue
 
-                row = self._next_row(
-                    db_path,
-                    ("metadata", "playlist", "history") if archivarix_blocked else (),
-                )
+                eligible_worker_types: list[str] = []
+                if not youtube_blocked:
+                    eligible_worker_types.extend(("metadata", "playlist", "history"))
+                if not archivarix_blocked:
+                    eligible_worker_types.append("placeholder")
+                if not eligible_worker_types:
+                    return
+                row = self._next_row(db_path, tuple(eligible_worker_types))
                 if not row:
                     return
                 worker_type = row.get("worker_type") or ""

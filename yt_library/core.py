@@ -772,6 +772,47 @@ def archivarix_session_status(cookie_file: Path, now: float | None = None) -> tu
     return True, ""
 
 
+_YOUTUBE_AUTH_COOKIE_NAMES = {
+    "SID",
+    "HSID",
+    "SSID",
+    "APISID",
+    "SAPISID",
+    "LOGIN_INFO",
+    "__Secure-1PSID",
+    "__Secure-3PSID",
+}
+
+
+def youtube_auth_cookies(cookie_file: Path) -> list[http.cookiejar.Cookie]:
+    return [
+        cookie
+        for cookie in load_cookie_jar(cookie_file)
+        if cookie.name in _YOUTUBE_AUTH_COOKIE_NAMES
+        and cookie.domain.lstrip(".").endswith(("youtube.com", "google.com"))
+    ]
+
+
+def youtube_cookie_diagnostics(cookie_file: Path, now: float | None = None) -> str:
+    now = time.time() if now is None else now
+    try:
+        sessions = youtube_auth_cookies(cookie_file)
+    except (OSError, http.cookiejar.LoadError) as exc:
+        return f"cookie_file=unreadable; error={type(exc).__name__}"
+    unexpired = [cookie for cookie in sessions if cookie.expires is None or cookie.expires > now]
+    session_cookies = sum(cookie.expires is None for cookie in sessions)
+    expirations = [int(cookie.expires) for cookie in unexpired if cookie.expires is not None]
+    earliest_expiry = (
+        datetime.fromtimestamp(min(expirations), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if expirations
+        else "none"
+    )
+    return (
+        f"auth_cookies={len(sessions)}; unexpired={len(unexpired)}; "
+        f"session_cookies={session_cookies}; earliest_expiry={earliest_expiry}"
+    )
+
+
 def youtube_session_status(
     cookie_file: Path,
     now: float | None = None,
@@ -783,20 +824,10 @@ def youtube_session_status(
         jar = load_cookie_jar(cookie_file)
     except (OSError, http.cookiejar.LoadError):
         return False, "YouTube cookie file could not be read"
-    auth_names = {
-        "SID",
-        "HSID",
-        "SSID",
-        "APISID",
-        "SAPISID",
-        "LOGIN_INFO",
-        "__Secure-1PSID",
-        "__Secure-3PSID",
-    }
     sessions = [
         cookie
         for cookie in jar
-        if cookie.name in auth_names
+        if cookie.name in _YOUTUBE_AUTH_COOKIE_NAMES
         and cookie.domain.lstrip(".").endswith(("youtube.com", "google.com"))
     ]
     if not sessions:
@@ -810,9 +841,12 @@ def youtube_session_status(
                 "https://www.youtube.com/feed/history",
             )
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
-            return False, f"YouTube login session could not be verified: {exc}"
+            return False, youtube_request_error_diagnostics(exc, "history authentication check")
         if "Watch history isn't viewable when signed out" in page:
-            return False, "YouTube login session is not accepted by YouTube"
+            return False, (
+                "YouTube login session is not accepted by YouTube; "
+                + youtube_page_diagnostics(page, "history authentication check")
+            )
     return True, ""
 
 
@@ -827,11 +861,81 @@ def youtube_page_requires_login(html_text: str) -> bool:
 
 
 class YouTubeAuthenticationError(RuntimeError):
-    pass
+    def __init__(self, message: str, diagnostics: str = "") -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 def youtube_page_is_authenticated(html_text: str) -> bool:
     return bool(re.search(r'"LOGGED_IN"\s*:\s*true', html_text or ""))
+
+
+def youtube_page_diagnostics(html_text: str, operation: str) -> str:
+    page = html_text or ""
+    logged_in_match = re.search(r'"LOGGED_IN"\s*:\s*(true|false)', page)
+    logged_in = logged_in_match.group(1) if logged_in_match else "missing"
+    marker_patterns = (
+        ("service_login", r"ServiceLogin"),
+        ("signed_out_history", r"Watch history isn't viewable when signed out"),
+        ("consent", r"consent\.youtube\.com|consent\.google\.com"),
+        ("bot_check", r"confirm you(?:'|’)re not a bot|protect our community"),
+        ("unusual_traffic", r"unusual traffic|/sorry/"),
+        ("captcha", r"recaptcha|g-recaptcha"),
+    )
+    markers = [name for name, pattern in marker_patterns if re.search(pattern, page, re.IGNORECASE)]
+    player = extract_json_assignment(page, "ytInitialPlayerResponse")
+    playability = player.get("playabilityStatus", {}) if isinstance(player, dict) else {}
+    player_status = str(playability.get("status") or "").strip()
+    player_reason = re.sub(r"\s+", " ", text_from_runs(playability.get("reason")).strip())
+    player_reason = re.sub(r"https?://\S+", "<url>", player_reason)[:160]
+    client_name_match = re.search(r'"INNERTUBE_CLIENT_NAME"\s*:\s*"([^"\\]+)"', page)
+    client_version_match = re.search(r'"INNERTUBE_CLIENT_VERSION"\s*:\s*"([^"\\]+)"', page)
+    parts = [
+        f"operation={operation}",
+        f"response_chars={len(page)}",
+        f"logged_in={logged_in}",
+        f"markers={','.join(markers) if markers else 'none'}",
+        f"player_status={player_status or 'missing'}",
+    ]
+    if player_reason:
+        parts.append(f"player_reason={player_reason}")
+    if client_name_match:
+        parts.append(f"client={client_name_match.group(1)}")
+    if client_version_match:
+        parts.append(f"client_version={client_version_match.group(1)}")
+    return "; ".join(parts)
+
+
+def youtube_authentication_error(html_text: str, operation: str) -> YouTubeAuthenticationError:
+    return YouTubeAuthenticationError(
+        "YouTube login session is not accepted by YouTube",
+        youtube_page_diagnostics(html_text, operation),
+    )
+
+
+def youtube_request_error_diagnostics(exc: BaseException, operation: str) -> str:
+    parts = [f"YouTube request failed; operation={operation}", f"error={type(exc).__name__}"]
+    if isinstance(exc, urllib.error.HTTPError):
+        parts.append(f"status={exc.code}")
+        if exc.reason:
+            reason = re.sub(r"https?://\S+", "<url>", str(exc.reason))
+            parts.append(f"reason={reason[:120]}")
+        retry_after = exc.headers.get("Retry-After", "") if exc.headers else ""
+        content_type = exc.headers.get("Content-Type", "") if exc.headers else ""
+        if retry_after:
+            parts.append(f"retry_after={retry_after[:80]}")
+        if content_type:
+            parts.append(f"content_type={content_type.split(';', 1)[0][:80]}")
+    elif isinstance(exc, urllib.error.URLError):
+        reason = re.sub(r"https?://\S+", "<url>", str(exc.reason))
+        parts.append(f"reason={reason[:160]}")
+    elif isinstance(exc, json.JSONDecodeError):
+        parts.append(f"json_line={exc.lineno}")
+        parts.append(f"json_column={exc.colno}")
+    elif str(exc):
+        message = re.sub(r"https?://\S+", "<url>", str(exc))
+        parts.append(f"message={message[:160]}")
+    return "; ".join(parts)
 
 
 def load_cookie_opener(cookie_file: Path) -> urllib.request.OpenerDirector:
@@ -2662,7 +2766,7 @@ def fetch_channel_metadata(
     channel_url = youtube_channel_url(channel_id)
     page = request_text(opener, channel_url)
     if require_authenticated and not youtube_page_is_authenticated(page):
-        raise YouTubeAuthenticationError("YouTube login session is not accepted by YouTube")
+        raise youtube_authentication_error(page, "channel page")
     metadata = extract_channel_page_metadata(page, channel_id)
     if not (metadata.get("channel") and metadata.get("channel_thumbnail_url")):
         search_terms = [
@@ -2679,7 +2783,7 @@ def fetch_channel_metadata(
             search_url = "https://www.youtube.com/results?" + urllib.parse.urlencode({"search_query": term})
             search_page = request_text(opener, search_url)
             if require_authenticated and not youtube_page_is_authenticated(search_page):
-                raise YouTubeAuthenticationError("YouTube login session is not accepted by YouTube")
+                raise youtube_authentication_error(search_page, "channel search")
             search_metadata = extract_channel_search_metadata(search_page, channel_id, fallback_query or term)
             metadata = merge_channel_metadata(metadata, search_metadata)
             if metadata.get("channel") and metadata.get("channel_thumbnail_url"):
@@ -2785,7 +2889,7 @@ def fetch_watch_metadata(
     watch_url = f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}"
     page = request_text(opener, watch_url)
     if require_authenticated and not youtube_page_is_authenticated(page):
-        raise YouTubeAuthenticationError("YouTube login session is not accepted by YouTube")
+        raise youtube_authentication_error(page, "watch page")
     metadata = extract_watch_metadata(page, video_id)
     if not bounded_int(metadata.get("watch_progress_percent")) and not int(metadata.get("watch_resume_seconds") or 0):
         try:
