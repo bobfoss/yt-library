@@ -66,6 +66,12 @@ This review uses the current code as truth and ranks remaining cleanup by duplic
 - Admin shows the block reason and local time and provides a deliberate retry action after credentials or quota state changes.
 - Service restarts retain the block, and Archivarix does not retry automatically without an explicit retry request.
 
+### Shared Collection Card Rendering
+
+- `collection-card.js` owns the common playlist/channel card shell, media region, result-kind label, title/action row, and body container.
+- Playlist and channel adapters retain their distinct metadata, visibility, status, owner/subscription, description, and source-link content.
+- The shared builder preserves linked playlist thumbnails, playlist placeholders, and the existing channel thumbnail behavior.
+
 ## Removal Gate
 
 Remove a vestigial candidate only when all are true:
@@ -77,11 +83,7 @@ Remove a vestigial candidate only when all are true:
 
 ## Ranked Remaining Cleanup
 
-### 1. Collection Card Duplication
-
-Playlist and channel cards share some framing but still have meaningfully different content. Revisit only after the video-card renderer settles.
-
-### 2. Foreign Playlist Continuation Extraction
+### 1. Foreign Playlist Continuation Extraction
 
 Foreign playlists can expose fewer rows than their reported count. Continue preserving the best nonzero scan and logging reported versus exposed counts. Investigate continuation behavior only with a concrete fixture and never synthesize unavailable rows from a count gap.
 
@@ -94,5 +96,4 @@ Foreign playlists can expose fewer rows than their reported count. Continue pres
 
 ## Suggested Order
 
-1. Reassess collection-card duplication after the shared video-card renderer has settled.
-2. Investigate foreign playlist continuation extraction when a reproducible fixture is available.
+1. Investigate foreign playlist continuation extraction when a reproducible fixture is available.

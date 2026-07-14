@@ -241,6 +241,7 @@
   </div>
   <script>
     const VideoCard = window.YTLibraryVideoCard;
+    const CollectionCard = window.YTLibraryCollectionCard;
     const badgeRowsHtml = VideoCard.badgeRowsHtml;
     const creatorHtml = VideoCard.creatorHtml;
     const detailRowHtml = VideoCard.detailRowHtml;
@@ -1938,37 +1939,17 @@
     }
 
     function cardFor(playlist, options = {}) {
-      const article = document.createElement('article');
-      article.className = 'card';
       const localHref = localPlaylistHref(playlist.playlist_id);
       const playlistCount = playlistVideoCountLabel(playlist);
       const owner = playlistOwnerHtml(playlist);
-      const thumbLink = document.createElement('a');
-      thumbLink.className = 'thumb-link';
-      thumbLink.href = localHref;
-      if (playlist.thumbnail_path) {
-        const img = document.createElement('img');
-        img.className = 'thumb';
-        img.loading = 'lazy';
-        img.alt = '';
-        img.src = `/${playlist.thumbnail_path}`;
-        thumbLink.append(img);
-      } else {
-        const placeholder = document.createElement('div');
-        placeholder.className = 'thumb';
-        placeholder.setAttribute('aria-hidden', 'true');
-        thumbLink.append(placeholder);
-      }
-      const body = document.createElement('div');
-      body.className = 'body';
-      body.innerHTML = `
-        ${options.resultKind ? `<div class="result-kind">${escapeHtml(options.resultKind)}</div>` : ''}
-        <div class="title-row">
-          <a class="playlist-title" href="${localHref}">${escapeHtml(playlist.title)}</a>
-          <a class="external-link" href="${playlist.url}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(playlist.title)} on YouTube">
-            ${externalLinkSvg()}
-          </a>
-        </div>
+      return CollectionCard.create({
+        resultKind: options.resultKind,
+        thumbnailPath: playlist.thumbnail_path,
+        thumbnailHref: localHref,
+        placeholderThumbnail: true,
+        titleHtml: `<a class="playlist-title" href="${localHref}">${escapeHtml(playlist.title)}</a>`,
+        actionsHtml: `<a class="external-link" href="${escapeHtml(playlist.url)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(playlist.title)} on YouTube">${externalLinkSvg()}</a>`,
+        bodyHtml: `
         <div class="details">
           ${playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : ''}
           ${playlist.unavailable_count ? `<span class="badge">${playlist.unavailable_count} unavailable</span>` : ''}
@@ -1979,9 +1960,8 @@
         <div class="details">
           ${playlist.playlist_id ? `<span>${escapeHtml(playlist.playlist_id)}</span>` : ''}
         </div>
-      `;
-      article.append(thumbLink, body);
-      return article;
+        `,
+      });
     }
 
     function playlistVideoCountLabel(playlist) {
@@ -2112,18 +2092,6 @@
     }
 
     function channelCardFor(channel, options = {}) {
-      const article = document.createElement('article');
-      article.className = 'card';
-      if (channel.thumbnail_path) {
-        const img = document.createElement('img');
-        img.className = 'thumb';
-        img.loading = 'lazy';
-        img.alt = '';
-        img.src = `/${channel.thumbnail_path}`;
-        article.append(img);
-      }
-      const body = document.createElement('div');
-      body.className = 'body';
       const youtubeUrl = channel.url || (channel.channel_id ? `https://www.youtube.com/channel/${encodeURIComponent(channel.channel_id)}` : '');
       const archivarixUrl = channel.channel_id ? `https://tube.archivarix.net/?q=${encodeURIComponent(channel.channel_id)}` : '';
       const status = String(channel.status || '').toLowerCase();
@@ -2134,12 +2102,12 @@
         titleText,
         channel.channel_id ? localChannelHref(channel.channel_id) : ''
       );
-      body.innerHTML = `
-        ${options.resultKind ? `<div class="result-kind">${escapeHtml(options.resultKind)}</div>` : ''}
-        <div class="title-row">
-          <div class="playlist-title">${titleHtml || escapeHtml(titleText)}</div>
-          ${youtubeUrl ? `<a class="external-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
-        </div>
+      return CollectionCard.create({
+        resultKind: options.resultKind,
+        thumbnailPath: channel.thumbnail_path,
+        titleHtml: `<div class="playlist-title">${titleHtml || escapeHtml(titleText)}</div>`,
+        actionsHtml: youtubeUrl ? `<a class="external-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : '',
+        bodyHtml: `
         <div class="details">
           <span>${subscribedLabel}</span>
           ${status ? `<span class="badge">${escapeHtml(status)}</span>` : ''}
@@ -2153,9 +2121,8 @@
           ${youtubeUrl ? `<a class="playlist-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">YouTube</a>` : ''}
           ${archivarixUrl ? `<a class="playlist-link" href="${escapeHtml(archivarixUrl)}" target="_blank" rel="noreferrer">Archivarix</a>` : ''}
         </div>
-      `;
-      article.append(body);
-      return article;
+        `,
+      });
     }
 
     function externalLinkSvg() {
