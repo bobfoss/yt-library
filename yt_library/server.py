@@ -38,7 +38,6 @@ from .workers import (
 
 
 INDEX_HTML = load_template("index.html")
-HISTORY_HTML = load_template("history.html")
 ADMIN_HTML = load_template("admin.html")
 TIMEZONE_JS = load_template("timezone.js")
 VIDEO_CARD_JS = load_template("video-card.js")
@@ -114,13 +113,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         if parsed.path == "/history":
-            body = self.render_page(HISTORY_HTML)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
+            self.send_response(302)
+            self.send_header("Location", "/#view=history")
+            self.send_header("Content-Length", "0")
             self.end_headers()
-            self.wfile.write(body)
             return
         if parsed.path == "/api/settings":
             conn = connect(self.db_path)

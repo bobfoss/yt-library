@@ -81,7 +81,7 @@ lookups therefore do not delay the YouTube launch cadence.
 Open:
 
 - `http://127.0.0.1:8765/` for the library browser.
-- `http://127.0.0.1:8765/history` for watch history search.
+- `http://127.0.0.1:8765/#view=history` for watch history.
 - `http://127.0.0.1:8765/admin` for worker controls and logs.
 
 ## Useful Commands

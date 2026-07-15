@@ -10,7 +10,7 @@ This repository is a Python web app for browsing, enriching, and reconciling a p
 - `yt_library/workers.py` contains background worker orchestration.
 - `yt_library/queries.py` contains paginated browser list/detail read models, unified omni-search, and history search.
 - `yt_library/schema.sql` is the SQLite schema, loaded by `yt_library/schema.py`.
-- `yt_library/templates/` contains the browser, history, and admin HTML.
+- `yt_library/templates/` contains the main browser and admin HTML.
 - `tests/` contains the standard-library `unittest` suite for helpers, schema bootstrap, and read models.
 - `requirements.txt` lists Python dependencies, including `yt-dlp`.
 - `yt_library.sqlite3`, cookie files, thumbnail folders, and Takeout zip exports are local runtime data and should not be committed.

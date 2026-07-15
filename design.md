@@ -20,12 +20,12 @@ The app is intentionally compact but no longer single-file. `yt_library_manager.
 - `yt_library/workers.py` owns in-process worker orchestration.
 - `yt_library/queries.py` owns read models for browser and history views.
 - `yt_library/schema.sql` is the canonical SQLite schema for fresh local databases.
-- `yt_library/templates/` contains the browser, history, and admin HTML plus shared browser-side modules for timezone and video-card rendering.
+- `yt_library/templates/` contains the browser and admin HTML plus shared browser-side modules for timezone and card rendering.
 
 Primary surfaces:
 
-- `/`: playlist library browser with local groups, playlist pages, liked and unavailable-video views, omni-search, history heatmaps, thumbnails, channel avatars, and watch-progress bars.
-- `/history`: single-column watch history search, sorted by descending watch date, with pagination and metadata-enhanced cards.
+- `/`: playlist library browser with local groups, playlist pages, liked and unavailable-video views, omni-search, the paginated History view and heatmaps, thumbnails, channel avatars, and watch-progress bars.
+- `/history`: compatibility redirect to the main browser's History view.
 - `/admin`: status dashboard and worker control plane for metadata, playlist scans, placeholder recovery, and history.
 
 Omni-search uses `/api/search` as its single read model. The server applies title/description and source filters, folds playlist and history evidence into one canonical video result, includes unresolved unavailable memberships, globally sorts and counts videos/channels/playlists, and only then returns the requested page. The browser does not merge a separate history result set.
