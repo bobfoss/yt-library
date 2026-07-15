@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .config import configured_display_timezone, effective_display_timezone, ensure_config_file, save_config
+from .config import configured_display_timezone, effective_display_timezone, ensure_config_file, ensure_directory, save_config
 from .core import *
 from .queries import (
     channel_detail_data,
@@ -668,6 +668,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(WORKER_QUEUE_DISPATCHER.stop())
             return
         if parsed.path == "/api/admin/history/import-takeout":
+            try:
+                ensure_directory(self.takeout_dir)
+            except OSError as exc:
+                self.send_json({"error": f"Could not create Takeout directory: {exc}"}, status=500)
+                return
             run_id = uuid.uuid4().hex
             started_at = utc_now()
             conn = connect(self.db_path)

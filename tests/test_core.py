@@ -22,6 +22,8 @@ from yt_library.config import (
     configured_youtube_max_in_flight,
     configured_youtube_request_interval,
     effective_display_timezone,
+    ensure_config_file,
+    ensure_directory,
     load_config,
 )
 from yt_library.workers import MetadataWorker, PlaceholderRecoveryWorker, PlaylistScanWorker, WorkerQueueDispatcher
@@ -1710,6 +1712,7 @@ class ConfigTests(unittest.TestCase):
 
             self.assertTrue(config_path.exists())
             self.assertTrue(db_path.exists())
+            self.assertTrue((Path(temp_dir) / "takeout").is_dir())
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["display_timezone"], "")
             self.assertEqual(payload["host"], "127.0.0.1")
@@ -1720,6 +1723,27 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["archivarix_max_in_flight"], 1)
             self.assertNotIn("cookies", payload)
             self.assertNotIn("pockettube_export", payload)
+
+    def test_new_config_creates_custom_takeout_directory_relative_to_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "settings" / "yt_library.config.json"
+            config_path.parent.mkdir()
+            config = load_config(config_path)
+            config["takeout_dir"] = "imports/takeout"
+
+            ensure_config_file(config)
+
+            self.assertTrue(config_path.exists())
+            self.assertTrue((config_path.parent / "imports" / "takeout").is_dir())
+
+    def test_ensure_directory_recreates_missing_takeout_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            takeout_dir = Path(temp_dir) / "nested" / "takeout"
+
+            created = ensure_directory(takeout_dir)
+
+            self.assertEqual(created, takeout_dir)
+            self.assertTrue(takeout_dir.is_dir())
 
     def test_cli_defaults_to_serve_command(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

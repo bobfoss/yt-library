@@ -100,6 +100,7 @@ def ensure_config_file(config: dict[str, Any]) -> Path:
         return path
     payload = {key: config[key] for key in DEFAULT_CONFIG}
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    ensure_directory(config_path(config, "takeout_dir"))
     return path
 
 
@@ -116,6 +117,12 @@ def config_path(config: dict[str, Any], key: str) -> Path:
         return value
     base = Path(str(config.get("_config_path") or DEFAULT_CONFIG_PATH)).resolve().parent
     return base / value
+
+
+def ensure_directory(path: Path | str) -> Path:
+    directory = Path(path)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
 
 
 def config_int(config: dict[str, Any], key: str) -> int:
