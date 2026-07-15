@@ -22,7 +22,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "host": "127.0.0.1",
     "port": 8765,
     "display_timezone": "",
-    "youtube_request_interval_seconds": 0.5,
+    "youtube_request_interval_seconds": 5.0,
     "youtube_max_in_flight": 10,
     "archivarix_request_interval_seconds": 3.0,
     "archivarix_max_in_flight": 1,

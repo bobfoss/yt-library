@@ -1675,7 +1675,7 @@ class ConfigTests(unittest.TestCase):
                 (config_path.parent / "data" / "library.sqlite3").resolve(),
             )
             self.assertEqual(config["display_timezone"], "America/Los_Angeles")
-            self.assertEqual(configured_youtube_request_interval(config), 0.5)
+            self.assertEqual(configured_youtube_request_interval(config), 5.0)
             self.assertEqual(configured_youtube_max_in_flight(config), 10)
             self.assertEqual(configured_archivarix_request_interval(config), 3.0)
             self.assertEqual(configured_archivarix_max_in_flight(config), 1)
@@ -1718,7 +1718,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["host"], "127.0.0.1")
             self.assertEqual(payload["youtube_cookies"], "yt_cookies.txt")
             self.assertEqual(payload["archivarix_cookies"], "archivarix_cookies.txt")
-            self.assertEqual(payload["youtube_request_interval_seconds"], 0.5)
+            self.assertEqual(payload["youtube_request_interval_seconds"], 5.0)
             self.assertEqual(payload["youtube_max_in_flight"], 10)
             self.assertEqual(payload["archivarix_request_interval_seconds"], 3.0)
             self.assertEqual(payload["archivarix_max_in_flight"], 1)
