@@ -42,6 +42,7 @@ ADMIN_HTML = load_template("admin.html")
 TIMEZONE_JS = load_template("timezone.js")
 VIDEO_CARD_JS = load_template("video-card.js")
 COLLECTION_CARD_JS = load_template("collection-card.js")
+FAVICON_SVG = load_template("favicon.svg")
 
 
 class LibraryHandler(http.server.SimpleHTTPRequestHandler):
@@ -67,6 +68,15 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/favicon.svg":
+            body = FAVICON_SVG.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path == "/timezone.js":
             body = TIMEZONE_JS.encode("utf-8")
             self.send_response(200)
