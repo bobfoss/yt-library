@@ -34,6 +34,7 @@
     body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); }
     main { width: 100%; margin: 0 auto; padding: 24px; }
     header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .header-title { display: flex; align-items: baseline; gap: 12px; }
     h1 { font-size: 28px; margin: 0; }
     h2 { font-size: 20px; margin: 0; }
     a { color: var(--accent); text-decoration: none; }
@@ -109,7 +110,10 @@
 <body>
   <main>
     <header>
-      <h1>YT Library Admin</h1>
+      <div class="header-title">
+        <h1>YT Library Admin</h1>
+        <a href="/">Main</a>
+      </div>
       <div class="header-timezone">
         <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>
         <button id="saveTimezone" class="primary" type="button">Save</button>
