@@ -13,8 +13,8 @@ DEFAULT_CONFIG_PATH = ROOT / "yt_library.config.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "database": "yt_library.sqlite3",
-    "youtube_cookies": "YT cookies.txt",
-    "archivarix_cookies": "archivarix.net cookies.txt",
+    "youtube_cookies": "yt_cookies.txt",
+    "archivarix_cookies": "archivarix_cookies.txt",
     "thumbnail_dir": "thumbs",
     "archivarix_thumbnail_dir": "archivarix_thumbs",
     "video_thumbnail_dir": "video_thumbs",

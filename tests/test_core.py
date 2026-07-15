@@ -1716,7 +1716,8 @@ class ConfigTests(unittest.TestCase):
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["display_timezone"], "")
             self.assertEqual(payload["host"], "127.0.0.1")
-            self.assertEqual(payload["youtube_cookies"], "YT cookies.txt")
+            self.assertEqual(payload["youtube_cookies"], "yt_cookies.txt")
+            self.assertEqual(payload["archivarix_cookies"], "archivarix_cookies.txt")
             self.assertEqual(payload["youtube_request_interval_seconds"], 0.5)
             self.assertEqual(payload["youtube_max_in_flight"], 10)
             self.assertEqual(payload["archivarix_request_interval_seconds"], 3.0)
@@ -1755,7 +1756,7 @@ class ConfigTests(unittest.TestCase):
             args = serve.call_args.args[0]
             self.assertEqual(args.command, "serve")
             self.assertEqual(Path(args.db).resolve(), (config_path.parent / "yt_library.sqlite3").resolve())
-            self.assertEqual(Path(args.cookies).resolve(), (config_path.parent / "YT cookies.txt").resolve())
+            self.assertEqual(Path(args.cookies).resolve(), (config_path.parent / "yt_cookies.txt").resolve())
             self.assertEqual(args.host, "127.0.0.1")
 
 

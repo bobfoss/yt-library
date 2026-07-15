@@ -56,7 +56,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 $code | & "C:\Users\michael.keenan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -B -
 ```
 
-When using `Start-Process`, pass a single quoted argument string or otherwise verify paths with spaces remain intact; cookie files such as `"YT cookies.txt"` must not be split into separate arguments.
+When using `Start-Process`, pass a single quoted argument string or otherwise verify that any paths containing spaces remain intact and are not split into separate arguments.
 
 SQLite can be held open by long-running ad hoc probes. If schema initialization or imports fail with `database is locked`, inspect local `python.exe`/`pwsh.exe` processes for stale diagnostic scripts before changing application code. Stop only the stale probe, not the active server, unless a server restart is needed.
 

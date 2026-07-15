@@ -35,8 +35,12 @@
     aside { border-right: 1px solid var(--line); background: var(--panel); padding: 18px 14px; position: sticky; top: 0; height: 100vh; overflow: auto; }
     main { min-width: 0; min-height: 0; padding: 24px; display: flex; flex-direction: column; }
     h1 { font-size: 20px; margin: 0 0 14px; }
+    .sidebar-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .sidebar-header h1 { margin: 0; }
     .home-title { color: var(--ink); text-decoration: none; display: inline-block; }
     .home-title:hover { color: var(--ink); text-decoration: none; }
+    .admin-link { color: var(--accent); font-size: 13px; text-decoration: none; }
+    .admin-link:hover { text-decoration: underline; }
     .search { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 10px 12px; font: inherit; margin-bottom: 14px; }
     .filters { border-bottom: 1px solid var(--line); padding: 0 0 10px; margin-bottom: 14px; display: grid; gap: 7px; }
     .filter-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
@@ -202,7 +206,10 @@
 <body>
   <div class="app">
     <aside>
-      <h1><a class="home-title" href="/">YT Library</a></h1>
+      <div class="sidebar-header">
+        <h1><a class="home-title" href="/">YT Library</a></h1>
+        <a class="admin-link" href="/admin">Admin</a>
+      </div>
       <button id="search-nav" class="group search-nav" type="button" data-key="__search__"><span>Search</span><span class="count"></span></button>
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
       <div class="filters" aria-label="Search filters">
