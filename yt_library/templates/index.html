@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YT Library</title>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon.svg?v=ytl" type="image/svg+xml">
   <style>
     :root {
       color-scheme: light dark;
@@ -36,10 +36,11 @@
     aside { border-right: 1px solid var(--line); background: var(--panel); padding: 18px 14px; position: sticky; top: 0; height: 100vh; overflow: auto; }
     main { min-width: 0; min-height: 0; padding: 24px; display: flex; flex-direction: column; }
     h1 { font-size: 20px; margin: 0 0 14px; }
-    .sidebar-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .sidebar-header h1 { margin: 0; }
-    .home-title { color: var(--ink); text-decoration: none; display: inline-block; }
+    .home-title { color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: 8px; }
     .home-title:hover { color: var(--ink); text-decoration: none; }
+    .library-mark { width: 28px; height: 28px; flex: none; }
     .admin-link { color: var(--accent); font-size: 13px; text-decoration: none; }
     .admin-link:hover { text-decoration: underline; }
     .search { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 10px 12px; font: inherit; margin-bottom: 14px; }
@@ -208,7 +209,7 @@
   <div class="app">
     <aside>
       <div class="sidebar-header">
-        <h1><a class="home-title" href="/">YT Library</a></h1>
+        <h1><a class="home-title" href="/"><img class="library-mark" src="/favicon.svg?v=ytl" alt="">YT Library</a></h1>
         <a class="admin-link" href="/admin">Admin</a>
       </div>
       <button id="search-nav" class="group search-nav" type="button" data-key="__search__"><span>Search</span><span class="count"></span></button>
