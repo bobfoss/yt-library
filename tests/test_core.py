@@ -35,6 +35,24 @@ def migrated_connection(db_path: Path):
 
 
 class CoreHelperTests(unittest.TestCase):
+    def test_local_asset_path_maps_external_thumbnail_storage_to_web_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            app_root = temp_root / "release"
+            external_video_thumbs = temp_root / "storage" / "video_thumbs"
+            thumbnail = external_video_thumbs / "video-id.jpg"
+            thumbnail.parent.mkdir(parents=True)
+            thumbnail.write_bytes(b"thumbnail")
+
+            with (
+                patch.object(core, "ROOT", app_root),
+                patch.object(core, "DEFAULT_VIDEO_THUMB_DIR", external_video_thumbs),
+            ):
+                self.assertEqual(
+                    core.local_asset_path(thumbnail),
+                    "video_thumbs/video-id.jpg",
+                )
+
     def test_placeholder_recovery_exposes_its_persisted_run_id(self) -> None:
         entered = threading.Event()
         release = threading.Event()

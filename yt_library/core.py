@@ -1559,7 +1559,18 @@ def thumbnail_extension(content_type: str, url: str) -> str:
 
 
 def local_asset_path(path: Path) -> str:
-    return str(path.resolve().relative_to(ROOT)).replace("\\", "/")
+    resolved = path.resolve()
+    for asset_dir in (
+        DEFAULT_THUMB_DIR,
+        DEFAULT_VIDEO_THUMB_DIR,
+        DEFAULT_ARCHIVARIX_THUMB_DIR,
+    ):
+        try:
+            relative = resolved.relative_to(asset_dir.resolve())
+        except ValueError:
+            continue
+        return str(Path(asset_dir.name) / relative).replace("\\", "/")
+    return str(resolved.relative_to(ROOT)).replace("\\", "/")
 
 
 def cache_thumbnail(
