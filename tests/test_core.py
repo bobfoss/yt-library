@@ -20,6 +20,7 @@ from yt_library.config import (
     configured_archivarix_request_interval,
     configured_display_timezone,
     configured_youtube_max_in_flight,
+    configured_youtube_request_delay_range,
     configured_youtube_request_interval,
     effective_display_timezone,
     ensure_config_file,
@@ -35,6 +36,36 @@ def migrated_connection(db_path: Path):
 
 
 class CoreHelperTests(unittest.TestCase):
+    def test_youtube_request_pacer_spaces_request_starts(self) -> None:
+        clock = [0.0]
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        pacer = core.YouTubeRequestPacer(
+            6.0,
+            10.0,
+            monotonic=lambda: clock[0],
+            sleep=sleep,
+            uniform=lambda minimum, maximum: 8.0,
+        )
+
+        pacer.wait()
+        clock[0] = 2.0
+        pacer.wait()
+
+        self.assertEqual(sleeps, [6.0])
+        self.assertEqual(clock[0], 8.0)
+
+    def test_youtube_request_url_matching_excludes_unrelated_hosts(self) -> None:
+        self.assertTrue(core.is_youtube_request_url("https://www.youtube.com/watch?v=abc"))
+        self.assertTrue(core.is_youtube_request_url("https://i.ytimg.com/vi/abc/hqdefault.jpg"))
+        self.assertTrue(core.is_youtube_request_url("https://rr1.googlevideo.com/videoplayback"))
+        self.assertFalse(core.is_youtube_request_url("https://youtube.com.example.test/watch?v=abc"))
+        self.assertFalse(core.is_youtube_request_url("https://archivarix.com/search"))
+
     def test_placeholder_recovery_exposes_its_persisted_run_id(self) -> None:
         entered = threading.Event()
         release = threading.Event()
@@ -1676,6 +1707,7 @@ class ConfigTests(unittest.TestCase):
             )
             self.assertEqual(config["display_timezone"], "America/Los_Angeles")
             self.assertEqual(configured_youtube_request_interval(config), 5.0)
+            self.assertEqual(configured_youtube_request_delay_range(config), (0.0, 0.0))
             self.assertEqual(configured_youtube_max_in_flight(config), 10)
             self.assertEqual(configured_archivarix_request_interval(config), 3.0)
             self.assertEqual(configured_archivarix_max_in_flight(config), 1)
@@ -1698,6 +1730,15 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(effective_display_timezone({"display_timezone": ""}), "UTC")
         self.assertEqual(configured_youtube_request_interval({"youtube_request_interval_seconds": -1}), 0.0)
+        self.assertEqual(
+            configured_youtube_request_delay_range(
+                {
+                    "youtube_request_delay_min_seconds": 6,
+                    "youtube_request_delay_max_seconds": 2,
+                }
+            ),
+            (6.0, 6.0),
+        )
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 0}), 1)
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 5000}), 100)
         self.assertEqual(configured_archivarix_request_interval({"archivarix_request_interval_seconds": -1}), 0.0)
@@ -1719,6 +1760,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["youtube_cookies"], "yt_cookies.txt")
             self.assertEqual(payload["archivarix_cookies"], "archivarix_cookies.txt")
             self.assertEqual(payload["youtube_request_interval_seconds"], 5.0)
+            self.assertEqual(payload["youtube_request_delay_min_seconds"], 0.0)
+            self.assertEqual(payload["youtube_request_delay_max_seconds"], 0.0)
             self.assertEqual(payload["youtube_max_in_flight"], 10)
             self.assertEqual(payload["archivarix_request_interval_seconds"], 3.0)
             self.assertEqual(payload["archivarix_max_in_flight"], 1)

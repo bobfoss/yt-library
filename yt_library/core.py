@@ -14,6 +14,7 @@ import json
 import mimetypes
 import os
 import posixpath
+import random
 import re
 import shutil
 import sqlite3
@@ -53,6 +54,71 @@ TAKEOUT_DIR = ROOT / "YouTube and YouTube Music"
 HISTORY_BATCH_SIZE = 1000
 HISTORY_BATCH_DELAY_SECONDS = 10.0
 DEFAULT_DISPLAY_TIMEZONE = "UTC"
+
+
+class YouTubeRequestPacer:
+    """Coordinate randomized request spacing across concurrent workers."""
+
+    def __init__(
+        self,
+        minimum_delay: float = 0.0,
+        maximum_delay: float = 0.0,
+        *,
+        monotonic=time.monotonic,
+        sleep=time.sleep,
+        uniform=random.uniform,
+    ) -> None:
+        self.minimum_delay = max(0.0, minimum_delay)
+        self.maximum_delay = max(self.minimum_delay, maximum_delay)
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._uniform = uniform
+        self._lock = threading.Lock()
+        self._next_request_at: float | None = None
+
+    def wait(self) -> None:
+        if self.maximum_delay <= 0.0:
+            return
+        with self._lock:
+            now = self._monotonic()
+            if self._next_request_at is not None and now < self._next_request_at:
+                self._sleep(self._next_request_at - now)
+                now = self._monotonic()
+            self._next_request_at = now + self._uniform(
+                self.minimum_delay,
+                self.maximum_delay,
+            )
+
+
+_YOUTUBE_REQUEST_HOSTS = (
+    "youtube.com",
+    "youtube-nocookie.com",
+    "youtu.be",
+    "ytimg.com",
+    "googlevideo.com",
+)
+_youtube_request_pacer = YouTubeRequestPacer()
+
+
+def configure_youtube_request_pacing(minimum_delay: float, maximum_delay: float) -> None:
+    global _youtube_request_pacer
+    _youtube_request_pacer = YouTubeRequestPacer(minimum_delay, maximum_delay)
+
+
+def is_youtube_request_url(url: str) -> bool:
+    hostname = (urllib.parse.urlparse(url).hostname or "").lower().rstrip(".")
+    return any(hostname == host or hostname.endswith(f".{host}") for host in _YOUTUBE_REQUEST_HOSTS)
+
+
+def open_with_youtube_pacing(
+    opener: urllib.request.OpenerDirector,
+    request: urllib.request.Request,
+    *,
+    timeout: int,
+) -> Any:
+    if is_youtube_request_url(request.full_url):
+        _youtube_request_pacer.wait()
+    return opener.open(request, timeout=timeout)
 
 PLAYLIST_MATCH_TYPE_NOTES = {
     "ambiguous_hidden_candidate": "missing from current playable scan; hidden slot mapping is ambiguous",
@@ -980,7 +1046,7 @@ def request_bytes(
     if referer:
         headers["Referer"] = referer
     req = urllib.request.Request(url, headers=headers)
-    with opener.open(req, timeout=timeout) as response:
+    with open_with_youtube_pacing(opener, req, timeout=timeout) as response:
         return response.read(), response.headers.get_content_type()
 
 
@@ -1142,7 +1208,7 @@ def request_json(
         "Referer": referer,
     }
     req = urllib.request.Request(url, data=body, headers=headers)
-    with opener.open(req, timeout=30) as response:
+    with open_with_youtube_pacing(opener, req, timeout=30) as response:
         return json.loads(response.read().decode("utf-8", "replace"))
 
 
@@ -1189,7 +1255,7 @@ def request_youtubei_json(
         headers["Authorization"] = auth
     url = f"https://www.youtube.com/youtubei/v1/browse?key={urllib.parse.quote(api_key)}"
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
-    with opener.open(req, timeout=30) as response:
+    with open_with_youtube_pacing(opener, req, timeout=30) as response:
         return json.loads(response.read().decode("utf-8", "replace"))
 
 
