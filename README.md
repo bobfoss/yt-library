@@ -60,6 +60,8 @@ in the generated config file:
   "port": 8765,
   "display_timezone": "",
   "youtube_request_interval_seconds": 5.0,
+  "youtube_request_delay_min_seconds": 0.0,
+  "youtube_request_delay_max_seconds": 0.0,
   "youtube_max_in_flight": 10,
   "archivarix_request_interval_seconds": 3.0,
   "archivarix_max_in_flight": 1
@@ -77,6 +79,15 @@ load and saves it to the config file.
 The request interval settings control how often each site's next task may launch.
 The matching `max_in_flight` settings cap concurrent tasks; long Archivarix
 lookups therefore do not delay the YouTube launch cadence.
+
+The optional `youtube_request_delay_min_seconds` and
+`youtube_request_delay_max_seconds` settings add randomized spacing between
+app-managed requests to YouTube web and thumbnail hosts. The delay is shared
+across concurrent workers, so increasing `youtube_max_in_flight` does not bypass
+it. Both values default to `0.0`, which disables per-request pacing. For a
+conservative 6-to-10-second cadence, set them to `6.0` and `10.0`. These settings
+do not pace Archivarix requests or network activity managed internally by
+`yt-dlp`.
 
 Open:
 

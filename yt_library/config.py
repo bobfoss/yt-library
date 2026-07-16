@@ -23,6 +23,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "port": 8765,
     "display_timezone": "",
     "youtube_request_interval_seconds": 5.0,
+    "youtube_request_delay_min_seconds": 0.0,
+    "youtube_request_delay_max_seconds": 0.0,
     "youtube_max_in_flight": 10,
     "archivarix_request_interval_seconds": 3.0,
     "archivarix_max_in_flight": 1,
@@ -49,6 +51,28 @@ def configured_youtube_request_interval(config: dict[str, Any]) -> float:
         0.0,
         float(config.get("youtube_request_interval_seconds", DEFAULT_CONFIG["youtube_request_interval_seconds"])),
     )
+
+
+def configured_youtube_request_delay_range(config: dict[str, Any]) -> tuple[float, float]:
+    minimum = max(
+        0.0,
+        float(
+            config.get(
+                "youtube_request_delay_min_seconds",
+                DEFAULT_CONFIG["youtube_request_delay_min_seconds"],
+            )
+        ),
+    )
+    maximum = max(
+        minimum,
+        float(
+            config.get(
+                "youtube_request_delay_max_seconds",
+                DEFAULT_CONFIG["youtube_request_delay_max_seconds"],
+            )
+        ),
+    )
+    return minimum, maximum
 
 
 def configured_youtube_max_in_flight(config: dict[str, Any]) -> int:
