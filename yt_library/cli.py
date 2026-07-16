@@ -7,8 +7,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import config_int, config_path, ensure_config_file, load_config
+from .config import (
+    config_int,
+    config_path,
+    ensure_config_file,
+    load_config,
+)
 from .core import (
+    configure_request_pacing,
     discover_current_playlists,
     import_history,
     import_playlists,
@@ -43,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     argv, config = _preparse_config(argv)
+    configure_request_pacing(config)
     parser = argparse.ArgumentParser(description="Import YouTube library data and browse it locally.")
     parser.add_argument("--config", default=str(config["_config_path"]), help="Path to the JSON configuration file")
     subparsers = parser.add_subparsers(dest="command")

@@ -23,6 +23,7 @@ from yt_library import server
 from yt_library import workers
 from yt_library.config import (
     configured_archivarix_max_in_flight,
+    configured_archivarix_request_delay_range,
     configured_archivarix_request_interval,
     configured_archivarix_request_timeout,
     configured_archivarix_retry_attempts,
@@ -33,6 +34,8 @@ from yt_library.config import (
     configured_use_proxy,
     configured_youtube_max_in_flight,
     configured_proxy,
+    configured_request_jitter_enabled,
+    configured_youtube_request_delay_range,
     configured_youtube_request_interval,
     effective_display_timezone,
     ensure_config_file,
@@ -247,6 +250,72 @@ class CoreHelperTests(unittest.TestCase):
                     core.local_asset_path(thumbnail),
                     "video_thumbs/video-id.jpg",
                 )
+
+    def test_request_pacer_spaces_request_starts(self) -> None:
+        clock = [0.0]
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        pacer = core.RequestPacer(
+            6.0,
+            10.0,
+            monotonic=lambda: clock[0],
+            sleep=sleep,
+            uniform=lambda minimum, maximum: 8.0,
+        )
+
+        pacer.wait()
+        clock[0] = 2.0
+        pacer.wait()
+
+        self.assertEqual(sleeps, [6.0])
+        self.assertEqual(clock[0], 8.0)
+
+    def test_youtube_request_url_matching_excludes_unrelated_hosts(self) -> None:
+        self.assertTrue(core.is_youtube_request_url("https://www.youtube.com/watch?v=abc"))
+        self.assertTrue(core.is_youtube_request_url("https://i.ytimg.com/vi/abc/hqdefault.jpg"))
+        self.assertTrue(core.is_youtube_request_url("https://rr1.googlevideo.com/videoplayback"))
+        self.assertTrue(core.is_youtube_request_url("https://yt3.ggpht.com/avatar"))
+        self.assertTrue(core.is_youtube_request_url("https://yt3.googleusercontent.com/avatar"))
+        self.assertFalse(core.is_youtube_request_url("https://youtube.com.example.test/watch?v=abc"))
+        self.assertFalse(core.is_youtube_request_url("https://archivarix.com/search"))
+
+    def test_archivarix_request_url_matching_includes_api_and_archive_hosts(self) -> None:
+        self.assertTrue(core.is_archivarix_request_url("https://tube.archivarix.net/api/search"))
+        self.assertTrue(core.is_archivarix_request_url("https://web.archive.org/web/example"))
+        self.assertFalse(core.is_archivarix_request_url("https://archivarix.net.example.test/search"))
+        self.assertFalse(core.is_archivarix_request_url("https://www.youtube.com/watch?v=abc"))
+
+    def test_request_pacing_routes_sites_to_independent_pacers(self) -> None:
+        opener = Mock()
+        youtube_pacer = Mock()
+        archivarix_pacer = Mock()
+        with (
+            patch.object(core, "_youtube_request_pacer", youtube_pacer),
+            patch.object(core, "_archivarix_request_pacer", archivarix_pacer),
+        ):
+            core.open_with_request_pacing(
+                opener,
+                urllib.request.Request("https://yt3.ggpht.com/avatar"),
+                timeout=12,
+            )
+            core.open_with_request_pacing(
+                opener,
+                urllib.request.Request("https://tube.archivarix.net/api/search"),
+                timeout=18,
+            )
+            core.open_with_request_pacing(
+                opener,
+                urllib.request.Request("https://example.test/resource"),
+                timeout=6,
+            )
+
+        youtube_pacer.wait.assert_called_once_with()
+        archivarix_pacer.wait.assert_called_once_with()
+        self.assertEqual(opener.open.call_count, 3)
 
     def test_placeholder_recovery_exposes_its_persisted_run_id(self) -> None:
         entered = threading.Event()
@@ -2412,8 +2481,11 @@ class ConfigTests(unittest.TestCase):
                 "socks5h://127.0.0.1:1080",
             )
             self.assertEqual(configured_youtube_request_interval(config), 5.0)
+            self.assertFalse(configured_request_jitter_enabled(config))
+            self.assertEqual(configured_youtube_request_delay_range(config), (0.0, 0.0))
             self.assertEqual(configured_youtube_max_in_flight(config), 10)
             self.assertEqual(configured_archivarix_request_interval(config), 3.0)
+            self.assertEqual(configured_archivarix_request_delay_range(config), (0.0, 0.0))
             self.assertEqual(configured_archivarix_max_in_flight(config), 1)
             self.assertEqual(configured_archivarix_request_timeout(config), 15.0)
             self.assertEqual(configured_archivarix_stream_timeout(config), 30.0)
@@ -2459,6 +2531,25 @@ class ConfigTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             configured_proxy({"proxy": "http://127.0.0.1:1080"})
+        self.assertTrue(configured_request_jitter_enabled({"request_jitter_enabled": "yes"}))
+        self.assertEqual(
+            configured_youtube_request_delay_range(
+                {
+                    "youtube_request_delay_min_seconds": 6,
+                    "youtube_request_delay_max_seconds": 2,
+                }
+            ),
+            (6.0, 6.0),
+        )
+        self.assertEqual(
+            configured_archivarix_request_delay_range(
+                {
+                    "archivarix_request_delay_min_seconds": 4,
+                    "archivarix_request_delay_max_seconds": 2,
+                }
+            ),
+            (4.0, 4.0),
+        )
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 0}), 1)
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 5000}), 100)
         self.assertEqual(configured_archivarix_request_interval({"archivarix_request_interval_seconds": -1}), 0.0)
@@ -2502,10 +2593,15 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["archivarix_cookies"], "archivarix_cookies.txt")
             self.assertFalse(payload["use_proxy"])
             self.assertEqual(payload["proxy"], "")
+            self.assertFalse(payload["request_jitter_enabled"])
             self.assertNotIn("youtube_proxy", payload)
             self.assertEqual(payload["youtube_request_interval_seconds"], 5.0)
+            self.assertEqual(payload["youtube_request_delay_min_seconds"], 0.0)
+            self.assertEqual(payload["youtube_request_delay_max_seconds"], 0.0)
             self.assertEqual(payload["youtube_max_in_flight"], 10)
             self.assertEqual(payload["archivarix_request_interval_seconds"], 3.0)
+            self.assertEqual(payload["archivarix_request_delay_min_seconds"], 0.0)
+            self.assertEqual(payload["archivarix_request_delay_max_seconds"], 0.0)
             self.assertEqual(payload["archivarix_max_in_flight"], 1)
             self.assertEqual(payload["archivarix_request_timeout_seconds"], 15.0)
             self.assertEqual(payload["archivarix_stream_timeout_seconds"], 30.0)
@@ -2550,6 +2646,72 @@ class ConfigTests(unittest.TestCase):
 
 
 class AdminServerTests(unittest.TestCase):
+    def test_request_intervals_save_jitter_config_and_reconfigure_live_pacers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/admin/request-intervals?" + urllib.parse.urlencode(
+                {
+                    "youtube_seconds": "5",
+                    "archivarix_seconds": "3",
+                    "jitter_enabled": "1",
+                    "youtube_delay_min_seconds": "6",
+                    "youtube_delay_max_seconds": "10",
+                    "archivarix_delay_min_seconds": "2",
+                    "archivarix_delay_max_seconds": "4",
+                }
+            )
+            handler.config_data = config
+            handler.send_json = Mock()
+
+            with (
+                patch.object(
+                    server.WORKER_QUEUE_DISPATCHER,
+                    "update_request_intervals",
+                ) as update_intervals,
+                patch("yt_library.server.configure_request_pacing") as configure_pacing,
+            ):
+                handler.do_POST()
+
+            update_intervals.assert_called_once_with(5.0, 3.0)
+            configure_pacing.assert_called_once_with(config)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(payload["request_jitter_enabled"])
+            self.assertEqual(payload["youtube_request_delay_min_seconds"], 6.0)
+            self.assertEqual(payload["youtube_request_delay_max_seconds"], 10.0)
+            self.assertEqual(payload["archivarix_request_delay_min_seconds"], 2.0)
+            self.assertEqual(payload["archivarix_request_delay_max_seconds"], 4.0)
+            response = handler.send_json.call_args.args[0]
+            self.assertTrue(response["requestIntervals"]["jitter_enabled"])
+            self.assertEqual(
+                response["requestIntervals"]["archivarix_delay_max_seconds"],
+                4.0,
+            )
+
+    def test_request_intervals_reject_jitter_maximum_below_minimum(self) -> None:
+        config = load_config(Path("missing-test-config.json"))
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = "/api/admin/request-intervals?" + urllib.parse.urlencode(
+            {
+                "youtube_seconds": "5",
+                "archivarix_seconds": "3",
+                "jitter_enabled": "1",
+                "youtube_delay_min_seconds": "10",
+                "youtube_delay_max_seconds": "6",
+                "archivarix_delay_min_seconds": "2",
+                "archivarix_delay_max_seconds": "4",
+            }
+        )
+        handler.config_data = config
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        response = handler.send_json.call_args.args[0]
+        self.assertIn("maximums", response["error"])
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
     def test_admin_settings_save_proxy_and_schedule_restart(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"
@@ -2618,6 +2780,13 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('id="useProxy"', server.ADMIN_HTML)
         self.assertIn('id="proxyUrl"', server.ADMIN_HTML)
         self.assertIn('id="saveSettings"', server.ADMIN_HTML)
+        self.assertIn('id="requestJitterEnabled"', server.ADMIN_HTML)
+        self.assertIn('id="youtubeDelayMin"', server.ADMIN_HTML)
+        self.assertIn('id="youtubeDelayMax"', server.ADMIN_HTML)
+        self.assertIn('id="archivarixDelayMin"', server.ADMIN_HTML)
+        self.assertIn('id="archivarixDelayMax"', server.ADMIN_HTML)
+        self.assertIn("syncRequestJitterInputs();", server.ADMIN_HTML)
+        self.assertIn("field.addEventListener('change', flushRequestIntervalSave);", server.ADMIN_HTML)
         self.assertEqual(server.ADMIN_HTML.count("<th>ID</th>"), 2)
         self.assertNotIn("<th>Video ID</th>", server.ADMIN_HTML)
         self.assertIn("return row.channel_id || row.video_id || '';", server.ADMIN_HTML)

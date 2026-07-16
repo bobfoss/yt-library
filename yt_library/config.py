@@ -26,9 +26,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "display_timezone": "",
     "use_proxy": False,
     "proxy": "",
+    "request_jitter_enabled": False,
     "youtube_request_interval_seconds": 5.0,
+    "youtube_request_delay_min_seconds": 0.0,
+    "youtube_request_delay_max_seconds": 0.0,
     "youtube_max_in_flight": 10,
     "archivarix_request_interval_seconds": 3.0,
+    "archivarix_request_delay_min_seconds": 0.0,
+    "archivarix_request_delay_max_seconds": 0.0,
     "archivarix_max_in_flight": 1,
     "archivarix_request_timeout_seconds": 15.0,
     "archivarix_stream_timeout_seconds": 30.0,
@@ -77,6 +82,51 @@ def configured_use_proxy(config: dict[str, Any]) -> bool:
 def configured_proxy(config: dict[str, Any]) -> str:
     proxy_url = configured_proxy_address(config)
     return proxy_url if configured_use_proxy(config) else ""
+
+
+def configured_request_jitter_enabled(config: dict[str, Any]) -> bool:
+    value = config.get(
+        "request_jitter_enabled",
+        DEFAULT_CONFIG["request_jitter_enabled"],
+    )
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _configured_request_delay_range(
+    config: dict[str, Any],
+    site: str,
+) -> tuple[float, float]:
+    minimum_key = f"{site}_request_delay_min_seconds"
+    maximum_key = f"{site}_request_delay_max_seconds"
+    minimum = max(
+        0.0,
+        float(
+            config.get(
+                minimum_key,
+                DEFAULT_CONFIG[minimum_key],
+            )
+        ),
+    )
+    maximum = max(
+        minimum,
+        float(
+            config.get(
+                maximum_key,
+                DEFAULT_CONFIG[maximum_key],
+            )
+        ),
+    )
+    return minimum, maximum
+
+
+def configured_youtube_request_delay_range(config: dict[str, Any]) -> tuple[float, float]:
+    return _configured_request_delay_range(config, "youtube")
+
+
+def configured_archivarix_request_delay_range(config: dict[str, Any]) -> tuple[float, float]:
+    return _configured_request_delay_range(config, "archivarix")
 
 
 def configured_youtube_max_in_flight(config: dict[str, Any]) -> int:
