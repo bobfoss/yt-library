@@ -71,6 +71,7 @@
     .settings-status { align-self: center; min-width: 64px; }
     label.checkbox { display: flex; flex-direction: row; align-items: center; gap: 7px; padding-bottom: 8px; }
     label.checkbox input { width: auto; }
+    input:disabled { cursor: not-allowed; opacity: 0.55; }
     button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 9px 12px; font: inherit; cursor: pointer; }
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     button.danger { background: #b91c1c; border-color: #dc2626; color: #fff; }
@@ -220,6 +221,11 @@
       <div class="controls">
         <label>YouTube delay (seconds)<input id="youtubeRequestInterval" class="delay-input" type="number" min="0" step="0.1"></label>
         <label>Archivarix delay (seconds)<input id="archivarixRequestInterval" class="delay-input" type="number" min="0" step="0.1"></label>
+        <label class="checkbox"><input id="requestJitterEnabled" type="checkbox">Add jitter</label>
+        <label>YouTube jitter min<input id="youtubeDelayMin" class="delay-input" type="number" min="0" step="0.1" disabled></label>
+        <label>YouTube jitter max<input id="youtubeDelayMax" class="delay-input" type="number" min="0" step="0.1" disabled></label>
+        <label>Archivarix jitter min<input id="archivarixDelayMin" class="delay-input" type="number" min="0" step="0.1" disabled></label>
+        <label>Archivarix jitter max<input id="archivarixDelayMax" class="delay-input" type="number" min="0" step="0.1" disabled></label>
         <span id="requestIntervalStatus" class="metric settings-status" aria-live="polite"></span>
       </div>
       <div class="controls">
@@ -334,6 +340,11 @@
       archivarixRequestsTotal: document.getElementById('archivarixRequestsTotal'),
       youtubeRequestInterval: document.getElementById('youtubeRequestInterval'),
       archivarixRequestInterval: document.getElementById('archivarixRequestInterval'),
+      requestJitterEnabled: document.getElementById('requestJitterEnabled'),
+      youtubeDelayMin: document.getElementById('youtubeDelayMin'),
+      youtubeDelayMax: document.getElementById('youtubeDelayMax'),
+      archivarixDelayMin: document.getElementById('archivarixDelayMin'),
+      archivarixDelayMax: document.getElementById('archivarixDelayMax'),
       requestIntervalStatus: document.getElementById('requestIntervalStatus'),
       startWorkerQueue: document.getElementById('startWorkerQueue'),
       stopWorkerQueue: document.getElementById('stopWorkerQueue'),
@@ -379,6 +390,14 @@
       return String(value || '').replace(/[&<>"']/g, ch => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
       }[ch]));
+    }
+
+    function syncRequestJitterInputs() {
+      const disabled = !fields.requestJitterEnabled.checked;
+      fields.youtubeDelayMin.disabled = disabled;
+      fields.youtubeDelayMax.disabled = disabled;
+      fields.archivarixDelayMin.disabled = disabled;
+      fields.archivarixDelayMax.disabled = disabled;
     }
 
     function fmtTime(value) {
@@ -712,12 +731,26 @@
       fields.archivarixRequestsTotal.title = fields.archivarixRequests24h.title;
       const requestIntervals = data.requestIntervals || {};
       if (!requestIntervalsSaving) {
+        fields.requestJitterEnabled.checked = Boolean(requestIntervals.jitter_enabled);
         if (document.activeElement !== fields.youtubeRequestInterval) {
           fields.youtubeRequestInterval.value = Number(requestIntervals.youtube_seconds ?? 0);
         }
         if (document.activeElement !== fields.archivarixRequestInterval) {
           fields.archivarixRequestInterval.value = Number(requestIntervals.archivarix_seconds ?? 0);
         }
+        if (document.activeElement !== fields.youtubeDelayMin) {
+          fields.youtubeDelayMin.value = Number(requestIntervals.youtube_delay_min_seconds ?? 0);
+        }
+        if (document.activeElement !== fields.youtubeDelayMax) {
+          fields.youtubeDelayMax.value = Number(requestIntervals.youtube_delay_max_seconds ?? 0);
+        }
+        if (document.activeElement !== fields.archivarixDelayMin) {
+          fields.archivarixDelayMin.value = Number(requestIntervals.archivarix_delay_min_seconds ?? 0);
+        }
+        if (document.activeElement !== fields.archivarixDelayMax) {
+          fields.archivarixDelayMax.value = Number(requestIntervals.archivarix_delay_max_seconds ?? 0);
+        }
+        syncRequestJitterInputs();
       }
       const archivarixBlock = data.archivarixBlock || {};
       fields.archivarixBlock.hidden = !archivarixBlock.blocked;
@@ -946,13 +979,24 @@
     async function saveRequestIntervals() {
       const youtubeSeconds = Number(fields.youtubeRequestInterval.value);
       const archivarixSeconds = Number(fields.archivarixRequestInterval.value);
-      if (
-        !Number.isFinite(youtubeSeconds)
-        || !Number.isFinite(archivarixSeconds)
-        || youtubeSeconds < 0
-        || archivarixSeconds < 0
-      ) {
+      const youtubeDelayMin = Number(fields.youtubeDelayMin.value);
+      const youtubeDelayMax = Number(fields.youtubeDelayMax.value);
+      const archivarixDelayMin = Number(fields.archivarixDelayMin.value);
+      const archivarixDelayMax = Number(fields.archivarixDelayMax.value);
+      const requestDelays = [
+        youtubeSeconds,
+        archivarixSeconds,
+        youtubeDelayMin,
+        youtubeDelayMax,
+        archivarixDelayMin,
+        archivarixDelayMax,
+      ];
+      if (requestDelays.some(value => !Number.isFinite(value) || value < 0)) {
         fields.requestIntervalStatus.textContent = 'Invalid value';
+        return;
+      }
+      if (youtubeDelayMax < youtubeDelayMin || archivarixDelayMax < archivarixDelayMin) {
+        fields.requestIntervalStatus.textContent = 'Max must be at least min';
         return;
       }
       requestIntervalsSaving = true;
@@ -961,10 +1005,21 @@
         const payload = await post('/api/admin/request-intervals', {
           youtube_seconds: youtubeSeconds,
           archivarix_seconds: archivarixSeconds,
+          jitter_enabled: fields.requestJitterEnabled.checked ? '1' : '0',
+          youtube_delay_min_seconds: youtubeDelayMin,
+          youtube_delay_max_seconds: youtubeDelayMax,
+          archivarix_delay_min_seconds: archivarixDelayMin,
+          archivarix_delay_max_seconds: archivarixDelayMax,
         });
         const saved = payload.requestIntervals || {};
         fields.youtubeRequestInterval.value = Number(saved.youtube_seconds ?? youtubeSeconds);
         fields.archivarixRequestInterval.value = Number(saved.archivarix_seconds ?? archivarixSeconds);
+        fields.requestJitterEnabled.checked = Boolean(saved.jitter_enabled);
+        fields.youtubeDelayMin.value = Number(saved.youtube_delay_min_seconds ?? youtubeDelayMin);
+        fields.youtubeDelayMax.value = Number(saved.youtube_delay_max_seconds ?? youtubeDelayMax);
+        fields.archivarixDelayMin.value = Number(saved.archivarix_delay_min_seconds ?? archivarixDelayMin);
+        fields.archivarixDelayMax.value = Number(saved.archivarix_delay_max_seconds ?? archivarixDelayMax);
+        syncRequestJitterInputs();
         fields.requestIntervalStatus.textContent = 'Saved';
       } catch (error) {
         fields.requestIntervalStatus.textContent = 'Save failed';
@@ -1038,10 +1093,21 @@
     });
     document.getElementById('stopWorkerQueue').addEventListener('click', () => stopWorkersNow().catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus({ force: true }).catch(error => alert(error.message)));
-    fields.youtubeRequestInterval.addEventListener('input', scheduleRequestIntervalSave);
-    fields.archivarixRequestInterval.addEventListener('input', scheduleRequestIntervalSave);
-    fields.youtubeRequestInterval.addEventListener('change', flushRequestIntervalSave);
-    fields.archivarixRequestInterval.addEventListener('change', flushRequestIntervalSave);
+    for (const field of [
+      fields.youtubeRequestInterval,
+      fields.archivarixRequestInterval,
+      fields.youtubeDelayMin,
+      fields.youtubeDelayMax,
+      fields.archivarixDelayMin,
+      fields.archivarixDelayMax,
+    ]) {
+      field.addEventListener('input', scheduleRequestIntervalSave);
+      field.addEventListener('change', flushRequestIntervalSave);
+    }
+    fields.requestJitterEnabled.addEventListener('change', () => {
+      syncRequestJitterInputs();
+      flushRequestIntervalSave();
+    });
     fields.logSourceFilter.addEventListener('change', renderLogs);
     fields.logLevelFilter.addEventListener('change', renderLogs);
     fields.themeToggle.addEventListener('change', () => {

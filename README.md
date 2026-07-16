@@ -65,9 +65,14 @@ in the generated config file:
   "display_timezone": "",
   "use_proxy": false,
   "proxy": "",
+  "request_jitter_enabled": false,
   "youtube_request_interval_seconds": 5.0,
+  "youtube_request_delay_min_seconds": 0.0,
+  "youtube_request_delay_max_seconds": 0.0,
   "youtube_max_in_flight": 10,
   "archivarix_request_interval_seconds": 3.0,
+  "archivarix_request_delay_min_seconds": 0.0,
+  "archivarix_request_delay_max_seconds": 0.0,
   "archivarix_max_in_flight": 1,
   "archivarix_request_timeout_seconds": 15.0,
   "archivarix_stream_timeout_seconds": 30.0,
@@ -99,6 +104,16 @@ When YouTube rejects an authenticated request, the worker stops its YouTube task
 group and records one cached, low-volume yt-dlp authentication probe in the debug
 log. Public-only yt-dlp clients are diagnostic only and are not used to complete
 authenticated metadata tasks that require private access or reaction state.
+
+Set `request_jitter_enabled` to `true` to add randomized spacing between
+app-managed requests. YouTube uses `youtube_request_delay_min_seconds` and
+`youtube_request_delay_max_seconds`; Archivarix and its archived thumbnail
+requests use the matching `archivarix_request_delay_*` settings. Each site's
+delay is shared across concurrent workers, so increasing `max_in_flight` does
+not bypass it. The Admin worker queue exposes one **Add jitter** checkbox plus
+both sites' minimum and maximum delays, and saves changes to the config file
+without restarting the service. Network activity managed internally by
+`yt-dlp` is not paced.
 
 Open:
 

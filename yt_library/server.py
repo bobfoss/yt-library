@@ -18,10 +18,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import (
+    configured_archivarix_request_delay_range,
     configured_archivarix_request_interval,
     configured_display_timezone,
     configured_proxy_address,
+    configured_request_jitter_enabled,
     configured_use_proxy,
+    configured_youtube_request_delay_range,
     configured_youtube_request_interval,
     effective_display_timezone,
     ensure_config_file,
@@ -586,31 +589,68 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 archivarix_seconds = float(
                     (params.get("archivarix_seconds") or [""])[0]
                 )
+                youtube_delay_min = float(
+                    (params.get("youtube_delay_min_seconds") or [""])[0]
+                )
+                youtube_delay_max = float(
+                    (params.get("youtube_delay_max_seconds") or [""])[0]
+                )
+                archivarix_delay_min = float(
+                    (params.get("archivarix_delay_min_seconds") or [""])[0]
+                )
+                archivarix_delay_max = float(
+                    (params.get("archivarix_delay_max_seconds") or [""])[0]
+                )
             except ValueError:
                 self.send_json({"error": "Request delays must be numbers"}, status=400)
                 return
+            request_delays = (
+                youtube_seconds,
+                archivarix_seconds,
+                youtube_delay_min,
+                youtube_delay_max,
+                archivarix_delay_min,
+                archivarix_delay_max,
+            )
             if (
-                not math.isfinite(youtube_seconds)
-                or not math.isfinite(archivarix_seconds)
-                or youtube_seconds < 0
-                or archivarix_seconds < 0
+                any(not math.isfinite(value) for value in request_delays)
+                or any(value < 0 for value in request_delays)
             ):
                 self.send_json(
                     {"error": "Request delays must be finite and zero or greater"},
                     status=400,
                 )
                 return
+            if (
+                youtube_delay_max < youtube_delay_min
+                or archivarix_delay_max < archivarix_delay_min
+            ):
+                self.send_json(
+                    {"error": "Jitter maximums must be greater than or equal to minimums"},
+                    status=400,
+                )
+                return
+            jitter_enabled = (
+                (params.get("jitter_enabled") or ["0"])[0].strip().lower()
+                in {"1", "true", "yes", "on"}
+            )
             self.config_data["youtube_request_interval_seconds"] = youtube_seconds
             self.config_data["archivarix_request_interval_seconds"] = archivarix_seconds
+            self.config_data["request_jitter_enabled"] = jitter_enabled
+            self.config_data["youtube_request_delay_min_seconds"] = youtube_delay_min
+            self.config_data["youtube_request_delay_max_seconds"] = youtube_delay_max
+            self.config_data["archivarix_request_delay_min_seconds"] = archivarix_delay_min
+            self.config_data["archivarix_request_delay_max_seconds"] = archivarix_delay_max
             save_config(self.config_data)
-            active_intervals = WORKER_QUEUE_DISPATCHER.update_request_intervals(
+            WORKER_QUEUE_DISPATCHER.update_request_intervals(
                 youtube_seconds,
                 archivarix_seconds,
             )
+            configure_request_pacing(self.config_data)
             self.send_json(
                 {
                     "ok": True,
-                    "requestIntervals": active_intervals,
+                    "requestIntervals": self.request_interval_settings(),
                 }
             )
             return
@@ -961,10 +1001,21 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def display_timezone_name(self, conn: sqlite3.Connection) -> str:
         return configured_display_timezone(self.config_data)
 
-    def request_interval_settings(self) -> dict[str, float]:
+    def request_interval_settings(self) -> dict[str, Any]:
+        youtube_delay_min, youtube_delay_max = configured_youtube_request_delay_range(
+            self.config_data
+        )
+        archivarix_delay_min, archivarix_delay_max = (
+            configured_archivarix_request_delay_range(self.config_data)
+        )
         return {
             "youtube_seconds": configured_youtube_request_interval(self.config_data),
             "archivarix_seconds": configured_archivarix_request_interval(self.config_data),
+            "jitter_enabled": configured_request_jitter_enabled(self.config_data),
+            "youtube_delay_min_seconds": youtube_delay_min,
+            "youtube_delay_max_seconds": youtube_delay_max,
+            "archivarix_delay_min_seconds": archivarix_delay_min,
+            "archivarix_delay_max_seconds": archivarix_delay_max,
         }
 
     def admin_settings(self) -> dict[str, Any]:
