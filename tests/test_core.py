@@ -2379,6 +2379,8 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(server.ADMIN_HTML.count("<th>ID</th>"), 2)
         self.assertNotIn("<th>Video ID</th>", server.ADMIN_HTML)
         self.assertIn("return row.channel_id || row.video_id || '';", server.ADMIN_HTML)
+        self.assertIn("return row.playlist_id || row.video_id || '';", server.ADMIN_HTML)
+        self.assertIn("identifier: log.display_id || log.playlist_id || ''", server.ADMIN_HTML)
         self.assertIn(".id-col { width: 280px; }", server.ADMIN_HTML)
         self.assertIn(".subject-col { width: 490px; }", server.ADMIN_HTML)
         self.assertIn(".queue-source-col { width: 280px; }", server.ADMIN_HTML)
@@ -3351,7 +3353,7 @@ class WorkerQueueTests(unittest.TestCase):
                     snapshot["playlistScanLogs"][0]["subject_title"],
                     "Example playlist",
                 )
-                self.assertEqual(snapshot["playlistScanLogs"][0]["display_id"], "")
+                self.assertEqual(snapshot["playlistScanLogs"][0]["display_id"], "PLexample")
                 self.assertEqual(snapshot["liveHistoryLogs"], [])
                 self.assertEqual(
                     [row["message"] for row in snapshot["placeholderRecoveryLogs"]],

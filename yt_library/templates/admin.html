@@ -445,7 +445,7 @@
         ...(data.playlistScanLogs || []).map(log => ({
           ...log,
           subject_id: log.subject_title || playlistSubject(log.playlist_id),
-          identifier: log.display_id || '',
+          identifier: log.display_id || log.playlist_id || '',
           source: 'playlist',
         })),
         ...(data.metadataLogs || []).map(log => ({
@@ -543,7 +543,10 @@
       if (row.worker_type === 'metadata' && row.task_type === 'channel') {
         return row.channel_id || row.video_id || '';
       }
-      return row.video_id || '';
+      if (row.worker_type === 'playlist') {
+        return row.playlist_id || row.video_id || '';
+      }
+      return row.video_id || row.channel_id || row.playlist_id || '';
     }
 
     function queueRowHtml(row) {

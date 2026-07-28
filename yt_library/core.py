@@ -5406,7 +5406,7 @@ def worker_log_select(name: str) -> str:
         return f"""
             SELECT l.*,
                    COALESCE(NULLIF(p.title, ''), l.playlist_id) AS subject_title,
-                   '' AS display_id
+                   l.playlist_id AS display_id
             FROM {table} l
             LEFT JOIN playlists p ON p.playlist_id = l.playlist_id
         """
