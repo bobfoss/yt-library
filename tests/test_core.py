@@ -7,6 +7,7 @@ import sqlite3
 import json
 import threading
 import urllib.error
+import urllib.request
 import unittest
 import zipfile
 from datetime import date
@@ -15,6 +16,7 @@ from unittest.mock import patch
 
 from yt_library import cli
 from yt_library import core
+from yt_library import network
 from yt_library.config import (
     configured_archivarix_max_in_flight,
     configured_archivarix_request_interval,
@@ -24,6 +26,7 @@ from yt_library.config import (
     configured_archivarix_stream_timeout,
     configured_display_timezone,
     configured_youtube_max_in_flight,
+    configured_youtube_proxy,
     configured_youtube_request_interval,
     effective_display_timezone,
     ensure_config_file,
@@ -39,6 +42,154 @@ def migrated_connection(db_path: Path):
 
 
 class CoreHelperTests(unittest.TestCase):
+    def test_socks5_proxy_parser_supports_remote_dns_and_credentials(self) -> None:
+        proxy = network.parse_socks5_proxy_url(
+            "socks5h://user%20name:pass%2Fword@127.0.0.1:1080"
+        )
+
+        self.assertIsNotNone(proxy)
+        self.assertEqual(proxy.host, "127.0.0.1")
+        self.assertEqual(proxy.port, 1080)
+        self.assertTrue(proxy.remote_dns)
+        self.assertEqual(proxy.username, "user name")
+        self.assertEqual(proxy.password, "pass/word")
+        self.assertFalse(
+            network.parse_socks5_proxy_url("socks5://localhost:1081").remote_dns
+        )
+        self.assertIsNone(network.parse_socks5_proxy_url(""))
+
+    def test_socks5_proxy_parser_rejects_unsupported_or_ambiguous_urls(self) -> None:
+        invalid_values = (
+            "http://127.0.0.1:1080",
+            "socks5://127.0.0.1",
+            "socks5://127.0.0.1:1080/path",
+            "socks5://:1080",
+        )
+        for value in invalid_values:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    network.parse_socks5_proxy_url(value)
+
+    def test_socks5_connection_routes_destination_through_pysocks(self) -> None:
+        calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        fake_socket = object()
+
+        class FakeSocks:
+            SOCKS5 = 2
+
+            @staticmethod
+            def create_connection(*args, **kwargs):
+                calls.append((args, kwargs))
+                return fake_socket
+
+        proxy = network.parse_socks5_proxy_url(
+            "socks5h://proxy-user:proxy-pass@localhost:1080"
+        )
+        connection = network._Socks5HTTPConnection(
+            "www.youtube.com",
+            port=80,
+            timeout=12,
+            socks_module=FakeSocks,
+            proxy=proxy,
+        )
+
+        connection.connect()
+
+        self.assertIs(connection.sock, fake_socket)
+        self.assertEqual(calls[0][0], (("www.youtube.com", 80),))
+        self.assertEqual(calls[0][1]["proxy_type"], FakeSocks.SOCKS5)
+        self.assertEqual(calls[0][1]["proxy_addr"], "localhost")
+        self.assertEqual(calls[0][1]["proxy_port"], 1080)
+        self.assertTrue(calls[0][1]["proxy_rdns"])
+        self.assertEqual(calls[0][1]["proxy_username"], "proxy-user")
+        self.assertEqual(calls[0][1]["proxy_password"], "proxy-pass")
+
+    def test_socks5_https_handler_uses_its_tls_context(self) -> None:
+        class FakeSocks:
+            SOCKS5 = 2
+
+        proxy = network.parse_socks5_proxy_url("socks5h://localhost:1080")
+        handler = network._Socks5HTTPSHandler(FakeSocks, proxy)
+        request = urllib.request.Request("https://www.youtube.com/")
+
+        with patch.object(handler, "do_open", return_value="response") as do_open:
+            response = handler.https_open(request)
+
+        self.assertEqual(response, "response")
+        do_open.assert_called_once_with(
+            handler._connection,
+            request,
+            context=handler._context,
+        )
+
+    def test_ytdlp_proxy_options_preserve_supported_proxy_url(self) -> None:
+        self.assertEqual(
+            network.youtube_ytdlp_proxy_options("socks5://127.0.0.1:1080"),
+            {"proxy": "socks5://127.0.0.1:1080"},
+        )
+        self.assertEqual(network.youtube_ytdlp_proxy_options(""), {})
+
+    def test_metadata_worker_passes_proxy_to_poll_run(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        captured_args: list[object] = []
+        worker = MetadataWorker()
+
+        def hold_worker(*args) -> None:
+            captured_args.extend(args)
+            entered.set()
+            release.wait(2)
+
+        with patch.object(worker, "_run", side_effect=hold_worker):
+            result = worker.start(
+                Path("library.sqlite3"),
+                Path("cookies.txt"),
+                Path("thumbs"),
+                delay=0,
+                limit=1,
+                force=False,
+                stale_days=30,
+                proxy_url="socks5h://127.0.0.1:1080",
+            )
+            self.assertTrue(result["started"])
+            self.assertTrue(entered.wait(1))
+            self.assertEqual(captured_args[-1], "socks5h://127.0.0.1:1080")
+            release.set()
+            deadline = time.time() + 1
+            while worker.is_alive() and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(worker.is_alive())
+
+    def test_dispatcher_passes_configured_proxy_to_queue_run(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        captured_args: list[object] = []
+        dispatcher = WorkerQueueDispatcher()
+
+        def hold_dispatcher(*args) -> None:
+            captured_args.extend(args)
+            entered.set()
+            release.wait(2)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = load_config(Path(temp_dir) / "config.json")
+            config["youtube_proxy"] = "socks5h://127.0.0.1:1080"
+            with patch.object(dispatcher, "_run", side_effect=hold_dispatcher):
+                result = dispatcher.start(
+                    Path(temp_dir) / "library.sqlite3",
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    config,
+                )
+                self.assertTrue(result["started"])
+                self.assertTrue(entered.wait(1))
+                self.assertEqual(captured_args[-1], "socks5h://127.0.0.1:1080")
+                release.set()
+                deadline = time.time() + 1
+                while dispatcher.is_alive() and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertFalse(dispatcher.is_alive())
+
     def test_placeholder_recovery_exposes_its_persisted_run_id(self) -> None:
         entered = threading.Event()
         release = threading.Event()
@@ -1730,6 +1881,7 @@ class ConfigTests(unittest.TestCase):
                         "cookies": "legacy-cookies.txt",
                         "pockettube_export": "legacy-pockettube.json",
                         "display_timezone": "America/Los_Angeles",
+                        "youtube_proxy": "socks5h://127.0.0.1:1080",
                     }
                 ),
                 encoding="utf-8",
@@ -1744,6 +1896,10 @@ class ConfigTests(unittest.TestCase):
                 (config_path.parent / "data" / "library.sqlite3").resolve(),
             )
             self.assertEqual(config["display_timezone"], "America/Los_Angeles")
+            self.assertEqual(
+                configured_youtube_proxy(config),
+                "socks5h://127.0.0.1:1080",
+            )
             self.assertEqual(configured_youtube_request_interval(config), 5.0)
             self.assertEqual(configured_youtube_max_in_flight(config), 10)
             self.assertEqual(configured_archivarix_request_interval(config), 3.0)
@@ -1771,6 +1927,9 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(effective_display_timezone({"display_timezone": ""}), "UTC")
         self.assertEqual(configured_youtube_request_interval({"youtube_request_interval_seconds": -1}), 0.0)
+        self.assertEqual(configured_youtube_proxy({"youtube_proxy": ""}), "")
+        with self.assertRaises(ValueError):
+            configured_youtube_proxy({"youtube_proxy": "http://127.0.0.1:1080"})
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 0}), 1)
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 5000}), 100)
         self.assertEqual(configured_archivarix_request_interval({"archivarix_request_interval_seconds": -1}), 0.0)
@@ -1780,6 +1939,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(configured_archivarix_retry_attempts({"archivarix_retry_attempts": 0}), 1)
         self.assertEqual(configured_archivarix_retry_attempts({"archivarix_retry_attempts": 500}), 10)
         self.assertEqual(configured_archivarix_retry_backoff({"archivarix_retry_backoff_seconds": -1}), 0.0)
+
+    def test_load_config_rejects_invalid_youtube_proxy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config_path.write_text(
+                json.dumps({"youtube_proxy": "http://127.0.0.1:1080"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "socks5"):
+                load_config(config_path)
 
     def test_migrate_creates_default_config_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1796,6 +1966,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["host"], "127.0.0.1")
             self.assertEqual(payload["youtube_cookies"], "yt_cookies.txt")
             self.assertEqual(payload["archivarix_cookies"], "archivarix_cookies.txt")
+            self.assertEqual(payload["youtube_proxy"], "")
             self.assertEqual(payload["youtube_request_interval_seconds"], 5.0)
             self.assertEqual(payload["youtube_max_in_flight"], 10)
             self.assertEqual(payload["archivarix_request_interval_seconds"], 3.0)
@@ -2201,7 +2372,7 @@ class WorkerQueueTests(unittest.TestCase):
 
             self.assertEqual(session_status.call_count, 2)
             self.assertEqual(fetch_metadata.call_count, 2)
-            ytdlp_probe.assert_called_once_with(cookie_file)
+            ytdlp_probe.assert_called_once_with(cookie_file, "")
             self.assertIn("not accepted", worker.blocked_reason())
             conn = core.connect(db_path)
             try:

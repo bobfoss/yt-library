@@ -21,6 +21,7 @@ from .config import (
     configured_archivarix_retry_backoff,
     configured_archivarix_stream_timeout,
     configured_youtube_max_in_flight,
+    configured_youtube_proxy,
     configured_youtube_request_interval,
     effective_display_timezone,
 )
@@ -28,22 +29,22 @@ from .core import *
 
 
 _YOUTUBE_AUTH_PROBE_LOCK = threading.Lock()
-_YOUTUBE_AUTH_PROBE_CACHE_KEY: tuple[str, int, int] | None = None
+_YOUTUBE_AUTH_PROBE_CACHE_KEY: tuple[str, int, int, str] | None = None
 _YOUTUBE_AUTH_PROBE_CACHE_TIME = 0.0
 _YOUTUBE_AUTH_PROBE_CACHE_VALUE = ""
 _YOUTUBE_AUTH_PROBE_CACHE_SECONDS = 300.0
 
 
-def cached_youtube_authentication_probe(cookie_file: Path) -> str:
+def cached_youtube_authentication_probe(cookie_file: Path, proxy_url: str = "") -> str:
     global _YOUTUBE_AUTH_PROBE_CACHE_KEY
     global _YOUTUBE_AUTH_PROBE_CACHE_TIME
     global _YOUTUBE_AUTH_PROBE_CACHE_VALUE
 
     try:
         stat = cookie_file.stat()
-        cache_key = (str(cookie_file.resolve()), stat.st_mtime_ns, stat.st_size)
+        cache_key = (str(cookie_file.resolve()), stat.st_mtime_ns, stat.st_size, proxy_url)
     except OSError:
-        cache_key = (str(cookie_file.resolve()), 0, 0)
+        cache_key = (str(cookie_file.resolve()), 0, 0, proxy_url)
     with _YOUTUBE_AUTH_PROBE_LOCK:
         now = time.monotonic()
         if (
@@ -51,7 +52,7 @@ def cached_youtube_authentication_probe(cookie_file: Path) -> str:
             and now - _YOUTUBE_AUTH_PROBE_CACHE_TIME < _YOUTUBE_AUTH_PROBE_CACHE_SECONDS
         ):
             return _YOUTUBE_AUTH_PROBE_CACHE_VALUE
-        result = probe_youtube_authentication_ytdlp(cookie_file)
+        result = probe_youtube_authentication_ytdlp(cookie_file, proxy_url)
         _YOUTUBE_AUTH_PROBE_CACHE_KEY = cache_key
         _YOUTUBE_AUTH_PROBE_CACHE_TIME = time.monotonic()
         _YOUTUBE_AUTH_PROBE_CACHE_VALUE = result
@@ -61,11 +62,12 @@ def cached_youtube_authentication_probe(cookie_file: Path) -> str:
 def youtube_authentication_debug_message(
     exc: YouTubeAuthenticationError,
     cookie_file: Path,
+    proxy_url: str = "",
 ) -> str:
     parts = [
         exc.diagnostics,
         youtube_cookie_diagnostics(cookie_file),
-        cached_youtube_authentication_probe(cookie_file),
+        cached_youtube_authentication_probe(cookie_file, proxy_url),
     ]
     return "YouTube authentication diagnostics: " + " | ".join(part for part in parts if part)
 
@@ -170,6 +172,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
         stale_days: int,
         record_summary: bool = True,
         queue_id: int = 0,
+        proxy_url: str = "",
     ) -> dict[str, Any]:
         return self._start_background(
             self._run,
@@ -184,6 +187,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                 stale_days,
                 record_summary,
                 queue_id,
+                proxy_url,
             ),
             started_message="Worker started",
             already_running_message="Worker already running",
@@ -208,6 +212,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
         stale_days: int,
         record_summary: bool,
         target_queue_id: int = 0,
+        proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
         try:
@@ -264,7 +269,11 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                         log_worker_event(conn, run_id, "warn", "Worker stopped by request")
                     return
                 if cookie_file.exists():
-                    session_valid, session_message = youtube_session_status(cookie_file, verify_remote=False)
+                    session_valid, session_message = youtube_session_status(
+                        cookie_file,
+                        verify_remote=False,
+                        proxy_url=proxy_url,
+                    )
                     if not session_valid:
                         authentication_error = f"Metadata worker stopped: {session_message}"
                         self._set_blocked_reason(authentication_error)
@@ -285,7 +294,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                                 f"YouTube cookie diagnostics: {youtube_cookie_diagnostics(cookie_file)}",
                             )
                         return
-                opener = load_cookie_opener(cookie_file)
+                opener = load_cookie_opener(cookie_file, proxy_url)
                 row_queue_id = int(row["queue_id"]) if "queue_id" in row.keys() else 0
                 video_id = row["video_id"]
                 metadata_source = row["metadata_source"] if "metadata_source" in row.keys() else "history"
@@ -339,7 +348,11 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                 except YouTubeAuthenticationError as exc:
                     authentication_error = f"Metadata worker stopped: {exc}"
                     self._set_blocked_reason(authentication_error)
-                    debug_message = youtube_authentication_debug_message(exc, cookie_file)
+                    debug_message = youtube_authentication_debug_message(
+                        exc,
+                        cookie_file,
+                        proxy_url,
+                    )
                     with conn:
                         conn.execute(
                             """
@@ -377,7 +390,11 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                     except YouTubeAuthenticationError as exc:
                         authentication_error = f"Metadata worker stopped: {exc}"
                         self._set_blocked_reason(authentication_error)
-                        debug_message = youtube_authentication_debug_message(exc, cookie_file)
+                        debug_message = youtube_authentication_debug_message(
+                            exc,
+                            cookie_file,
+                            proxy_url,
+                        )
                         with conn:
                             conn.execute(
                                 """
@@ -512,10 +529,21 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
         force: bool,
         stale_days: int,
         record_summary: bool = True,
+        proxy_url: str = "",
     ) -> dict[str, Any]:
         return self._start_background(
             self._run,
-            lambda run_id: (run_id, db_path, cookie_file, delay, limit, force, stale_days, record_summary),
+            lambda run_id: (
+                run_id,
+                db_path,
+                cookie_file,
+                delay,
+                limit,
+                force,
+                stale_days,
+                record_summary,
+                proxy_url,
+            ),
             started_message="Playlist scan started",
             already_running_message="Playlist scan already running",
         )
@@ -536,9 +564,10 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
         force: bool,
         stale_days: int,
         record_summary: bool,
+        proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
-        opener = load_cookie_opener(cookie_file)
+        opener = load_cookie_opener(cookie_file, proxy_url)
         try:
             initial_total = worker_queue_type_count(conn, "playlist")
             run_total = min(initial_total, limit) if limit else initial_total
@@ -627,7 +656,11 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         error += "; request diagnostics logged at debug level"
                 else:
                     try:
-                        videos, playlist_metadata = scan_playlist_ytdlp(playlist_id, cookie_file)
+                        videos, playlist_metadata = scan_playlist_ytdlp(
+                            playlist_id,
+                            cookie_file,
+                            proxy_url,
+                        )
                     except Exception as exc:
                         ytdlp_error = str(exc)
                 ytdlp_count = len(videos)
@@ -675,7 +708,11 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 )
                 previous_scan_count = int(row["video_count"] or 0)
                 if status == "ok" and (ytdlp_error or playlist_scan_is_incomplete(ytdlp_count, expected_count)):
-                    session_valid, session_message = youtube_session_status(cookie_file, verify_remote=True)
+                    session_valid, session_message = youtube_session_status(
+                        cookie_file,
+                        verify_remote=True,
+                        proxy_url=proxy_url,
+                    )
                     if not session_valid:
                         status = "error"
                         error = f"skipping: {session_message}"
@@ -858,11 +895,19 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
         cookie_file: Path,
         mode: str,
         timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
+        proxy_url: str = "",
     ) -> dict[str, Any]:
         label = "Verify history" if mode == "verify" else "History fetch"
         return self._start_background(
             self._run,
-            lambda run_id: (run_id, db_path, cookie_file, mode, timezone_name),
+            lambda run_id: (
+                run_id,
+                db_path,
+                cookie_file,
+                mode,
+                timezone_name,
+                proxy_url,
+            ),
             started_message=f"{label} started",
             already_running_message="History fetch already running",
         )
@@ -880,6 +925,7 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
         cookie_file: Path,
         mode: str,
         timezone_name: str,
+        proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
         mode = "verify" if mode == "verify" else "recent"
@@ -938,6 +984,7 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                     limit=batch_size,
                     start=start,
                     timezone_name=timezone_name,
+                    proxy_url=proxy_url,
                 )
                 fetched_ids = [row.get("video_id") or "" for row in rows if row.get("video_id")]
                 with conn:
@@ -1012,7 +1059,11 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
         except Exception as exc:
             if isinstance(exc, YouTubeAuthenticationError):
                 error_message = str(exc)
-                debug_message = youtube_authentication_debug_message(exc, cookie_file)
+                debug_message = youtube_authentication_debug_message(
+                    exc,
+                    cookie_file,
+                    proxy_url,
+                )
             elif isinstance(
                 exc,
                 (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError),
@@ -1449,6 +1500,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 configured_archivarix_stream_timeout(config),
                 configured_archivarix_retry_attempts(config),
                 configured_archivarix_retry_backoff(config),
+                configured_youtube_proxy(config),
             ),
             started_message="Worker queue dispatcher started",
             already_running_message="Worker queue dispatcher already running",
@@ -1595,6 +1647,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         archivarix_stream_timeout: float = 30.0,
         archivarix_retry_attempts: int = 3,
         archivarix_retry_backoff_seconds: float = 2.0,
+        youtube_proxy_url: str = "",
     ) -> None:
         with self._lock:
             if self._timing_revision == 0:
@@ -1697,6 +1750,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                             stale_days=30,
                             record_summary=False,
                             queue_id=queue_id,
+                            proxy_url=youtube_proxy_url,
                         )
                         if result.get("started"):
                             with self._lock:
@@ -1780,6 +1834,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         force=False,
                         stale_days=7,
                         record_summary=False,
+                        proxy_url=youtube_proxy_url,
                     )
                     if not result.get("started") and not PLAYLIST_SCAN_WORKER.is_running():
                         time.sleep(0.5)
@@ -1788,7 +1843,13 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         self._mark_completed()
                 elif worker_type == "history":
                     mode = "verify" if row.get("task_type") == "verify" else "recent"
-                    result = LIVE_HISTORY_WORKER.start(db_path, cookie_file, mode=mode, timezone_name=timezone_name)
+                    result = LIVE_HISTORY_WORKER.start(
+                        db_path,
+                        cookie_file,
+                        mode=mode,
+                        timezone_name=timezone_name,
+                        proxy_url=youtube_proxy_url,
+                    )
                     if not result.get("started") and not LIVE_HISTORY_WORKER.is_running():
                         time.sleep(0.5)
                     self._wait_for_worker(LIVE_HISTORY_WORKER)

@@ -36,7 +36,8 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .schema import load_schema
-from .config import effective_display_timezone
+from .config import configured_youtube_proxy, effective_display_timezone
+from .network import socks5_proxy_handlers, youtube_ytdlp_proxy_options
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
@@ -929,7 +930,7 @@ def youtube_ytdlp_probe_diagnostics(
     return "; ".join(parts)
 
 
-def probe_youtube_authentication_ytdlp(cookie_file: Path) -> str:
+def probe_youtube_authentication_ytdlp(cookie_file: Path, proxy_url: str = "") -> str:
     """Use yt-dlp's authenticated history extractor as a low-volume independent probe."""
     try:
         import yt_dlp  # type: ignore
@@ -977,6 +978,7 @@ def probe_youtube_authentication_ytdlp(cookie_file: Path) -> str:
                 "retries": 0,
                 "skip_download": True,
                 "socket_timeout": 15,
+                **youtube_ytdlp_proxy_options(proxy_url),
             }
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(":ythistory", download=False)
@@ -995,6 +997,7 @@ def youtube_session_status(
     cookie_file: Path,
     now: float | None = None,
     verify_remote: bool = False,
+    proxy_url: str = "",
 ) -> tuple[bool, str]:
     """Return whether local YouTube cookies are current and, optionally, accepted by YouTube."""
     now = time.time() if now is None else now
@@ -1015,7 +1018,7 @@ def youtube_session_status(
     if verify_remote:
         try:
             page = request_text(
-                load_cookie_opener(cookie_file),
+                load_cookie_opener(cookie_file, proxy_url),
                 "https://www.youtube.com/feed/history",
             )
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -1116,9 +1119,15 @@ def youtube_request_error_diagnostics(exc: BaseException, operation: str) -> str
     return "; ".join(parts)
 
 
-def load_cookie_opener(cookie_file: Path) -> urllib.request.OpenerDirector:
+def load_cookie_opener(
+    cookie_file: Path,
+    proxy_url: str = "",
+) -> urllib.request.OpenerDirector:
     jar = load_cookie_jar(cookie_file)
-    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    return urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+        *socks5_proxy_handlers(proxy_url),
+    )
 
 
 def request_bytes(
@@ -2598,9 +2607,13 @@ def fetch_youtube_history_web(
     limit: int = 100,
     start: int = 1,
     timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
+    proxy_url: str = "",
 ) -> list[dict[str, Any]]:
     jar = load_cookie_jar(cookie_file)
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+        *socks5_proxy_handlers(proxy_url),
+    )
     referer = "https://www.youtube.com/feed/history"
     page = request_text(opener, referer)
     if "Watch history isn't viewable when signed out" in page or "Keep track of what you watch" in page:
@@ -3434,8 +3447,9 @@ def fetch_provided_metadata(
 def scan_playlist_videos_ytdlp(
     playlist_id: str,
     cookie_file: Path,
+    proxy_url: str = "",
 ) -> list[dict[str, Any]]:
-    videos, _metadata = scan_playlist_ytdlp(playlist_id, cookie_file)
+    videos, _metadata = scan_playlist_ytdlp(playlist_id, cookie_file, proxy_url)
     return videos
 
 
@@ -3479,6 +3493,7 @@ def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) ->
 def scan_playlist_ytdlp(
     playlist_id: str,
     cookie_file: Path,
+    proxy_url: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     try:
         import yt_dlp  # type: ignore
@@ -3507,6 +3522,7 @@ def scan_playlist_ytdlp(
             "no_warnings": True,
             "quiet": True,
             "skip_download": True,
+            **youtube_ytdlp_proxy_options(proxy_url),
         }
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -3552,7 +3568,12 @@ def scan_playlist_ytdlp(
     return videos, metadata
 
 
-def fetch_youtube_history_ytdlp(cookie_file: Path, limit: int = 100, start: int = 1) -> list[dict[str, Any]]:
+def fetch_youtube_history_ytdlp(
+    cookie_file: Path,
+    limit: int = 100,
+    start: int = 1,
+    proxy_url: str = "",
+) -> list[dict[str, Any]]:
     try:
         import yt_dlp  # type: ignore
     except ImportError as exc:
@@ -3581,6 +3602,7 @@ def fetch_youtube_history_ytdlp(cookie_file: Path, limit: int = 100, start: int 
             "playlistend": max(1, start) + max(1, limit) - 1,
             "cookiefile": str(working_cookie_file) if working_cookie_file else None,
             "logger": YtdlpLogger(),
+            **youtube_ytdlp_proxy_options(proxy_url),
         }
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(":ythistory", download=False)
@@ -3745,6 +3767,7 @@ def scan_playlist_videos(
 def import_playlists(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     thumb_dir = Path(args.thumbs)
+    proxy_url = configured_youtube_proxy(getattr(args, "config_data", {}))
     _, groups, memberships = load_pockettube(Path(args.pockettube))
     all_playlist_ids = []
     seen: set[str] = set()
@@ -3754,7 +3777,7 @@ def import_playlists(args: argparse.Namespace) -> None:
                 all_playlist_ids.append(playlist_id)
                 seen.add(playlist_id)
 
-    opener = load_cookie_opener(Path(args.cookies))
+    opener = load_cookie_opener(Path(args.cookies), proxy_url)
     conn = connect(db_path)
     with conn:
         conn.execute("DELETE FROM group_playlists")
@@ -3883,9 +3906,13 @@ def youtube_web_context(config: dict[str, Any]) -> dict[str, Any]:
 def fetch_current_youtube_playlists(
     cookie_file: Path,
     browse_id: str = "FEplaylist_aggregation",
+    proxy_url: str = "",
 ) -> tuple[urllib.request.OpenerDirector, list[dict[str, str]]]:
     jar = load_cookie_jar(cookie_file)
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+        *socks5_proxy_handlers(proxy_url),
+    )
     referer = "https://www.youtube.com/feed/playlists"
     page = request_text(opener, referer)
     config = extract_ytcfg(page)
@@ -3944,7 +3971,12 @@ def is_system_playlist(playlist_id: str) -> bool:
 def discover_current_playlists(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     thumb_dir = Path(args.thumbs)
-    opener, records = fetch_current_youtube_playlists(Path(args.cookies), args.browse_id)
+    proxy_url = configured_youtube_proxy(getattr(args, "config_data", {}))
+    opener, records = fetch_current_youtube_playlists(
+        Path(args.cookies),
+        args.browse_id,
+        proxy_url,
+    )
     if not args.include_system:
         records = [record for record in records if not is_system_playlist(record["playlist_id"])]
 
@@ -6181,7 +6213,8 @@ def reconcile_worker_runs(
 def scan_hidden(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     conn = connect(db_path)
-    opener = load_cookie_opener(Path(args.cookies))
+    proxy_url = configured_youtube_proxy(getattr(args, "config_data", {}))
+    opener = load_cookie_opener(Path(args.cookies), proxy_url)
     rows = conn.execute(
         "SELECT playlist_id, title FROM playlists ORDER BY title COLLATE NOCASE"
     ).fetchall()
