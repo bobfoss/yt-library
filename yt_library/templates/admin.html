@@ -276,19 +276,19 @@
         <colgroup>
           <col class="log-time-col">
           <col class="log-level-col">
-          <col class="subject-col">
           <col class="video-col">
+          <col class="subject-col">
           <col>
         </colgroup>
-        <thead><tr><th>Time</th><th>Level</th><th>Subject</th><th>Video ID</th><th>Message</th></tr></thead>
+        <thead><tr><th>Time</th><th>Level</th><th>Video ID</th><th>Subject</th><th>Message</th></tr></thead>
       </table>
       <div class="log-scroll">
         <table>
           <colgroup>
             <col class="log-time-col">
             <col class="log-level-col">
-            <col class="subject-col">
             <col class="video-col">
+            <col class="subject-col">
             <col>
           </colgroup>
           <tbody id="logs"></tbody>
@@ -458,8 +458,8 @@
         <tr>
           <td class="time-cell">${fmtTime(log.created_at)}</td>
           <td class="level-cell">${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
-          <td class="message">${escapeHtml(log.subject_id || '')}</td>
           <td class="time-cell">${escapeHtml(log.video_id || '')}</td>
+          <td class="message">${escapeHtml(log.subject_id || '')}</td>
           <td class="message">${escapeHtml(log.message)}</td>
         </tr>
       `).join('') : '<tr><td colspan="5" class="message">No log entries match these filters.</td></tr>';
