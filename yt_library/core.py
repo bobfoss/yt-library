@@ -1034,7 +1034,17 @@ def youtube_session_status(
     return True, ""
 
 
+def youtube_page_login_state(html_text: str) -> bool | None:
+    match = re.search(r'"LOGGED_IN"\s*:\s*(true|false)', html_text or "")
+    if not match:
+        return None
+    return match.group(1) == "true"
+
+
 def youtube_page_requires_login(html_text: str) -> bool:
+    login_state = youtube_page_login_state(html_text)
+    if login_state is not None:
+        return not login_state
     markers = (
         "ServiceLogin",
         "accounts.google.com/ServiceLogin",
@@ -1051,7 +1061,7 @@ class YouTubeAuthenticationError(RuntimeError):
 
 
 def youtube_page_is_authenticated(html_text: str) -> bool:
-    return bool(re.search(r'"LOGGED_IN"\s*:\s*true', html_text or ""))
+    return youtube_page_login_state(html_text) is True
 
 
 def youtube_page_diagnostics(html_text: str, operation: str) -> str:

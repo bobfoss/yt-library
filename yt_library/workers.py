@@ -672,11 +672,6 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         + " | "
                         + youtube_cookie_diagnostics(cookie_file)
                     )
-                elif not header_count_available:
-                    status = "error"
-                    error = "skipping: YouTube playlist header count unavailable"
-                    if youtube_debug:
-                        error += "; request diagnostics logged at debug level"
                 else:
                     try:
                         videos, playlist_metadata = scan_playlist_ytdlp(
@@ -687,6 +682,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     except Exception as exc:
                         ytdlp_error = str(exc)
                 ytdlp_count = len(videos)
+                ytdlp_expected_count = int(playlist_metadata.get("video_count") or 0)
                 if header_metadata.get("video_count"):
                     playlist_metadata["video_count"] = header_metadata["video_count"]
                 for key in (
@@ -723,13 +719,30 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         DEFAULT_THUMB_DIR,
                     )
                 header_expected_count = int(header_metadata.get("video_count") or 0)
-                expected_count = header_expected_count
+                expected_count = header_expected_count or ytdlp_expected_count
+                expected_source = (
+                    "YouTube playlist header"
+                    if header_expected_count
+                    else "yt-dlp playlist metadata"
+                )
                 exact_count_required = playlist_scan_requires_exact_count(
                     header_metadata,
                     known_owner_channel_id=row["owner_channel_id"] if "owner_channel_id" in row.keys() else "",
                     known_visibility=row["visibility"] if "visibility" in row.keys() else "",
                 )
                 previous_scan_count = int(row["video_count"] or 0)
+                if status == "ok" and not header_count_available and not ytdlp_expected_count:
+                    status = "error"
+                    error = "skipping: YouTube playlist count unavailable"
+                    if ytdlp_error:
+                        error += f"; yt-dlp failed: {ytdlp_error[:500]}"
+                    elif ytdlp_count:
+                        error += (
+                            f"; yt-dlp returned {ytdlp_count} entries without "
+                            "a reported playlist count"
+                        )
+                    if youtube_debug:
+                        error += "; request diagnostics logged at debug level"
                 if status == "ok" and (ytdlp_error or playlist_scan_is_incomplete(ytdlp_count, expected_count)):
                     session_valid, session_message = youtube_session_status(
                         cookie_file,
@@ -778,7 +791,6 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     and playlist_scan_is_incomplete(len(videos), expected_count)
                 ):
                     status = "error"
-                    expected_source = "YouTube playlist header" if header_expected_count else "playlist metadata"
                     if ytdlp_error:
                         error = (
                             f"yt-dlp failed: {ytdlp_error[:500]}; web fallback parsed {web_count} videos, "

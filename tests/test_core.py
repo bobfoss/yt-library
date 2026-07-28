@@ -465,9 +465,18 @@ class CoreHelperTests(unittest.TestCase):
             self.assertIn("not accepted", message)
 
     def test_youtube_page_authentication_uses_logged_in_state(self) -> None:
-        self.assertTrue(core.youtube_page_is_authenticated('ytcfg.set({"LOGGED_IN":true});'))
-        self.assertFalse(core.youtube_page_is_authenticated('ytcfg.set({"LOGGED_IN":false});'))
+        logged_in = 'ytcfg.set({"LOGGED_IN":true}); ServiceLogin recaptcha'
+        logged_out = 'ytcfg.set({"LOGGED_IN":false});'
+        self.assertIs(core.youtube_page_login_state(logged_in), True)
+        self.assertIs(core.youtube_page_login_state(logged_out), False)
+        self.assertIsNone(core.youtube_page_login_state("ServiceLogin"))
+        self.assertTrue(core.youtube_page_is_authenticated(logged_in))
+        self.assertFalse(core.youtube_page_is_authenticated(logged_out))
         self.assertFalse(core.youtube_page_is_authenticated("ServiceLogin"))
+        self.assertFalse(core.youtube_page_requires_login(logged_in))
+        self.assertTrue(core.youtube_page_requires_login(logged_out))
+        self.assertTrue(core.youtube_page_requires_login("ServiceLogin"))
+        self.assertFalse(core.youtube_page_requires_login("playlist header"))
 
     def test_youtube_page_diagnostics_classify_authentication_challenges(self) -> None:
         page = """
@@ -3072,7 +3081,7 @@ class WorkerQueueTests(unittest.TestCase):
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
                 patch("yt_library.workers.request_text", return_value="header page"),
                 patch("yt_library.workers.extract_playlist_metadata", return_value={"video_count": 0, "has_video_count": False}),
-                patch("yt_library.workers.scan_playlist_ytdlp") as scan_ytdlp,
+                patch("yt_library.workers.scan_playlist_ytdlp", return_value=([], {})) as scan_ytdlp,
                 patch("yt_library.workers.scan_playlist_videos") as scan_web,
             ):
                 worker._run(
@@ -3086,7 +3095,7 @@ class WorkerQueueTests(unittest.TestCase):
                     record_summary=False,
                 )
 
-            scan_ytdlp.assert_not_called()
+            scan_ytdlp.assert_called_once()
             scan_web.assert_not_called()
             conn = core.connect(db_path)
             try:
@@ -3094,7 +3103,62 @@ class WorkerQueueTests(unittest.TestCase):
                     "SELECT level, message FROM playlist_scan_worker_log WHERE run_id = 'test-playlist-no-header'"
                 ).fetchone()
                 self.assertEqual(log["level"], "error")
-                self.assertIn("header count unavailable", log["message"])
+                self.assertIn("playlist count unavailable", log["message"])
+            finally:
+                conn.close()
+
+    def test_playlist_worker_uses_ytdlp_count_for_authenticated_header_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLexample', 'Example')")
+                    core.enqueue_playlist_scan_item(conn, "PLexample", manual=False)
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            videos = [{"video_id": "first"}]
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.request_text",
+                    return_value='ytcfg.set({"LOGGED_IN":true}); ServiceLogin recaptcha',
+                ),
+                patch(
+                    "yt_library.workers.extract_playlist_metadata",
+                    return_value={"video_count": 0, "has_video_count": False},
+                ),
+                patch(
+                    "yt_library.workers.scan_playlist_ytdlp",
+                    return_value=(videos, {"video_count": 1, "title": "Example"}),
+                ) as scan_ytdlp,
+                patch("yt_library.workers.scan_playlist_videos") as scan_web,
+                patch("yt_library.workers.save_playlist_scan", return_value=(1, 0)),
+                patch("yt_library.workers.enqueue_placeholder_recovery_targets", return_value={"inserted": 0}),
+            ):
+                worker._run(
+                    "test-playlist-authenticated-header-shell",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            scan_ytdlp.assert_called_once()
+            scan_web.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                log = conn.execute(
+                    "SELECT level, message FROM playlist_scan_worker_log "
+                    "WHERE run_id = 'test-playlist-authenticated-header-shell'"
+                ).fetchone()
+                self.assertEqual(log["level"], "info")
+                self.assertIn("1 videos", log["message"])
             finally:
                 conn.close()
 
@@ -3158,7 +3222,13 @@ class WorkerQueueTests(unittest.TestCase):
             worker = PlaylistScanWorker()
             with (
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
-                patch("yt_library.workers.request_text", return_value="<a href='https://accounts.google.com/ServiceLogin'>Sign in</a>"),
+                patch(
+                    "yt_library.workers.request_text",
+                    return_value=(
+                        'ytcfg.set({"LOGGED_IN":false}); '
+                        "<a href='https://accounts.google.com/ServiceLogin'>Sign in</a>"
+                    ),
+                ),
                 patch("yt_library.workers.extract_playlist_metadata", return_value={"video_count": 0, "has_video_count": False}),
                 patch("yt_library.workers.scan_playlist_ytdlp") as scan_ytdlp,
                 patch("yt_library.workers.scan_playlist_videos") as scan_web,
