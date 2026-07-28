@@ -229,20 +229,20 @@
         <colgroup>
           <col class="action-col">
           <col class="queue-worker-col">
-          <col>
           <col class="queue-video-col">
+          <col>
           <col class="queue-source-col">
           <col class="queue-details-col">
         </colgroup>
-        <thead><tr><th>Action</th><th>Worker</th><th>Subject</th><th>Video ID</th><th>Source</th><th>Details</th></tr></thead>
+        <thead><tr><th>Action</th><th>Worker</th><th>Video ID</th><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
       </table>
       <div class="queue-scroll" id="workerQueuePanel">
         <table>
           <colgroup>
             <col class="action-col">
             <col class="queue-worker-col">
-            <col>
             <col class="queue-video-col">
+            <col>
             <col class="queue-source-col">
             <col class="queue-details-col">
           </colgroup>
@@ -517,8 +517,8 @@
         <tr data-queue-id="${escapeHtml(row.queue_id || '')}">
           <td><button class="remove-queue-entry" type="button" data-queue-id="${escapeHtml(row.queue_id || '')}">Remove</button></td>
           <td class="queue-worker-cell">${escapeHtml(workerLabel(row))}</td>
-          <td class="message"><div class="queue-cell">${escapeHtml(workerSubject(row))}</div></td>
           <td class="time-cell"><div class="queue-cell">${escapeHtml(workerVideoId(row))}</div></td>
+          <td class="message"><div class="queue-cell">${escapeHtml(workerSubject(row))}</div></td>
           <td class="message"><div class="queue-cell">${escapeHtml(row.source_key || '')}</div></td>
           <td class="message"><div class="queue-cell">${escapeHtml(workerDetails(row))}</div></td>
         </tr>
