@@ -3914,6 +3914,85 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_metadata_worker_logs_watch_percentage_for_history_and_manual_videos(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="abc12345678",
+                        current_title="History video",
+                        metadata_source="history",
+                        priority=0,
+                    )
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="def12345678",
+                        current_title="Manual video",
+                        metadata_source="provided",
+                        priority=1,
+                        manual=True,
+                    )
+            finally:
+                conn.close()
+
+            def watch_metadata(_opener, video_id, _thumb_dir, require_authenticated=False):
+                del require_authenticated
+                return {
+                    "video_id": video_id,
+                    "title": "History video" if video_id == "abc12345678" else "Manual video",
+                    "duration_text": "1:00",
+                    "watch_progress_percent": "52" if video_id == "abc12345678" else "87",
+                    "watch_resume_seconds": "0",
+                    "yt_status": "OK",
+                }
+
+            worker = MetadataWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.fetch_watch_metadata", side_effect=watch_metadata),
+                patch("yt_library.workers.fetch_new_channel_metadata_if_needed", return_value=({}, "", "")),
+            ):
+                worker._run(
+                    "test-watch-progress-log",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    delay=0,
+                    limit=2,
+                    force=False,
+                    stale_days=30,
+                    record_summary=False,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                logs = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM metadata_worker_log
+                    WHERE run_id = 'test-watch-progress-log'
+                    ORDER BY id
+                    """
+                ).fetchall()
+                self.assertEqual(
+                    [dict(row) for row in logs],
+                    [
+                        {
+                            "level": "history",
+                            "message": "ok: History video\nwatch percentage: 52%",
+                        },
+                        {
+                            "level": "provided",
+                            "message": "ok: Manual video\nwatch percentage: 87%",
+                        },
+                    ],
+                )
+            finally:
+                conn.close()
+
     def test_metadata_worker_fetches_new_channel_metadata_discovered_from_video(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

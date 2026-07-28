@@ -446,7 +446,11 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                         if metadata_source == "channel":
                             log_worker_event(conn, run_id, metadata_source, f"{status}: {channel_label} (via {title})", channel_label)
                         else:
-                            log_worker_event(conn, run_id, metadata_source, f"{status}: {title}", video_id)
+                            message = f"{status}: {title}"
+                            if status == "ok" and metadata_source in {"history", "provided"}:
+                                progress = bounded_int(metadata.get("watch_progress_percent"))
+                                message += f"\nwatch percentage: {progress}%"
+                            log_worker_event(conn, run_id, metadata_source, message, video_id)
                             if channel_status:
                                 discovered_channel_label = (
                                     channel_metadata.get("channel")
