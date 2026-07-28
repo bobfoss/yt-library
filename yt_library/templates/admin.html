@@ -668,7 +668,7 @@
       const serviceState = String(service.status || 'unknown');
       currentServicePid = Number(service.pid || currentServicePid || 0);
       fields.serviceStatus.textContent = serviceState === 'running'
-        ? 'Running'
+        ? `Running${service.pid ? ` (${service.pid})` : ''}`
         : (serviceState === 'restarting' ? 'Restarting' : 'Unavailable');
       fields.serviceStatus.className = serviceState === 'running' ? 'running' : 'warn';
       fields.serviceStatus.title = [

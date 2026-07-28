@@ -2371,6 +2371,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('<span>Light</span>', server.ADMIN_HTML)
         self.assertIn('<span>Dark</span>', server.ADMIN_HTML)
         self.assertIn('id="serviceStatus"', server.ADMIN_HTML)
+        self.assertIn("`Running${service.pid ? ` (${service.pid})` : ''}`", server.ADMIN_HTML)
         self.assertIn('id="restartService"', server.ADMIN_HTML)
         self.assertIn('id="useProxy"', server.ADMIN_HTML)
         self.assertIn('id="proxyUrl"', server.ADMIN_HTML)
