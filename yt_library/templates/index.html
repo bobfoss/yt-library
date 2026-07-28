@@ -290,7 +290,6 @@
     let pendingHistoryDate = '';
     let channelHistoryCounts = new Map();
     let channelDetailTab = 'playlists';
-    let channelsManuallyDisabled = false;
     let renderGeneration = 0;
     let searchProgressTimer = null;
     let searchInputTimer = null;
@@ -306,6 +305,14 @@
     const videosFilter = document.querySelector('[data-filter="videos_root"]');
     const videoFieldFilters = [...document.querySelectorAll('.video-field-filter')];
     const videoSourceFilters = [...document.querySelectorAll('.video-source-filter')];
+    const searchFilterGroups = [
+      { parent: videosFilter, children: videoSourceFilters },
+      { parent: channelsFilter, children: channelChildFilters },
+    ];
+    const searchFilterParents = new Set(searchFilterGroups.map(group => group.parent).filter(Boolean));
+    const searchFilterGroupByChild = new Map(
+      searchFilterGroups.flatMap(group => group.children.map(child => [child, group]))
+    );
     const grid = document.getElementById('grid');
     const empty = document.getElementById('empty');
     const title = document.getElementById('view-title');
@@ -481,12 +488,10 @@
       if (filterParam !== null) {
         const active = new Set(filterParam.split(',').filter(Boolean));
         for (const input of searchFilters) {
-          if (input.dataset.filter === 'videos_root') continue;
+          if (searchFilterParents.has(input)) continue;
           input.checked = active.has(input.dataset.filter);
         }
-        channelsManuallyDisabled = !channelChildFilters.some(child => child.checked);
-        syncChannelParentFilter();
-        syncVideosParentFilter();
+        syncSearchFilterGroups();
         syncSearchForFilters();
       }
       searchResultVisibility.unavailable = params.get('unavailable') !== '0';
@@ -623,42 +628,36 @@
         searchFilters
           .filter(input => {
             if (!input.checked) return false;
-            if (input.dataset.filter === 'videos_root') return false;
-            if (input.classList.contains('channel-child-filter') && !channelsFilter.checked) return false;
-            if (input.classList.contains('video-source-filter') && !videosFilter.checked) return false;
+            if (searchFilterParents.has(input)) return false;
+            const group = searchFilterGroupByChild.get(input);
+            if (group && !group.parent.checked) return false;
             return true;
           })
           .map(input => input.dataset.filter)
       );
     }
 
-    function syncChannelParentFilter() {
-      if (!channelsFilter || !channelChildFilters.length) return;
-      const checkedCount = channelChildFilters.filter(input => input.checked).length;
-      if (channelsManuallyDisabled) {
-        channelsFilter.checked = false;
-        channelsFilter.indeterminate = false;
-      } else {
-        channelsFilter.checked = checkedCount > 0;
-        channelsFilter.indeterminate = checkedCount > 0 && checkedCount < channelChildFilters.length;
-      }
-      setFilterDimmed(channelChildFilters, !channelsFilter.checked);
+    function syncSearchFilterGroup(parent, childFilters) {
+      if (!parent || !childFilters.length) return;
+      const checkedCount = childFilters.filter(input => input.checked).length;
+      parent.checked = checkedCount > 0;
+      parent.indeterminate = checkedCount > 0 && checkedCount < childFilters.length;
+      setFilterDimmed(childFilters, !parent.checked);
     }
 
-    function syncVideosParentFilter() {
-      if (!videosFilter) return;
-      const checkedSourceCount = videoSourceFilters.filter(input => input.checked).length;
-      videosFilter.checked = checkedSourceCount > 0;
-      videosFilter.indeterminate = checkedSourceCount > 0 && checkedSourceCount < videoSourceFilters.length;
-      setFilterDimmed(videoSourceFilters, !videosFilter.checked);
+    function syncSearchFilterGroups() {
+      for (const group of searchFilterGroups) {
+        syncSearchFilterGroup(group.parent, group.children);
+      }
     }
 
     function syncSearchForFilters() {
       const checkedFieldCount = videoFieldFilters.filter(input => input.checked).length;
       const fieldless = checkedFieldCount === 0;
       setFilterDimmed([playlistsFilter, channelsFilter, videosFilter], fieldless);
-      setFilterDimmed(channelChildFilters, fieldless || !channelsFilter.checked);
-      setFilterDimmed(videoSourceFilters, fieldless || !videosFilter.checked);
+      for (const group of searchFilterGroups) {
+        setFilterDimmed(group.children, fieldless || !group.parent.checked);
+      }
     }
 
     function setFilterDimmed(inputs, dimmed) {
@@ -2330,49 +2329,27 @@
     bottomPager.addEventListener('click', handlePagerClick);
     bottomPager.addEventListener('change', handlePagerChange);
     bottomPager.addEventListener('submit', handlePagerSubmit);
-    if (channelsFilter) {
-      channelsFilter.addEventListener('change', () => {
-        channelsFilter.indeterminate = false;
-        channelsManuallyDisabled = !channelsFilter.checked;
-        if (channelsFilter.checked && !channelChildFilters.some(child => child.checked)) {
-          for (const child of channelChildFilters) child.checked = true;
-        }
+    for (const group of searchFilterGroups) {
+      if (!group.parent) continue;
+      group.parent.addEventListener('change', () => {
+        group.parent.indeterminate = false;
+        for (const child of group.children) child.checked = group.parent.checked;
         currentPage = 1;
-        syncChannelParentFilter();
+        syncSearchFilterGroup(group.parent, group.children);
         syncSearchForFilters();
         syncSearchHashAndRender();
       });
-    }
-    if (videosFilter) {
-      videosFilter.addEventListener('change', () => {
-        videosFilter.indeterminate = false;
-        for (const child of videoSourceFilters) child.checked = videosFilter.checked;
-        currentPage = 1;
-        syncVideosParentFilter();
-        syncSearchForFilters();
-        syncSearchHashAndRender();
-      });
-    }
-    for (const input of channelChildFilters) {
-      input.addEventListener('change', () => {
-        channelsManuallyDisabled = false;
-        syncChannelParentFilter();
-        syncSearchForFilters();
-        currentPage = 1;
-        syncSearchHashAndRender();
-      });
+      for (const child of group.children) {
+        child.addEventListener('change', () => {
+          syncSearchFilterGroup(group.parent, group.children);
+          syncSearchForFilters();
+          currentPage = 1;
+          syncSearchHashAndRender();
+        });
+      }
     }
     for (const input of videoFieldFilters) {
       input.addEventListener('change', () => {
-        syncVideosParentFilter();
-        syncSearchForFilters();
-        currentPage = 1;
-        syncSearchHashAndRender();
-      });
-    }
-    for (const input of videoSourceFilters) {
-      input.addEventListener('change', () => {
-        syncVideosParentFilter();
         syncSearchForFilters();
         currentPage = 1;
         syncSearchHashAndRender();
@@ -2380,11 +2357,9 @@
     }
     for (const input of searchFilters) {
       if (
-        input === channelsFilter
-        || input === videosFilter
-        || channelChildFilters.includes(input)
+        searchFilterParents.has(input)
+        || searchFilterGroupByChild.has(input)
         || videoFieldFilters.includes(input)
-        || videoSourceFilters.includes(input)
       ) continue;
       input.addEventListener('change', () => {
         syncSearchForFilters();
@@ -2392,8 +2367,7 @@
         syncSearchHashAndRender();
       });
     }
-    syncChannelParentFilter();
-    syncVideosParentFilter();
+    syncSearchFilterGroups();
     syncSearchForFilters();
     window.addEventListener('hashchange', () => {
       const previousSelection = selected;
