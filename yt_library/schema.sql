@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS playlists (
   description TEXT NOT NULL DEFAULT '',
   owner_channel_id TEXT REFERENCES channels(channel_id),
   visibility TEXT NOT NULL DEFAULT '',
+  is_library_playlist INTEGER NOT NULL DEFAULT 0 CHECK (is_library_playlist IN (0, 1)),
   video_count INTEGER NOT NULL DEFAULT 0,
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',

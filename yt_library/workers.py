@@ -653,7 +653,9 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 videos: list[dict[str, Any]] = []
                 playlist_metadata: dict[str, Any] = {}
                 header_metadata: dict[str, Any] = {}
+                header_page = ""
                 header_page_requires_login = False
+                missing_status = ""
                 youtube_debug = ""
                 try:
                     playlist_url = f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}"
@@ -683,6 +685,20 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         ytdlp_error = str(exc)
                 ytdlp_count = len(videos)
                 ytdlp_expected_count = int(playlist_metadata.get("video_count") or 0)
+                if (
+                    playlist_id != LIKED_VIDEOS_PLAYLIST_ID
+                    and youtube_playlist_is_missing(
+                        header_page,
+                        header_metadata,
+                        ytdlp_error,
+                    )
+                ):
+                    missing_status = playlist_missing_status(conn, playlist_id)
+                    status = missing_status
+                    error = (
+                        "authenticated YouTube playlist request returned 404 "
+                        "(Requested entity was not found)"
+                    )
                 if header_metadata.get("video_count"):
                     playlist_metadata["video_count"] = header_metadata["video_count"]
                 for key in (
@@ -808,7 +824,14 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 with conn:
                     metadata_queued = 0
                     placeholder_queued = 0
-                    if status == "error" and playlist_id == LIKED_VIDEOS_PLAYLIST_ID:
+                    if status in {"removed", "unavailable"}:
+                        video_count, unavailable_count = save_playlist_missing_status(
+                            conn,
+                            playlist_id,
+                            status,
+                            error,
+                        )
+                    elif status == "error" and playlist_id == LIKED_VIDEOS_PLAYLIST_ID:
                         video_count = int(
                             conn.execute("SELECT COUNT(*) FROM videos WHERE reaction = 'L'").fetchone()[0]
                             or 0
@@ -852,6 +875,18 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 f"{title}: YouTube diagnostics: {youtube_debug}",
                                 playlist_id,
                             )
+                    elif status in {"removed", "unavailable"}:
+                        found += 1
+                        log_playlist_scan_event(
+                            conn,
+                            run_id,
+                            "info",
+                            (
+                                f"{title}: marked {status} after authenticated YouTube 404; "
+                                f"preserved {video_count} videos"
+                            ),
+                            playlist_id,
+                        )
                     else:
                         found += 1
                         reported_note = ""

@@ -512,6 +512,10 @@ def _video_candidate_rows(
     rows = [dict(row) for row in conn.execute(sql, params)]
     if playlist_id:
         return rows
+    return rows
+
+
+def _deduplicate_video_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduplicated: dict[str, dict[str, Any]] = {}
     unresolved: list[dict[str, Any]] = []
     for row in rows:
@@ -520,7 +524,17 @@ def _video_candidate_rows(
             unresolved.append(row)
             continue
         current = deduplicated.get(video_id)
-        if current is None or int(row.get("completeness_score") or 0) > int(current.get("completeness_score") or 0):
+        row_is_current = row.get("membership_state") == "current"
+        current_is_current = current and current.get("membership_state") == "current"
+        if (
+            current is None
+            or (row_is_current and not current_is_current)
+            or (
+                row_is_current == current_is_current
+                and int(row.get("completeness_score") or 0)
+                > int(current.get("completeness_score") or 0)
+            )
+        ):
             deduplicated[video_id] = row
     return [*deduplicated.values(), *unresolved]
 
@@ -532,6 +546,17 @@ def _video_is_unavailable(item: dict[str, Any]) -> bool:
     return status == "NOT_FOUND" or status.startswith("DELETED_")
 
 
+def _video_collection_category(item: dict[str, Any]) -> str:
+    if _video_is_unavailable(item):
+        return "unavailable"
+    if (
+        item.get("source_quality") == "takeout"
+        and item.get("match_type") == "ambiguous_hidden_candidate"
+    ):
+        return "removed"
+    return "videos"
+
+
 def video_collection_data(
     conn: sqlite3.Connection,
     *,
@@ -541,6 +566,7 @@ def video_collection_data(
     query: str = "",
     include_videos: bool = True,
     include_unavailable: bool = True,
+    include_removed: bool = True,
     sort: str = "newest_added",
     limit: int = 100,
     offset: int = 0,
@@ -552,13 +578,29 @@ def video_collection_data(
         channel_id=channel_id,
         query=query,
     )
-    available_count = sum(1 for item in candidates if not _video_is_unavailable(item))
-    unavailable_count = len(candidates) - available_count
+    categories = {
+        "videos": include_videos,
+        "unavailable": include_unavailable,
+        "removed": include_removed,
+    }
+    count_keys = {"videos": set(), "unavailable": set(), "removed": set()}
+    for index, item in enumerate(candidates):
+        category = _video_collection_category(item)
+        item["collection_category"] = category
+        count_key = item.get("video_id") or (
+            item.get("playlist_id"),
+            item.get("position"),
+            index,
+        )
+        count_keys[category].add(count_key)
+    counts = {category: len(keys) for category, keys in count_keys.items()}
     candidates = [
         item
         for item in candidates
-        if (include_unavailable if _video_is_unavailable(item) else include_videos)
+        if categories[item["collection_category"]]
     ]
+    if not playlist_id:
+        candidates = _deduplicate_video_candidates(candidates)
     title_key = lambda item: str(item.get("metadata_title") or item.get("title") or item.get("video_id") or "").casefold()
     if sort == "oldest_added":
         candidates.sort(key=lambda item: (str(item.get("added_at") or item.get("metadata_upload_date") or ""), title_key(item)))
@@ -609,16 +651,19 @@ def video_collection_data(
     results = []
     for index, wrapper in enumerate(wrappers):
         item = wrapper["item"]
-        if playlist_id:
+        if scope == "playlist":
             item.update(exact_memberships.get((item.get("video_id") or "", index), {}))
-            item["url"] = youtube_video_url(item.get("video_id") or "", playlist_id)
-            item["playlist_url"] = youtube_playlist_url(playlist_id)
+            item["url"] = youtube_video_url(
+                item.get("video_id") or "",
+                item.get("playlist_id") or "",
+            )
+            item["playlist_url"] = youtube_playlist_url(item.get("playlist_id") or "")
         item.pop("completeness_score", None)
         results.append(item)
     return {
         "results": results,
         "total": total,
-        "counts": {"videos": available_count, "unavailable": unavailable_count},
+        "counts": counts,
         "limit": limit,
         "offset": offset,
     }
@@ -881,6 +926,8 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
         item = hydrated.get(video_id)
         if not item:
             continue
+        if "collection_category" in result["item"]:
+            item["collection_category"] = result["item"]["collection_category"]
         item["url"] = youtube_video_url(video_id, item.get("playlist_id") or "")
         item["playlist_url"] = youtube_playlist_url(item.get("playlist_id") or "")
         item["metadata_channel_url"] = youtube_channel_url(item.get("metadata_channel_id") or "")

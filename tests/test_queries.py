@@ -207,13 +207,91 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.conn.commit()
 
         liked = video_collection_data(self.conn, scope="liked", include_unavailable=False, limit=1)
-        self.assertEqual(liked["counts"], {"videos": 1, "unavailable": 1})
+        self.assertEqual(liked["counts"], {"videos": 1, "unavailable": 1, "removed": 0})
         self.assertEqual([row["video_id"] for row in liked["results"]], ["available1"])
         self.assertIn("metadata_description", liked["results"][0])
         channels = channel_list_data(self.conn, categories={"subscribed"})
         self.assertEqual([row["channel_id"] for row in channels["results"]], ["UC_subscribed"])
         detail = video_detail_data(self.conn, "available1")
         self.assertEqual(detail["video_id"], "available1")
+
+    def test_playlist_video_collection_separates_removed_from_unavailable(self) -> None:
+        self.add_video("available1", "Available")
+        self.add_video("unavailable1", "Unavailable")
+        self.add_video("removed1", "Removed")
+        self.conn.execute("UPDATE videos SET is_playable = 1 WHERE video_id = 'available1'")
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 0, availability = 'private' WHERE video_id = 'unavailable1'"
+        )
+        self.conn.execute("UPDATE videos SET is_playable = 1 WHERE video_id = 'removed1'")
+        self.conn.executemany(
+            "INSERT INTO playlists(playlist_id, title) VALUES (?, ?)",
+            [("PLone", "One"), ("PLtwo", "Two")],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO playlist_items(
+              playlist_id, position, video_id, membership_state, source_quality, match_type
+            ) VALUES ('PLone', ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, "available1", "current", "youtube", ""),
+                (2, "unavailable1", "current", "youtube", ""),
+                (
+                    2000,
+                    "removed1",
+                    "retained_unavailable",
+                    "takeout",
+                    "ambiguous_hidden_candidate",
+                ),
+            ],
+        )
+        self.conn.execute(
+            """
+            INSERT INTO playlist_items(
+              playlist_id, position, video_id, membership_state, source_quality, match_type
+            ) VALUES (
+              'PLtwo', 2000, 'available1', 'retained_unavailable',
+              'takeout', 'ambiguous_hidden_candidate'
+            )
+            """
+        )
+        self.conn.commit()
+
+        all_rows = video_collection_data(self.conn)
+        self.assertEqual(
+            all_rows["counts"],
+            {"videos": 1, "unavailable": 1, "removed": 2},
+        )
+        self.assertEqual(
+            {row["video_id"] for row in all_rows["results"]},
+            {"available1", "unavailable1", "removed1"},
+        )
+
+        removed = video_collection_data(
+            self.conn,
+            include_videos=False,
+            include_unavailable=False,
+            include_removed=True,
+        )
+        self.assertEqual(
+            {row["video_id"] for row in removed["results"]},
+            {"available1", "removed1"},
+        )
+        self.assertTrue(
+            all(row["collection_category"] == "removed" for row in removed["results"])
+        )
+
+        unavailable = video_collection_data(
+            self.conn,
+            include_videos=False,
+            include_unavailable=True,
+            include_removed=False,
+        )
+        self.assertEqual(
+            [row["video_id"] for row in unavailable["results"]],
+            ["unavailable1"],
+        )
 
     def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:
         self.add_video("old123", "Old Router Video")

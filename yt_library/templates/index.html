@@ -65,6 +65,8 @@
     .title-link:hover { color: var(--accent); text-decoration: none; }
     .title-with-action { display: inline-flex; align-items: center; gap: 10px; }
     .title-with-action .external-link { width: 30px; height: 30px; }
+    .playlist-page-heading { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+    .playlist-page-meta { margin-top: 0; font-size: 13px; font-weight: 400; line-height: 1.35; }
     .meta { color: var(--muted); font-size: 14px; }
     .meta-filter { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; }
     .meta-filter input { accent-color: var(--accent); }
@@ -267,7 +269,7 @@
     let children = new Map();
 
     let selected = '';
-    let playlistVisibility = { videos: true, unavailable: true };
+    let playlistVisibility = { videos: true, unavailable: true, removed: true };
     let playlistListVisibility = { private: true, public: true, unlisted: true, others: true, unknown: true };
     let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
     let searchResultVisibility = { unavailable: true };
@@ -613,7 +615,7 @@
     function resetPlaylistVisibilityFor(playlistId) {
       if (playlistVisibilityPlaylistId === playlistId) return;
       playlistVisibilityPlaylistId = playlistId;
-      playlistVisibility = { videos: true, unavailable: true };
+      playlistVisibility = { videos: true, unavailable: true, removed: true };
       playlistPageSearch = '';
     }
 
@@ -782,6 +784,7 @@
     }
 
     function wasRemovedByMeFromPlaylist(video) {
+      if (video.collection_category) return video.collection_category === 'removed';
       return wasRemovedFromPlaylist(video) && !isUnavailablePlaylistVideo(video);
     }
 
@@ -1399,6 +1402,7 @@
         q: query,
         videos: visibility.videos ? '1' : '0',
         unavailable: visibility.unavailable ? '1' : '0',
+        removed: visibility.removed === false ? '0' : '1',
         sort,
       });
       return fetchViewData(path);
@@ -1768,16 +1772,27 @@
         const rows = payload.results || [];
         const videoCount = Number(payload.counts?.videos || 0);
         const hiddenCount = Number(payload.counts?.unavailable || 0);
+        const removedCount = Number(payload.counts?.removed || 0);
+        const playlistCount = playlistVideoCountLabel(playlist);
+        const playlistHeadingMeta = [
+          playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : '',
+          playlistVisibilityLabelHtml(playlist),
+          playlistStatusLabelHtml(playlist),
+        ].filter(Boolean).join('');
         title.innerHTML = `
-          <span class="title-with-action">
-            <span>${escapeHtml(playlist.title)}</span>
-            ${playlist.url ? `<a class="external-link" href="${escapeHtml(playlist.url)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(playlist.title)} on YouTube">${externalLinkSvg()}</a>` : ''}
+          <span class="playlist-page-heading">
+            <span class="title-with-action">
+              <span>${escapeHtml(playlist.title)}</span>
+              ${playlist.url ? `<a class="external-link" href="${escapeHtml(playlist.url)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(playlist.title)} on YouTube">${externalLinkSvg()}</a>` : ''}
+            </span>
+            ${playlistHeadingMeta ? `<span class="details playlist-page-meta">${playlistHeadingMeta}</span>` : ''}
           </span>
         `;
         meta.innerHTML = `
           <input class="playlist-search" type="search" data-playlist-page-search placeholder="Search this playlist" autocomplete="off" value="${escapeHtml(playlistPageSearch)}">
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-filter="removed" ${playlistVisibility.removed ? 'checked' : ''}> <span class="badge">${removedCount} removed</span></label>
           ${videoSortHtml(playlistViewSort, 'playlist')}
         `;
         renderPager(remotePayloadPageInfo(payload, rows.length));
@@ -1793,11 +1808,13 @@
         if (generation !== renderGeneration) return;
         const rows = payload.results || [];
         const hiddenCount = Number(payload.counts?.unavailable || 0);
+        const removedCount = Number(payload.counts?.removed || 0);
         const videoCount = Number(payload.counts?.videos || 0);
         title.textContent = 'Playlist videos';
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
           <label class="meta-filter"><input type="checkbox" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-filter="removed" ${playlistVisibility.removed ? 'checked' : ''}> <span class="badge">${removedCount} removed</span></label>
           ${videoSortHtml(allVideosSort, 'all')}
         `;
         renderPager(remotePayloadPageInfo(payload, rows.length));
@@ -1813,7 +1830,9 @@
       }
       if (selected === '__hidden__') {
         title.textContent = 'Unavailable videos';
-        const payload = await fetchVideoCollection({ visibility: { videos: false, unavailable: true } });
+        const payload = await fetchVideoCollection({
+          visibility: { videos: false, unavailable: true, removed: false },
+        });
         if (generation !== renderGeneration) return;
         const rows = payload.results || [];
         meta.textContent = `${payload.total || 0} shown`;
@@ -1962,7 +1981,7 @@
           ${playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : ''}
           ${playlist.unavailable_count ? `<span class="badge">${playlist.unavailable_count} unavailable</span>` : ''}
           ${playlistVisibilityLabelHtml(playlist)}
-          ${playlist.fetch_status === 'error' ? '<span class="status">Fetch failed</span>' : ''}
+          ${playlistStatusLabelHtml(playlist)}
         </div>
         ${owner ? `<div class="details">${owner}</div>` : ''}
         <div class="details">
@@ -1972,14 +1991,25 @@
       });
     }
 
+    function playlistStatusLabelHtml(playlist) {
+      if (playlist.fetch_status === 'removed') return '<span class="status">Removed</span>';
+      if (playlist.fetch_status === 'unavailable') return '<span class="status">Unavailable</span>';
+      if (playlist.fetch_status === 'error') return '<span class="status">Fetch failed</span>';
+      return '';
+    }
+
     function playlistVideoCountLabel(playlist) {
       const reported = Number(playlist.video_count || 0);
       const scanned = Number(playlist.scanned_video_count || 0);
       const count = reported || scanned;
       if (!count) return '';
       const incomplete = Boolean(
-        playlist.scan_status === 'error'
-        || (reported && scanned && reported !== scanned)
+        playlist.scan_status !== 'removed'
+        && playlist.scan_status !== 'unavailable'
+        && (
+          playlist.scan_status === 'error'
+          || (reported && scanned && reported !== scanned)
+        )
       );
       return `${count} videos${incomplete ? ' (incomplete)' : ''}`;
     }

@@ -478,6 +478,41 @@ class CoreHelperTests(unittest.TestCase):
         self.assertTrue(core.youtube_page_requires_login("ServiceLogin"))
         self.assertFalse(core.youtube_page_requires_login("playlist header"))
 
+    def test_youtube_playlist_missing_requires_authenticated_404_without_header(self) -> None:
+        logged_in = 'ytcfg.set({"LOGGED_IN":true});'
+        missing_error = (
+            "[youtube:tab] ERROR - Requested entity was not found. "
+            "Unable to download API page: HTTP Error 404: Not Found"
+        )
+        self.assertTrue(
+            core.youtube_playlist_is_missing(
+                logged_in,
+                {"video_count": 0, "has_video_count": False},
+                missing_error,
+            )
+        )
+        self.assertFalse(
+            core.youtube_playlist_is_missing(
+                'ytcfg.set({"LOGGED_IN":false});',
+                {"video_count": 0, "has_video_count": False},
+                missing_error,
+            )
+        )
+        self.assertFalse(
+            core.youtube_playlist_is_missing(
+                logged_in,
+                {"video_count": 1, "has_video_count": True},
+                missing_error,
+            )
+        )
+        self.assertFalse(
+            core.youtube_playlist_is_missing(
+                logged_in,
+                {"video_count": 0, "has_video_count": False},
+                "Incomplete yt initial data received",
+            )
+        )
+
     def test_youtube_page_diagnostics_classify_authentication_challenges(self) -> None:
         page = """
         ytcfg.set({
@@ -1783,6 +1818,67 @@ class SchemaTests(unittest.TestCase):
         self.assertIsNone(rows[2]["request_started_at"])
         self.assertEqual(rows[2]["request_count"], 0)
 
+    def test_migrate_marks_takeout_playlists_as_library_playlists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            legacy_schema = core.SCHEMA.replace(
+                "  is_library_playlist INTEGER NOT NULL DEFAULT 0 "
+                "CHECK (is_library_playlist IN (0, 1)),\n",
+                "",
+            )
+            raw = sqlite3.connect(db_path)
+            try:
+                raw.executescript(legacy_schema)
+                raw.execute("DELETE FROM schema_migrations")
+                raw.execute(
+                    """
+                    INSERT INTO schema_migrations(version, applied_at)
+                    VALUES (6, '2026-07-28T00:00:00Z')
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO playlists(playlist_id, title)
+                    VALUES ('PLtakeout', 'Takeout playlist')
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO videos(video_id, title)
+                    VALUES ('takeoutvid1', 'Takeout video')
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO playlist_items(
+                      playlist_id, position, video_id, source_quality
+                    )
+                    VALUES ('PLtakeout', 1, 'takeoutvid1', 'takeout')
+                    """
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                playlist = conn.execute(
+                    """
+                    SELECT is_library_playlist
+                    FROM playlists
+                    WHERE playlist_id = 'PLtakeout'
+                    """
+                ).fetchone()
+                schema_version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(playlist["is_library_playlist"], 1)
+        self.assertEqual(schema_version, core.SCHEMA_VERSION)
+
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2098,6 +2194,125 @@ class SchemaTests(unittest.TestCase):
                     conn.close()
             finally:
                 core.ROOT = original_root
+
+    def test_save_playlist_missing_status_preserves_playlist_and_members(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, visibility, is_library_playlist
+                        )
+                        VALUES ('PLmissing', 'Missing', 'private', 1)
+                        """
+                    )
+                    core.upsert_video(conn, "keptvideo01", title="Kept video", source="playlist")
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_items(
+                          playlist_id, position, video_id, membership_state,
+                          source_quality, match_type
+                        )
+                        VALUES (
+                          'PLmissing', 1, 'keptvideo01', 'retained_unavailable',
+                          'takeout', 'ambiguous_hidden_candidate'
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scans(
+                          playlist_id, scanned_at, video_count, unavailable_count, scan_status
+                        ) VALUES ('PLmissing', '2026-07-28T00:00:00Z', 1, 0, 'ok')
+                        """
+                    )
+                    self.assertEqual(
+                        core.playlist_missing_status(conn, "PLmissing"),
+                        "removed",
+                    )
+                    counts = core.save_playlist_missing_status(
+                        conn,
+                        "PLmissing",
+                        "removed",
+                        "authenticated YouTube 404",
+                    )
+                self.assertEqual(counts, (1, 0))
+                playlist = conn.execute(
+                    """
+                    SELECT fetch_status, fetch_error
+                    FROM playlists
+                    WHERE playlist_id = 'PLmissing'
+                    """
+                ).fetchone()
+                self.assertEqual(playlist["fetch_status"], "removed")
+                self.assertIn("404", playlist["fetch_error"])
+                scan = conn.execute(
+                    """
+                    SELECT video_count, scan_status
+                    FROM playlist_scans
+                    WHERE playlist_id = 'PLmissing'
+                    """
+                ).fetchone()
+                self.assertEqual(dict(scan), {"video_count": 1, "scan_status": "removed"})
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM playlist_items WHERE playlist_id = 'PLmissing'"
+                    ).fetchone()[0],
+                    1,
+                )
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT title FROM videos WHERE video_id = 'keptvideo01'"
+                    ).fetchone()[0],
+                    "Kept video",
+                )
+                self.assertEqual(core.playlist_scan_candidate_rows(conn), [])
+                self.assertEqual(
+                    [row["playlist_id"] for row in core.playlist_scan_candidate_rows(conn, force=True)],
+                    ["PLmissing"],
+                )
+            finally:
+                conn.close()
+
+    def test_playlist_missing_status_uses_unavailable_without_ownership_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(playlist_id, title, owner_channel_id)
+                        VALUES ('PLforeign', 'Foreign', NULL)
+                        """
+                    )
+                self.assertEqual(
+                    core.playlist_missing_status(conn, "PLforeign"),
+                    "unavailable",
+                )
+            finally:
+                conn.close()
+
+    def test_playlist_missing_status_uses_removed_for_library_playlist(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, visibility, is_library_playlist
+                        )
+                        VALUES ('PLlibrary', 'Library', 'private', 1)
+                        """
+                    )
+                self.assertEqual(
+                    core.playlist_missing_status(conn, "PLlibrary"),
+                    "removed",
+                )
+            finally:
+                conn.close()
 
     def test_recovered_live_video_is_playable(self) -> None:
         original_root = core.ROOT
@@ -3159,6 +3374,112 @@ class WorkerQueueTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(log["level"], "info")
                 self.assertIn("1 videos", log["message"])
+            finally:
+                conn.close()
+
+    def test_playlist_worker_marks_authenticated_missing_playlist_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, visibility, is_library_playlist
+                        )
+                        VALUES ('PLmissing', 'Missing', 'private', 1)
+                        """
+                    )
+                    core.upsert_video(conn, "keptvideo01", title="Kept video", source="playlist")
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_items(playlist_id, position, video_id)
+                        VALUES ('PLmissing', 1, 'keptvideo01')
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scans(
+                          playlist_id, scanned_at, video_count, unavailable_count, scan_status
+                        ) VALUES ('PLmissing', '2026-07-28T00:00:00Z', 1, 0, 'ok')
+                        """
+                    )
+                    core.enqueue_playlist_scan_item(conn, "PLmissing", manual=True)
+            finally:
+                conn.close()
+
+            missing_error = (
+                "[youtube:tab] ERROR - Requested entity was not found. "
+                "Unable to download API page: HTTP Error 404: Not Found"
+            )
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.request_text",
+                    return_value='ytcfg.set({"LOGGED_IN":true});',
+                ),
+                patch(
+                    "yt_library.workers.extract_playlist_metadata",
+                    return_value={"video_count": 0, "has_video_count": False},
+                ),
+                patch(
+                    "yt_library.workers.scan_playlist_ytdlp",
+                    side_effect=RuntimeError(missing_error),
+                ),
+                patch("yt_library.workers.scan_playlist_videos") as scan_web,
+            ):
+                worker._run(
+                    "test-playlist-missing",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            scan_web.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                playlist = conn.execute(
+                    """
+                    SELECT fetch_status
+                    FROM playlists
+                    WHERE playlist_id = 'PLmissing'
+                    """
+                ).fetchone()
+                self.assertEqual(playlist["fetch_status"], "removed")
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM playlist_items WHERE playlist_id = 'PLmissing'"
+                    ).fetchone()[0],
+                    1,
+                )
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT title FROM videos WHERE video_id = 'keptvideo01'"
+                    ).fetchone()[0],
+                    "Kept video",
+                )
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM worker_queue WHERE playlist_id = 'PLmissing'"
+                    ).fetchone()[0],
+                    0,
+                )
+                log = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM playlist_scan_worker_log
+                    WHERE run_id = 'test-playlist-missing'
+                    """
+                ).fetchone()
+                self.assertEqual(log["level"], "info")
+                self.assertIn("marked removed", log["message"])
+                self.assertIn("preserved 1 videos", log["message"])
             finally:
                 conn.close()
 

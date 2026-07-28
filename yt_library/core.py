@@ -105,7 +105,7 @@ LIKED_VIDEOS_PLAYLIST_ID = "LL"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 @dataclass(frozen=True)
@@ -215,6 +215,35 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (6, utc_now()),
+        )
+    if current_version < 7:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(playlists)")
+        }
+        if "is_library_playlist" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE playlists
+                ADD COLUMN is_library_playlist INTEGER NOT NULL DEFAULT 0
+                CHECK (is_library_playlist IN (0, 1))
+                """
+            )
+        conn.execute(
+            """
+            UPDATE playlists
+            SET is_library_playlist = 1
+            WHERE EXISTS (
+              SELECT 1
+              FROM playlist_items pi
+              WHERE pi.playlist_id = playlists.playlist_id
+                AND pi.source_quality = 'takeout'
+            )
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (7, utc_now()),
         )
 
 
@@ -1062,6 +1091,22 @@ class YouTubeAuthenticationError(RuntimeError):
 
 def youtube_page_is_authenticated(html_text: str) -> bool:
     return youtube_page_login_state(html_text) is True
+
+
+def youtube_playlist_is_missing(
+    html_text: str,
+    playlist_metadata: dict[str, Any],
+    ytdlp_error: str,
+) -> bool:
+    if youtube_page_login_state(html_text) is not True:
+        return False
+    if playlist_metadata.get("has_video_count"):
+        return False
+    normalized_error = (ytdlp_error or "").casefold()
+    return (
+        "requested entity was not found" in normalized_error
+        and "http error 404" in normalized_error
+    )
 
 
 def youtube_page_diagnostics(html_text: str, operation: str) -> str:
@@ -4080,13 +4125,15 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
             conn.execute(
                 """
                 INSERT INTO playlists(
-                  playlist_id, title, description, owner_channel_id, visibility, video_count,
+                  playlist_id, title, description, owner_channel_id, visibility,
+                  is_library_playlist, video_count,
                   thumbnail_url, thumbnail_path, fetch_status, fetch_error, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ok', '', ?)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 'ok', '', ?)
                 ON CONFLICT(playlist_id) DO UPDATE SET
                   title=excluded.title,
                   description=excluded.description,
+                  is_library_playlist=1,
                   owner_channel_id=CASE
                     WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN NULL
                     ELSE COALESCE(excluded.owner_channel_id, playlists.owner_channel_id)
@@ -5214,6 +5261,75 @@ def save_playlist_scan_error(
     return video_count, unavailable_count
 
 
+def playlist_missing_status(conn: sqlite3.Connection, playlist_id: str) -> str:
+    row = conn.execute(
+        """
+        SELECT p.is_library_playlist,
+               EXISTS(
+                 SELECT 1
+                 FROM playlist_items pi
+                 WHERE pi.playlist_id = p.playlist_id
+                   AND pi.source_quality = 'takeout'
+               ) AS has_takeout_items
+        FROM playlists p
+        WHERE p.playlist_id = ?
+        """,
+        (playlist_id,),
+    ).fetchone()
+    if not row:
+        return "unavailable"
+    return (
+        "removed"
+        if bool(row["is_library_playlist"]) or bool(row["has_takeout_items"])
+        else "unavailable"
+    )
+
+
+def save_playlist_missing_status(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    status: str,
+    error: str,
+) -> tuple[int, int]:
+    if status not in {"removed", "unavailable"}:
+        raise ValueError(f"Unsupported playlist missing status: {status}")
+    now = utc_now()
+    previous = conn.execute(
+        """
+        SELECT video_count, unavailable_count
+        FROM playlist_scans
+        WHERE playlist_id = ?
+        """,
+        (playlist_id,),
+    ).fetchone()
+    video_count = int(previous["video_count"] or 0) if previous else 0
+    unavailable_count = int(previous["unavailable_count"] or 0) if previous else 0
+    conn.execute(
+        """
+        UPDATE playlists
+        SET fetch_status = ?, fetch_error = ?, updated_at = ?
+        WHERE playlist_id = ?
+        """,
+        (status, error, now, playlist_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO playlist_scans(
+          playlist_id, scanned_at, video_count, unavailable_count, scan_status, scan_error
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(playlist_id) DO UPDATE SET
+          scanned_at=excluded.scanned_at,
+          video_count=playlist_scans.video_count,
+          unavailable_count=playlist_scans.unavailable_count,
+          scan_status=excluded.scan_status,
+          scan_error=excluded.scan_error
+        """,
+        (playlist_id, now, video_count, unavailable_count, status, error),
+    )
+    return video_count, unavailable_count
+
+
 def rebuild_playlist_reconciliation(
     conn: sqlite3.Connection,
     playlist_id: str | None = None,
@@ -5250,6 +5366,8 @@ def playlist_scan_candidate_rows(
     if not force:
         where.append(
             """
+            COALESCE(ps.scan_status, '') NOT IN ('removed', 'unavailable')
+            AND
             (
               ps.playlist_id IS NULL
               OR ps.scan_status <> 'ok'
@@ -6281,7 +6399,14 @@ def admin_status(
                   COUNT(*) AS total_playlists,
                   SUM(CASE WHEN ps.playlist_id IS NULL THEN 1 ELSE 0 END) AS unscanned_playlists,
                   SUM(CASE WHEN ps.scan_status = 'ok' THEN 1 ELSE 0 END) AS scanned_ok,
-                  SUM(CASE WHEN ps.scan_status <> '' AND ps.scan_status <> 'ok' THEN 1 ELSE 0 END) AS scan_errors
+                  SUM(CASE WHEN ps.scan_status = 'removed' THEN 1 ELSE 0 END) AS removed,
+                  SUM(CASE WHEN ps.scan_status = 'unavailable' THEN 1 ELSE 0 END) AS unavailable,
+                  SUM(
+                    CASE
+                      WHEN ps.scan_status NOT IN ('', 'ok', 'removed', 'unavailable') THEN 1
+                      ELSE 0
+                    END
+                  ) AS scan_errors
                 FROM playlists p
                 LEFT JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
                 """
@@ -6642,11 +6767,14 @@ def import_takeout_playlists(args: argparse.Namespace) -> None:
                 continue
             conn.execute(
                 """
-                INSERT INTO playlists(playlist_id, title, visibility, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO playlists(
+                  playlist_id, title, visibility, is_library_playlist, updated_at
+                )
+                VALUES (?, ?, ?, 1, ?)
                 ON CONFLICT(playlist_id) DO UPDATE SET
                   title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
                   visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
+                  is_library_playlist=1,
                   updated_at=excluded.updated_at
                 """,
                 (
@@ -6674,8 +6802,13 @@ def import_takeout_playlists(args: argparse.Namespace) -> None:
                 playlist_title = title_from_file
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO playlists(playlist_id, title, updated_at)
-                    VALUES (?, ?, ?)
+                    INSERT INTO playlists(
+                      playlist_id, title, is_library_playlist, updated_at
+                    )
+                    VALUES (?, ?, 1, ?)
+                    ON CONFLICT(playlist_id) DO UPDATE SET
+                      is_library_playlist=1,
+                      updated_at=excluded.updated_at
                     """,
                     (
                         playlist_id,
@@ -6869,11 +7002,14 @@ def import_takeout_playlists_zip(conn: sqlite3.Connection, zip_path: Path) -> di
                 continue
             conn.execute(
                 """
-                INSERT INTO playlists(playlist_id, title, visibility, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO playlists(
+                  playlist_id, title, visibility, is_library_playlist, updated_at
+                )
+                VALUES (?, ?, ?, 1, ?)
                 ON CONFLICT(playlist_id) DO UPDATE SET
                   title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
                   visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
+                  is_library_playlist=1,
                   updated_at=excluded.updated_at
                 """,
                 (
