@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import random
 import sqlite3
 import threading
 import time
@@ -15,6 +16,10 @@ from .config import (
     config_path,
     configured_archivarix_max_in_flight,
     configured_archivarix_request_interval,
+    configured_archivarix_request_timeout,
+    configured_archivarix_retry_attempts,
+    configured_archivarix_retry_backoff,
+    configured_archivarix_stream_timeout,
     configured_youtube_max_in_flight,
     configured_youtube_request_interval,
     effective_display_timezone,
@@ -22,12 +27,52 @@ from .config import (
 from .core import *
 
 
+_YOUTUBE_AUTH_PROBE_LOCK = threading.Lock()
+_YOUTUBE_AUTH_PROBE_CACHE_KEY: tuple[str, int, int] | None = None
+_YOUTUBE_AUTH_PROBE_CACHE_TIME = 0.0
+_YOUTUBE_AUTH_PROBE_CACHE_VALUE = ""
+_YOUTUBE_AUTH_PROBE_CACHE_SECONDS = 300.0
+
+
+def cached_youtube_authentication_probe(cookie_file: Path) -> str:
+    global _YOUTUBE_AUTH_PROBE_CACHE_KEY
+    global _YOUTUBE_AUTH_PROBE_CACHE_TIME
+    global _YOUTUBE_AUTH_PROBE_CACHE_VALUE
+
+    try:
+        stat = cookie_file.stat()
+        cache_key = (str(cookie_file.resolve()), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        cache_key = (str(cookie_file.resolve()), 0, 0)
+    with _YOUTUBE_AUTH_PROBE_LOCK:
+        now = time.monotonic()
+        if (
+            cache_key == _YOUTUBE_AUTH_PROBE_CACHE_KEY
+            and now - _YOUTUBE_AUTH_PROBE_CACHE_TIME < _YOUTUBE_AUTH_PROBE_CACHE_SECONDS
+        ):
+            return _YOUTUBE_AUTH_PROBE_CACHE_VALUE
+        result = probe_youtube_authentication_ytdlp(cookie_file)
+        _YOUTUBE_AUTH_PROBE_CACHE_KEY = cache_key
+        _YOUTUBE_AUTH_PROBE_CACHE_TIME = time.monotonic()
+        _YOUTUBE_AUTH_PROBE_CACHE_VALUE = result
+        return result
+
+
 def youtube_authentication_debug_message(
     exc: YouTubeAuthenticationError,
     cookie_file: Path,
 ) -> str:
-    parts = [exc.diagnostics, youtube_cookie_diagnostics(cookie_file)]
+    parts = [
+        exc.diagnostics,
+        youtube_cookie_diagnostics(cookie_file),
+        cached_youtube_authentication_probe(cookie_file),
+    ]
     return "YouTube authentication diagnostics: " + " | ".join(part for part in parts if part)
+
+
+def archivarix_retry_delay(base_seconds: float, retry_number: int) -> float:
+    cap = min(30.0, max(0.0, base_seconds) * (2 ** max(0, retry_number - 1)))
+    return random.uniform(cap / 2, cap) if cap else 0.0
 
 
 class _ThreadWorkerLifecycle:
@@ -294,6 +339,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                 except YouTubeAuthenticationError as exc:
                     authentication_error = f"Metadata worker stopped: {exc}"
                     self._set_blocked_reason(authentication_error)
+                    debug_message = youtube_authentication_debug_message(exc, cookie_file)
                     with conn:
                         conn.execute(
                             """
@@ -308,7 +354,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                             conn,
                             run_id,
                             "debug",
-                            youtube_authentication_debug_message(exc, cookie_file),
+                            debug_message,
                             queued_channel_id if metadata_source == "channel" else video_id,
                         )
                     return
@@ -331,6 +377,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                     except YouTubeAuthenticationError as exc:
                         authentication_error = f"Metadata worker stopped: {exc}"
                         self._set_blocked_reason(authentication_error)
+                        debug_message = youtube_authentication_debug_message(exc, cookie_file)
                         with conn:
                             conn.execute(
                                 """
@@ -345,7 +392,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                                 conn,
                                 run_id,
                                 "debug",
-                                youtube_authentication_debug_message(exc, cookie_file),
+                                debug_message,
                                 video_metadata_channel_id(metadata) or video_id,
                             )
                         return
@@ -1001,10 +1048,24 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
         archivarix_cookie_file: Path,
         thumb_dir: Path,
         queue_id: int = 0,
+        request_timeout: float = 15.0,
+        stream_timeout: float = 30.0,
+        retry_attempts: int = 3,
+        retry_backoff_seconds: float = 2.0,
     ) -> dict[str, Any]:
         return self._start_background(
             self._run,
-            lambda run_id: (run_id, db_path, archivarix_cookie_file, thumb_dir, queue_id),
+            lambda run_id: (
+                run_id,
+                db_path,
+                archivarix_cookie_file,
+                thumb_dir,
+                queue_id,
+                request_timeout,
+                stream_timeout,
+                retry_attempts,
+                retry_backoff_seconds,
+            ),
             started_message="Placeholder recovery started",
             already_running_message="Placeholder recovery already running",
             reset_blocked_reason=True,
@@ -1045,6 +1106,10 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
         archivarix_cookie_file: Path,
         thumb_dir: Path,
         queue_id: int = 0,
+        request_timeout: float = 15.0,
+        stream_timeout: float = 30.0,
+        retry_attempts: int = 3,
+        retry_backoff_seconds: float = 2.0,
     ) -> None:
         conn = connect(db_path)
         video_id = ""
@@ -1124,30 +1189,44 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
             archivarix_opener = load_cookie_opener(archivarix_cookie_file)
             status = "not_found"
             error = ""
-            with conn:
-                conn.execute(
-                    """
-                    UPDATE placeholder_recovery_worker_runs
-                    SET request_started_at = ?
-                    WHERE run_id = ?
-                    """,
-                    (utc_now(), run_id),
-                )
-            try:
-                video, thumbnail_url, thumbnail_path, status, error = recover_archivarix_video(
-                    video_id,
-                    thumb_dir,
-                    archivarix_opener,
-                    refresh_metadata=True,
-                    no_api=False,
-                    delay=0.0,
-                    channel_cache={},
-                    stop_event=self._stop,
-                    request_timeout=5,
-                    stream_timeout=5,
-                    thumbnail_timeout=5,
-                    channel_thumbnail_timeout=5,
-                )
+            video: dict[str, Any] | None = None
+            thumbnail_url = ""
+            thumbnail_path = ""
+            attempts = max(1, int(retry_attempts))
+            for attempt in range(1, attempts + 1):
+                with conn:
+                    conn.execute(
+                        """
+                        UPDATE placeholder_recovery_worker_runs
+                        SET request_started_at = ?, request_count = request_count + 1
+                        WHERE run_id = ?
+                        """,
+                        (utc_now(), run_id),
+                    )
+                try:
+                    video, thumbnail_url, thumbnail_path, status, error = recover_archivarix_video(
+                        video_id,
+                        thumb_dir,
+                        archivarix_opener,
+                        refresh_metadata=True,
+                        no_api=False,
+                        delay=0.0,
+                        channel_cache={},
+                        stop_event=self._stop,
+                        request_timeout=request_timeout,
+                        stream_timeout=stream_timeout,
+                        thumbnail_timeout=request_timeout,
+                        channel_thumbnail_timeout=stream_timeout,
+                    )
+                except (
+                    urllib.error.HTTPError,
+                    urllib.error.URLError,
+                    TimeoutError,
+                    json.JSONDecodeError,
+                    OSError,
+                ) as exc:
+                    status = "timeout" if archivarix_timeout_error(exc) else "error"
+                    error = str(exc)
                 if self._stop.is_set():
                     with conn:
                         self._finish_run(
@@ -1159,19 +1238,42 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                         )
                         log_placeholder_recovery_event(conn, run_id, "warn", "Stop requested", video_id)
                     return
-                save_video_recovery(
-                    conn,
-                    video_id,
-                    video,
-                    status,
-                    error,
-                    thumbnail_url,
-                    thumbnail_path,
-                )
-                title = (video or {}).get("title") or title
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-                status = "error"
-                error = str(exc)
+                if status != "timeout" or attempt == attempts:
+                    break
+                delay = archivarix_retry_delay(retry_backoff_seconds, attempt)
+                with conn:
+                    log_placeholder_recovery_event(
+                        conn,
+                        run_id,
+                        "warn",
+                        (
+                            f"Archivarix timeout on attempt {attempt}/{attempts}; "
+                            f"retrying in {delay:.1f} seconds: {error or 'request timed out'}"
+                        ),
+                        video_id,
+                    )
+                if self._stop.wait(delay):
+                    with conn:
+                        self._finish_run(
+                            conn,
+                            run_id,
+                            status="stopped",
+                            message="Stop requested",
+                            recovery_status="timeout",
+                        )
+                        log_placeholder_recovery_event(conn, run_id, "warn", "Stop requested", video_id)
+                    return
+
+            save_video_recovery(
+                conn,
+                video_id,
+                video,
+                status,
+                error,
+                thumbnail_url,
+                thumbnail_path,
+            )
+            title = (video or {}).get("title") or title
 
             with conn:
                 if status == "rate_limited":
@@ -1196,6 +1298,38 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                     )
                     log_placeholder_recovery_event(conn, run_id, "warn", message, video_id)
                     return
+                if status in {"timeout", "error"}:
+                    if status == "timeout":
+                        message = (
+                            f"Archivarix timed out after {attempts} attempts; "
+                            f"queue item retained: {error or 'request timed out'}"
+                        )
+                        reason_code = "timeout"
+                        level = "warn"
+                    else:
+                        message = f"Archivarix request failed; queue item retained: {error or status}"
+                        reason_code = "request_error"
+                        level = "error"
+                    self._set_blocked_reason(message)
+                    set_external_service_block(
+                        conn,
+                        "archivarix",
+                        reason_code,
+                        message,
+                        run_id=run_id,
+                        queue_id=queue_id,
+                    )
+                    self._finish_run(
+                        conn,
+                        run_id,
+                        status="blocked",
+                        message=message,
+                        recovery_status=status,
+                        processed=1,
+                        failed=1,
+                    )
+                    log_placeholder_recovery_event(conn, run_id, level, message, video_id)
+                    return
                 if status == "found":
                     level = "found"
                     message = f"found: {title}"
@@ -1205,9 +1339,6 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                 elif status == "not_found":
                     level = "not found"
                     message = "not found"
-                else:
-                    level = "error"
-                    message = error or status
                 if queue_id:
                     conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
                 rebuild_playlist_reconciliation(conn, playlist_id)
@@ -1251,6 +1382,9 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         self._metadata_workers: dict[int, tuple[MetadataWorker, str]] = {}
         self._placeholder_workers: dict[int, tuple[PlaceholderRecoveryWorker, str]] = {}
         self._archivarix_retry_requested = threading.Event()
+        self._youtube_request_interval = 0.0
+        self._archivarix_request_interval = 0.0
+        self._timing_revision = 0
 
     def stats(self, remaining_count: int) -> dict[str, Any]:
         with self._lock:
@@ -1285,6 +1419,9 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         config_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         config = config_data or {}
+        youtube_interval = configured_youtube_request_interval(config)
+        archivarix_interval = configured_archivarix_request_interval(config)
+
         def prepare_run() -> None:
             self._started_at = utc_now()
             self._started_monotonic = time.monotonic()
@@ -1293,6 +1430,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             self._metadata_workers = {}
             self._placeholder_workers = {}
             self._archivarix_retry_requested.clear()
+            self._set_request_intervals_unlocked(youtube_interval, archivarix_interval)
 
         return self._start_background(
             self._run,
@@ -1307,6 +1445,10 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 configured_youtube_max_in_flight(config),
                 configured_archivarix_request_interval(config),
                 configured_archivarix_max_in_flight(config),
+                configured_archivarix_request_timeout(config),
+                configured_archivarix_stream_timeout(config),
+                configured_archivarix_retry_attempts(config),
+                configured_archivarix_retry_backoff(config),
             ),
             started_message="Worker queue dispatcher started",
             already_running_message="Worker queue dispatcher already running",
@@ -1340,6 +1482,34 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
     def allow_archivarix_retry(self) -> None:
         self._placeholder_block_reason = ""
         self._archivarix_retry_requested.set()
+
+    def _set_request_intervals_unlocked(
+        self,
+        youtube_seconds: float,
+        archivarix_seconds: float,
+    ) -> None:
+        self._youtube_request_interval = max(0.0, float(youtube_seconds))
+        self._archivarix_request_interval = max(0.0, float(archivarix_seconds))
+        self._timing_revision += 1
+
+    def update_request_intervals(
+        self,
+        youtube_seconds: float,
+        archivarix_seconds: float,
+    ) -> dict[str, float]:
+        with self._lock:
+            self._set_request_intervals_unlocked(youtube_seconds, archivarix_seconds)
+            return {
+                "youtube_seconds": self._youtube_request_interval,
+                "archivarix_seconds": self._archivarix_request_interval,
+            }
+
+    def request_intervals(self) -> dict[str, float]:
+        with self._lock:
+            return {
+                "youtube_seconds": self._youtube_request_interval,
+                "archivarix_seconds": self._archivarix_request_interval,
+            }
 
     def _mark_initial_count(self, count: int) -> None:
         with self._lock:
@@ -1421,14 +1591,24 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         youtube_max_in_flight: int,
         archivarix_interval: float,
         archivarix_max_in_flight: int,
+        archivarix_request_timeout: float = 15.0,
+        archivarix_stream_timeout: float = 30.0,
+        archivarix_retry_attempts: int = 3,
+        archivarix_retry_backoff_seconds: float = 2.0,
     ) -> None:
+        with self._lock:
+            if self._timing_revision == 0:
+                self._set_request_intervals_unlocked(youtube_interval, archivarix_interval)
         conn = connect(db_path)
         try:
             self._mark_initial_count(worker_queue_count(conn))
         finally:
             conn.close()
+        last_youtube_launch: float | None = None
+        last_archivarix_launch: float | None = None
         next_youtube_launch = time.monotonic()
-        next_archivarix_launch = time.monotonic()
+        next_archivarix_launch = next_youtube_launch
+        timing_revision = -1
         conn = connect(db_path)
         try:
             block = external_service_block(conn, "archivarix")
@@ -1482,6 +1662,21 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 with self._lock:
                     metadata_queue_ids = set(self._metadata_workers)
                     placeholder_queue_ids = set(self._placeholder_workers)
+                    current_youtube_interval = self._youtube_request_interval
+                    current_archivarix_interval = self._archivarix_request_interval
+                    current_timing_revision = self._timing_revision
+                if current_timing_revision != timing_revision:
+                    next_youtube_launch = (
+                        last_youtube_launch + current_youtube_interval
+                        if last_youtube_launch is not None
+                        else now
+                    )
+                    next_archivarix_launch = (
+                        last_archivarix_launch + current_archivarix_interval
+                        if last_archivarix_launch is not None
+                        else now
+                    )
+                    timing_revision = current_timing_revision
 
                 if (
                     not youtube_blocked
@@ -1506,7 +1701,8 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         if result.get("started"):
                             with self._lock:
                                 self._metadata_workers[queue_id] = (worker, str(result.get("run_id") or ""))
-                            next_youtube_launch = now + youtube_interval
+                            last_youtube_launch = now
+                            next_youtube_launch = now + current_youtube_interval
 
                 if (
                     not archivarix_blocked
@@ -1522,6 +1718,10 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                             archivarix_cookie_file,
                             archivarix_thumb_dir,
                             queue_id=queue_id,
+                            request_timeout=archivarix_request_timeout,
+                            stream_timeout=archivarix_stream_timeout,
+                            retry_attempts=archivarix_retry_attempts,
+                            retry_backoff_seconds=archivarix_retry_backoff_seconds,
                         )
                         if result.get("blocked"):
                             reason = str(result.get("message") or "unavailable")
@@ -1547,7 +1747,8 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                                     worker,
                                     str(result.get("run_id") or ""),
                                 )
-                            next_archivarix_launch = now + archivarix_interval
+                            last_archivarix_launch = now
+                            next_archivarix_launch = now + current_archivarix_interval
 
                 with self._lock:
                     has_active = bool(self._metadata_workers or self._placeholder_workers)

@@ -18,6 +18,10 @@ from yt_library import core
 from yt_library.config import (
     configured_archivarix_max_in_flight,
     configured_archivarix_request_interval,
+    configured_archivarix_request_timeout,
+    configured_archivarix_retry_attempts,
+    configured_archivarix_retry_backoff,
+    configured_archivarix_stream_timeout,
     configured_display_timezone,
     configured_youtube_max_in_flight,
     configured_youtube_request_interval,
@@ -149,6 +153,15 @@ class CoreHelperTests(unittest.TestCase):
         )
         self.assertEqual(core.archivarix_quota_message_from_text("ordinary response"), "")
 
+    def test_archivarix_timeout_errors_are_classified(self) -> None:
+        self.assertTrue(core.archivarix_timeout_error(TimeoutError("read timed out")))
+        self.assertTrue(
+            core.archivarix_timeout_error(
+                urllib.error.URLError(TimeoutError("connection timed out"))
+            )
+        )
+        self.assertFalse(core.archivarix_timeout_error(OSError("connection reset")))
+
     def test_youtube_session_status_requires_a_current_login_cookie(self) -> None:
         class Cookie:
             def __init__(self, name: str, domain: str, expires: int | None) -> None:
@@ -228,6 +241,59 @@ class CoreHelperTests(unittest.TestCase):
         self.assertIn("retry_after=120", diagnostics)
         self.assertIn("content_type=text/html", diagnostics)
         self.assertNotIn("private-id", diagnostics)
+
+    def test_temporary_ytdlp_cookie_file_does_not_modify_configured_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cookie_file = Path(temp_dir) / "cookies.txt"
+            cookie_file.write_text("original cookies", encoding="utf-8")
+
+            with core.temporary_ytdlp_cookie_file(cookie_file) as working_cookie_file:
+                self.assertIsNotNone(working_cookie_file)
+                self.assertNotEqual(working_cookie_file, cookie_file)
+                self.assertEqual(working_cookie_file.read_text(encoding="utf-8"), "original cookies")
+                working_cookie_file.write_text("yt-dlp updates", encoding="utf-8")
+
+            self.assertEqual(cookie_file.read_text(encoding="utf-8"), "original cookies")
+            self.assertFalse(working_cookie_file.exists())
+
+    def test_youtube_ytdlp_probe_diagnostics_classify_cookie_rotation(self) -> None:
+        diagnostics = core.youtube_ytdlp_probe_diagnostics(
+            [
+                "The provided YouTube account cookies are no longer valid. "
+                "They have likely been rotated in the browser.",
+                "web_safari player response playability status: LOGIN_REQUIRED",
+            ],
+            succeeded=False,
+            deno_available=True,
+            ejs_available=True,
+        )
+
+        self.assertIn("yt_dlp_probe=cookies_rotated", diagnostics)
+        self.assertIn("deno=available", diagnostics)
+        self.assertIn("ejs=available", diagnostics)
+        self.assertIn("clients=web_safari", diagnostics)
+
+    def test_youtube_ytdlp_probe_diagnostics_classify_bot_challenge(self) -> None:
+        diagnostics = core.youtube_ytdlp_probe_diagnostics(
+            ["ERROR: Sign in to confirm you're not a bot"],
+            succeeded=False,
+            deno_available=False,
+            ejs_available=False,
+        )
+
+        self.assertIn("yt_dlp_probe=bot_challenge", diagnostics)
+        self.assertIn("deno=missing", diagnostics)
+        self.assertIn("ejs=missing", diagnostics)
+
+    def test_youtube_ytdlp_probe_diagnostics_classify_rejected_login(self) -> None:
+        diagnostics = core.youtube_ytdlp_probe_diagnostics(
+            ["Login details are needed to download this content"],
+            succeeded=False,
+            deno_available=True,
+            ejs_available=True,
+        )
+
+        self.assertIn("yt_dlp_probe=login_required", diagnostics)
 
     def test_history_date_from_relative_and_month_labels(self) -> None:
         today = date(2026, 7, 6)
@@ -1280,7 +1346,7 @@ class SchemaTests(unittest.TestCase):
             try:
                 rows = conn.execute(
                     """
-                    SELECT run_id, request_started_at
+                    SELECT run_id, request_started_at, request_count
                     FROM placeholder_recovery_worker_runs
                     ORDER BY started_at
                     """
@@ -1289,8 +1355,11 @@ class SchemaTests(unittest.TestCase):
                 conn.close()
 
         self.assertEqual(rows[0]["request_started_at"], "2026-07-14T01:00:00Z")
+        self.assertEqual(rows[0]["request_count"], 1)
         self.assertIsNone(rows[1]["request_started_at"])
+        self.assertEqual(rows[1]["request_count"], 0)
         self.assertIsNone(rows[2]["request_started_at"])
+        self.assertEqual(rows[2]["request_count"], 0)
 
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT
@@ -1679,6 +1748,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(configured_youtube_max_in_flight(config), 10)
             self.assertEqual(configured_archivarix_request_interval(config), 3.0)
             self.assertEqual(configured_archivarix_max_in_flight(config), 1)
+            self.assertEqual(configured_archivarix_request_timeout(config), 15.0)
+            self.assertEqual(configured_archivarix_stream_timeout(config), 30.0)
+            self.assertEqual(configured_archivarix_retry_attempts(config), 3)
+            self.assertEqual(configured_archivarix_retry_backoff(config), 2.0)
             self.assertNotIn("cookies", config)
             self.assertNotIn("pockettube_export", config)
             self.assertEqual(
@@ -1702,6 +1775,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 5000}), 100)
         self.assertEqual(configured_archivarix_request_interval({"archivarix_request_interval_seconds": -1}), 0.0)
         self.assertEqual(configured_archivarix_max_in_flight({"archivarix_max_in_flight": 5000}), 20)
+        self.assertEqual(configured_archivarix_request_timeout({"archivarix_request_timeout_seconds": 0}), 1.0)
+        self.assertEqual(configured_archivarix_stream_timeout({"archivarix_stream_timeout_seconds": 5000}), 300.0)
+        self.assertEqual(configured_archivarix_retry_attempts({"archivarix_retry_attempts": 0}), 1)
+        self.assertEqual(configured_archivarix_retry_attempts({"archivarix_retry_attempts": 500}), 10)
+        self.assertEqual(configured_archivarix_retry_backoff({"archivarix_retry_backoff_seconds": -1}), 0.0)
 
     def test_migrate_creates_default_config_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1722,6 +1800,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["youtube_max_in_flight"], 10)
             self.assertEqual(payload["archivarix_request_interval_seconds"], 3.0)
             self.assertEqual(payload["archivarix_max_in_flight"], 1)
+            self.assertEqual(payload["archivarix_request_timeout_seconds"], 15.0)
+            self.assertEqual(payload["archivarix_stream_timeout_seconds"], 30.0)
+            self.assertEqual(payload["archivarix_retry_attempts"], 3)
+            self.assertEqual(payload["archivarix_retry_backoff_seconds"], 2.0)
             self.assertNotIn("cookies", payload)
             self.assertNotIn("pockettube_export", payload)
 
@@ -1840,6 +1922,77 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(core.worker_queue_count(conn), 0)
             finally:
                 conn.close()
+
+    def test_dispatcher_request_interval_changes_apply_during_active_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    for index in range(2):
+                        core.enqueue_metadata_item(
+                            conn,
+                            video_id=f"retimed{index}",
+                            current_title=f"Retimed {index}",
+                            metadata_source="history",
+                            priority=index,
+                        )
+            finally:
+                conn.close()
+
+            first_started = threading.Event()
+            second_started = threading.Event()
+            started_at: list[float] = []
+
+            def fetch_metadata(_opener, video_id, _thumb_dir, **_kwargs):
+                started_at.append(time.monotonic())
+                if len(started_at) == 1:
+                    first_started.set()
+                else:
+                    second_started.set()
+                return {
+                    "video_id": video_id,
+                    "title": video_id,
+                    "duration_text": "1:00",
+                    "yt_status": "OK",
+                }
+
+            dispatcher = WorkerQueueDispatcher()
+            config = load_config(Path(temp_dir) / "config.json")
+            config.update(
+                {
+                    "youtube_request_interval_seconds": 10.0,
+                    "youtube_max_in_flight": 1,
+                }
+            )
+            with (
+                patch("yt_library.workers.fetch_watch_metadata", side_effect=fetch_metadata),
+                patch("yt_library.workers.fetch_new_channel_metadata_if_needed", return_value=({}, "", "")),
+            ):
+                result = dispatcher.start(
+                    db_path,
+                    Path(temp_dir) / "missing-youtube-cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    config,
+                )
+                self.assertTrue(result["started"])
+                self.assertTrue(first_started.wait(1))
+                self.assertFalse(second_started.wait(0.2))
+
+                intervals = dispatcher.update_request_intervals(0.0, 2.5)
+                self.assertEqual(
+                    intervals,
+                    {"youtube_seconds": 0.0, "archivarix_seconds": 2.5},
+                )
+                self.assertTrue(second_started.wait(1))
+
+                deadline = time.time() + 2
+                while dispatcher.is_running() and time.time() < deadline:
+                    time.sleep(0.02)
+
+            self.assertFalse(dispatcher.is_running())
+            self.assertEqual(len(started_at), 2)
+            self.assertLess(started_at[1] - started_at[0], 2.0)
 
     def test_youtube_authentication_block_does_not_stop_placeholder_work(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2015,6 +2168,12 @@ class WorkerQueueTests(unittest.TestCase):
                     "yt_library.workers.youtube_session_status",
                     return_value=(True, ""),
                 ) as session_status,
+                patch(
+                    "yt_library.workers.cached_youtube_authentication_probe",
+                    return_value=(
+                        "yt_dlp_probe=cookies_rotated; deno=available; ejs=available"
+                    ),
+                ) as ytdlp_probe,
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
                 patch(
                     "yt_library.workers.fetch_watch_metadata",
@@ -2042,6 +2201,7 @@ class WorkerQueueTests(unittest.TestCase):
 
             self.assertEqual(session_status.call_count, 2)
             self.assertEqual(fetch_metadata.call_count, 2)
+            ytdlp_probe.assert_called_once_with(cookie_file)
             self.assertIn("not accepted", worker.blocked_reason())
             conn = core.connect(db_path)
             try:
@@ -2064,6 +2224,7 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(debug_log["video_id"], "authcheck1")
                 self.assertIn("operation=watch page", debug_log["message"])
                 self.assertIn("logged_in=false", debug_log["message"])
+                self.assertIn("yt_dlp_probe=cookies_rotated", debug_log["message"])
             finally:
                 conn.close()
 
@@ -2591,7 +2752,7 @@ class WorkerQueueTests(unittest.TestCase):
                 run = conn.execute(
                     """
                     SELECT status, processed, failed, recovery_status, video_id,
-                           request_started_at, message
+                           request_started_at, request_count, message
                     FROM placeholder_recovery_worker_runs
                     WHERE run_id = ?
                     """,
@@ -2606,6 +2767,7 @@ class WorkerQueueTests(unittest.TestCase):
                         "rate_limited",
                         "abc12345678",
                         run["request_started_at"],
+                        1,
                         "Archivarix daily search limit reached",
                     ),
                 )
@@ -2631,6 +2793,190 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(
                     status["archivarixRequestCounts"]["latest_at"],
                     run["request_started_at"],
+                )
+            finally:
+                conn.close()
+
+    def test_placeholder_timeout_retries_then_completes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                candidate = {
+                    "video_id": "abc12345678",
+                    "title": "Unavailable example",
+                    "playlist_count": 1,
+                }
+                with patch("yt_library.core.playlist_placeholder_recovery_rows", return_value=[candidate]):
+                    with conn:
+                        core.enqueue_placeholder_recovery_targets(conn, "PLexample")
+            finally:
+                conn.close()
+
+            worker = PlaceholderRecoveryWorker()
+            with (
+                patch("yt_library.workers.archivarix_session_status", return_value=(True, "")),
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.recover_archivarix_video",
+                    side_effect=[
+                        (None, "", "", "timeout", "The read operation timed out"),
+                        (None, "", "", "not_found", ""),
+                    ],
+                ) as recover,
+            ):
+                worker._run(
+                    "test-placeholder-timeout-recovered",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    retry_attempts=3,
+                    retry_backoff_seconds=0,
+                )
+
+            self.assertEqual(recover.call_count, 2)
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 0)
+                run = conn.execute(
+                    """
+                    SELECT status, processed, failed, recovery_status, request_count, message
+                    FROM placeholder_recovery_worker_runs
+                    WHERE run_id = ?
+                    """,
+                    ("test-placeholder-timeout-recovered",),
+                ).fetchone()
+                self.assertEqual(
+                    tuple(run),
+                    ("complete", 1, 0, "not_found", 2, "not found"),
+                )
+                logs = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM placeholder_recovery_worker_log
+                    WHERE run_id = ?
+                    ORDER BY id
+                    """,
+                    ("test-placeholder-timeout-recovered",),
+                ).fetchall()
+                self.assertEqual(logs[1]["level"], "warn")
+                self.assertIn("attempt 1/3", logs[1]["message"])
+                self.assertEqual(logs[-1]["message"], "not found")
+                self.assertEqual(core.admin_status(db_path)["archivarixRequestCounts"]["total"], 2)
+            finally:
+                conn.close()
+
+    def test_placeholder_timeout_exhaustion_keeps_queue_entry_and_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                candidate = {
+                    "video_id": "abc12345678",
+                    "title": "Unavailable example",
+                    "playlist_count": 1,
+                }
+                with patch("yt_library.core.playlist_placeholder_recovery_rows", return_value=[candidate]):
+                    with conn:
+                        core.enqueue_placeholder_recovery_targets(conn, "PLexample")
+            finally:
+                conn.close()
+
+            worker = PlaceholderRecoveryWorker()
+            with (
+                patch("yt_library.workers.archivarix_session_status", return_value=(True, "")),
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.recover_archivarix_video",
+                    return_value=(None, "", "", "timeout", "The read operation timed out"),
+                ) as recover,
+            ):
+                worker._run(
+                    "test-placeholder-timeout-exhausted",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    retry_attempts=3,
+                    retry_backoff_seconds=0,
+                )
+
+            self.assertEqual(recover.call_count, 3)
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
+                run = conn.execute(
+                    """
+                    SELECT status, processed, failed, recovery_status, request_count, message
+                    FROM placeholder_recovery_worker_runs
+                    WHERE run_id = ?
+                    """,
+                    ("test-placeholder-timeout-exhausted",),
+                ).fetchone()
+                self.assertEqual(
+                    tuple(run)[:5],
+                    ("blocked", 1, 1, "timeout", 3),
+                )
+                self.assertIn("timed out after 3 attempts", run["message"])
+                block = core.external_service_block(conn, "archivarix")
+                self.assertTrue(block["blocked"])
+                self.assertEqual(block["reason_code"], "timeout")
+                self.assertEqual(block["queue_id"], 1)
+                self.assertEqual(worker.blocked_reason(), run["message"])
+                self.assertEqual(core.admin_status(db_path)["archivarixRequestCounts"]["total"], 3)
+            finally:
+                conn.close()
+
+    def test_placeholder_request_error_keeps_queue_entry_and_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                candidate = {
+                    "video_id": "abc12345678",
+                    "title": "Unavailable example",
+                    "playlist_count": 1,
+                }
+                with patch("yt_library.core.playlist_placeholder_recovery_rows", return_value=[candidate]):
+                    with conn:
+                        core.enqueue_placeholder_recovery_targets(conn, "PLexample")
+            finally:
+                conn.close()
+
+            worker = PlaceholderRecoveryWorker()
+            with (
+                patch("yt_library.workers.archivarix_session_status", return_value=(True, "")),
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.recover_archivarix_video",
+                    return_value=(None, "", "", "error", "connection reset"),
+                ) as recover,
+            ):
+                worker._run(
+                    "test-placeholder-request-error",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    retry_attempts=3,
+                    retry_backoff_seconds=0,
+                )
+
+            recover.assert_called_once()
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
+                run = conn.execute(
+                    """
+                    SELECT status, recovery_status, request_count, message
+                    FROM placeholder_recovery_worker_runs
+                    WHERE run_id = ?
+                    """,
+                    ("test-placeholder-request-error",),
+                ).fetchone()
+                self.assertEqual(tuple(run)[:3], ("blocked", "error", 1))
+                self.assertIn("queue item retained", run["message"])
+                self.assertEqual(
+                    core.external_service_block(conn, "archivarix")["reason_code"],
+                    "request_error",
                 )
             finally:
                 conn.close()

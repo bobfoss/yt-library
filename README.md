@@ -36,6 +36,10 @@ python -m pip install -r requirements.txt
 ```
 
 Keep a Netscape-format YouTube cookie file in the project directory or pass its path with `--cookies`.
+Authenticated yt-dlp calls use a temporary copy so yt-dlp cannot rewrite the
+configured cookie export. Install Deno for yt-dlp's recommended JavaScript
+challenge runtime; the `yt-dlp[default]` dependency includes the matching EJS
+challenge scripts.
 
 ## Run Locally
 
@@ -62,7 +66,11 @@ in the generated config file:
   "youtube_request_interval_seconds": 5.0,
   "youtube_max_in_flight": 10,
   "archivarix_request_interval_seconds": 3.0,
-  "archivarix_max_in_flight": 1
+  "archivarix_max_in_flight": 1,
+  "archivarix_request_timeout_seconds": 15.0,
+  "archivarix_stream_timeout_seconds": 30.0,
+  "archivarix_retry_attempts": 3,
+  "archivarix_retry_backoff_seconds": 2.0
 }
 ```
 
@@ -77,6 +85,12 @@ load and saves it to the config file.
 The request interval settings control how often each site's next task may launch.
 The matching `max_in_flight` settings cap concurrent tasks; long Archivarix
 lookups therefore do not delay the YouTube launch cadence.
+The Admin worker queue controls expose both request intervals. Changes are saved
+to the config file and retime an active dispatcher without restarting it.
+When YouTube rejects an authenticated request, the worker stops its YouTube task
+group and records one cached, low-volume yt-dlp authentication probe in the debug
+log. Public-only yt-dlp clients are diagnostic only and are not used to complete
+authenticated metadata tasks that require private access or reaction state.
 
 Open:
 

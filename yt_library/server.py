@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import http.server
 import json
+import math
 import posixpath
 import sys
 import time
@@ -13,7 +14,15 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .config import configured_display_timezone, effective_display_timezone, ensure_config_file, ensure_directory, save_config
+from .config import (
+    configured_archivarix_request_interval,
+    configured_display_timezone,
+    configured_youtube_request_interval,
+    effective_display_timezone,
+    ensure_config_file,
+    ensure_directory,
+    save_config,
+)
 from .core import *
 from .queries import (
     channel_detail_data,
@@ -376,17 +385,17 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 worker_queue_limit = max(0, min(10000, int((params.get("queue_limit") or ["500"])[0] or 500)))
             except ValueError:
                 worker_queue_limit = 500
-            self.send_json(
-                admin_status(
-                    self.db_path,
-                    METADATA_WORKER,
-                    PLAYLIST_SCAN_WORKER,
-                    LIVE_HISTORY_WORKER,
-                    WORKER_QUEUE_DISPATCHER,
-                    include_logs,
-                    worker_queue_limit,
-                )
+            data = admin_status(
+                self.db_path,
+                METADATA_WORKER,
+                PLAYLIST_SCAN_WORKER,
+                LIVE_HISTORY_WORKER,
+                WORKER_QUEUE_DISPATCHER,
+                include_logs,
+                worker_queue_limit,
             )
+            data["requestIntervals"] = self.request_interval_settings()
+            self.send_json(data)
             return
         if parsed.path == "/api/admin/queue/events":
             self.stream_worker_queue_events()
@@ -445,6 +454,42 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             finally:
                 conn.close()
             self.send_json({"ok": True, "displayTimezone": value})
+            return
+        if parsed.path == "/api/admin/request-intervals":
+            try:
+                youtube_seconds = float(
+                    (params.get("youtube_seconds") or [""])[0]
+                )
+                archivarix_seconds = float(
+                    (params.get("archivarix_seconds") or [""])[0]
+                )
+            except ValueError:
+                self.send_json({"error": "Request delays must be numbers"}, status=400)
+                return
+            if (
+                not math.isfinite(youtube_seconds)
+                or not math.isfinite(archivarix_seconds)
+                or youtube_seconds < 0
+                or archivarix_seconds < 0
+            ):
+                self.send_json(
+                    {"error": "Request delays must be finite and zero or greater"},
+                    status=400,
+                )
+                return
+            self.config_data["youtube_request_interval_seconds"] = youtube_seconds
+            self.config_data["archivarix_request_interval_seconds"] = archivarix_seconds
+            save_config(self.config_data)
+            active_intervals = WORKER_QUEUE_DISPATCHER.update_request_intervals(
+                youtube_seconds,
+                archivarix_seconds,
+            )
+            self.send_json(
+                {
+                    "ok": True,
+                    "requestIntervals": active_intervals,
+                }
+            )
             return
         if parsed.path == "/api/admin/metadata/start":
             stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
@@ -792,6 +837,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
 
     def display_timezone_name(self, conn: sqlite3.Connection) -> str:
         return configured_display_timezone(self.config_data)
+
+    def request_interval_settings(self) -> dict[str, float]:
+        return {
+            "youtube_seconds": configured_youtube_request_interval(self.config_data),
+            "archivarix_seconds": configured_archivarix_request_interval(self.config_data),
+        }
 
     def send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")

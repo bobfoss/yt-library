@@ -26,6 +26,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "youtube_max_in_flight": 10,
     "archivarix_request_interval_seconds": 3.0,
     "archivarix_max_in_flight": 1,
+    "archivarix_request_timeout_seconds": 15.0,
+    "archivarix_stream_timeout_seconds": 30.0,
+    "archivarix_retry_attempts": 3,
+    "archivarix_retry_backoff_seconds": 2.0,
 }
 
 
@@ -64,6 +68,62 @@ def configured_archivarix_request_interval(config: dict[str, Any]) -> float:
 
 def configured_archivarix_max_in_flight(config: dict[str, Any]) -> int:
     return max(1, min(20, int(config.get("archivarix_max_in_flight", DEFAULT_CONFIG["archivarix_max_in_flight"]))))
+
+
+def configured_archivarix_request_timeout(config: dict[str, Any]) -> float:
+    return max(
+        1.0,
+        min(
+            120.0,
+            float(
+                config.get(
+                    "archivarix_request_timeout_seconds",
+                    DEFAULT_CONFIG["archivarix_request_timeout_seconds"],
+                )
+            ),
+        ),
+    )
+
+
+def configured_archivarix_stream_timeout(config: dict[str, Any]) -> float:
+    return max(
+        1.0,
+        min(
+            300.0,
+            float(
+                config.get(
+                    "archivarix_stream_timeout_seconds",
+                    DEFAULT_CONFIG["archivarix_stream_timeout_seconds"],
+                )
+            ),
+        ),
+    )
+
+
+def configured_archivarix_retry_attempts(config: dict[str, Any]) -> int:
+    return max(
+        1,
+        min(
+            10,
+            int(config.get("archivarix_retry_attempts", DEFAULT_CONFIG["archivarix_retry_attempts"])),
+        ),
+    )
+
+
+def configured_archivarix_retry_backoff(config: dict[str, Any]) -> float:
+    return max(
+        0.0,
+        min(
+            60.0,
+            float(
+                config.get(
+                    "archivarix_retry_backoff_seconds",
+                    DEFAULT_CONFIG["archivarix_retry_backoff_seconds"],
+                )
+            ),
+        ),
+    )
+
 
 PATH_KEYS = {
     "database",

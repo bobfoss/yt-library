@@ -9,6 +9,7 @@ import hashlib
 import html
 import http.cookiejar
 import http.server
+import importlib.metadata
 import io
 import json
 import mimetypes
@@ -26,6 +27,8 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,7 +101,7 @@ LIKED_VIDEOS_PLAYLIST_ID = "LL"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -184,6 +187,30 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (5, utc_now()),
+        )
+    if current_version < 6:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(placeholder_recovery_worker_runs)")
+        }
+        if "request_count" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE placeholder_recovery_worker_runs
+                ADD COLUMN request_count INTEGER NOT NULL DEFAULT 0
+                """
+            )
+        conn.execute(
+            """
+            UPDATE placeholder_recovery_worker_runs
+            SET request_count = 1
+            WHERE request_started_at IS NOT NULL
+              AND request_count = 0
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (6, utc_now()),
         )
 
 
@@ -793,6 +820,17 @@ def archivarix_session_status(cookie_file: Path, now: float | None = None) -> tu
     return True, ""
 
 
+def archivarix_timeout_error(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, TimeoutError):
+            return True
+        return "timed out" in str(reason).lower()
+    return "timed out" in str(exc).lower()
+
+
 _YOUTUBE_AUTH_COOKIE_NAMES = {
     "SID",
     "HSID",
@@ -831,6 +869,125 @@ def youtube_cookie_diagnostics(cookie_file: Path, now: float | None = None) -> s
     return (
         f"auth_cookies={len(sessions)}; unexpired={len(unexpired)}; "
         f"non_expiring_auth_cookies={non_expiring_auth_cookies}; earliest_expiry={earliest_expiry}"
+    )
+
+
+@contextmanager
+def temporary_ytdlp_cookie_file(cookie_file: Path) -> Iterator[Path | None]:
+    """Give yt-dlp a disposable cookie jar so it cannot rewrite the configured export."""
+    if not cookie_file.exists():
+        yield None
+        return
+    with tempfile.TemporaryDirectory(prefix="yt-library-ytdlp-") as temp_dir:
+        working_cookie_file = Path(temp_dir) / "cookies.txt"
+        shutil.copy2(cookie_file, working_cookie_file)
+        yield working_cookie_file
+
+
+def youtube_ytdlp_probe_diagnostics(
+    messages: list[str],
+    *,
+    succeeded: bool,
+    deno_available: bool,
+    ejs_available: bool,
+) -> str:
+    combined = "\n".join(messages)
+    lowered = combined.lower()
+    if "cookies are no longer valid" in lowered or "likely been rotated" in lowered:
+        status = "cookies_rotated"
+    elif (
+        "confirm you're not a bot" in lowered
+        or "confirm you’re not a bot" in lowered
+        or "protect our community" in lowered
+        or "captcha" in lowered
+    ):
+        status = "bot_challenge"
+    elif (
+        "login_required" in lowered
+        or "login details are needed" in lowered
+        or "sign in" in lowered
+    ):
+        status = "login_required"
+    elif succeeded:
+        status = "authenticated"
+    else:
+        status = "error"
+    clients: list[str] = []
+    for client in re.findall(
+        r"\b([a-z][a-z0-9_]*) player response playability status",
+        lowered,
+    ):
+        if client not in clients:
+            clients.append(client)
+    parts = [
+        f"yt_dlp_probe={status}",
+        f"deno={'available' if deno_available else 'missing'}",
+        f"ejs={'available' if ejs_available else 'missing'}",
+    ]
+    if clients:
+        parts.append(f"clients={','.join(clients)}")
+    return "; ".join(parts)
+
+
+def probe_youtube_authentication_ytdlp(cookie_file: Path) -> str:
+    """Use yt-dlp's authenticated history extractor as a low-volume independent probe."""
+    try:
+        import yt_dlp  # type: ignore
+    except ImportError:
+        return "yt_dlp_probe=unavailable; reason=not_installed"
+
+    messages: list[str] = []
+
+    class YtdlpProbeLogger:
+        @staticmethod
+        def _append(message: str) -> None:
+            if len(messages) < 250:
+                messages.append(str(message)[:2000])
+
+        def debug(self, message: str) -> None:
+            self._append(message)
+
+        def info(self, message: str) -> None:
+            self._append(message)
+
+        def warning(self, message: str) -> None:
+            self._append(message)
+
+        def error(self, message: str) -> None:
+            self._append(message)
+
+    deno_available = bool(shutil.which("deno"))
+    try:
+        importlib.metadata.version("yt-dlp-ejs")
+        ejs_available = True
+    except importlib.metadata.PackageNotFoundError:
+        ejs_available = False
+    succeeded = False
+    try:
+        with temporary_ytdlp_cookie_file(cookie_file) as working_cookie_file:
+            options = {
+                "cookiefile": str(working_cookie_file) if working_cookie_file else None,
+                "extract_flat": "in_playlist",
+                "extractor_retries": 0,
+                "fragment_retries": 0,
+                "logger": YtdlpProbeLogger(),
+                "noprogress": True,
+                "playlistend": 1,
+                "quiet": True,
+                "retries": 0,
+                "skip_download": True,
+                "socket_timeout": 15,
+            }
+            with yt_dlp.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(":ythistory", download=False)
+            succeeded = bool(info)
+    except Exception as exc:
+        messages.append(str(exc)[:2000])
+    return youtube_ytdlp_probe_diagnostics(
+        messages,
+        succeeded=succeeded,
+        deno_available=deno_available,
+        ejs_available=ejs_available,
     )
 
 
@@ -3341,17 +3498,18 @@ def scan_playlist_ytdlp(
         def error(self, message: str) -> None:
             messages.append(message)
 
-    options = {
-        "cookiefile": str(cookie_file) if cookie_file.exists() else None,
-        "extract_flat": "in_playlist",
-        "ignoreerrors": True,
-        "logger": YtdlpLogger(),
-        "no_warnings": True,
-        "quiet": True,
-        "skip_download": True,
-    }
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=False)
+    with temporary_ytdlp_cookie_file(cookie_file) as working_cookie_file:
+        options = {
+            "cookiefile": str(working_cookie_file) if working_cookie_file else None,
+            "extract_flat": "in_playlist",
+            "ignoreerrors": True,
+            "logger": YtdlpLogger(),
+            "no_warnings": True,
+            "quiet": True,
+            "skip_download": True,
+        }
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
     if not info:
         text = "\n".join(messages).strip()
         raise RuntimeError(text or "yt-dlp returned no playlist data")
@@ -3413,18 +3571,19 @@ def fetch_youtube_history_ytdlp(cookie_file: Path, limit: int = 100, start: int 
         def error(self, msg: str) -> None:
             pass
 
-    options = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "extract_flat": "in_playlist",
-        "playliststart": max(1, start),
-        "playlistend": max(1, start) + max(1, limit) - 1,
-        "cookiefile": str(cookie_file) if cookie_file.exists() else None,
-        "logger": YtdlpLogger(),
-    }
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(":ythistory", download=False)
+    with temporary_ytdlp_cookie_file(cookie_file) as working_cookie_file:
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extract_flat": "in_playlist",
+            "playliststart": max(1, start),
+            "playlistend": max(1, start) + max(1, limit) - 1,
+            "cookiefile": str(working_cookie_file) if working_cookie_file else None,
+            "logger": YtdlpLogger(),
+        }
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(":ythistory", download=False)
     entries = (info or {}).get("entries") or []
     rows: list[dict[str, Any]] = []
     for entry in entries:
@@ -4274,7 +4433,7 @@ def recover_archivarix_video(
                 status = "error"
                 error = str(exc)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-            status = "error"
+            status = "timeout" if archivarix_timeout_error(exc) else "error"
             error = str(exc)
     if video:
         if stop_event and stop_event.is_set():
@@ -5836,11 +5995,14 @@ def admin_status(
             conn.execute(
                 """
                 SELECT
-                  COUNT(*) AS total,
-                  SUM(CASE WHEN request_started_at >= ? THEN 1 ELSE 0 END) AS last_24_hours,
+                  COALESCE(SUM(request_count), 0) AS total,
+                  COALESCE(
+                    SUM(CASE WHEN request_started_at >= ? THEN request_count ELSE 0 END),
+                    0
+                  ) AS last_24_hours,
                   COALESCE(MAX(request_started_at), '') AS latest_at
                 FROM placeholder_recovery_worker_runs
-                WHERE request_started_at IS NOT NULL
+                WHERE request_count > 0
                 """,
                 (utc_days_ago(1),),
             ).fetchone()

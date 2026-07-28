@@ -54,6 +54,8 @@
     input, select { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 8px 10px; font: inherit; width: 120px; }
     .wide-input { width: min(720px, calc(100vw - 360px)); }
     .timezone-input { width: 260px; }
+    .delay-input { width: 150px; }
+    .settings-status { align-self: center; min-width: 64px; }
     label.checkbox { display: flex; flex-direction: row; align-items: center; gap: 7px; padding-bottom: 8px; }
     label.checkbox input { width: auto; }
     button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 9px 12px; font: inherit; cursor: pointer; }
@@ -179,6 +181,11 @@
         <div class="panel"><div class="metric">Archivarix requests tracked</div><div id="archivarixRequestsTotal" class="value">0</div></div>
       </div>
       <div class="controls">
+        <label>YouTube delay (seconds)<input id="youtubeRequestInterval" class="delay-input" type="number" min="0" step="0.1"></label>
+        <label>Archivarix delay (seconds)<input id="archivarixRequestInterval" class="delay-input" type="number" min="0" step="0.1"></label>
+        <span id="requestIntervalStatus" class="metric settings-status" aria-live="polite"></span>
+      </div>
+      <div class="controls">
         <label>URL/video/channel/playlist ID<input id="providedQueueTarget" class="wide-input" type="text" placeholder="YouTube URL, local URL, video ID, channel ID, @handle, or playlist ID"></label>
         <button id="queueProvidedTarget" class="primary" type="button">Add to queue</button>
       </div>
@@ -284,6 +291,9 @@
       workerQueueEta: document.getElementById('workerQueueEta'),
       archivarixRequests24h: document.getElementById('archivarixRequests24h'),
       archivarixRequestsTotal: document.getElementById('archivarixRequestsTotal'),
+      youtubeRequestInterval: document.getElementById('youtubeRequestInterval'),
+      archivarixRequestInterval: document.getElementById('archivarixRequestInterval'),
+      requestIntervalStatus: document.getElementById('requestIntervalStatus'),
       startWorkerQueue: document.getElementById('startWorkerQueue'),
       stopWorkerQueue: document.getElementById('stopWorkerQueue'),
       workerQueueRows: document.getElementById('workerQueueRows'),
@@ -306,6 +316,8 @@
     const queueRowHeight = 72;
     const queueOverscan = 10;
     const statusPollMs = 30000;
+    let requestIntervalsSaving = false;
+    let requestIntervalSaveTimer = null;
     const logState = {
       rows: [],
       keys: new Set(),
@@ -583,6 +595,15 @@
         ? `Latest request ${fmtTime(archivarixRequestCounts.latest_at)}`
         : 'No tracked requests';
       fields.archivarixRequestsTotal.title = fields.archivarixRequests24h.title;
+      const requestIntervals = data.requestIntervals || {};
+      if (!requestIntervalsSaving) {
+        if (document.activeElement !== fields.youtubeRequestInterval) {
+          fields.youtubeRequestInterval.value = Number(requestIntervals.youtube_seconds ?? 0);
+        }
+        if (document.activeElement !== fields.archivarixRequestInterval) {
+          fields.archivarixRequestInterval.value = Number(requestIntervals.archivarix_seconds ?? 0);
+        }
+      }
       const archivarixBlock = data.archivarixBlock || {};
       fields.archivarixBlock.hidden = !archivarixBlock.blocked;
       fields.archivarixBlockMessage.textContent = archivarixBlock.blocked
@@ -713,6 +734,55 @@
       return response.json();
     }
 
+    async function saveRequestIntervals() {
+      const youtubeSeconds = Number(fields.youtubeRequestInterval.value);
+      const archivarixSeconds = Number(fields.archivarixRequestInterval.value);
+      if (
+        !Number.isFinite(youtubeSeconds)
+        || !Number.isFinite(archivarixSeconds)
+        || youtubeSeconds < 0
+        || archivarixSeconds < 0
+      ) {
+        fields.requestIntervalStatus.textContent = 'Invalid value';
+        return;
+      }
+      requestIntervalsSaving = true;
+      fields.requestIntervalStatus.textContent = 'Saving';
+      try {
+        const payload = await post('/api/admin/request-intervals', {
+          youtube_seconds: youtubeSeconds,
+          archivarix_seconds: archivarixSeconds,
+        });
+        const saved = payload.requestIntervals || {};
+        fields.youtubeRequestInterval.value = Number(saved.youtube_seconds ?? youtubeSeconds);
+        fields.archivarixRequestInterval.value = Number(saved.archivarix_seconds ?? archivarixSeconds);
+        fields.requestIntervalStatus.textContent = 'Saved';
+      } catch (error) {
+        fields.requestIntervalStatus.textContent = 'Save failed';
+        alert(error.message);
+      } finally {
+        requestIntervalsSaving = false;
+      }
+    }
+
+    function scheduleRequestIntervalSave() {
+      if (requestIntervalSaveTimer !== null) {
+        window.clearTimeout(requestIntervalSaveTimer);
+      }
+      requestIntervalSaveTimer = window.setTimeout(() => {
+        requestIntervalSaveTimer = null;
+        saveRequestIntervals();
+      }, 350);
+    }
+
+    function flushRequestIntervalSave() {
+      if (requestIntervalSaveTimer !== null) {
+        window.clearTimeout(requestIntervalSaveTimer);
+        requestIntervalSaveTimer = null;
+      }
+      saveRequestIntervals();
+    }
+
     document.getElementById('scanPlaylists').addEventListener('click', () => post('/api/admin/playlists/start').catch(error => alert(error.message)));
     document.getElementById('fetchMetadata').addEventListener('click', () => post('/api/admin/metadata/start', {
       stale_days: fields.metadataStaleDays.value,
@@ -759,6 +829,10 @@
     });
     document.getElementById('stopWorkerQueue').addEventListener('click', () => stopWorkersNow().catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus({ force: true }).catch(error => alert(error.message)));
+    fields.youtubeRequestInterval.addEventListener('input', scheduleRequestIntervalSave);
+    fields.archivarixRequestInterval.addEventListener('input', scheduleRequestIntervalSave);
+    fields.youtubeRequestInterval.addEventListener('change', flushRequestIntervalSave);
+    fields.archivarixRequestInterval.addEventListener('change', flushRequestIntervalSave);
     fields.logSourceFilter.addEventListener('change', renderLogs);
     fields.logLevelFilter.addEventListener('change', renderLogs);
     document.getElementById('saveTimezone').addEventListener('click', () => {
