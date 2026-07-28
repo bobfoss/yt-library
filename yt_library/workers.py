@@ -453,7 +453,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                                 conn,
                                 run_id,
                                 metadata_source,
-                                f"{status}: {channel_label} (via {title})",
+                                f"{status}: {channel_label}",
                                 channel_subject_id,
                             )
                         else:

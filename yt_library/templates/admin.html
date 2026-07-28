@@ -463,7 +463,7 @@
           <td class="level-cell">${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
           <td class="time-cell">${escapeHtml(log.identifier || '')}</td>
           <td class="message">${escapeHtml(log.subject_id || '')}</td>
-          <td class="message">${escapeHtml(log.message)}</td>
+          <td class="message">${escapeHtml(displayLogMessage(log))}</td>
         </tr>
       `).join('') : '<tr><td colspan="5" class="message">No log entries match these filters.</td></tr>';
     }
@@ -474,6 +474,15 @@
       if (tokens.includes('warn') || tokens.includes('warning')) return 'warn';
       if (tokens.includes('debug')) return 'debug';
       return 'info';
+    }
+
+    function displayLogMessage(log) {
+      const message = String(log.message || '');
+      if (log.source !== 'metadata' || log.level !== 'channel' || !log.identifier) return message;
+      const redundantSuffix = ` (via ${log.identifier})`;
+      return message.endsWith(redundantSuffix)
+        ? message.slice(0, -redundantSuffix.length)
+        : message;
     }
 
     function applyLogs(data, reset = false) {

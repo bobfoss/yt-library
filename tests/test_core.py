@@ -2378,6 +2378,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(".subject-col { width: 340px; }", server.ADMIN_HTML)
         self.assertEqual(server.ADMIN_HTML.count('<col class="id-col">'), 4)
         self.assertEqual(server.ADMIN_HTML.count('<col class="subject-col">'), 4)
+        self.assertIn("const redundantSuffix = ` (via ${log.identifier})`;", server.ADMIN_HTML)
 
     def test_service_replacement_uses_dedicated_log_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -4062,7 +4063,7 @@ class WorkerQueueTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(log["level"], "channel")
                 self.assertEqual(log["video_id"], channel_id)
-                self.assertIn("ok: Fetched Channel", log["message"])
+                self.assertEqual(log["message"], "ok: Fetched Channel")
                 display_log = core.worker_log_snapshot(conn)["metadataLogs"][0]
                 self.assertEqual(display_log["display_id"], channel_id)
                 self.assertEqual(display_log["subject_title"], "Fetched Channel")
