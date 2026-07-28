@@ -5170,6 +5170,25 @@ _WORKER_LOG_TABLES = {
 }
 
 
+def worker_log_select(name: str) -> str:
+    table = _WORKER_LOG_TABLES[name]
+    if name == "playlistScanLogs":
+        return f"""
+            SELECT l.*,
+                   COALESCE(NULLIF(p.title, ''), l.playlist_id) AS subject_title,
+                   '' AS display_video_id
+            FROM {table} l
+            LEFT JOIN playlists p ON p.playlist_id = l.playlist_id
+        """
+    return f"""
+        SELECT l.*,
+               COALESCE(NULLIF(v.title, ''), l.video_id) AS subject_title,
+               CASE WHEN v.video_id IS NULL THEN '' ELSE l.video_id END AS display_video_id
+        FROM {table} l
+        LEFT JOIN videos v ON v.video_id = l.video_id
+    """
+
+
 def worker_log_cursors(conn: sqlite3.Connection) -> dict[str, int]:
     return {
         name: int(
@@ -5182,8 +5201,11 @@ def worker_log_cursors(conn: sqlite3.Connection) -> dict[str, int]:
 def worker_log_snapshot(conn: sqlite3.Connection, *, limit: int = 80) -> dict[str, list[sqlite3.Row]]:
     row_limit = max(1, min(500, int(limit)))
     return {
-        name: conn.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT ?", (row_limit,)).fetchall()
-        for name, table in _WORKER_LOG_TABLES.items()
+        name: conn.execute(
+            worker_log_select(name) + " ORDER BY l.id DESC LIMIT ?",
+            (row_limit,),
+        ).fetchall()
+        for name in _WORKER_LOG_TABLES
     }
 
 
@@ -5196,10 +5218,10 @@ def worker_logs_after(
     row_limit = max(1, min(5000, int(limit)))
     return {
         name: conn.execute(
-            f"SELECT * FROM {table} WHERE id > ? ORDER BY id LIMIT ?",
+            worker_log_select(name) + " WHERE l.id > ? ORDER BY l.id LIMIT ?",
             (max(0, int(cursors.get(name, 0))), row_limit),
         ).fetchall()
-        for name, table in _WORKER_LOG_TABLES.items()
+        for name in _WORKER_LOG_TABLES
     }
 
 
@@ -6067,49 +6089,12 @@ def admin_status(
         live_history_logs: list[dict[str, Any]] = []
         placeholder_recovery_logs: list[dict[str, Any]] = []
         if include_logs:
-            metadata_logs = [
-                dict(row)
-                for row in conn.execute(
-                    """
-                    SELECT *
-                    FROM metadata_worker_log
-                    ORDER BY id DESC
-                    LIMIT 80
-                    """
-                )
-            ]
-            playlist_logs = [
-                dict(row)
-                for row in conn.execute(
-                    """
-                    SELECT *
-                    FROM playlist_scan_worker_log
-                    ORDER BY id DESC
-                    LIMIT 80
-                    """
-                )
-            ]
-            live_history_logs = [
-                dict(row)
-                for row in conn.execute(
-                    """
-                    SELECT *
-                    FROM live_history_worker_log
-                    ORDER BY id DESC
-                    LIMIT 80
-                    """
-                )
-            ]
+            log_snapshot = worker_log_snapshot(conn)
+            metadata_logs = [dict(row) for row in log_snapshot["metadataLogs"]]
+            playlist_logs = [dict(row) for row in log_snapshot["playlistScanLogs"]]
+            live_history_logs = [dict(row) for row in log_snapshot["liveHistoryLogs"]]
             placeholder_recovery_logs = [
-                dict(row)
-                for row in conn.execute(
-                    """
-                    SELECT *
-                    FROM placeholder_recovery_worker_log
-                    ORDER BY id DESC
-                    LIMIT 80
-                    """
-                )
+                dict(row) for row in log_snapshot["placeholderRecoveryLogs"]
             ]
     finally:
         conn.close()

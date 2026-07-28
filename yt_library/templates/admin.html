@@ -226,18 +226,20 @@
         <colgroup>
           <col class="action-col">
           <col class="queue-worker-col">
-          <col>
+          <col class="subject-col">
+          <col class="video-col">
           <col>
           <col>
         </colgroup>
-        <thead><tr><th>Action</th><th>Worker</th><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
+        <thead><tr><th>Action</th><th>Worker</th><th>Subject</th><th>Video ID</th><th>Source</th><th>Details</th></tr></thead>
       </table>
       <div class="queue-scroll" id="workerQueuePanel">
         <table>
           <colgroup>
             <col class="action-col">
             <col class="queue-worker-col">
-            <col>
+            <col class="subject-col">
+            <col class="video-col">
             <col>
             <col>
           </colgroup>
@@ -272,9 +274,10 @@
           <col class="log-time-col">
           <col class="log-level-col">
           <col class="subject-col">
+          <col class="video-col">
           <col>
         </colgroup>
-        <thead><tr><th>Time</th><th>Level</th><th>Subject</th><th>Message</th></tr></thead>
+        <thead><tr><th>Time</th><th>Level</th><th>Subject</th><th>Video ID</th><th>Message</th></tr></thead>
       </table>
       <div class="log-scroll">
         <table>
@@ -282,6 +285,7 @@
             <col class="log-time-col">
             <col class="log-level-col">
             <col class="subject-col">
+            <col class="video-col">
             <col>
           </colgroup>
           <tbody id="logs"></tbody>
@@ -412,15 +416,31 @@
 
     function normalizedLogs(data) {
       return [
-        ...(data.playlistScanLogs || []).map(log => ({ ...log, subject_id: playlistSubject(log.playlist_id), source: 'playlist' })),
+        ...(data.playlistScanLogs || []).map(log => ({
+          ...log,
+          subject_id: log.subject_title || playlistSubject(log.playlist_id),
+          video_id: log.display_video_id || '',
+          source: 'playlist',
+        })),
         ...(data.metadataLogs || []).map(log => ({
           ...log,
-          subject_id: log.video_id,
+          subject_id: log.subject_title || log.video_id,
+          video_id: log.display_video_id || '',
           source: String(log.level || '').startsWith('placeholder ') ? 'placeholder' : 'metadata',
           level: String(log.level || '').replace(/^placeholder\s+/, ''),
         })),
-        ...(data.placeholderRecoveryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'placeholder' })),
-        ...(data.liveHistoryLogs || []).map(log => ({ ...log, subject_id: log.video_id, source: 'history' })),
+        ...(data.placeholderRecoveryLogs || []).map(log => ({
+          ...log,
+          subject_id: log.subject_title || log.video_id,
+          video_id: log.display_video_id || '',
+          source: 'placeholder',
+        })),
+        ...(data.liveHistoryLogs || []).map(log => ({
+          ...log,
+          subject_id: log.subject_title || log.video_id,
+          video_id: log.display_video_id || '',
+          source: 'history',
+        })),
       ];
     }
 
@@ -435,10 +455,11 @@
         <tr>
           <td class="time-cell">${fmtTime(log.created_at)}</td>
           <td class="level-cell">${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
-          <td class="time-cell">${escapeHtml(log.subject_id || '')}</td>
+          <td class="message">${escapeHtml(log.subject_id || '')}</td>
+          <td class="time-cell">${escapeHtml(log.video_id || '')}</td>
           <td class="message">${escapeHtml(log.message)}</td>
         </tr>
-      `).join('') : '<tr><td colspan="4" class="message">No log entries match these filters.</td></tr>';
+      `).join('') : '<tr><td colspan="5" class="message">No log entries match these filters.</td></tr>';
     }
 
     function logSeverity(level) {
@@ -471,16 +492,21 @@
         return `${row.playlist_id || ''}\n${row.scan_status || 'unscanned'} ${row.video_count || 0}/${row.playlist_video_count || '?'}`;
       }
       if (row.worker_type === 'metadata') {
-        return row.task_type === 'channel' ? (row.channel_id || '') : (row.current_title || '');
+        return row.task_type === 'channel' ? (row.channel_id || '') : '';
       }
       if (row.worker_type === 'placeholder') {
-        return [row.video_id || '', row.current_title || ''].filter(Boolean).join('\n');
+        return '';
       }
-      return row.current_title || row.task_type || '';
+      return row.task_type || '';
     }
 
     function workerLabel(row) {
       return [row.worker_type || '', row.task_type || '', row.manual ? 'manual' : ''].filter(Boolean).join(' ');
+    }
+
+    function workerVideoId(row) {
+      if (row.worker_type === 'metadata' && row.task_type === 'channel') return '';
+      return row.video_id || '';
     }
 
     function queueRowHtml(row) {
@@ -489,6 +515,7 @@
           <td><button class="remove-queue-entry" type="button" data-queue-id="${escapeHtml(row.queue_id || '')}">Remove</button></td>
           <td class="queue-worker-cell">${escapeHtml(workerLabel(row))}</td>
           <td class="message"><div class="queue-cell">${escapeHtml(workerSubject(row))}</div></td>
+          <td class="time-cell"><div class="queue-cell">${escapeHtml(workerVideoId(row))}</div></td>
           <td class="message"><div class="queue-cell">${escapeHtml(row.source_key || '')}</div></td>
           <td class="message"><div class="queue-cell">${escapeHtml(workerDetails(row))}</div></td>
         </tr>
@@ -546,7 +573,7 @@
     function renderQueueWindow() {
       if (!queueState.rows.length) {
         fields.workerQueueRows.innerHTML = queueState.ready
-          ? '<tr class="empty-queue-row"><td colspan="5" class="message">No worker jobs queued.</td></tr>'
+          ? '<tr class="empty-queue-row"><td colspan="6" class="message">No worker jobs queued.</td></tr>'
           : '';
         return;
       }
@@ -557,14 +584,14 @@
       if (start > 0) {
         const spacer = document.createElement('tr');
         spacer.className = 'queue-spacer';
-        spacer.innerHTML = `<td colspan="5" style="height:${start * queueRowHeight}px"></td>`;
+        spacer.innerHTML = `<td colspan="6" style="height:${start * queueRowHeight}px"></td>`;
         fragment.appendChild(spacer);
       }
       for (const row of queueState.rows.slice(start, end)) fragment.appendChild(createQueueRow(row));
       if (end < queueState.rows.length) {
         const spacer = document.createElement('tr');
         spacer.className = 'queue-spacer';
-        spacer.innerHTML = `<td colspan="5" style="height:${(queueState.rows.length - end) * queueRowHeight}px"></td>`;
+        spacer.innerHTML = `<td colspan="6" style="height:${(queueState.rows.length - end) * queueRowHeight}px"></td>`;
         fragment.appendChild(spacer);
       }
       fields.workerQueueRows.replaceChildren(fragment);

@@ -2214,6 +2214,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('id="useProxy"', server.ADMIN_HTML)
         self.assertIn('id="proxyUrl"', server.ADMIN_HTML)
         self.assertIn('id="saveSettings"', server.ADMIN_HTML)
+        self.assertEqual(server.ADMIN_HTML.count("<th>Video ID</th>"), 2)
 
     def test_service_replacement_uses_dedicated_log_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3006,6 +3007,15 @@ class WorkerQueueTests(unittest.TestCase):
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
             try:
                 with conn:
+                    core.upsert_video(
+                        conn,
+                        "abc12345678",
+                        title="Example video",
+                        source="test",
+                    )
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLexample', 'Example playlist')"
+                    )
                     conn.execute(
                         "INSERT INTO metadata_worker_log(run_id, created_at, level, video_id, message) "
                         "VALUES ('run-1', '2026-07-13T12:00:00Z', 'video', 'abc12345678', 'first')"
@@ -3022,7 +3032,14 @@ class WorkerQueueTests(unittest.TestCase):
                 cursors = core.worker_log_cursors(conn)
                 snapshot = core.worker_log_snapshot(conn)
                 self.assertEqual([row["message"] for row in snapshot["metadataLogs"]], ["first"])
+                self.assertEqual(snapshot["metadataLogs"][0]["subject_title"], "Example video")
+                self.assertEqual(snapshot["metadataLogs"][0]["display_video_id"], "abc12345678")
                 self.assertEqual([row["message"] for row in snapshot["playlistScanLogs"]], ["playlist"])
+                self.assertEqual(
+                    snapshot["playlistScanLogs"][0]["subject_title"],
+                    "Example playlist",
+                )
+                self.assertEqual(snapshot["playlistScanLogs"][0]["display_video_id"], "")
                 self.assertEqual(snapshot["liveHistoryLogs"], [])
                 self.assertEqual(
                     [row["message"] for row in snapshot["placeholderRecoveryLogs"]],
@@ -3030,6 +3047,18 @@ class WorkerQueueTests(unittest.TestCase):
                 )
 
                 with conn:
+                    core.upsert_video(
+                        conn,
+                        "def12345678",
+                        title="Second video",
+                        source="test",
+                    )
+                    core.upsert_video(
+                        conn,
+                        "ghi12345678",
+                        title="History video",
+                        source="test",
+                    )
                     conn.execute(
                         "INSERT INTO metadata_worker_log(run_id, created_at, level, video_id, message) "
                         "VALUES ('run-1', '2026-07-13T12:00:02Z', 'video', 'def12345678', 'second')"
@@ -3041,8 +3070,12 @@ class WorkerQueueTests(unittest.TestCase):
 
                 deltas = core.worker_logs_after(conn, cursors)
                 self.assertEqual([row["message"] for row in deltas["metadataLogs"]], ["second"])
+                self.assertEqual(deltas["metadataLogs"][0]["subject_title"], "Second video")
+                self.assertEqual(deltas["metadataLogs"][0]["display_video_id"], "def12345678")
                 self.assertEqual(deltas["playlistScanLogs"], [])
                 self.assertEqual([row["message"] for row in deltas["liveHistoryLogs"]], ["history"])
+                self.assertEqual(deltas["liveHistoryLogs"][0]["subject_title"], "History video")
+                self.assertEqual(deltas["liveHistoryLogs"][0]["display_video_id"], "ghi12345678")
                 self.assertEqual(deltas["placeholderRecoveryLogs"], [])
             finally:
                 conn.close()
