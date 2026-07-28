@@ -54,6 +54,7 @@ from .workers import (
 
 INDEX_HTML = load_template("index.html")
 ADMIN_HTML = load_template("admin.html")
+THEME_JS = load_template("theme.js")
 TIMEZONE_JS = load_template("timezone.js")
 VIDEO_CARD_JS = load_template("video-card.js")
 COLLECTION_CARD_JS = load_template("collection-card.js")
@@ -127,6 +128,15 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/timezone.js":
             body = TIMEZONE_JS.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/theme.js":
+            body = THEME_JS.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/javascript; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
