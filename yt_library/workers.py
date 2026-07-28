@@ -21,7 +21,7 @@ from .config import (
     configured_archivarix_retry_backoff,
     configured_archivarix_stream_timeout,
     configured_youtube_max_in_flight,
-    configured_youtube_proxy,
+    configured_proxy,
     configured_youtube_request_interval,
     effective_display_timezone,
 )
@@ -329,6 +329,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                             thumb_dir,
                             fallback_query=queued_channel_title,
                             require_authenticated=cookie_file.exists(),
+                            proxy_url=proxy_url,
                         )
                         if not (
                             metadata.get("channel")
@@ -386,6 +387,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                             thumb_dir,
                             metadata,
                             require_authenticated=cookie_file.exists(),
+                            proxy_url=proxy_url,
                         )
                     except YouTubeAuthenticationError as exc:
                         authentication_error = f"Metadata worker stopped: {exc}"
@@ -1103,6 +1105,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
         stream_timeout: float = 30.0,
         retry_attempts: int = 3,
         retry_backoff_seconds: float = 2.0,
+        proxy_url: str = "",
     ) -> dict[str, Any]:
         return self._start_background(
             self._run,
@@ -1116,6 +1119,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                 stream_timeout,
                 retry_attempts,
                 retry_backoff_seconds,
+                proxy_url,
             ),
             started_message="Placeholder recovery started",
             already_running_message="Placeholder recovery already running",
@@ -1161,6 +1165,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
         stream_timeout: float = 30.0,
         retry_attempts: int = 3,
         retry_backoff_seconds: float = 2.0,
+        proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
         video_id = ""
@@ -1237,7 +1242,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                     )
                     log_placeholder_recovery_event(conn, run_id, "warn", session_message, video_id)
                 return
-            archivarix_opener = load_cookie_opener(archivarix_cookie_file)
+            archivarix_opener = load_cookie_opener(archivarix_cookie_file, proxy_url)
             status = "not_found"
             error = ""
             video: dict[str, Any] | None = None
@@ -1500,7 +1505,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 configured_archivarix_stream_timeout(config),
                 configured_archivarix_retry_attempts(config),
                 configured_archivarix_retry_backoff(config),
-                configured_youtube_proxy(config),
+                configured_proxy(config),
             ),
             started_message="Worker queue dispatcher started",
             already_running_message="Worker queue dispatcher already running",
@@ -1647,7 +1652,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         archivarix_stream_timeout: float = 30.0,
         archivarix_retry_attempts: int = 3,
         archivarix_retry_backoff_seconds: float = 2.0,
-        youtube_proxy_url: str = "",
+        proxy_url: str = "",
     ) -> None:
         with self._lock:
             if self._timing_revision == 0:
@@ -1750,7 +1755,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                             stale_days=30,
                             record_summary=False,
                             queue_id=queue_id,
-                            proxy_url=youtube_proxy_url,
+                            proxy_url=proxy_url,
                         )
                         if result.get("started"):
                             with self._lock:
@@ -1776,6 +1781,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                             stream_timeout=archivarix_stream_timeout,
                             retry_attempts=archivarix_retry_attempts,
                             retry_backoff_seconds=archivarix_retry_backoff_seconds,
+                            proxy_url=proxy_url,
                         )
                         if result.get("blocked"):
                             reason = str(result.get("message") or "unavailable")
@@ -1834,7 +1840,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         force=False,
                         stale_days=7,
                         record_summary=False,
-                        proxy_url=youtube_proxy_url,
+                        proxy_url=proxy_url,
                     )
                     if not result.get("started") and not PLAYLIST_SCAN_WORKER.is_running():
                         time.sleep(0.5)
@@ -1848,7 +1854,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         cookie_file,
                         mode=mode,
                         timezone_name=timezone_name,
-                        proxy_url=youtube_proxy_url,
+                        proxy_url=proxy_url,
                     )
                     if not result.get("started") and not LIVE_HISTORY_WORKER.is_running():
                         time.sleep(0.5)

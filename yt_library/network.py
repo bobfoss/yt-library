@@ -26,17 +26,17 @@ def parse_socks5_proxy_url(value: str | None) -> Socks5Proxy | None:
         return None
     parsed = urllib.parse.urlsplit(proxy_url)
     if parsed.scheme.lower() not in {"socks5", "socks5h"}:
-        raise ValueError("YouTube proxy must use socks5:// or socks5h://")
+        raise ValueError("Proxy must use socks5:// or socks5h://")
     if not parsed.hostname:
-        raise ValueError("YouTube SOCKS5 proxy must include a host")
+        raise ValueError("SOCKS5 proxy must include a host")
     try:
         port = parsed.port
     except ValueError as exc:
-        raise ValueError("YouTube SOCKS5 proxy must include a valid port") from exc
+        raise ValueError("SOCKS5 proxy must include a valid port") from exc
     if port is None:
-        raise ValueError("YouTube SOCKS5 proxy must include a port")
+        raise ValueError("SOCKS5 proxy must include a port")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-        raise ValueError("YouTube SOCKS5 proxy must not include a path, query, or fragment")
+        raise ValueError("SOCKS5 proxy must not include a path, query, or fragment")
     return Socks5Proxy(
         host=parsed.hostname,
         port=port,
@@ -52,7 +52,7 @@ def validated_socks5_proxy_url(value: str | None) -> str:
     return proxy_url
 
 
-def youtube_ytdlp_proxy_options(proxy_url: str | None) -> dict[str, str]:
+def ytdlp_proxy_options(proxy_url: str | None) -> dict[str, str]:
     value = validated_socks5_proxy_url(proxy_url)
     return {"proxy": value} if value else {}
 

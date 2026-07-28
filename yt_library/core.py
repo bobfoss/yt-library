@@ -36,8 +36,8 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .schema import load_schema
-from .config import configured_youtube_proxy, effective_display_timezone
-from .network import socks5_proxy_handlers, youtube_ytdlp_proxy_options
+from .config import configured_proxy, effective_display_timezone
+from .network import socks5_proxy_handlers, ytdlp_proxy_options
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
@@ -978,7 +978,7 @@ def probe_youtube_authentication_ytdlp(cookie_file: Path, proxy_url: str = "") -
                 "retries": 0,
                 "skip_download": True,
                 "socket_timeout": 15,
-                **youtube_ytdlp_proxy_options(proxy_url),
+                **ytdlp_proxy_options(proxy_url),
             }
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(":ythistory", download=False)
@@ -1117,6 +1117,12 @@ def youtube_request_error_diagnostics(exc: BaseException, operation: str) -> str
         message = re.sub(r"https?://\S+", "<url>", str(exc))
         parts.append(f"message={message[:160]}")
     return "; ".join(parts)
+
+
+def network_opener(proxy_url: str = "") -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(
+        *socks5_proxy_handlers(proxy_url),
+    )
 
 
 def load_cookie_opener(
@@ -1818,7 +1824,11 @@ def format_duration(seconds: Any) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-def archivarix_search_deleted(query: str, page_size: int = 50) -> list[dict[str, Any]]:
+def archivarix_search_deleted(
+    query: str,
+    page_size: int = 50,
+    opener: urllib.request.OpenerDirector | None = None,
+) -> list[dict[str, Any]]:
     params = urllib.parse.urlencode(
         {"q": query, "page": "1", "pageSize": str(page_size), "status": "deleted"}
     )
@@ -1834,7 +1844,8 @@ def archivarix_search_deleted(query: str, page_size: int = 50) -> list[dict[str,
             "Referer": f"https://tube.archivarix.net/?q={urllib.parse.quote(query)}",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as response:
+    opener = opener or network_opener()
+    with opener.open(req, timeout=30) as response:
         payload = json.loads(response.read().decode("utf-8", "replace"))
     data = payload.get("data", {})
     videos = data.get("videos", [])
@@ -1868,7 +1879,7 @@ def archivarix_lookup_video(
 ) -> dict[str, Any] | None:
     if stop_event and stop_event.is_set():
         return None
-    opener = opener or urllib.request.build_opener()
+    opener = opener or network_opener()
     channel_cache = channel_cache if channel_cache is not None else {}
     youtube_url = f"https://www.youtube.com/watch?v={video_id}"
     request = urllib.request.Request(
@@ -1952,7 +1963,7 @@ def archivarix_lookup_channel(
 ) -> dict[str, Any]:
     if not channel_id:
         return {}
-    opener = opener or urllib.request.build_opener()
+    opener = opener or network_opener()
     request = urllib.request.Request(
         "https://tube.archivarix.net/api/search",
         data=json.dumps({"query": channel_id}).encode("utf-8"),
@@ -2072,7 +2083,7 @@ def cache_archivarix_thumbnail(
     if not video_id:
         return ""
     thumb_dir.mkdir(parents=True, exist_ok=True)
-    opener = opener or urllib.request.build_opener()
+    opener = opener or network_opener()
     sources = [
         f"https://tube.archivarix.net/media/thumbnails/{video_id[:2]}/{video_id[2:4]}/{video_id}.jpg",
         f"https://web.archive.org/web/0im_/https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
@@ -2953,6 +2964,7 @@ def fetch_channel_metadata(
     thumb_dir: Path,
     fallback_query: str = "",
     require_authenticated: bool = False,
+    proxy_url: str = "",
 ) -> dict[str, str]:
     channel_url = youtube_channel_url(channel_id)
     page = request_text(opener, channel_url)
@@ -2984,7 +2996,7 @@ def fetch_channel_metadata(
         or not (metadata.get("channel") and metadata.get("channel_thumbnail_url"))
     ):
         try:
-            archivarix_opener = load_cookie_opener(ARCHIVARIX_COOKIE_FILE)
+            archivarix_opener = load_cookie_opener(ARCHIVARIX_COOKIE_FILE, proxy_url)
             archivarix_fields = archivarix_lookup_channel(channel_id, archivarix_opener)
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
             archivarix_fields = {}
@@ -3326,6 +3338,7 @@ def fetch_new_channel_metadata_if_needed(
     thumb_dir: Path,
     video_metadata: dict[str, str],
     require_authenticated: bool = False,
+    proxy_url: str = "",
 ) -> tuple[dict[str, str], str, str]:
     channel_id = video_metadata_channel_id(video_metadata)
     if not channel_id:
@@ -3339,6 +3352,7 @@ def fetch_new_channel_metadata_if_needed(
             thumb_dir,
             fallback_query=video_metadata.get("channel", ""),
             require_authenticated=require_authenticated,
+            proxy_url=proxy_url,
         )
         status = (
             "ok"
@@ -3367,13 +3381,20 @@ def fetch_provided_metadata(
     opener: urllib.request.OpenerDirector,
     thumb_dir: Path,
     target: str,
+    proxy_url: str = "",
 ) -> dict[str, str]:
     source, subject_id = resolve_metadata_target(opener, target)
     if not source or not subject_id:
         raise ValueError("Enter a YouTube watch URL, video ID, channel URL, channel ID, or @handle.")
     now = utc_now()
     if source == "channel":
-        metadata = fetch_channel_metadata(opener, subject_id, thumb_dir, fallback_query=target)
+        metadata = fetch_channel_metadata(
+            opener,
+            subject_id,
+            thumb_dir,
+            fallback_query=target,
+            proxy_url=proxy_url,
+        )
         status = "ok" if (
             metadata.get("channel")
             or metadata.get("channel_url")
@@ -3390,7 +3411,7 @@ def fetch_provided_metadata(
     status = "ok" if useful_video_metadata(metadata) else "no_metadata"
     if status != "ok":
         try:
-            archivarix_opener = load_cookie_opener(ARCHIVARIX_COOKIE_FILE)
+            archivarix_opener = load_cookie_opener(ARCHIVARIX_COOKIE_FILE, proxy_url)
             video, thumbnail_url, thumbnail_path, arch_status, arch_error = recover_archivarix_video(
                 subject_id,
                 thumb_dir,
@@ -3432,6 +3453,7 @@ def fetch_provided_metadata(
             opener,
             thumb_dir,
             metadata,
+            proxy_url=proxy_url,
         )
     if channel_status:
         store_channel_metadata(conn, channel_metadata, channel_status, channel_error, updated_at=now)
@@ -3522,7 +3544,7 @@ def scan_playlist_ytdlp(
             "no_warnings": True,
             "quiet": True,
             "skip_download": True,
-            **youtube_ytdlp_proxy_options(proxy_url),
+            **ytdlp_proxy_options(proxy_url),
         }
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -3602,7 +3624,7 @@ def fetch_youtube_history_ytdlp(
             "playlistend": max(1, start) + max(1, limit) - 1,
             "cookiefile": str(working_cookie_file) if working_cookie_file else None,
             "logger": YtdlpLogger(),
-            **youtube_ytdlp_proxy_options(proxy_url),
+            **ytdlp_proxy_options(proxy_url),
         }
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(":ythistory", download=False)
@@ -3767,7 +3789,7 @@ def scan_playlist_videos(
 def import_playlists(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     thumb_dir = Path(args.thumbs)
-    proxy_url = configured_youtube_proxy(getattr(args, "config_data", {}))
+    proxy_url = configured_proxy(getattr(args, "config_data", {}))
     _, groups, memberships = load_pockettube(Path(args.pockettube))
     all_playlist_ids = []
     seen: set[str] = set()
@@ -3971,7 +3993,7 @@ def is_system_playlist(playlist_id: str) -> bool:
 def discover_current_playlists(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     thumb_dir = Path(args.thumbs)
-    proxy_url = configured_youtube_proxy(getattr(args, "config_data", {}))
+    proxy_url = configured_proxy(getattr(args, "config_data", {}))
     opener, records = fetch_current_youtube_playlists(
         Path(args.cookies),
         args.browse_id,
@@ -6213,7 +6235,7 @@ def reconcile_worker_runs(
 def scan_hidden(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     conn = connect(db_path)
-    proxy_url = configured_youtube_proxy(getattr(args, "config_data", {}))
+    proxy_url = configured_proxy(getattr(args, "config_data", {}))
     opener = load_cookie_opener(Path(args.cookies), proxy_url)
     rows = conn.execute(
         "SELECT playlist_id, title FROM playlists ORDER BY title COLLATE NOCASE"
@@ -6247,6 +6269,8 @@ def scan_hidden(args: argparse.Namespace) -> None:
 def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     thumb_dir = Path(args.thumbs)
+    proxy_url = configured_proxy(getattr(args, "config_data", {}))
+    opener = network_opener(proxy_url)
     conn = connect(db_path)
     rows = conn.execute(
         """
@@ -6266,7 +6290,11 @@ def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
         playlist_id = row["playlist_id"]
         query = row["title"]
         try:
-            videos = archivarix_search_deleted(query, page_size=args.page_size)
+            videos = archivarix_search_deleted(
+                query,
+                page_size=args.page_size,
+                opener=opener,
+            )
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             print(f"[{index:03d}/{len(rows):03d}] ERROR {query}: {exc}")
             continue
@@ -6287,7 +6315,10 @@ def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
                     or ""
                 )
                 thumbnail_path = cache_archivarix_thumbnail(
-                    video_id, thumbnail_url, thumb_dir
+                    video_id,
+                    thumbnail_url,
+                    thumb_dir,
+                    opener,
                 )
                 if thumbnail_path:
                     cached += 1
@@ -6851,7 +6882,11 @@ def recover_unavailable_videos(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     thumb_dir = Path(args.thumbs)
     conn = connect(db_path)
-    archivarix_opener = load_cookie_opener(Path(args.archivarix_cookies))
+    proxy_url = configured_proxy(getattr(args, "config_data", {}))
+    archivarix_opener = load_cookie_opener(
+        Path(args.archivarix_cookies),
+        proxy_url,
+    )
     where_clauses = [
         "pi.video_id IS NOT NULL",
         "(pi.membership_state = 'retained_unavailable' OR v.is_playable = 0)",

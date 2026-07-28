@@ -26,7 +26,7 @@ from yt_library.config import (
     configured_archivarix_stream_timeout,
     configured_display_timezone,
     configured_youtube_max_in_flight,
-    configured_youtube_proxy,
+    configured_proxy,
     configured_youtube_request_interval,
     effective_display_timezone,
     ensure_config_file,
@@ -124,10 +124,10 @@ class CoreHelperTests(unittest.TestCase):
 
     def test_ytdlp_proxy_options_preserve_supported_proxy_url(self) -> None:
         self.assertEqual(
-            network.youtube_ytdlp_proxy_options("socks5://127.0.0.1:1080"),
+            network.ytdlp_proxy_options("socks5://127.0.0.1:1080"),
             {"proxy": "socks5://127.0.0.1:1080"},
         )
-        self.assertEqual(network.youtube_ytdlp_proxy_options(""), {})
+        self.assertEqual(network.ytdlp_proxy_options(""), {})
 
     def test_metadata_worker_passes_proxy_to_poll_run(self) -> None:
         entered = threading.Event()
@@ -160,7 +160,7 @@ class CoreHelperTests(unittest.TestCase):
                 time.sleep(0.01)
             self.assertFalse(worker.is_alive())
 
-    def test_dispatcher_passes_configured_proxy_to_queue_run(self) -> None:
+    def test_dispatcher_passes_general_proxy_to_queue_run(self) -> None:
         entered = threading.Event()
         release = threading.Event()
         captured_args: list[object] = []
@@ -173,7 +173,7 @@ class CoreHelperTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             config = load_config(Path(temp_dir) / "config.json")
-            config["youtube_proxy"] = "socks5h://127.0.0.1:1080"
+            config["proxy"] = "socks5h://127.0.0.1:1080"
             with patch.object(dispatcher, "_run", side_effect=hold_dispatcher):
                 result = dispatcher.start(
                     Path(temp_dir) / "library.sqlite3",
@@ -189,6 +189,33 @@ class CoreHelperTests(unittest.TestCase):
                 while dispatcher.is_alive() and time.time() < deadline:
                     time.sleep(0.01)
                 self.assertFalse(dispatcher.is_alive())
+
+    def test_placeholder_worker_passes_general_proxy_to_run(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        captured_args: list[object] = []
+        worker = PlaceholderRecoveryWorker()
+
+        def hold_worker(*args) -> None:
+            captured_args.extend(args)
+            entered.set()
+            release.wait(2)
+
+        with patch.object(worker, "_run", side_effect=hold_worker):
+            result = worker.start(
+                Path("library.sqlite3"),
+                Path("archivarix-cookies.txt"),
+                Path("thumbs"),
+                proxy_url="socks5h://127.0.0.1:1080",
+            )
+            self.assertTrue(result["started"])
+            self.assertTrue(entered.wait(1))
+            self.assertEqual(captured_args[-1], "socks5h://127.0.0.1:1080")
+            release.set()
+            deadline = time.time() + 1
+            while worker.is_alive() and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(worker.is_alive())
 
     def test_placeholder_recovery_exposes_its_persisted_run_id(self) -> None:
         entered = threading.Event()
@@ -303,6 +330,79 @@ class CoreHelperTests(unittest.TestCase):
             "Archivarix daily search limit reached",
         )
         self.assertEqual(core.archivarix_quota_message_from_text("ordinary response"), "")
+
+    def test_archivarix_search_uses_supplied_network_opener(self) -> None:
+        class Response:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            @staticmethod
+            def read() -> bytes:
+                return json.dumps(
+                    {"data": {"videos": [{"videoId": "proxytest1"}]}}
+                ).encode("utf-8")
+
+        class Opener:
+            def __init__(self) -> None:
+                self.calls: list[tuple[object, object]] = []
+
+            def open(self, request, timeout=None):
+                self.calls.append((request, timeout))
+                return Response()
+
+        opener = Opener()
+        videos = core.archivarix_search_deleted(
+            "Proxy test",
+            page_size=25,
+            opener=opener,
+        )
+
+        self.assertEqual(videos, [{"videoId": "proxytest1"}])
+        self.assertEqual(len(opener.calls), 1)
+        self.assertEqual(opener.calls[0][1], 30)
+        self.assertIn("tube.archivarix.net/api/fts", opener.calls[0][0].full_url)
+
+    def test_provided_metadata_passes_general_proxy_to_channel_enrichment(self) -> None:
+        conn = object()
+        opener = object()
+        thumb_dir = Path("thumbs")
+        metadata = {
+            "video_id": "abc12345678",
+            "title": "Example video",
+            "channel_id": "UCexample",
+        }
+        with (
+            patch(
+                "yt_library.core.resolve_metadata_target",
+                return_value=("video", "abc12345678"),
+            ),
+            patch("yt_library.core.fetch_watch_metadata", return_value=metadata),
+            patch(
+                "yt_library.core.fetch_new_channel_metadata_if_needed",
+                return_value=({}, "", ""),
+            ) as fetch_channel,
+            patch("yt_library.core.store_video_metadata"),
+        ):
+            core.fetch_provided_metadata(
+                conn,
+                opener,
+                thumb_dir,
+                "abc12345678",
+                proxy_url="socks5h://proxy.test:1080",
+            )
+
+        fetch_channel.assert_called_once_with(
+            conn,
+            opener,
+            thumb_dir,
+            metadata,
+            proxy_url="socks5h://proxy.test:1080",
+        )
 
     def test_archivarix_timeout_errors_are_classified(self) -> None:
         self.assertTrue(core.archivarix_timeout_error(TimeoutError("read timed out")))
@@ -1881,7 +1981,8 @@ class ConfigTests(unittest.TestCase):
                         "cookies": "legacy-cookies.txt",
                         "pockettube_export": "legacy-pockettube.json",
                         "display_timezone": "America/Los_Angeles",
-                        "youtube_proxy": "socks5h://127.0.0.1:1080",
+                        "proxy": "socks5h://127.0.0.1:1080",
+                        "youtube_proxy": "socks5h://legacy-proxy:1080",
                     }
                 ),
                 encoding="utf-8",
@@ -1897,7 +1998,7 @@ class ConfigTests(unittest.TestCase):
             )
             self.assertEqual(config["display_timezone"], "America/Los_Angeles")
             self.assertEqual(
-                configured_youtube_proxy(config),
+                configured_proxy(config),
                 "socks5h://127.0.0.1:1080",
             )
             self.assertEqual(configured_youtube_request_interval(config), 5.0)
@@ -1910,6 +2011,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(configured_archivarix_retry_backoff(config), 2.0)
             self.assertNotIn("cookies", config)
             self.assertNotIn("pockettube_export", config)
+            self.assertNotIn("youtube_proxy", config)
             self.assertEqual(
                 resolve_config_path(config, "youtube_cookies").resolve(),
                 (config_path.parent / "secrets" / "youtube.txt").resolve(),
@@ -1927,9 +2029,9 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(effective_display_timezone({"display_timezone": ""}), "UTC")
         self.assertEqual(configured_youtube_request_interval({"youtube_request_interval_seconds": -1}), 0.0)
-        self.assertEqual(configured_youtube_proxy({"youtube_proxy": ""}), "")
+        self.assertEqual(configured_proxy({"proxy": ""}), "")
         with self.assertRaises(ValueError):
-            configured_youtube_proxy({"youtube_proxy": "http://127.0.0.1:1080"})
+            configured_proxy({"proxy": "http://127.0.0.1:1080"})
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 0}), 1)
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 5000}), 100)
         self.assertEqual(configured_archivarix_request_interval({"archivarix_request_interval_seconds": -1}), 0.0)
@@ -1940,11 +2042,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(configured_archivarix_retry_attempts({"archivarix_retry_attempts": 500}), 10)
         self.assertEqual(configured_archivarix_retry_backoff({"archivarix_retry_backoff_seconds": -1}), 0.0)
 
-    def test_load_config_rejects_invalid_youtube_proxy(self) -> None:
+    def test_load_config_rejects_invalid_proxy(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"
             config_path.write_text(
-                json.dumps({"youtube_proxy": "http://127.0.0.1:1080"}),
+                json.dumps({"proxy": "http://127.0.0.1:1080"}),
                 encoding="utf-8",
             )
 
@@ -1966,7 +2068,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["host"], "127.0.0.1")
             self.assertEqual(payload["youtube_cookies"], "yt_cookies.txt")
             self.assertEqual(payload["archivarix_cookies"], "archivarix_cookies.txt")
-            self.assertEqual(payload["youtube_proxy"], "")
+            self.assertEqual(payload["proxy"], "")
+            self.assertNotIn("youtube_proxy", payload)
             self.assertEqual(payload["youtube_request_interval_seconds"], 5.0)
             self.assertEqual(payload["youtube_max_in_flight"], 10)
             self.assertEqual(payload["archivarix_request_interval_seconds"], 3.0)

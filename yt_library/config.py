@@ -24,7 +24,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "host": "127.0.0.1",
     "port": 8765,
     "display_timezone": "",
-    "youtube_proxy": "",
+    "proxy": "",
     "youtube_request_interval_seconds": 5.0,
     "youtube_max_in_flight": 10,
     "archivarix_request_interval_seconds": 3.0,
@@ -58,9 +58,9 @@ def configured_youtube_request_interval(config: dict[str, Any]) -> float:
     )
 
 
-def configured_youtube_proxy(config: dict[str, Any]) -> str:
+def configured_proxy(config: dict[str, Any]) -> str:
     return validated_socks5_proxy_url(
-        str(config.get("youtube_proxy", DEFAULT_CONFIG["youtube_proxy"]) or "")
+        str(config.get("proxy", DEFAULT_CONFIG["proxy"]) or "")
     )
 
 
@@ -159,7 +159,7 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
                 if key in DEFAULT_CONFIG and value is not None
             }
         )
-    configured_youtube_proxy(config)
+    configured_proxy(config)
     config["_config_path"] = str(path)
     return config
 
