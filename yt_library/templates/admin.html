@@ -48,12 +48,16 @@
     .metric { color: var(--muted); font-size: 13px; }
     .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
     .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0 18px; }
-    .header-timezone { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: end; gap: 8px; }
-    .header-timezone label { text-align: left; }
+    .header-settings { display: grid; justify-items: end; gap: 8px; }
+    .header-settings-row { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: end; gap: 8px; }
+    .header-settings label { text-align: left; }
+    .service-controls { display: flex; align-items: center; gap: 8px; min-height: 36px; }
+    .service-controls strong { font-size: 14px; }
     label { color: var(--muted); display: grid; gap: 5px; font-size: 13px; }
     input, select { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 8px 10px; font: inherit; width: 120px; }
     .wide-input { width: min(720px, calc(100vw - 360px)); }
     .timezone-input { width: 260px; }
+    .proxy-input { width: 320px; }
     .delay-input { width: 150px; }
     .settings-status { align-self: center; min-width: 64px; }
     label.checkbox { display: flex; flex-direction: row; align-items: center; gap: 7px; padding-bottom: 8px; }
@@ -104,8 +108,10 @@
     @media (max-width: 700px) {
       main { padding: 16px; }
       header, .workstream-header { display: block; }
-      .header-timezone { justify-content: flex-start; margin-top: 12px; }
-      .header-timezone label { text-align: left; }
+      .header-settings { justify-items: start; margin-top: 12px; }
+      .header-settings-row { justify-content: flex-start; }
+      .header-settings label { text-align: left; }
+      .proxy-input { width: min(100%, 320px); }
       .wide-input { width: min(100%, 720px); }
     }
   </style>
@@ -117,10 +123,22 @@
         <h1>YT Library Admin</h1>
         <a href="/">Main</a>
       </div>
-      <div class="header-timezone">
-        <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>
-        <button id="saveTimezone" class="primary" type="button">Save</button>
-        <button id="detectTimezone" type="button">Use browser time zone</button>
+      <div class="header-settings">
+        <div class="service-controls">
+          <span class="metric">Service</span>
+          <strong id="serviceStatus">Checking</strong>
+          <button id="restartService" type="button">Restart</button>
+        </div>
+        <div class="header-settings-row">
+          <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>
+          <button id="detectTimezone" type="button">Use browser time zone</button>
+        </div>
+        <div class="header-settings-row">
+          <label class="checkbox"><input id="useProxy" type="checkbox">Use proxy</label>
+          <input id="proxyUrl" class="proxy-input" type="text" aria-label="SOCKS5 proxy URL" placeholder="socks5h://127.0.0.1:1080">
+          <button id="saveSettings" class="primary" type="button">Save</button>
+          <span id="settingsStatus" class="metric settings-status" aria-live="polite"></span>
+        </div>
       </div>
     </header>
 
@@ -303,6 +321,12 @@
       placeholderRunStatus: document.getElementById('placeholderRunStatus'),
       placeholderRunDetails: document.getElementById('placeholderRunDetails'),
       displayTimezone: document.getElementById('displayTimezone'),
+      useProxy: document.getElementById('useProxy'),
+      proxyUrl: document.getElementById('proxyUrl'),
+      saveSettings: document.getElementById('saveSettings'),
+      settingsStatus: document.getElementById('settingsStatus'),
+      serviceStatus: document.getElementById('serviceStatus'),
+      restartService: document.getElementById('restartService'),
     };
     fields.displayTimezone.value = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
 
@@ -318,6 +342,9 @@
     const statusPollMs = 30000;
     let requestIntervalsSaving = false;
     let requestIntervalSaveTimer = null;
+    let settingsSaving = false;
+    let settingsDirty = false;
+    let currentServicePid = 0;
     const logState = {
       rows: [],
       keys: new Set(),
@@ -573,6 +600,26 @@
     }
 
     function render(data) {
+      const service = data.service || {};
+      const serviceState = String(service.status || 'unknown');
+      currentServicePid = Number(service.pid || currentServicePid || 0);
+      fields.serviceStatus.textContent = serviceState === 'running'
+        ? 'Running'
+        : (serviceState === 'restarting' ? 'Restarting' : 'Unavailable');
+      fields.serviceStatus.className = serviceState === 'running' ? 'running' : 'warn';
+      fields.serviceStatus.title = [
+        service.pid ? `PID ${service.pid}` : '',
+        service.startedAt ? `Started ${fmtTime(service.startedAt)}` : '',
+      ].filter(Boolean).join(' | ');
+      fields.restartService.disabled = serviceState === 'restarting';
+
+      const settings = data.settings || {};
+      if (!settingsSaving && !settingsDirty) {
+        fields.displayTimezone.value = settings.displayTimezone || window.YTLibraryTime.detected();
+        fields.useProxy.checked = Boolean(settings.useProxy);
+        fields.proxyUrl.value = settings.proxy || '';
+      }
+
       fields.playlistRows.textContent = data.playlistCounts.total_playlists || 0;
       fields.distinctVideos.textContent = data.counts.distinct_playlist_item_videos || 0;
       fields.historyRows.textContent = data.counts.history_rows || 0;
@@ -724,6 +771,100 @@
       return payload;
     }
 
+    async function requestJson(path, params = {}) {
+      const response = await fetch(`${path}?${new URLSearchParams(params)}`, { method: 'POST' });
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch (error) {
+        // A process restart can close the connection immediately after a valid response.
+      }
+      if (!response.ok) {
+        throw new Error(payload.error || `Request failed: ${response.status}`);
+      }
+      return payload;
+    }
+
+    function sleep(milliseconds) {
+      return new Promise(resolve => window.setTimeout(resolve, milliseconds));
+    }
+
+    async function waitForServiceRestart(previousPid) {
+      const deadline = Date.now() + 45000;
+      fields.serviceStatus.textContent = 'Restarting';
+      fields.serviceStatus.className = 'warn';
+      fields.restartService.disabled = true;
+      while (Date.now() < deadline) {
+        await sleep(500);
+        try {
+          const response = await fetch('/api/admin/service/status', { cache: 'no-store' });
+          if (!response.ok) continue;
+          const payload = await response.json();
+          const service = payload.service || {};
+          const nextPid = Number(service.pid || 0);
+          if (service.status === 'running' && nextPid && nextPid !== Number(previousPid || 0)) {
+            currentServicePid = nextPid;
+            await loadStatus({ force: true });
+            return;
+          }
+        } catch (error) {
+          // The listener is expected to be briefly unavailable during restart.
+        }
+      }
+      fields.serviceStatus.textContent = 'Unavailable';
+      fields.serviceStatus.className = 'warn';
+      fields.restartService.disabled = false;
+      throw new Error('Service did not come back within 45 seconds');
+    }
+
+    async function saveAdminSettings() {
+      if (settingsSaving) return;
+      settingsSaving = true;
+      fields.saveSettings.disabled = true;
+      fields.settingsStatus.textContent = 'Saving';
+      const previousPid = currentServicePid;
+      try {
+        const payload = await requestJson('/api/admin/settings', {
+          display_timezone: fields.displayTimezone.value.trim(),
+          use_proxy: fields.useProxy.checked ? '1' : '0',
+          proxy: fields.proxyUrl.value.trim(),
+        });
+        const settings = payload.settings || {};
+        fields.displayTimezone.value = settings.displayTimezone || fields.displayTimezone.value.trim();
+        fields.useProxy.checked = Boolean(settings.useProxy);
+        fields.proxyUrl.value = settings.proxy || '';
+        window.YTLibraryTime.apply(settings.displayTimezone || fields.displayTimezone.value);
+        settingsDirty = false;
+        if (payload.restartScheduled) {
+          fields.settingsStatus.textContent = 'Restarting';
+          await waitForServiceRestart(payload.service?.pid || previousPid);
+        } else {
+          await loadStatus({ force: true });
+        }
+        fields.settingsStatus.textContent = 'Saved';
+      } catch (error) {
+        fields.settingsStatus.textContent = 'Save failed';
+        alert(error.message);
+      } finally {
+        settingsSaving = false;
+        fields.saveSettings.disabled = false;
+      }
+    }
+
+    async function restartServiceNow() {
+      if (!confirm('Restart the service? Active queue work will be interrupted.')) return;
+      const previousPid = currentServicePid;
+      fields.settingsStatus.textContent = 'Restarting';
+      try {
+        const payload = await requestJson('/api/admin/service/restart');
+        await waitForServiceRestart(payload.service?.pid || previousPid);
+        fields.settingsStatus.textContent = '';
+      } catch (error) {
+        fields.settingsStatus.textContent = 'Restart failed';
+        alert(error.message);
+      }
+    }
+
     async function stopWorkersNow() {
       fields.commonWorkerState.textContent = 'stopping';
       fields.startWorkerQueue.classList.remove('primary');
@@ -835,15 +976,14 @@
     fields.archivarixRequestInterval.addEventListener('change', flushRequestIntervalSave);
     fields.logSourceFilter.addEventListener('change', renderLogs);
     fields.logLevelFilter.addEventListener('change', renderLogs);
-    document.getElementById('saveTimezone').addEventListener('click', () => {
-      window.YTLibraryTime.persist(fields.displayTimezone.value.trim())
-        .then(() => loadStatus({ force: true }))
-        .catch(error => alert(error.message));
-    });
+    fields.displayTimezone.addEventListener('input', () => { settingsDirty = true; });
+    fields.useProxy.addEventListener('change', () => { settingsDirty = true; });
+    fields.proxyUrl.addEventListener('input', () => { settingsDirty = true; });
+    fields.saveSettings.addEventListener('click', saveAdminSettings);
+    fields.restartService.addEventListener('click', restartServiceNow);
     document.getElementById('detectTimezone').addEventListener('click', () => {
-      const detected = window.YTLibraryTime.detected();
-      fields.displayTimezone.value = detected;
-      window.YTLibraryTime.persist(detected).catch(error => alert(error.message));
+      fields.displayTimezone.value = window.YTLibraryTime.detected();
+      settingsDirty = true;
     });
 
     function connectQueueEvents() {

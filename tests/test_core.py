@@ -7,16 +7,18 @@ import sqlite3
 import json
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 import unittest
 import zipfile
 from datetime import date
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from yt_library import cli
 from yt_library import core
 from yt_library import network
+from yt_library import server
 from yt_library.config import (
     configured_archivarix_max_in_flight,
     configured_archivarix_request_interval,
@@ -25,6 +27,8 @@ from yt_library.config import (
     configured_archivarix_retry_backoff,
     configured_archivarix_stream_timeout,
     configured_display_timezone,
+    configured_proxy_address,
+    configured_use_proxy,
     configured_youtube_max_in_flight,
     configured_proxy,
     configured_youtube_request_interval,
@@ -173,6 +177,7 @@ class CoreHelperTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             config = load_config(Path(temp_dir) / "config.json")
+            config["use_proxy"] = True
             config["proxy"] = "socks5h://127.0.0.1:1080"
             with patch.object(dispatcher, "_run", side_effect=hold_dispatcher):
                 result = dispatcher.start(
@@ -1997,6 +2002,12 @@ class ConfigTests(unittest.TestCase):
                 (config_path.parent / "data" / "library.sqlite3").resolve(),
             )
             self.assertEqual(config["display_timezone"], "America/Los_Angeles")
+            self.assertTrue(config["use_proxy"])
+            self.assertTrue(configured_use_proxy(config))
+            self.assertEqual(
+                configured_proxy_address(config),
+                "socks5h://127.0.0.1:1080",
+            )
             self.assertEqual(
                 configured_proxy(config),
                 "socks5h://127.0.0.1:1080",
@@ -2030,6 +2041,23 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(effective_display_timezone({"display_timezone": ""}), "UTC")
         self.assertEqual(configured_youtube_request_interval({"youtube_request_interval_seconds": -1}), 0.0)
         self.assertEqual(configured_proxy({"proxy": ""}), "")
+        self.assertEqual(
+            configured_proxy(
+                {
+                    "use_proxy": False,
+                    "proxy": "socks5h://127.0.0.1:1080",
+                }
+            ),
+            "",
+        )
+        self.assertFalse(
+            configured_use_proxy(
+                {
+                    "use_proxy": False,
+                    "proxy": "socks5h://127.0.0.1:1080",
+                }
+            )
+        )
         with self.assertRaises(ValueError):
             configured_proxy({"proxy": "http://127.0.0.1:1080"})
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 0}), 1)
@@ -2046,7 +2074,12 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"
             config_path.write_text(
-                json.dumps({"proxy": "http://127.0.0.1:1080"}),
+                json.dumps(
+                    {
+                        "use_proxy": False,
+                        "proxy": "http://127.0.0.1:1080",
+                    }
+                ),
                 encoding="utf-8",
             )
 
@@ -2068,6 +2101,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["host"], "127.0.0.1")
             self.assertEqual(payload["youtube_cookies"], "yt_cookies.txt")
             self.assertEqual(payload["archivarix_cookies"], "archivarix_cookies.txt")
+            self.assertFalse(payload["use_proxy"])
             self.assertEqual(payload["proxy"], "")
             self.assertNotIn("youtube_proxy", payload)
             self.assertEqual(payload["youtube_request_interval_seconds"], 5.0)
@@ -2114,6 +2148,93 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(Path(args.db).resolve(), (config_path.parent / "yt_library.sqlite3").resolve())
             self.assertEqual(Path(args.cookies).resolve(), (config_path.parent / "yt_cookies.txt").resolve())
             self.assertEqual(args.host, "127.0.0.1")
+
+
+class AdminServerTests(unittest.TestCase):
+    def test_admin_settings_save_proxy_and_schedule_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            db_path = Path(temp_dir) / "library.sqlite3"
+            config = load_config(config_path)
+            core.migrate_database(db_path)
+            request_restart = Mock(return_value=True)
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/admin/settings?" + urllib.parse.urlencode(
+                {
+                    "display_timezone": "America/Los_Angeles",
+                    "use_proxy": "1",
+                    "proxy": "socks5h://127.0.0.1:1081",
+                }
+            )
+            handler.db_path = db_path
+            handler.config_data = config
+            handler.service_started_at = "2026-07-28T12:00:00Z"
+            handler.restart_pending = lambda: request_restart.called
+            handler.request_restart = request_restart
+            handler.send_json = Mock()
+
+            handler.do_POST()
+
+            request_restart.assert_called_once_with()
+            self.assertEqual(config["display_timezone"], "America/Los_Angeles")
+            self.assertTrue(config["use_proxy"])
+            self.assertEqual(config["proxy"], "socks5h://127.0.0.1:1081")
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(payload["use_proxy"])
+            self.assertEqual(payload["proxy"], "socks5h://127.0.0.1:1081")
+            response = handler.send_json.call_args.args[0]
+            self.assertTrue(response["restartScheduled"])
+            self.assertEqual(response["service"]["status"], "restarting")
+
+    def test_admin_settings_reject_enabled_proxy_without_an_address(self) -> None:
+        config = load_config(Path("missing-test-config.json"))
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = (
+            "/api/admin/settings?"
+            + urllib.parse.urlencode(
+                {
+                    "display_timezone": "UTC",
+                    "use_proxy": "1",
+                    "proxy": "",
+                }
+            )
+        )
+        handler.config_data = config
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        response = handler.send_json.call_args.args[0]
+        self.assertIn("SOCKS5 proxy URL", response["error"])
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
+    def test_admin_template_exposes_service_and_proxy_controls(self) -> None:
+        self.assertIn('id="serviceStatus"', server.ADMIN_HTML)
+        self.assertIn('id="restartService"', server.ADMIN_HTML)
+        self.assertIn('id="useProxy"', server.ADMIN_HTML)
+        self.assertIn('id="proxyUrl"', server.ADMIN_HTML)
+        self.assertIn('id="saveSettings"', server.ADMIN_HTML)
+
+    def test_service_replacement_uses_dedicated_log_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with (
+                patch.object(server, "ROOT", root),
+                patch.object(server.subprocess, "Popen") as popen,
+            ):
+                server.launch_service_replacement()
+
+            kwargs = popen.call_args.kwargs
+            self.assertEqual(
+                Path(kwargs["stdout"].name),
+                root / ".codex" / "service-logs" / "yt-library.out.log",
+            )
+            self.assertEqual(
+                Path(kwargs["stderr"].name),
+                root / ".codex" / "service-logs" / "yt-library.err.log",
+            )
+            self.assertTrue(kwargs["stdout"].closed)
+            self.assertTrue(kwargs["stderr"].closed)
 
 
 class WorkerQueueTests(unittest.TestCase):

@@ -24,6 +24,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "host": "127.0.0.1",
     "port": 8765,
     "display_timezone": "",
+    "use_proxy": False,
     "proxy": "",
     "youtube_request_interval_seconds": 5.0,
     "youtube_max_in_flight": 10,
@@ -58,10 +59,24 @@ def configured_youtube_request_interval(config: dict[str, Any]) -> float:
     )
 
 
-def configured_proxy(config: dict[str, Any]) -> str:
+def configured_proxy_address(config: dict[str, Any]) -> str:
     return validated_socks5_proxy_url(
         str(config.get("proxy", DEFAULT_CONFIG["proxy"]) or "")
     )
+
+
+def configured_use_proxy(config: dict[str, Any]) -> bool:
+    value = config.get("use_proxy")
+    if value is None:
+        return bool(configured_proxy_address(config))
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def configured_proxy(config: dict[str, Any]) -> str:
+    proxy_url = configured_proxy_address(config)
+    return proxy_url if configured_use_proxy(config) else ""
 
 
 def configured_youtube_max_in_flight(config: dict[str, Any]) -> int:
@@ -159,7 +174,9 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
                 if key in DEFAULT_CONFIG and value is not None
             }
         )
-    configured_proxy(config)
+        if "use_proxy" not in loaded and str(loaded.get("proxy") or "").strip():
+            config["use_proxy"] = True
+    configured_proxy_address(config)
     config["_config_path"] = str(path)
     return config
 

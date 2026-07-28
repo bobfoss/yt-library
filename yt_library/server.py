@@ -6,17 +6,22 @@ import argparse
 import http.server
 import json
 import math
+import os
 import posixpath
+import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import (
     configured_archivarix_request_interval,
     configured_display_timezone,
+    configured_proxy_address,
+    configured_use_proxy,
     configured_youtube_request_interval,
     effective_display_timezone,
     ensure_config_file,
@@ -24,6 +29,7 @@ from .config import (
     save_config,
 )
 from .core import *
+from .network import validated_socks5_proxy_url
 from .queries import (
     channel_detail_data,
     channel_list_data,
@@ -54,6 +60,33 @@ COLLECTION_CARD_JS = load_template("collection-card.js")
 FAVICON_SVG = load_template("favicon.svg")
 
 
+def service_restart_command() -> list[str]:
+    return [
+        sys.executable,
+        str(Path(sys.argv[0]).resolve()),
+        *sys.argv[1:],
+    ]
+
+
+def launch_service_replacement() -> None:
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    log_dir = ROOT / ".codex" / "service-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with (
+        (log_dir / "yt-library.out.log").open("a", encoding="utf-8") as stdout,
+        (log_dir / "yt-library.err.log").open("a", encoding="utf-8") as stderr,
+    ):
+        subprocess.Popen(
+            service_restart_command(),
+            cwd=str(Path.cwd()),
+            creationflags=creationflags,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+
 class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -65,6 +98,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         video_thumbs: Path,
         takeout_dir: Path,
         config_data: dict[str, Any],
+        service_started_at: str,
+        restart_pending: Callable[[], bool],
+        request_restart: Callable[[], bool],
         directory: str | None = None,
         **kwargs,
     ):
@@ -73,6 +109,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         self.video_thumbs = video_thumbs
         self.takeout_dir = takeout_dir
         self.config_data = config_data
+        self.service_started_at = service_started_at
+        self.restart_pending = restart_pending
+        self.request_restart = request_restart
         super().__init__(*args, directory=directory, **kwargs)
 
     def do_GET(self) -> None:
@@ -378,6 +417,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 conn.close()
             self.send_json(data)
             return
+        if parsed.path == "/api/admin/service/status":
+            self.send_json({"service": self.service_status()})
+            return
         if parsed.path == "/api/admin/status":
             params = urllib.parse.parse_qs(parsed.query)
             include_logs = (params.get("include_logs") or ["1"])[0].strip().lower() not in {"0", "false", "no"}
@@ -395,6 +437,8 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 worker_queue_limit,
             )
             data["requestIntervals"] = self.request_interval_settings()
+            data["settings"] = self.admin_settings()
+            data["service"] = self.service_status()
             self.send_json(data)
             return
         if parsed.path == "/api/admin/queue/events":
@@ -439,7 +483,73 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if parsed.path == "/api/admin/settings":
+            timezone_name = (params.get("display_timezone") or [""])[0].strip()
+            use_proxy = (params.get("use_proxy") or ["0"])[0].strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            proxy_url = (params.get("proxy") or [""])[0].strip()
+            if not valid_timezone_name(timezone_name):
+                self.send_json(
+                    {"error": f"Invalid IANA timezone: {timezone_name}"},
+                    status=400,
+                )
+                return
+            try:
+                proxy_url = validated_socks5_proxy_url(proxy_url)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
+                return
+            if use_proxy and not proxy_url:
+                self.send_json(
+                    {"error": "Enter a SOCKS5 proxy URL or clear Use proxy"},
+                    status=400,
+                )
+                return
+
+            previous_timezone = configured_display_timezone(self.config_data)
+            previous_use_proxy = configured_use_proxy(self.config_data)
+            previous_proxy = configured_proxy_address(self.config_data)
+            proxy_changed = (
+                previous_use_proxy != use_proxy
+                or previous_proxy != proxy_url
+            )
+            self.config_data["display_timezone"] = timezone_name
+            self.config_data["use_proxy"] = use_proxy
+            self.config_data["proxy"] = proxy_url
+            save_config(self.config_data)
+            if previous_timezone != timezone_name:
+                conn = connect(self.db_path)
+                try:
+                    with conn:
+                        refresh_exact_history_dates(conn, timezone_name)
+                finally:
+                    conn.close()
+            if proxy_changed:
+                self.request_restart()
+            self.send_json(
+                {
+                    "ok": True,
+                    "settings": self.admin_settings(),
+                    "restartScheduled": proxy_changed,
+                    "service": self.service_status(),
+                }
+            )
+            return
+        if parsed.path == "/api/admin/service/restart":
+            scheduled = self.request_restart()
+            self.send_json(
+                {
+                    "ok": True,
+                    "restartScheduled": scheduled,
+                    "service": self.service_status(),
+                }
+            )
+            return
         if parsed.path == "/api/settings/timezone":
             value = (params.get("value") or [""])[0].strip()
             if not valid_timezone_name(value):
@@ -844,6 +954,20 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "archivarix_seconds": configured_archivarix_request_interval(self.config_data),
         }
 
+    def admin_settings(self) -> dict[str, Any]:
+        return {
+            "displayTimezone": configured_display_timezone(self.config_data),
+            "useProxy": configured_use_proxy(self.config_data),
+            "proxy": configured_proxy_address(self.config_data),
+        }
+
+    def service_status(self) -> dict[str, Any]:
+        return {
+            "status": "restarting" if self.restart_pending() else "running",
+            "pid": os.getpid(),
+            "startedAt": self.service_started_at,
+        }
+
     def send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -1009,6 +1133,25 @@ def serve(args: argparse.Namespace) -> None:
         LIVE_HISTORY_WORKER,
         PLACEHOLDER_RECOVERY_WORKER,
     )
+    service_started_at = utc_now()
+    restart_requested = threading.Event()
+    server: http.server.ThreadingHTTPServer | None = None
+
+    def restart_pending() -> bool:
+        return restart_requested.is_set()
+
+    def request_restart() -> bool:
+        if restart_requested.is_set():
+            return False
+        restart_requested.set()
+
+        def shutdown_after_response() -> None:
+            time.sleep(0.35)
+            if server is not None:
+                server.shutdown()
+
+        threading.Thread(target=shutdown_after_response, daemon=True).start()
+        return True
 
     def handler(*handler_args, **handler_kwargs):
         return LibraryHandler(
@@ -1018,6 +1161,9 @@ def serve(args: argparse.Namespace) -> None:
             video_thumbs=Path(args.video_thumbs),
             takeout_dir=Path(args.takeout),
             config_data=args.config_data,
+            service_started_at=service_started_at,
+            restart_pending=restart_pending,
+            request_restart=request_restart,
             directory=str(ROOT),
             **handler_kwargs,
         )
@@ -1028,3 +1174,8 @@ def serve(args: argparse.Namespace) -> None:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped")
+    finally:
+        server.server_close()
+    if restart_requested.is_set():
+        print("Restarting service")
+        launch_service_replacement()

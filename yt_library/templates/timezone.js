@@ -1,13 +1,17 @@
 (function () {
   const config = window.YT_LIBRARY_CONFIG || {};
 
+  function apply(timeZone) {
+    config.displayTimezone = timeZone;
+    window.dispatchEvent(new CustomEvent('ytlibrarytimezonechange', { detail: timeZone }));
+    return timeZone;
+  }
+
   async function persist(timeZone) {
     const params = new URLSearchParams({ value: timeZone });
     const response = await fetch(`/api/settings/timezone?${params}`, { method: 'POST' });
     if (!response.ok) throw new Error(`Could not save timezone (${response.status})`);
-    config.displayTimezone = timeZone;
-    window.dispatchEvent(new CustomEvent('ytlibrarytimezonechange', { detail: timeZone }));
-    return timeZone;
+    return apply(timeZone);
   }
 
   function detected() {
@@ -27,6 +31,7 @@
   }
 
   window.YTLibraryTime = {
+    apply,
     detected,
     format,
     get timeZone() { return config.displayTimezone || ''; },

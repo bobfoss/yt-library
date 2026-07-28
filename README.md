@@ -63,6 +63,7 @@ in the generated config file:
   "host": "127.0.0.1",
   "port": 8765,
   "display_timezone": "",
+  "use_proxy": false,
   "proxy": "",
   "youtube_request_interval_seconds": 5.0,
   "youtube_max_in_flight": 10,
@@ -83,10 +84,12 @@ through Tailscale without binding other interfaces, set `host` to the machine's
 Tailscale IPv4 address.
 If `display_timezone` is empty, the browser detects an IANA timezone on first
 load and saves it to the config file.
-Set `proxy` to a URL such as `socks5h://127.0.0.1:1080` to route every outbound
-YouTube and Archivarix page, API, stream, thumbnail, and yt-dlp request through
-a SOCKS5 proxy. Use `socks5h` for proxy-side DNS resolution; leave the setting
-empty for direct connections.
+Set `use_proxy` to `true` and `proxy` to a URL such as
+`socks5h://127.0.0.1:1080` to route every outbound YouTube and Archivarix page,
+API, stream, thumbnail, and yt-dlp request through a SOCKS5 proxy. Use `socks5h`
+for proxy-side DNS resolution. The Admin header can update the timezone and
+proxy settings together; changing either proxy setting restarts the service so
+all new network clients use the saved configuration.
 The request interval settings control how often each site's next task may launch.
 The matching `max_in_flight` settings cap concurrent tasks; long Archivarix
 lookups therefore do not delay the YouTube launch cadence.
