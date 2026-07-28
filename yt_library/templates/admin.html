@@ -88,8 +88,11 @@
     .log-level-col { width: 170px; }
     .video-col { width: 150px; }
     .subject-col { width: 290px; }
-    .queue-worker-col { width: 180px; }
-    .action-col { width: 100px; }
+    .queue-worker-col { width: 170px; }
+    .queue-video-col { width: 140px; }
+    .queue-source-col { width: 180px; }
+    .queue-details-col { width: 200px; }
+    .action-col { width: 90px; }
     .time-cell { white-space: nowrap; }
     .level-cell { white-space: nowrap; }
     .log-panel { margin-top: 16px; }
@@ -226,10 +229,10 @@
         <colgroup>
           <col class="action-col">
           <col class="queue-worker-col">
-          <col class="subject-col">
-          <col class="video-col">
           <col>
-          <col>
+          <col class="queue-video-col">
+          <col class="queue-source-col">
+          <col class="queue-details-col">
         </colgroup>
         <thead><tr><th>Action</th><th>Worker</th><th>Subject</th><th>Video ID</th><th>Source</th><th>Details</th></tr></thead>
       </table>
@@ -238,10 +241,10 @@
           <colgroup>
             <col class="action-col">
             <col class="queue-worker-col">
-            <col class="subject-col">
-            <col class="video-col">
             <col>
-            <col>
+            <col class="queue-video-col">
+            <col class="queue-source-col">
+            <col class="queue-details-col">
           </colgroup>
           <tbody id="workerQueueRows"></tbody>
         </table>
