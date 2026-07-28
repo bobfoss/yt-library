@@ -234,7 +234,7 @@
           <col class="queue-source-col">
           <col class="queue-details-col">
         </colgroup>
-        <thead><tr><th>Action</th><th>Worker</th><th>Video ID</th><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
+        <thead><tr><th>Action</th><th>Worker</th><th>ID</th><th>Subject</th><th>Source</th><th>Details</th></tr></thead>
       </table>
       <div class="queue-scroll" id="workerQueuePanel">
         <table>
@@ -280,7 +280,7 @@
           <col class="subject-col">
           <col>
         </colgroup>
-        <thead><tr><th>Time</th><th>Level</th><th>Video ID</th><th>Subject</th><th>Message</th></tr></thead>
+        <thead><tr><th>Time</th><th>Level</th><th>ID</th><th>Subject</th><th>Message</th></tr></thead>
       </table>
       <div class="log-scroll">
         <table>
@@ -410,6 +410,11 @@
     }
 
     function workerSubject(row) {
+      if (row.worker_type === 'metadata' && row.task_type === 'channel') {
+        const identifier = workerId(row);
+        return [row.known_channel_title, row.channel_title, row.current_title]
+          .find(value => value && value !== identifier) || '';
+      }
       return row.playlist_title || row.current_title || row.video_id || row.channel_title || row.channel_id || row.playlist_id || row.subject_key || '';
     }
 
@@ -422,26 +427,26 @@
         ...(data.playlistScanLogs || []).map(log => ({
           ...log,
           subject_id: log.subject_title || playlistSubject(log.playlist_id),
-          video_id: log.display_video_id || '',
+          identifier: log.display_id || '',
           source: 'playlist',
         })),
         ...(data.metadataLogs || []).map(log => ({
           ...log,
-          subject_id: log.subject_title || log.video_id,
-          video_id: log.display_video_id || '',
+          subject_id: log.subject_title || (log.display_id ? '' : log.video_id),
+          identifier: log.display_id || '',
           source: String(log.level || '').startsWith('placeholder ') ? 'placeholder' : 'metadata',
           level: String(log.level || '').replace(/^placeholder\s+/, ''),
         })),
         ...(data.placeholderRecoveryLogs || []).map(log => ({
           ...log,
           subject_id: log.subject_title || log.video_id,
-          video_id: log.display_video_id || '',
+          identifier: log.display_id || '',
           source: 'placeholder',
         })),
         ...(data.liveHistoryLogs || []).map(log => ({
           ...log,
           subject_id: log.subject_title || log.video_id,
-          video_id: log.display_video_id || '',
+          identifier: log.display_id || '',
           source: 'history',
         })),
       ];
@@ -458,7 +463,7 @@
         <tr>
           <td class="time-cell">${fmtTime(log.created_at)}</td>
           <td class="level-cell">${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
-          <td class="time-cell">${escapeHtml(log.video_id || '')}</td>
+          <td class="time-cell">${escapeHtml(log.identifier || '')}</td>
           <td class="message">${escapeHtml(log.subject_id || '')}</td>
           <td class="message">${escapeHtml(log.message)}</td>
         </tr>
@@ -495,7 +500,7 @@
         return `${row.playlist_id || ''}\n${row.scan_status || 'unscanned'} ${row.video_count || 0}/${row.playlist_video_count || '?'}`;
       }
       if (row.worker_type === 'metadata') {
-        return row.task_type === 'channel' ? (row.channel_id || '') : '';
+        return '';
       }
       if (row.worker_type === 'placeholder') {
         return '';
@@ -507,8 +512,10 @@
       return [row.worker_type || '', row.task_type || '', row.manual ? 'manual' : ''].filter(Boolean).join(' ');
     }
 
-    function workerVideoId(row) {
-      if (row.worker_type === 'metadata' && row.task_type === 'channel') return '';
+    function workerId(row) {
+      if (row.worker_type === 'metadata' && row.task_type === 'channel') {
+        return row.channel_id || row.video_id || '';
+      }
       return row.video_id || '';
     }
 
@@ -517,7 +524,7 @@
         <tr data-queue-id="${escapeHtml(row.queue_id || '')}">
           <td><button class="remove-queue-entry" type="button" data-queue-id="${escapeHtml(row.queue_id || '')}">Remove</button></td>
           <td class="queue-worker-cell">${escapeHtml(workerLabel(row))}</td>
-          <td class="time-cell"><div class="queue-cell">${escapeHtml(workerVideoId(row))}</div></td>
+          <td class="time-cell"><div class="queue-cell">${escapeHtml(workerId(row))}</div></td>
           <td class="message"><div class="queue-cell">${escapeHtml(workerSubject(row))}</div></td>
           <td class="message"><div class="queue-cell">${escapeHtml(row.source_key || '')}</div></td>
           <td class="message"><div class="queue-cell">${escapeHtml(workerDetails(row))}</div></td>

@@ -435,16 +435,27 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                                 updated_at=now,
                             )
                     processed += 1
+                    channel_subject_id = (
+                        str(metadata.get("channel_id") or "").strip()
+                        or queued_channel_id
+                        or video_id
+                    )
                     channel_label = metadata.get("channel") or queued_channel_title or queued_channel_id or video_id
                     if status == "error":
                         failed += 1
-                        subject_id = channel_label if metadata_source == "channel" else video_id
+                        subject_id = channel_subject_id if metadata_source == "channel" else video_id
                         log_worker_event(conn, run_id, f"{metadata_source} error", error, subject_id)
                     else:
                         found += 1
                         title = metadata.get("title") or video_id
                         if metadata_source == "channel":
-                            log_worker_event(conn, run_id, metadata_source, f"{status}: {channel_label} (via {title})", channel_label)
+                            log_worker_event(
+                                conn,
+                                run_id,
+                                metadata_source,
+                                f"{status}: {channel_label} (via {title})",
+                                channel_subject_id,
+                            )
                         else:
                             message = f"{status}: {title}"
                             if status == "ok" and metadata_source in {"history", "provided"}:
@@ -457,12 +468,17 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                                     or metadata.get("channel")
                                     or video_metadata_channel_id(metadata)
                                 )
+                                discovered_channel_id = (
+                                    str(channel_metadata.get("channel_id") or "").strip()
+                                    or video_metadata_channel_id(metadata)
+                                    or discovered_channel_label
+                                )
                                 log_worker_event(
                                     conn,
                                     run_id,
                                     "channel",
                                     f"{channel_status}: {discovered_channel_label} (discovered via {title})",
-                                    discovered_channel_label,
+                                    discovered_channel_id,
                                 )
                     if row_queue_id:
                         conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (row_queue_id,))

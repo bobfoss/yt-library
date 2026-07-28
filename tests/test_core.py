@@ -2371,7 +2371,9 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('id="useProxy"', server.ADMIN_HTML)
         self.assertIn('id="proxyUrl"', server.ADMIN_HTML)
         self.assertIn('id="saveSettings"', server.ADMIN_HTML)
-        self.assertEqual(server.ADMIN_HTML.count("<th>Video ID</th>"), 2)
+        self.assertEqual(server.ADMIN_HTML.count("<th>ID</th>"), 2)
+        self.assertNotIn("<th>Video ID</th>", server.ADMIN_HTML)
+        self.assertIn("return row.channel_id || row.video_id || '';", server.ADMIN_HTML)
 
     def test_service_replacement_uses_dedicated_log_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3326,13 +3328,13 @@ class WorkerQueueTests(unittest.TestCase):
                 snapshot = core.worker_log_snapshot(conn)
                 self.assertEqual([row["message"] for row in snapshot["metadataLogs"]], ["first"])
                 self.assertEqual(snapshot["metadataLogs"][0]["subject_title"], "Example video")
-                self.assertEqual(snapshot["metadataLogs"][0]["display_video_id"], "abc12345678")
+                self.assertEqual(snapshot["metadataLogs"][0]["display_id"], "abc12345678")
                 self.assertEqual([row["message"] for row in snapshot["playlistScanLogs"]], ["playlist"])
                 self.assertEqual(
                     snapshot["playlistScanLogs"][0]["subject_title"],
                     "Example playlist",
                 )
-                self.assertEqual(snapshot["playlistScanLogs"][0]["display_video_id"], "")
+                self.assertEqual(snapshot["playlistScanLogs"][0]["display_id"], "")
                 self.assertEqual(snapshot["liveHistoryLogs"], [])
                 self.assertEqual(
                     [row["message"] for row in snapshot["placeholderRecoveryLogs"]],
@@ -3364,11 +3366,11 @@ class WorkerQueueTests(unittest.TestCase):
                 deltas = core.worker_logs_after(conn, cursors)
                 self.assertEqual([row["message"] for row in deltas["metadataLogs"]], ["second"])
                 self.assertEqual(deltas["metadataLogs"][0]["subject_title"], "Second video")
-                self.assertEqual(deltas["metadataLogs"][0]["display_video_id"], "def12345678")
+                self.assertEqual(deltas["metadataLogs"][0]["display_id"], "def12345678")
                 self.assertEqual(deltas["playlistScanLogs"], [])
                 self.assertEqual([row["message"] for row in deltas["liveHistoryLogs"]], ["history"])
                 self.assertEqual(deltas["liveHistoryLogs"][0]["subject_title"], "History video")
-                self.assertEqual(deltas["liveHistoryLogs"][0]["display_video_id"], "ghi12345678")
+                self.assertEqual(deltas["liveHistoryLogs"][0]["display_id"], "ghi12345678")
                 self.assertEqual(deltas["placeholderRecoveryLogs"], [])
             finally:
                 conn.close()
@@ -3990,6 +3992,95 @@ class WorkerQueueTests(unittest.TestCase):
                         },
                     ],
                 )
+            finally:
+                conn.close()
+
+    def test_metadata_channel_uses_channel_id_in_queue_and_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            channel_id = "UCchannel12345678901234"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_channel(conn, channel_id, title="Queued Channel")
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id=channel_id,
+                        channel_id=channel_id,
+                        channel_title=channel_id,
+                        metadata_source="channel",
+                        priority=0,
+                        manual=True,
+                    )
+                queue_row = core.worker_queue_rows(conn, limit=1)[0]
+                self.assertEqual(queue_row["channel_id"], channel_id)
+                self.assertEqual(queue_row["known_channel_title"], "Queued Channel")
+            finally:
+                conn.close()
+
+            channel_metadata = {
+                "channel_id": channel_id,
+                "channel": "Fetched Channel",
+                "channel_url": f"https://www.youtube.com/channel/{channel_id}",
+                "channel_description": "",
+                "channel_aliases": "",
+                "channel_thumbnail_url": "",
+                "channel_thumbnail_path": "",
+                "archivarix_channel_id": "",
+                "channel_status": "",
+                "channel_status_reason": "",
+            }
+            worker = MetadataWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.fetch_channel_metadata", return_value=channel_metadata),
+            ):
+                worker._run(
+                    "test-channel-id-log",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=30,
+                    record_summary=False,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                log = conn.execute(
+                    """
+                    SELECT level, video_id, message
+                    FROM metadata_worker_log
+                    WHERE run_id = 'test-channel-id-log'
+                    """
+                ).fetchone()
+                self.assertEqual(log["level"], "channel")
+                self.assertEqual(log["video_id"], channel_id)
+                self.assertIn("ok: Fetched Channel", log["message"])
+                display_log = core.worker_log_snapshot(conn)["metadataLogs"][0]
+                self.assertEqual(display_log["display_id"], channel_id)
+                self.assertEqual(display_log["subject_title"], "Fetched Channel")
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO metadata_worker_log(
+                          run_id, created_at, level, video_id, message
+                        )
+                        VALUES (
+                          'legacy-channel-log', '2026-07-13T12:00:00Z',
+                          'channel', 'Fetched Channel', 'legacy channel message'
+                        )
+                        """
+                    )
+                legacy_log = next(
+                    row
+                    for row in core.worker_log_snapshot(conn)["metadataLogs"]
+                    if row["message"] == "legacy channel message"
+                )
+                self.assertEqual(legacy_log["display_id"], channel_id)
+                self.assertEqual(legacy_log["subject_title"], "Fetched Channel")
             finally:
                 conn.close()
 

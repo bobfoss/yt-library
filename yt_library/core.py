@@ -5296,6 +5296,7 @@ def worker_queue_rows(
                w.created_at,
                w.updated_at,
                p.title AS playlist_title,
+               COALESCE(NULLIF(c.title, ''), '') AS known_channel_title,
                p.video_count AS playlist_video_count,
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
@@ -5303,6 +5304,12 @@ def worker_queue_rows(
         FROM worker_queue w
         LEFT JOIN playlists p ON p.playlist_id = w.playlist_id
         LEFT JOIN playlist_scans ps ON ps.playlist_id = w.playlist_id
+        LEFT JOIN channels c
+          ON c.channel_id = CASE
+            WHEN w.worker_type = 'metadata' AND w.task_type = 'channel'
+              THEN COALESCE(NULLIF(w.channel_id, ''), w.video_id)
+            ELSE ''
+          END
         ORDER BY w.priority, w.queue_id
     """
     params: list[Any] = []
@@ -5341,6 +5348,7 @@ def worker_queue_rows_by_id(
                w.created_at,
                w.updated_at,
                p.title AS playlist_title,
+               COALESCE(NULLIF(c.title, ''), '') AS known_channel_title,
                p.video_count AS playlist_video_count,
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
@@ -5348,6 +5356,12 @@ def worker_queue_rows_by_id(
         FROM worker_queue w
         LEFT JOIN playlists p ON p.playlist_id = w.playlist_id
         LEFT JOIN playlist_scans ps ON ps.playlist_id = w.playlist_id
+        LEFT JOIN channels c
+          ON c.channel_id = CASE
+            WHEN w.worker_type = 'metadata' AND w.task_type = 'channel'
+              THEN COALESCE(NULLIF(w.channel_id, ''), w.video_id)
+            ELSE ''
+          END
         WHERE w.queue_id IN ({placeholders})
         ORDER BY w.priority, w.queue_id
         """,
@@ -5392,14 +5406,58 @@ def worker_log_select(name: str) -> str:
         return f"""
             SELECT l.*,
                    COALESCE(NULLIF(p.title, ''), l.playlist_id) AS subject_title,
-                   '' AS display_video_id
+                   '' AS display_id
             FROM {table} l
             LEFT JOIN playlists p ON p.playlist_id = l.playlist_id
+        """
+    if name == "metadataLogs":
+        identifier_condition = """
+            v.video_id IS NOT NULL
+            OR c.channel_id IS NOT NULL
+            OR legacy_c.channel_id IS NOT NULL
+            OR (
+              LENGTH(l.video_id) = 11
+              AND l.video_id NOT GLOB '*[^A-Za-z0-9_-]*'
+            )
+            OR l.video_id LIKE 'UC%'
+            OR l.video_id LIKE 'HC%'
+            OR l.video_id LIKE '@%'
+        """
+        return f"""
+            SELECT l.*,
+                   CASE
+                     WHEN v.video_id IS NOT NULL
+                       THEN COALESCE(NULLIF(v.title, ''), l.video_id)
+                     WHEN c.channel_id IS NOT NULL
+                       THEN COALESCE(NULLIF(c.title, ''), l.video_id)
+                     WHEN legacy_c.channel_id IS NOT NULL
+                       THEN COALESCE(NULLIF(legacy_c.title, ''), l.video_id)
+                     WHEN {identifier_condition}
+                       THEN ''
+                     ELSE l.video_id
+                   END AS subject_title,
+                   CASE
+                     WHEN legacy_c.channel_id IS NOT NULL THEN legacy_c.channel_id
+                     WHEN {identifier_condition} THEN l.video_id
+                     ELSE ''
+                   END AS display_id
+            FROM {table} l
+            LEFT JOIN videos v ON v.video_id = l.video_id
+            LEFT JOIN channels c ON c.channel_id = l.video_id
+            LEFT JOIN channels legacy_c
+              ON legacy_c.channel_id = (
+                SELECT c2.channel_id
+                FROM channels c2
+                WHERE (l.level = 'channel' OR l.level LIKE 'channel %')
+                  AND c2.title = l.video_id COLLATE NOCASE
+                ORDER BY c2.channel_id
+                LIMIT 1
+              )
         """
     return f"""
         SELECT l.*,
                COALESCE(NULLIF(v.title, ''), l.video_id) AS subject_title,
-               CASE WHEN v.video_id IS NULL THEN '' ELSE l.video_id END AS display_video_id
+               CASE WHEN v.video_id IS NULL THEN '' ELSE l.video_id END AS display_id
         FROM {table} l
         LEFT JOIN videos v ON v.video_id = l.video_id
     """
