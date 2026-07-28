@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 import unittest
 import zipfile
+from collections import Counter
 from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -19,6 +20,7 @@ from yt_library import cli
 from yt_library import core
 from yt_library import network
 from yt_library import server
+from yt_library import workers
 from yt_library.config import (
     configured_archivarix_max_in_flight,
     configured_archivarix_request_interval,
@@ -37,7 +39,13 @@ from yt_library.config import (
     ensure_directory,
     load_config,
 )
-from yt_library.workers import MetadataWorker, PlaceholderRecoveryWorker, PlaylistScanWorker, WorkerQueueDispatcher
+from yt_library.workers import (
+    LiveHistoryWorker,
+    MetadataWorker,
+    PlaceholderRecoveryWorker,
+    PlaylistScanWorker,
+    WorkerQueueDispatcher,
+)
 
 
 def migrated_connection(db_path: Path):
@@ -1348,6 +1356,155 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(core.history_time_quality_label("unknown"), "time unknown")
         self.assertIn("observed_at", core.history_time_quality_note("unknown"))
 
+    def test_history_day_overlap_requires_two_complete_matching_days(self) -> None:
+        tracker = core.HistoryDayOverlapTracker(
+            {
+                "2026-07-28": Counter({"repeat123": 1}),
+                "2026-07-27": Counter({"known-a": 1, "known-b": 1}),
+                "2026-07-26": Counter({"known-c": 1}),
+            }
+        )
+
+        reached = tracker.add_rows(
+            [
+                {"video_id": "repeat123", "watch_date": "2026-07-28"},
+                {"video_id": "repeat123", "watch_date": "2026-07-28"},
+                {"video_id": "known-a", "watch_date": "2026-07-27"},
+            ]
+        )
+        self.assertFalse(reached)
+
+        reached = tracker.add_rows(
+            [
+                {"video_id": "known-b", "watch_date": "2026-07-27"},
+                {"video_id": "known-c", "watch_date": "2026-07-26"},
+                {"video_id": "older", "watch_date": "2026-07-25"},
+            ]
+        )
+
+        self.assertTrue(reached)
+        self.assertEqual(tracker.confirmed_days, ["2026-07-27", "2026-07-26"])
+
+    def test_youtube_history_occurrence_counts_preserve_same_day_rewatches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(conn, "repeat123", title="Repeat", source="test")
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watch_date, time_precision,
+                          source_type, match_type, youtube_ordinal
+                        )
+                        VALUES ('legacy-position-id', 'repeat123', '2026-07-28',
+                                'date_only', 'youtube', 'youtube_only', 1)
+                        """
+                    )
+                snapshot = core.youtube_history_occurrence_snapshot(conn)
+
+                with conn:
+                    stats = core.save_youtube_history_events(
+                        conn,
+                        [
+                            {"video_id": "repeat123", "watch_date": "2026-07-28"},
+                            {"video_id": "repeat123", "watch_date": "2026-07-28"},
+                        ],
+                        1,
+                        snapshot,
+                        Counter(),
+                    )
+
+                rows = conn.execute(
+                    """
+                    SELECT event_id, youtube_ordinal
+                    FROM history_events
+                    WHERE video_id = 'repeat123' AND watch_date = '2026-07-28'
+                    ORDER BY youtube_ordinal
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(stats["existing"], 1)
+        self.assertEqual(stats["new"], 1)
+        self.assertEqual(rows[0]["event_id"], "legacy-position-id")
+        self.assertNotEqual(rows[1]["event_id"], "youtube:2")
+        self.assertEqual([row["youtube_ordinal"] for row in rows], [1, 2])
+
+    def test_youtube_takeout_match_count_is_scoped_to_the_fetched_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    for ordinal in (5, 10):
+                        video_id = f"matched-{ordinal}"
+                        core.upsert_video(conn, video_id, title=video_id, source="test")
+                        conn.execute(
+                            """
+                            INSERT INTO history_events(
+                              event_id, video_id, watched_at, watch_date, time_precision,
+                              source_type, match_type, youtube_ordinal,
+                              takeout_history_key, takeout_row_key
+                            )
+                            VALUES (?, ?, '2026-07-28T12:00:00Z', '2026-07-28', 'exact',
+                                    'takeout_youtube', 'video_id_date', ?, 'takeout', ?)
+                            """,
+                            (f"takeout-{ordinal}", video_id, ordinal, f"row-{ordinal}"),
+                        )
+
+                first_batch = core.youtube_takeout_match_count(conn, 1, 5)
+                second_batch = core.youtube_takeout_match_count(conn, 6, 5)
+            finally:
+                conn.close()
+
+        self.assertEqual(first_batch, 1)
+        self.assertEqual(second_batch, 1)
+
+    def test_youtube_history_order_normalizes_legacy_duplicate_ordinals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    for event_id, video_id, ordinal in (
+                        ("event-a", "video-a", 1),
+                        ("event-b", "video-b", 1),
+                        ("event-c", "video-c", 3),
+                    ):
+                        core.upsert_video(conn, video_id, title=video_id, source="test")
+                        conn.execute(
+                            """
+                            INSERT INTO history_events(
+                              event_id, video_id, watch_date, time_precision,
+                              source_type, match_type, youtube_ordinal
+                            )
+                            VALUES (?, ?, '2026-07-28', 'date_only',
+                                    'youtube', 'youtube_only', ?)
+                            """,
+                            (event_id, video_id, ordinal),
+                        )
+                snapshot = core.youtube_history_occurrence_snapshot(conn)
+
+                with conn:
+                    core.synchronize_youtube_history_order(
+                        conn,
+                        snapshot,
+                        set(),
+                        processed=0,
+                        shift=0,
+                    )
+
+                ordinals = [
+                    row["youtube_ordinal"]
+                    for row in conn.execute(
+                        "SELECT youtube_ordinal FROM history_events ORDER BY youtube_ordinal"
+                    )
+                ]
+            finally:
+                conn.close()
+
+        self.assertEqual(ordinals, [1, 2, 3])
+
     def test_canonical_video_prefers_current_youtube_and_retains_unavailable_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             conn = migrated_connection(Path(tmp) / "library.sqlite3")
@@ -2239,6 +2396,142 @@ class AdminServerTests(unittest.TestCase):
 
 
 class WorkerQueueTests(unittest.TestCase):
+    def test_recent_history_uses_small_batch_and_stops_after_two_matching_days(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            existing = [
+                ("known-a", "2026-07-27"),
+                ("known-b", "2026-07-27"),
+                ("known-c", "2026-07-26"),
+                ("known-d", "2026-07-26"),
+            ]
+            try:
+                with conn:
+                    for ordinal, (video_id, watch_date) in enumerate(existing, start=1):
+                        core.upsert_video(conn, video_id, title=video_id, source="test")
+                        if ordinal == 1:
+                            conn.execute(
+                                """
+                                INSERT INTO history_events(
+                                  event_id, video_id, watched_at, watch_date, time_precision,
+                                  source_type, match_type, youtube_ordinal,
+                                  takeout_history_key, takeout_row_key
+                                )
+                                VALUES (?, ?, '2026-07-27T12:00:00Z', ?, 'exact',
+                                        'takeout_youtube', 'video_id_date', ?,
+                                        'takeout', 'known-a-row')
+                                """,
+                                (f"existing-{ordinal}", video_id, watch_date, ordinal),
+                            )
+                        else:
+                            conn.execute(
+                                """
+                                INSERT INTO history_events(
+                                  event_id, video_id, watch_date, time_precision,
+                                  source_type, match_type, youtube_ordinal
+                                )
+                                VALUES (?, ?, ?, 'date_only', 'youtube', 'youtube_only', ?)
+                                """,
+                                (f"existing-{ordinal}", video_id, watch_date, ordinal),
+                            )
+            finally:
+                conn.close()
+
+            fetched_rows = [
+                {"video_id": "repeat-current", "watch_date": "2026-07-28"}
+                for _ in range(195)
+            ]
+            fetched_rows.extend(
+                {"video_id": video_id, "watch_date": watch_date}
+                for video_id, watch_date in existing
+            )
+            fetched_rows.append({"video_id": "older-new", "watch_date": "2026-07-25"})
+
+            worker = LiveHistoryWorker()
+            with patch.object(workers, "fetch_youtube_history_web", return_value=fetched_rows) as fetch:
+                worker._run(
+                    "recent-history-run",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    "recent",
+                    "UTC",
+                )
+
+            second_worker = LiveHistoryWorker()
+            with patch.object(workers, "fetch_youtube_history_web", return_value=fetched_rows) as second_fetch:
+                second_worker._run(
+                    "second-recent-history-run",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    "recent",
+                    "UTC",
+                )
+
+            conn = core.connect(db_path)
+            try:
+                run = conn.execute(
+                    "SELECT * FROM live_history_worker_runs WHERE run_id = 'recent-history-run'"
+                ).fetchone()
+                second_run = conn.execute(
+                    "SELECT * FROM live_history_worker_runs WHERE run_id = 'second-recent-history-run'"
+                ).fetchone()
+                logs = [
+                    row["message"]
+                    for row in conn.execute(
+                        """
+                        SELECT message FROM live_history_worker_log
+                        WHERE run_id = 'recent-history-run'
+                        ORDER BY rowid
+                        """
+                    )
+                ]
+                event_counts = conn.execute(
+                    """
+                    SELECT COUNT(*) AS events,
+                           COUNT(DISTINCT youtube_ordinal) AS distinct_ordinals,
+                           MIN(youtube_ordinal) AS first_ordinal,
+                           MAX(youtube_ordinal) AS last_ordinal
+                    FROM history_events
+                    WHERE youtube_ordinal IS NOT NULL
+                    """
+                ).fetchone()
+                reconciled = conn.execute(
+                    """
+                    SELECT time_precision, watched_at, youtube_ordinal
+                    FROM history_events
+                    WHERE event_id = 'existing-1'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(second_fetch.call_count, 1)
+        self.assertEqual(fetch.call_args.kwargs["limit"], core.RECENT_HISTORY_BATCH_SIZE)
+        self.assertEqual(run["status"], "complete")
+        self.assertEqual(run["processed"], 200)
+        self.assertEqual(run["found"], 196)
+        self.assertEqual(run["skipped"], 4)
+        self.assertIn("2 matching complete days", run["message"])
+        self.assertTrue(
+            any(
+                "196 new watches, 4 existing watches, 1 Takeout matches" in message
+                for message in logs
+            )
+        )
+        self.assertEqual(second_run["found"], 0)
+        self.assertEqual(second_run["skipped"], 200)
+        self.assertEqual(dict(event_counts), {
+            "events": 200,
+            "distinct_ordinals": 200,
+            "first_ordinal": 1,
+            "last_ordinal": 200,
+        })
+        self.assertEqual(reconciled["time_precision"], "exact")
+        self.assertEqual(reconciled["watched_at"], "2026-07-27T12:00:00Z")
+        self.assertEqual(reconciled["youtube_ordinal"], 196)
+
     def test_dispatcher_caps_concurrent_metadata_tasks_from_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

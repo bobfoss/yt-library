@@ -27,10 +27,11 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -55,7 +56,9 @@ ARCHIVARIX_COOKIE_FILE = ROOT / "archivarix_cookies.txt"
 POCKETTUBE_EXPORT = ROOT / "youtube_playlist_manager_2026-07-02-17_13.json"
 TAKEOUT_DIR = ROOT / "YouTube and YouTube Music"
 HISTORY_BATCH_SIZE = 1000
+RECENT_HISTORY_BATCH_SIZE = 200
 HISTORY_BATCH_DELAY_SECONDS = 10.0
+RECENT_HISTORY_OVERLAP_DAYS = 2
 DEFAULT_DISPLAY_TIMEZONE = "UTC"
 
 PLAYLIST_MATCH_TYPE_NOTES = {
@@ -4514,57 +4517,130 @@ def recover_archivarix_video(
     return video, thumbnail_url, thumbnail_path, status, error
 
 
-def youtube_occurrence_sequence(
-    conn: sqlite3.Connection,
-    start: int,
-    limit: int,
-) -> list[str]:
-    return [
-        row["video_id"]
-        for row in conn.execute(
-            """
-            SELECT video_id
-            FROM history_events
-            WHERE youtube_ordinal >= ?
-              AND youtube_ordinal < ?
-            ORDER BY youtube_ordinal
-            """,
-            (start, start + limit),
+HistoryOccurrenceKey = tuple[str, str]
+HistoryOccurrenceSnapshot = dict[HistoryOccurrenceKey, list[tuple[str, int]]]
+
+
+def history_occurrence_key(row: sqlite3.Row | dict[str, Any]) -> HistoryOccurrenceKey:
+    if isinstance(row, dict):
+        return str(row.get("video_id") or ""), str(row.get("watch_date") or "")
+    return str(row["video_id"] or ""), str(row["watch_date"] or "")
+
+
+def youtube_history_occurrence_snapshot(conn: sqlite3.Connection) -> HistoryOccurrenceSnapshot:
+    snapshot: HistoryOccurrenceSnapshot = {}
+    for row in conn.execute(
+        """
+        SELECT event_id, video_id, watch_date, youtube_ordinal
+        FROM history_events
+        WHERE youtube_ordinal IS NOT NULL
+        ORDER BY youtube_ordinal
+        """
+    ):
+        snapshot.setdefault(history_occurrence_key(row), []).append(
+            (row["event_id"], int(row["youtube_ordinal"]))
         )
-    ]
+    return snapshot
 
 
-def find_feed_overlap(fetched: list[str], existing: list[str]) -> int | None:
-    max_offset = min(len(fetched), len(existing))
-    for offset in range(max_offset + 1):
-        candidate = fetched[offset:]
-        if candidate and candidate == existing[: len(candidate)]:
-            return offset
-    return None
+def youtube_history_day_counts(
+    snapshot: HistoryOccurrenceSnapshot,
+) -> dict[str, Counter[str]]:
+    days: dict[str, Counter[str]] = {}
+    for (video_id, watch_date), occurrences in snapshot.items():
+        if not video_id or not watch_date:
+            continue
+        days.setdefault(watch_date, Counter())[video_id] += len(occurrences)
+    return days
+
+
+@dataclass
+class HistoryDayOverlapTracker:
+    existing_days: dict[str, Counter[str]]
+    required_matching_days: int = RECENT_HISTORY_OVERLAP_DAYS
+    current_date: str = ""
+    current_counts: Counter[str] = field(default_factory=Counter)
+    consecutive_matching_days: int = 0
+    confirmed_days: list[str] = field(default_factory=list)
+    reached_overlap: bool = False
+
+    def _finish_current_day(self) -> None:
+        if not self.current_date or self.reached_overlap:
+            return
+        matches = bool(self.current_counts) and self.current_counts == self.existing_days.get(self.current_date)
+        if matches:
+            self.consecutive_matching_days += 1
+            self.confirmed_days.append(self.current_date)
+            if self.consecutive_matching_days >= self.required_matching_days:
+                self.reached_overlap = True
+                self.confirmed_days = self.confirmed_days[-self.required_matching_days :]
+        else:
+            self.consecutive_matching_days = 0
+            self.confirmed_days = []
+
+    def add_rows(self, rows: list[dict[str, Any]]) -> bool:
+        for row in rows:
+            video_id, watch_date = history_occurrence_key(row)
+            if not watch_date:
+                self._finish_current_day()
+                self.current_date = ""
+                self.current_counts.clear()
+                if not self.reached_overlap:
+                    self.consecutive_matching_days = 0
+                    self.confirmed_days = []
+                continue
+            if self.current_date and watch_date != self.current_date:
+                self._finish_current_day()
+                self.current_counts = Counter()
+            self.current_date = watch_date
+            if video_id:
+                self.current_counts[video_id] += 1
+        return self.reached_overlap
+
+    def finish(self) -> bool:
+        self._finish_current_day()
+        self.current_date = ""
+        self.current_counts = Counter()
+        return self.reached_overlap
+
+
+def youtube_history_event_id(
+    video_id: str,
+    watch_date: str,
+    occurrence_number: int,
+) -> str:
+    payload = f"{video_id}\x1f{watch_date}\x1f{occurrence_number}"
+    return f"youtube:{hashlib.sha1(payload.encode('utf-8', 'replace')).hexdigest()}"
 
 
 def save_youtube_history_events(
     conn: sqlite3.Connection,
     rows: list[dict[str, Any]],
     start: int,
-) -> tuple[int, int, str]:
+    occurrence_snapshot: HistoryOccurrenceSnapshot,
+    seen_occurrences: Counter[HistoryOccurrenceKey],
+) -> dict[str, Any]:
     now = utc_now()
     observed_at = now
-    inserted = 0
+    new = 0
     existing = 0
     last_video_id = ""
+    assignments: list[dict[str, Any]] = []
     for index, row in enumerate(rows, start=start):
         video_id = row.get("video_id") or ""
         if not video_id:
             continue
-        previous = conn.execute(
-            "SELECT * FROM history_events WHERE youtube_ordinal = ?",
-            (index,),
-        ).fetchone()
-        if previous and previous["video_id"] == video_id:
+        key = history_occurrence_key(row)
+        seen_occurrences[key] += 1
+        occurrence_number = seen_occurrences[key]
+        prior_occurrences = occurrence_snapshot.get(key, [])
+        if occurrence_number <= len(prior_occurrences):
+            event_id, old_ordinal = prior_occurrences[occurrence_number - 1]
             existing += 1
         else:
-            inserted += 1
+            event_id = youtube_history_event_id(video_id, key[1], occurrence_number)
+            old_ordinal = None
+            new += 1
         last_video_id = video_id
         channel_url = row.get("channel_url") or ""
         channel_id = upsert_channel(
@@ -4587,51 +4663,191 @@ def save_youtube_history_events(
             source="youtube_history",
             updated_at=now,
         )
-        if previous and previous["video_id"] != video_id:
-            if previous["takeout_history_key"]:
-                conn.execute(
-                    """
-                    UPDATE history_events
-                    SET youtube_ordinal=NULL, source_type='takeout', match_type='takeout_only', updated_at=?
-                    WHERE event_id=?
-                    """,
-                    (now, previous["event_id"]),
+        progress = bounded_int(row.get("watch_progress_percent"))
+        resume = max(0, int(row.get("watch_resume_seconds") or 0))
+        if old_ordinal is not None:
+            conn.execute(
+                """
+                UPDATE history_events
+                SET video_id=?,
+                    watch_date=CASE WHEN takeout_history_key IS NULL THEN ? ELSE watch_date END,
+                    time_precision=CASE WHEN takeout_history_key IS NULL THEN ? ELSE time_precision END,
+                    source_type=CASE WHEN takeout_history_key IS NULL THEN 'youtube' ELSE 'takeout_youtube' END,
+                    match_type=CASE WHEN takeout_history_key IS NULL THEN 'youtube_only' ELSE 'video_id_date' END,
+                    youtube_ordinal=?, watch_progress_percent=?, watch_resume_seconds=?,
+                    observed_at=?, updated_at=?
+                WHERE event_id=?
+                """,
+                (
+                    video_id,
+                    key[1] or None,
+                    "date_only" if key[1] else "unknown",
+                    index,
+                    progress,
+                    resume,
+                    observed_at,
+                    now,
+                    event_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO history_events(
+                  event_id, video_id, watched_at, watch_date, time_precision,
+                  source_type, match_type, youtube_ordinal,
+                  watch_progress_percent, watch_resume_seconds,
+                  observed_at, imported_at, updated_at
                 )
+                VALUES (?, ?, NULL, ?, ?, 'youtube', 'youtube_only', ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                  video_id=excluded.video_id,
+                  watch_date=excluded.watch_date,
+                  time_precision=excluded.time_precision,
+                  source_type='youtube',
+                  match_type='youtube_only',
+                  youtube_ordinal=excluded.youtube_ordinal,
+                  watch_progress_percent=excluded.watch_progress_percent,
+                  watch_resume_seconds=excluded.watch_resume_seconds,
+                  observed_at=excluded.observed_at,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    event_id,
+                    video_id,
+                    key[1] or None,
+                    "date_only" if key[1] else "unknown",
+                    index,
+                    progress,
+                    resume,
+                    observed_at,
+                    now,
+                    now,
+                ),
+            )
+        assignments.append(
+            {
+                "event_id": event_id,
+                "video_id": video_id,
+                "watch_date": key[1],
+                "old_ordinal": old_ordinal,
+                "new_ordinal": index,
+            }
+        )
+    return {
+        "new": new,
+        "existing": existing,
+        "last_video_id": last_video_id,
+        "assignments": assignments,
+    }
+
+
+def youtube_history_order_shift(
+    assignments: list[dict[str, Any]],
+    *,
+    matching_days: set[str] | None = None,
+    fallback: int = 0,
+) -> int:
+    deltas = Counter(
+        int(assignment["new_ordinal"]) - int(assignment["old_ordinal"])
+        for assignment in assignments
+        if assignment.get("old_ordinal") is not None
+        and (not matching_days or assignment.get("watch_date") in matching_days)
+    )
+    return deltas.most_common(1)[0][0] if deltas else fallback
+
+
+def synchronize_youtube_history_order(
+    conn: sqlite3.Connection,
+    occurrence_snapshot: HistoryOccurrenceSnapshot,
+    assigned_event_ids: set[str],
+    *,
+    processed: int,
+    shift: int,
+    final: bool = False,
+    complete_scan: bool = False,
+) -> None:
+    now = utc_now()
+    removed_event_ids: list[str] = []
+    cleared_event_ids: list[str] = []
+    shifted_events: list[tuple[int, str]] = []
+    for occurrences in occurrence_snapshot.values():
+        for event_id, old_ordinal in occurrences:
+            if event_id in assigned_event_ids:
+                continue
+            predicted_ordinal = old_ordinal + shift
+            remove_observation = complete_scan or (final and predicted_ordinal <= processed)
+            if remove_observation:
+                removed_event_ids.append(event_id)
+            elif predicted_ordinal <= processed:
+                cleared_event_ids.append(event_id)
             else:
-                conn.execute("DELETE FROM history_events WHERE event_id = ?", (previous["event_id"],))
+                shifted_events.append((predicted_ordinal, event_id))
+    conn.executemany(
+        """
+        UPDATE history_events
+        SET youtube_ordinal=NULL, source_type='takeout',
+            match_type='takeout_only', updated_at=?
+        WHERE event_id=? AND takeout_history_key IS NOT NULL
+        """,
+        [(now, event_id) for event_id in removed_event_ids],
+    )
+    conn.executemany(
+        "DELETE FROM history_events WHERE event_id=? AND takeout_history_key IS NULL",
+        [(event_id,) for event_id in removed_event_ids],
+    )
+    conn.executemany(
+        """
+        UPDATE history_events
+        SET youtube_ordinal=NULL,
+            source_type=CASE WHEN takeout_history_key IS NULL THEN 'youtube' ELSE 'takeout' END,
+            match_type=CASE WHEN takeout_history_key IS NULL THEN 'youtube_only' ELSE 'takeout_only' END,
+            updated_at=?
+        WHERE event_id=?
+        """,
+        [(now, event_id) for event_id in cleared_event_ids],
+    )
+    conn.executemany(
+        "UPDATE history_events SET youtube_ordinal=?, updated_at=? WHERE event_id=?",
+        [(ordinal, now, event_id) for ordinal, event_id in shifted_events],
+    )
+    ordered_rows = conn.execute(
+        """
+        SELECT event_id, youtube_ordinal
+        FROM history_events
+        WHERE youtube_ordinal IS NOT NULL
+        ORDER BY youtube_ordinal, event_id
+        """
+    ).fetchall()
+    conn.executemany(
+        "UPDATE history_events SET youtube_ordinal=?, updated_at=? WHERE event_id=?",
+        [
+            (ordinal, now, row["event_id"])
+            for ordinal, row in enumerate(ordered_rows, start=1)
+            if row["youtube_ordinal"] != ordinal
+        ],
+    )
+
+
+def youtube_takeout_match_count(
+    conn: sqlite3.Connection,
+    start: int,
+    count: int,
+) -> int:
+    if count <= 0:
+        return 0
+    return int(
         conn.execute(
             """
-            INSERT INTO history_events(
-              event_id, video_id, watched_at, watch_date, time_precision,
-              source_type, match_type, youtube_ordinal,
-              watch_progress_percent, watch_resume_seconds,
-              observed_at, imported_at, updated_at
-            )
-            VALUES (?, ?, NULL, ?, ?, 'youtube', 'youtube_only', ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(event_id) DO UPDATE SET
-              video_id=excluded.video_id,
-              watch_date=excluded.watch_date,
-              time_precision=excluded.time_precision,
-              youtube_ordinal=excluded.youtube_ordinal,
-              watch_progress_percent=excluded.watch_progress_percent,
-              watch_resume_seconds=excluded.watch_resume_seconds,
-              observed_at=excluded.observed_at,
-              updated_at=excluded.updated_at
+            SELECT COUNT(*)
+            FROM history_events
+            WHERE youtube_ordinal >= ?
+              AND youtube_ordinal < ?
+              AND takeout_history_key IS NOT NULL
             """,
-            (
-                f"youtube:{index}",
-                video_id,
-                row.get("watch_date") or "",
-                "date_only" if row.get("watch_date") else "unknown",
-                index,
-                bounded_int(row.get("watch_progress_percent")),
-                max(0, int(row.get("watch_resume_seconds") or 0)),
-                observed_at,
-                now,
-                now,
-            ),
-        )
-    return inserted, existing, last_video_id
+            (start, start + count),
+        ).fetchone()[0]
+    )
 
 
 def history_row_hash(row: dict[str, str]) -> str:

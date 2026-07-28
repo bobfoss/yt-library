@@ -127,6 +127,8 @@ The test suite uses the Python standard library `unittest` runner, so there is n
 
 Takeout history is the authoritative source for exact watch times. Live YouTube history is useful for recent observations and ordering, but it may only provide date-level data. Reconciled history rows use compact `source_type`, `match_type`, and `time_quality` values so fetch time is not mistaken for watch time.
 
+Recent history fetches use 200-entry batches and stop after two consecutive complete days have the same per-video occurrence counts as the prior YouTube observation. Full history verification retains 1,000-entry batches and scans to the end. A live watch occurrence is reused by video ID, local watch date, and occurrence number within that video/day group; `youtube_ordinal` records current display order and is not event identity.
+
 The database stores canonical video metadata once in `videos`; playlist membership and history events link to that entity. Metadata revisions are intentionally discarded, except that the last useful state is retained when a video becomes unavailable. Exact timestamps use ISO 8601 UTC. The configured display timezone lives in `yt_library.config.json`; the UI can update it from Admin.
 
 ## Security

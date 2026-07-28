@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 import urllib.parse
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -932,8 +933,23 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
         conn = connect(db_path)
         mode = "verify" if mode == "verify" else "recent"
         label = "Verify history" if mode == "verify" else "History fetch"
-        batch_size = HISTORY_BATCH_SIZE
+        batch_size = HISTORY_BATCH_SIZE if mode == "verify" else RECENT_HISTORY_BATCH_SIZE
+        occurrence_snapshot: HistoryOccurrenceSnapshot = {}
+        seen_occurrences: Counter[HistoryOccurrenceKey] = Counter()
+        assigned_event_ids: set[str] = set()
+        assignments: list[dict[str, Any]] = []
+        overlap_tracker: HistoryDayOverlapTracker | None = None
+        processed = 0
+        inserted_total = 0
+        skipped_total = 0
+        takeout_matches_total = 0
         try:
+            occurrence_snapshot = youtube_history_occurrence_snapshot(conn)
+            overlap_tracker = (
+                HistoryDayOverlapTracker(youtube_history_day_counts(occurrence_snapshot))
+                if mode == "recent"
+                else None
+            )
             with conn:
                 conn.execute(
                     """
@@ -974,11 +990,9 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                 return
 
             start = 1
-            processed = 0
-            inserted_total = 0
-            skipped_total = 0
             last_video_id = ""
             final_message = ""
+            completion_reason = ""
             while not self._stop.is_set():
                 end = start + batch_size - 1
                 rows = fetch_youtube_history_web(
@@ -988,22 +1002,56 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                     timezone_name=timezone_name,
                     proxy_url=proxy_url,
                 )
-                fetched_ids = [row.get("video_id") or "" for row in rows if row.get("video_id")]
+                seen = len(rows)
+                overlap_reached = overlap_tracker.add_rows(rows) if overlap_tracker else False
+                if overlap_tracker and seen < batch_size:
+                    overlap_reached = overlap_tracker.finish()
                 with conn:
-                    existing_ids = youtube_occurrence_sequence(conn, start, len(rows))
-                    overlap_offset = find_feed_overlap(fetched_ids, existing_ids) if mode == "recent" else None
-                    inserted, existing, batch_last_video_id = save_youtube_history_events(conn, rows, start)
-                    reconcile_stats = rebuild_history_reconciliation(conn, timezone_name)
-                    seen = len(rows)
+                    save_stats = save_youtube_history_events(
+                        conn,
+                        rows,
+                        start,
+                        occurrence_snapshot,
+                        seen_occurrences,
+                    )
                     processed += seen
-                    inserted_total += inserted
-                    skipped_total += existing
+                    inserted_total += save_stats["new"]
+                    skipped_total += save_stats["existing"]
+                    assignments.extend(save_stats["assignments"])
+                    assigned_event_ids.update(
+                        assignment["event_id"] for assignment in save_stats["assignments"]
+                    )
+                    matching_days = (
+                        set(overlap_tracker.confirmed_days)
+                        if overlap_tracker and overlap_reached
+                        else None
+                    )
+                    shift = youtube_history_order_shift(
+                        assignments,
+                        matching_days=matching_days,
+                        fallback=inserted_total,
+                    )
+                    complete_scan = seen < batch_size and bool(processed)
+                    synchronize_youtube_history_order(
+                        conn,
+                        occurrence_snapshot,
+                        assigned_event_ids,
+                        processed=processed,
+                        shift=shift,
+                        final=complete_scan or overlap_reached,
+                        complete_scan=complete_scan,
+                    )
+                    rebuild_history_reconciliation(conn, timezone_name)
+                    batch_takeout_matches = youtube_takeout_match_count(conn, start, seen)
+                    takeout_matches_total += batch_takeout_matches
+                    batch_last_video_id = save_stats["last_video_id"]
                     if batch_last_video_id:
                         last_video_id = batch_last_video_id
                     final_message = (
                         f"{label}: entries {start}-{end}; {seen} fetched, "
-                        f"{inserted} changed/new, {existing} existing, "
-                        f"{reconcile_stats['matched']} matched"
+                        f"{save_stats['new']} new watches, "
+                        f"{save_stats['existing']} existing watches, "
+                        f"{batch_takeout_matches} Takeout matches"
                     )
                     conn.execute(
                         """
@@ -1016,26 +1064,35 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                     )
                     log_live_history_event(conn, run_id, "info", final_message, last_video_id)
                 if seen < batch_size:
+                    completion_reason = "reached the end of available history"
                     break
-                if mode == "recent" and overlap_offset is not None:
-                    final_message = f"{label} reached already-known history after {processed} entries"
+                if mode == "recent" and overlap_reached:
+                    completion_reason = (
+                        f"reached {RECENT_HISTORY_OVERLAP_DAYS} matching complete days "
+                        f"({', '.join(overlap_tracker.confirmed_days)})"
+                    )
                     break
                 if self._stop.wait(HISTORY_BATCH_DELAY_SECONDS):
                     break
                 start += batch_size
 
+            takeout_matches_total = youtube_takeout_match_count(conn, 1, processed)
             status = "stopped" if self._stop.is_set() else "complete"
             if not final_message:
                 final_message = f"{label}: no history rows fetched"
             elif status == "complete":
                 final_message = (
-                    f"{label} complete: {processed} fetched, "
-                    f"{inserted_total} changed/new, {skipped_total} existing"
+                    f"{label} complete"
+                    f"{f' ({completion_reason})' if completion_reason else ''}: "
+                    f"{processed} fetched, {inserted_total} new watches, "
+                    f"{skipped_total} existing watches, "
+                    f"{takeout_matches_total} Takeout matches"
                 )
             else:
                 final_message = (
                     f"{label} stopped: {processed} fetched, "
-                    f"{inserted_total} changed/new, {skipped_total} existing"
+                    f"{inserted_total} new watches, {skipped_total} existing watches, "
+                    f"{takeout_matches_total} Takeout matches"
                 )
             with conn:
                 conn.execute(
