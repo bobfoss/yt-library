@@ -2366,7 +2366,10 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
 
     def test_admin_template_exposes_service_and_proxy_controls(self) -> None:
-        self.assertIn('id="themeSelect"', server.ADMIN_HTML)
+        self.assertIn('id="themeToggle"', server.ADMIN_HTML)
+        self.assertIn('aria-label="Use dark theme"', server.ADMIN_HTML)
+        self.assertIn('<span>Light</span>', server.ADMIN_HTML)
+        self.assertIn('<span>Dark</span>', server.ADMIN_HTML)
         self.assertIn('id="serviceStatus"', server.ADMIN_HTML)
         self.assertIn('id="restartService"', server.ADMIN_HTML)
         self.assertIn('id="useProxy"', server.ADMIN_HTML)
@@ -2384,7 +2387,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(':root[data-theme="light"]', server.INDEX_HTML)
         self.assertIn('<script src="/theme.js"></script>', server.INDEX_HTML)
         self.assertIn("storedTheme() || 'dark'", server.THEME_JS)
-        self.assertIn("window.YTLibraryTheme.set(fields.themeSelect.value)", server.ADMIN_HTML)
+        self.assertIn("fields.themeToggle.checked ? 'dark' : 'light'", server.ADMIN_HTML)
 
     def test_service_replacement_uses_dedicated_log_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

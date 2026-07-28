@@ -54,8 +54,14 @@
     .header-settings label { text-align: left; }
     .service-controls { display: flex; align-items: center; gap: 8px; min-height: 36px; }
     .service-controls strong { font-size: 14px; }
-    .theme-control { display: flex; align-items: center; gap: 6px; }
-    .theme-control select { width: 90px; padding: 6px 8px; }
+    .theme-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
+    .theme-switch { position: relative; display: inline-flex; cursor: pointer; }
+    .theme-switch input { position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; opacity: 0; }
+    .theme-track { display: flex; align-items: center; width: 46px; height: 26px; padding: 3px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); transition: background-color 150ms ease, border-color 150ms ease; }
+    .theme-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--muted); transform: translateX(0); transition: transform 150ms ease, background-color 150ms ease; }
+    .theme-switch input:checked + .theme-track { border-color: var(--accent); background: var(--accent-soft); }
+    .theme-switch input:checked + .theme-track .theme-thumb { background: var(--accent); transform: translateX(20px); }
+    .theme-switch input:focus-visible + .theme-track { outline: 2px solid var(--accent); outline-offset: 2px; }
     label { color: var(--muted); display: grid; gap: 5px; font-size: 13px; }
     input, select { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 8px 10px; font: inherit; width: 120px; }
     .wide-input { width: min(720px, calc(100vw - 360px)); }
@@ -130,7 +136,14 @@
       </div>
       <div class="header-settings">
         <div class="service-controls">
-          <label class="theme-control"><span>Theme</span><select id="themeSelect"><option value="dark">Dark</option><option value="light">Light</option></select></label>
+          <div class="theme-control">
+            <span>Light</span>
+            <label class="theme-switch">
+              <input id="themeToggle" type="checkbox" aria-label="Use dark theme" checked>
+              <span class="theme-track" aria-hidden="true"><span class="theme-thumb"></span></span>
+            </label>
+            <span>Dark</span>
+          </div>
           <span class="metric">Service</span>
           <strong id="serviceStatus">Checking</strong>
           <button id="restartService" type="button">Restart</button>
@@ -335,12 +348,12 @@
       proxyUrl: document.getElementById('proxyUrl'),
       saveSettings: document.getElementById('saveSettings'),
       settingsStatus: document.getElementById('settingsStatus'),
-      themeSelect: document.getElementById('themeSelect'),
+      themeToggle: document.getElementById('themeToggle'),
       serviceStatus: document.getElementById('serviceStatus'),
       restartService: document.getElementById('restartService'),
     };
     fields.displayTimezone.value = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
-    fields.themeSelect.value = window.YTLibraryTheme.current();
+    fields.themeToggle.checked = window.YTLibraryTheme.current() === 'dark';
 
     const queueState = {
       rows: [],
@@ -1027,8 +1040,9 @@
     fields.archivarixRequestInterval.addEventListener('change', flushRequestIntervalSave);
     fields.logSourceFilter.addEventListener('change', renderLogs);
     fields.logLevelFilter.addEventListener('change', renderLogs);
-    fields.themeSelect.addEventListener('change', () => {
-      fields.themeSelect.value = window.YTLibraryTheme.set(fields.themeSelect.value);
+    fields.themeToggle.addEventListener('change', () => {
+      const selectedTheme = window.YTLibraryTheme.set(fields.themeToggle.checked ? 'dark' : 'light');
+      fields.themeToggle.checked = selectedTheme === 'dark';
     });
     fields.displayTimezone.addEventListener('input', () => { settingsDirty = true; });
     fields.useProxy.addEventListener('change', () => { settingsDirty = true; });
