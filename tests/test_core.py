@@ -2374,6 +2374,10 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(server.ADMIN_HTML.count("<th>ID</th>"), 2)
         self.assertNotIn("<th>Video ID</th>", server.ADMIN_HTML)
         self.assertIn("return row.channel_id || row.video_id || '';", server.ADMIN_HTML)
+        self.assertIn(".id-col { width: 280px; }", server.ADMIN_HTML)
+        self.assertIn(".subject-col { width: 340px; }", server.ADMIN_HTML)
+        self.assertEqual(server.ADMIN_HTML.count('<col class="id-col">'), 4)
+        self.assertEqual(server.ADMIN_HTML.count('<col class="subject-col">'), 4)
 
     def test_service_replacement_uses_dedicated_log_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
