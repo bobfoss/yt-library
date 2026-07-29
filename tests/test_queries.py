@@ -173,8 +173,16 @@ class NormalizedReadModelTests(unittest.TestCase):
 
     def test_playlist_list_filters_sorts_and_pages_on_server(self) -> None:
         self.conn.executemany(
-            "INSERT INTO playlists(playlist_id, title, visibility, video_count) VALUES (?, ?, ?, ?)",
-            [("PLz", "Zulu", "private", 2), ("PLa", "Alpha", "public", 5)],
+            """
+            INSERT INTO playlists(
+              playlist_id, title, visibility, video_count, fetch_status
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                ("PLz", "Zulu", "private", 2, ""),
+                ("PLa", "Alpha", "public", 5, ""),
+                ("PLremoved", "Removed", "private", 1, "removed"),
+            ],
         )
         self.conn.executemany(
             "INSERT INTO playlist_scans(playlist_id, scanned_at, video_count, unavailable_count) VALUES (?, '2026-07-01', ?, ?)",
@@ -184,10 +192,16 @@ class NormalizedReadModelTests(unittest.TestCase):
 
         data = playlist_list_data(self.conn, sort="most_videos", limit=1)
 
-        self.assertEqual(data["total"], 2)
-        self.assertEqual(data["counts"]["private"], 1)
+        self.assertEqual(data["total"], 3)
+        self.assertEqual(data["counts"]["private"], 2)
         self.assertEqual(data["counts"]["public"], 1)
+        self.assertEqual(data["counts"]["removed"], 1)
         self.assertEqual([row["playlist_id"] for row in data["results"]], ["PLa"])
+        without_removed = playlist_list_data(self.conn, include_removed=False)
+        self.assertEqual(
+            [row["playlist_id"] for row in without_removed["results"]],
+            ["PLa", "PLz"],
+        )
         unavailable = playlist_list_data(self.conn, unavailable_only=True)
         self.assertEqual([row["playlist_id"] for row in unavailable["results"]], ["PLz"])
 

@@ -220,6 +220,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     conn,
                     query=(params.get("q") or [""])[0],
                     visibilities=visibilities,
+                    include_removed=(params.get("removed") or ["1"])[0] != "0",
                     sort=(params.get("sort") or ["title"])[0],
                     unavailable_only=(params.get("unavailable_only") or ["0"])[0] == "1",
                     group_key=(params.get("group_key") or [""])[0],

@@ -354,6 +354,7 @@ def playlist_list_data(
     *,
     query: str = "",
     visibilities: set[str] | None = None,
+    include_removed: bool = True,
     sort: str = "title",
     unavailable_only: bool = False,
     group_key: str = "",
@@ -399,6 +400,15 @@ def playlist_list_data(
         category: sum(1 for row in rows if _playlist_visibility_category(row) == category)
         for category in ("private", "public", "unlisted", "others", "unknown")
     }
+    counts["removed"] = sum(
+        1 for row in rows if str(row.get("fetch_status") or "") == "removed"
+    )
+    if not include_removed:
+        rows = [
+            row
+            for row in rows
+            if str(row.get("fetch_status") or "") != "removed"
+        ]
     if visibilities is not None:
         rows = [row for row in rows if _playlist_visibility_category(row) in visibilities]
     if sort == "title_desc":

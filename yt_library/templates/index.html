@@ -271,6 +271,7 @@
     let selected = '';
     let playlistVisibility = { videos: true, unavailable: true, removed: true };
     let playlistListVisibility = { private: true, public: true, unlisted: true, others: true, unknown: true };
+    let playlistListIncludeRemoved = true;
     let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
     let searchResultVisibility = { unavailable: true };
     let searchResultsSort = 'relevance';
@@ -1385,6 +1386,7 @@
         .join(',');
       const path = remoteListPath('/api/playlists', {
         visibility: visibility || '__none__',
+        removed: playlistListIncludeRemoved ? '1' : '0',
         sort: unavailableOnly ? 'most_unavailable' : allPlaylistsSort,
         unavailable_only: unavailableOnly ? '1' : '0',
         group_key: groupKey,
@@ -1937,12 +1939,14 @@
         const unlistedCount = Number(payload.counts?.unlisted || 0);
         const othersCount = Number(payload.counts?.others || 0);
         const unknownCount = Number(payload.counts?.unknown || 0);
+        const removedCount = Number(payload.counts?.removed || 0);
         meta.innerHTML = `
           <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="private" ${playlistListVisibility.private ? 'checked' : ''}> ${visibilityFilterLabelHtml('private', privateCount)}</label>
           <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="public" ${playlistListVisibility.public ? 'checked' : ''}> ${visibilityFilterLabelHtml('public', publicCount)}</label>
           <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="unlisted" ${playlistListVisibility.unlisted ? 'checked' : ''}> ${visibilityFilterLabelHtml('unlisted', unlistedCount)}</label>
           <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="others" ${playlistListVisibility.others ? 'checked' : ''}> <span>${othersCount} others</span></label>
           <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="unknown" ${playlistListVisibility.unknown ? 'checked' : ''}> <span>${unknownCount} unknown</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-removed-filter ${playlistListIncludeRemoved ? 'checked' : ''}> <span class="status">${removedCount} removed</span></label>
           ${playlistSortHtml()}
         `;
         renderPager(remotePayloadPageInfo(payload, rows.length));
@@ -2286,6 +2290,12 @@
       const playlistVisibilityFilter = target.dataset.playlistVisibilityFilter;
       if (playlistVisibilityFilter) {
         playlistListVisibility[playlistVisibilityFilter] = target.checked;
+        currentPage = 1;
+        render();
+        return;
+      }
+      if (target.hasAttribute('data-playlist-removed-filter')) {
+        playlistListIncludeRemoved = target.checked;
         currentPage = 1;
         render();
         return;
