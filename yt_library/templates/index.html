@@ -1790,6 +1790,7 @@
               ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
               ${channel.archivarix_channel_id ? `<span>Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
             </div>
+            ${channelFirstSeenHtml(channel)}
             ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
             ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
             ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : '<div class="empty">No channel description captured.</div>'}
@@ -1798,6 +1799,12 @@
       `;
       article.append(body);
       return article;
+    }
+
+    function channelFirstSeenHtml(channel) {
+      if (!channel.first_seen_at) return '';
+      const date = window.YTLibraryTime.formatDate(channel.first_seen_at);
+      return date ? `<div class="details channel-first-seen"><span>First seen ${escapeHtml(date)}</span></div>` : '';
     }
 
     function channelTabsFor(activeTab, playlistCount, historyCount) {
@@ -2409,10 +2416,10 @@
         <div class="details">
           <span>${subscribedLabel}</span>
           ${status ? `<span class="badge">${escapeHtml(status)}</span>` : ''}
-          ${channel.first_seen_at ? `<span>First seen ${escapeHtml(window.YTLibraryTime.formatDate(channel.first_seen_at))}</span>` : ''}
           ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
           ${channel.archivarix_channel_id ? `<span>Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
         </div>
+        ${channelFirstSeenHtml(channel)}
         ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
         ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
         ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : ''}
