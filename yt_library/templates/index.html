@@ -649,6 +649,27 @@
       setFilterDimmed(childFilters, !parent.checked);
     }
 
+    function setMetaFilterGroup(groupName, checked) {
+      const groups = {
+        'playlist-videos': playlistVisibility,
+        'liked-videos': likedVideosVisibility,
+        channels: channelVisibility,
+        'playlist-list': playlistListVisibility,
+      };
+      const group = groups[groupName];
+      if (!group) return false;
+      for (const key of Object.keys(group)) group[key] = checked;
+      if (groupName === 'playlist-list') playlistListIncludeRemoved = checked;
+      return true;
+    }
+
+    function syncMetaFilterGroup(groupName) {
+      syncFilterGroup(
+        meta.querySelector(`[data-meta-all-filter="${groupName}"]`),
+        [...meta.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)],
+      );
+    }
+
     function syncSearchFilterGroups() {
       for (const group of searchFilterGroups) {
         syncFilterGroup(group.parent, group.children);
@@ -1793,11 +1814,13 @@
         `;
         meta.innerHTML = `
           <input class="playlist-search" type="search" data-playlist-page-search placeholder="Search this playlist" autocomplete="off" value="${escapeHtml(playlistPageSearch)}">
-          <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-filter="removed" ${playlistVisibility.removed ? 'checked' : ''}> <span class="badge">${removedCount} removed</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-all-filter="playlist-videos"> <span>All</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="removed" ${playlistVisibility.removed ? 'checked' : ''}> <span class="badge">${removedCount} removed</span></label>
           ${videoSortHtml(playlistViewSort, 'playlist')}
         `;
+        syncMetaFilterGroup('playlist-videos');
         renderPager(remotePayloadPageInfo(payload, rows.length));
         grid.className = 'grid';
         grid.replaceChildren(...rows.map(video => playlistVideoCardFor(video, { showPosition: true })));
@@ -1815,11 +1838,13 @@
         const videoCount = Number(payload.counts?.videos || 0);
         title.textContent = 'Playlist videos';
         meta.innerHTML = `
-          <label class="meta-filter"><input type="checkbox" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-filter="removed" ${playlistVisibility.removed ? 'checked' : ''}> <span class="badge">${removedCount} removed</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-all-filter="playlist-videos"> <span>All</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="removed" ${playlistVisibility.removed ? 'checked' : ''}> <span class="badge">${removedCount} removed</span></label>
           ${videoSortHtml(allVideosSort, 'all')}
         `;
+        syncMetaFilterGroup('playlist-videos');
         renderPager(remotePayloadPageInfo(payload, rows.length));
         grid.className = 'grid';
         grid.replaceChildren(...rows.map(playlistVideoCardFor));
@@ -1853,10 +1878,12 @@
         const unavailableCount = Number(payload.counts?.unavailable || 0);
         const videoCount = Number(payload.counts?.videos || 0);
         meta.innerHTML = `
-          <label class="meta-filter"><input type="checkbox" data-liked-filter="videos" ${likedVideosVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
-          <label class="meta-filter"><input type="checkbox" data-liked-filter="unavailable" ${likedVideosVisibility.unavailable ? 'checked' : ''}> <span class="badge">${unavailableCount} unavailable</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-all-filter="liked-videos"> <span>All</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="liked-videos" data-liked-filter="videos" ${likedVideosVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="liked-videos" data-liked-filter="unavailable" ${likedVideosVisibility.unavailable ? 'checked' : ''}> <span class="badge">${unavailableCount} unavailable</span></label>
           ${videoSortHtml(likedVideosSort, 'liked')}
         `;
+        syncMetaFilterGroup('liked-videos');
         renderPager(remotePayloadPageInfo(payload, rows.length));
         grid.className = 'grid';
         grid.replaceChildren(...rows.map(playlistVideoCardFor));
@@ -1874,11 +1901,13 @@
         const nonSubscribedCount = Number(payload.counts?.non_subscribed || 0);
         const terminatedCount = Number(payload.counts?.terminated || 0);
         meta.innerHTML = `
-          <label class="meta-filter"><input type="checkbox" data-channel-filter="subscribed" ${channelVisibility.subscribed ? 'checked' : ''}> <span>${subscribedCount} subscribed</span></label>
-          <label class="meta-filter"><input type="checkbox" data-channel-filter="non_subscribed" ${channelVisibility.non_subscribed ? 'checked' : ''}> <span>${nonSubscribedCount} non-subscribed</span></label>
-          <label class="meta-filter"><input type="checkbox" data-channel-filter="terminated" ${channelVisibility.terminated ? 'checked' : ''}> <span class="badge">${terminatedCount} terminated</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-all-filter="channels"> <span>All</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="channels" data-channel-filter="subscribed" ${channelVisibility.subscribed ? 'checked' : ''}> <span>${subscribedCount} subscribed</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="channels" data-channel-filter="non_subscribed" ${channelVisibility.non_subscribed ? 'checked' : ''}> <span>${nonSubscribedCount} non-subscribed</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="channels" data-channel-filter="terminated" ${channelVisibility.terminated ? 'checked' : ''}> <span class="badge">${terminatedCount} terminated</span></label>
           ${channelSortHtml()}
         `;
+        syncMetaFilterGroup('channels');
         renderPager(remotePayloadPageInfo(payload, rows.length));
         grid.className = 'grid';
         grid.replaceChildren(...rows.map(channelCardFor));
@@ -1942,19 +1971,16 @@
         const unknownCount = Number(payload.counts?.unknown || 0);
         const removedCount = Number(payload.counts?.removed || 0);
         meta.innerHTML = `
-          <label class="meta-filter"><input type="checkbox" data-playlist-all-filter> <span>All</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-visibility-filter="private" ${playlistListVisibility.private ? 'checked' : ''}> ${visibilityFilterLabelHtml('private', privateCount)}</label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-visibility-filter="public" ${playlistListVisibility.public ? 'checked' : ''}> ${visibilityFilterLabelHtml('public', publicCount)}</label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-visibility-filter="unlisted" ${playlistListVisibility.unlisted ? 'checked' : ''}> ${visibilityFilterLabelHtml('unlisted', unlistedCount)}</label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-visibility-filter="others" ${playlistListVisibility.others ? 'checked' : ''}> <span>${othersCount} others</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-visibility-filter="unknown" ${playlistListVisibility.unknown ? 'checked' : ''}> <span>${unknownCount} unknown</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-removed-filter ${playlistListIncludeRemoved ? 'checked' : ''}> <span class="status">${removedCount} removed</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-all-filter="playlist-list"> <span>All</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-visibility-filter="private" ${playlistListVisibility.private ? 'checked' : ''}> ${visibilityFilterLabelHtml('private', privateCount)}</label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-visibility-filter="public" ${playlistListVisibility.public ? 'checked' : ''}> ${visibilityFilterLabelHtml('public', publicCount)}</label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-visibility-filter="unlisted" ${playlistListVisibility.unlisted ? 'checked' : ''}> ${visibilityFilterLabelHtml('unlisted', unlistedCount)}</label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-visibility-filter="others" ${playlistListVisibility.others ? 'checked' : ''}> <span>${othersCount} others</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-visibility-filter="unknown" ${playlistListVisibility.unknown ? 'checked' : ''}> <span>${unknownCount} unknown</span></label>
+          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-removed-filter ${playlistListIncludeRemoved ? 'checked' : ''}> <span class="status">${removedCount} removed</span></label>
           ${playlistSortHtml()}
         `;
-        syncFilterGroup(
-          meta.querySelector('[data-playlist-all-filter]'),
-          [...meta.querySelectorAll('[data-playlist-list-child-filter]')],
-        );
+        syncMetaFilterGroup('playlist-list');
         renderPager(remotePayloadPageInfo(payload, rows.length));
         grid.className = 'grid';
         grid.replaceChildren(...rows.map(cardFor));
@@ -2279,6 +2305,12 @@
         return;
       }
       if (!(target instanceof HTMLInputElement)) return;
+      const metaAllFilter = target.dataset.metaAllFilter;
+      if (metaAllFilter && setMetaFilterGroup(metaAllFilter, target.checked)) {
+        currentPage = 1;
+        render();
+        return;
+      }
       const searchResultFilter = target.dataset.searchResultFilter;
       if (searchResultFilter) {
         searchResultVisibility[searchResultFilter] = target.checked;
@@ -2296,15 +2328,6 @@
       const playlistVisibilityFilter = target.dataset.playlistVisibilityFilter;
       if (playlistVisibilityFilter) {
         playlistListVisibility[playlistVisibilityFilter] = target.checked;
-        currentPage = 1;
-        render();
-        return;
-      }
-      if (target.hasAttribute('data-playlist-all-filter')) {
-        for (const key of Object.keys(playlistListVisibility)) {
-          playlistListVisibility[key] = target.checked;
-        }
-        playlistListIncludeRemoved = target.checked;
         currentPage = 1;
         render();
         return;
