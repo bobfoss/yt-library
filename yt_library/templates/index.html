@@ -81,8 +81,10 @@
     .search-result-meta { display: grid; gap: 8px; justify-items: end; }
     .search-result-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
     .search-meta-groups { display: grid; gap: 5px; }
-    .search-meta-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: baseline; gap: 10px; }
-    .search-meta-row-title { color: var(--ink); font-weight: 650; text-align: right; }
+    .search-meta-row { display: grid; grid-template-columns: 94px minmax(0, 1fr); align-items: baseline; gap: 10px; }
+    .search-meta-row-title { color: var(--ink); font-weight: 650; text-align: right; display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 4px; }
+    .search-meta-progress { display: inline-block; width: 1.4em; text-align: left; visibility: hidden; font-weight: 400; }
+    .search-meta-progress.active { visibility: visible; }
     .search-meta-controls { display: flex; flex-wrap: wrap; gap: 8px; }
     .search-meta-controls .meta-filter { margin-left: 0; }
     .playlist-search { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; min-width: min(360px, 38vw); }
@@ -237,7 +239,7 @@
       .search-result-meta { justify-items: start; }
       .search-result-summary { justify-content: flex-start; }
       .search-meta-row { grid-template-columns: 1fr; gap: 3px; }
-      .search-meta-row-title { text-align: left; }
+      .search-meta-row-title { text-align: left; justify-content: flex-start; }
       .view-top.history-top { display: block; margin-bottom: 0; }
       .view-top.history-top .toolbar { display: block; }
       .view-top.history-top .view-context { margin-bottom: 14px; }
@@ -343,6 +345,8 @@
     let renderGeneration = 0;
     let renderedOmniSearchQuery = '';
     let searchProgressTimer = null;
+    let searchMetaProgressTimer = null;
+    let pendingSearchMetaGroup = '';
     let searchInputTimer = null;
     let playlistSearchTimer = null;
     const search = document.getElementById('search');
@@ -1037,6 +1041,46 @@
       empty.classList.remove('searching-status');
     }
 
+    function animateProgressDots(update) {
+      let dotCount = 1;
+      update('.');
+      return setInterval(() => {
+        dotCount = dotCount === 3 ? 1 : dotCount + 1;
+        update('.'.repeat(dotCount));
+      }, 280);
+    }
+
+    function updateSearchMetaProgress(dotsText = '') {
+      for (const dots of meta.querySelectorAll('[data-search-meta-progress]')) {
+        const active = Boolean(pendingSearchMetaGroup)
+          && dots.dataset.searchMetaProgress === pendingSearchMetaGroup;
+        dots.classList.toggle('active', active);
+        dots.textContent = active ? dotsText : '';
+        const row = dots.closest('.search-meta-row');
+        if (!row) continue;
+        if (active) {
+          row.setAttribute('aria-busy', 'true');
+        } else {
+          row.removeAttribute('aria-busy');
+        }
+      }
+    }
+
+    function stopSearchMetaProgress() {
+      if (searchMetaProgressTimer !== null) {
+        clearInterval(searchMetaProgressTimer);
+        searchMetaProgressTimer = null;
+      }
+      pendingSearchMetaGroup = '';
+      updateSearchMetaProgress();
+    }
+
+    function showSearchMetaProgress(groupName) {
+      stopSearchMetaProgress();
+      pendingSearchMetaGroup = groupName;
+      searchMetaProgressTimer = animateProgressDots(updateSearchMetaProgress);
+    }
+
     function showSearchProgress({ preserveContent = false } = {}) {
       stopSearchProgress();
       grid.setAttribute('aria-busy', 'true');
@@ -1050,13 +1094,10 @@
       label.textContent = 'Searching';
       const dots = document.createElement('span');
       dots.className = 'searching-dots';
-      dots.textContent = '.';
       empty.replaceChildren(label, dots);
-      let dotCount = 1;
-      searchProgressTimer = setInterval(() => {
-        dotCount = dotCount === 3 ? 1 : dotCount + 1;
-        dots.textContent = '.'.repeat(dotCount);
-      }, 280);
+      searchProgressTimer = animateProgressDots(value => {
+        dots.textContent = value;
+      });
     }
 
     function remotePageInfo(total, rowsLength, remoteLimit = 0) {
@@ -1450,7 +1491,10 @@
         .filter(({ key }) => Number(metaCounts?.[key]?.total || 0) > 0)
         .map(({ title, key, visibility, definitions }) => `
           <div class="search-meta-row">
-            <span class="search-meta-row-title">${title}</span>
+            <span class="search-meta-row-title">
+              <span class="search-meta-progress" data-search-meta-progress="${key}" aria-hidden="true"></span>
+              <span>${title}</span>
+            </span>
             <span class="search-meta-controls">
               ${metaFilterControlsHtml({
                 groupName: `search-${key}`,
@@ -1829,6 +1873,7 @@
 
     async function render() {
       const generation = ++renderGeneration;
+      if (selected !== '__search__') stopSearchMetaProgress();
       if (!data) {
         title.textContent = '';
         meta.textContent = '';
@@ -1971,6 +2016,7 @@
           payload = await fetchOmniSearch(query);
         } catch (error) {
           if (generation !== renderGeneration) return;
+          stopSearchMetaProgress();
           stopSearchProgress();
           title.textContent = 'Search unavailable';
           empty.hidden = false;
@@ -1978,6 +2024,7 @@
           return;
         }
         if (generation !== renderGeneration) return;
+        stopSearchMetaProgress();
         stopSearchProgress();
         const rows = payload.results || [];
         const total = Number(payload.total || 0);
@@ -2535,6 +2582,7 @@
       if (metaAllFilter && setMetaFilterGroup(metaAllFilter, target.checked)) {
         currentPage = 1;
         if (metaAllFilter.startsWith('search-')) {
+          showSearchMetaProgress(metaAllFilter.slice('search-'.length));
           syncSearchHashAndRender();
         } else {
           render();
@@ -2548,6 +2596,7 @@
         if (!visibility || !Object.prototype.hasOwnProperty.call(visibility, filterName)) return;
         visibility[filterName] = target.checked;
         currentPage = 1;
+        showSearchMetaProgress(groupName);
         syncSearchHashAndRender();
         return;
       }

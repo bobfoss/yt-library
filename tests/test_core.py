@@ -3529,6 +3529,15 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("function searchMetaFiltersHtml(metaCounts)", server.INDEX_HTML)
         self.assertIn("filterAttribute: 'search-meta-filter'", server.INDEX_HTML)
         self.assertIn("groupName: `search-${key}`", server.INDEX_HTML)
+        self.assertIn('data-search-meta-progress="${key}"', server.INDEX_HTML)
+        self.assertIn("function animateProgressDots(update)", server.INDEX_HTML)
+        self.assertIn("function showSearchMetaProgress(groupName)", server.INDEX_HTML)
+        self.assertIn(
+            "showSearchMetaProgress(metaAllFilter.slice('search-'.length));",
+            server.INDEX_HTML,
+        )
+        self.assertIn("showSearchMetaProgress(groupName);", server.INDEX_HTML)
+        self.assertIn("if (selected !== '__search__') stopSearchMetaProgress();", server.INDEX_HTML)
         self.assertLess(
             server.INDEX_HTML.index('data-filter="playlists"'),
             server.INDEX_HTML.index('data-filter="channels"'),
