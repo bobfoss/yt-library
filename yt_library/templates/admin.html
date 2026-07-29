@@ -135,6 +135,34 @@
       .header-settings label { text-align: left; }
       .proxy-input { width: min(100%, 320px); }
       .wide-input { width: min(100%, 720px); }
+      .log-panel { padding: 12px; }
+      .log-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .log-controls label, .log-controls select { min-width: 0; width: 100%; }
+      .log-panel > table { display: none; }
+      .log-scroll { overflow-x: hidden; }
+      .log-scroll table, .log-scroll tbody { display: block; width: 100%; }
+      .log-scroll tr {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 4px 12px;
+        width: 100%;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .log-scroll tr:last-child { border-bottom: 0; }
+      .log-scroll td { min-width: 0; padding: 0; border: 0; }
+      .log-time-cell, .log-level-cell { color: var(--muted); font-size: 12px; white-space: normal; }
+      .log-level-cell { justify-self: end; text-align: right; }
+      .log-id-cell, .log-subject-cell, .log-message-cell, .log-empty-cell { grid-column: 1 / -1; }
+      .log-id-cell {
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .log-subject-cell { font-weight: 600; overflow-wrap: anywhere; }
+      .log-message-cell { overflow-wrap: anywhere; }
+      .log-id-cell:empty, .log-subject-cell:empty { display: none; }
     }
   </style>
 </head>
@@ -537,13 +565,13 @@
       ));
       fields.logs.innerHTML = rows.length ? rows.map(log => `
         <tr>
-          <td class="time-cell">${fmtTime(log.created_at)}</td>
-          <td class="level-cell">${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
-          <td class="time-cell">${escapeHtml(log.identifier || '')}</td>
-          <td class="message">${escapeHtml(log.subject_id || '')}</td>
-          <td class="message">${escapeHtml(displayLogMessage(log))}</td>
+          <td class="time-cell log-time-cell">${fmtTime(log.created_at)}</td>
+          <td class="level-cell log-level-cell">${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
+          <td class="time-cell log-id-cell">${escapeHtml(log.identifier || '')}</td>
+          <td class="message log-subject-cell">${escapeHtml(log.subject_id || '')}</td>
+          <td class="message log-message-cell">${escapeHtml(displayLogMessage(log))}</td>
         </tr>
-      `).join('') : '<tr><td colspan="5" class="message">No log entries match these filters.</td></tr>';
+      `).join('') : '<tr><td colspan="5" class="message log-empty-cell">No log entries match these filters.</td></tr>';
     }
 
     function logSeverity(level) {
