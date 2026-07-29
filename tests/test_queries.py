@@ -121,6 +121,74 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(all_data["counts"], {"videos": 2, "playlists": 0, "channels": 2})
         self.assertEqual(all_data["total"], 4)
 
+    def test_omni_search_uses_channel_first_seen_and_ranks_fallback_dates_last(self) -> None:
+        self.add_video("datedvideo", "Dated video")
+        self.conn.execute(
+            """
+            UPDATE videos
+            SET is_playable = 1, updated_at = '2026-06-15T00:00:00Z'
+            WHERE video_id = 'datedvideo'
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watched_at, watch_date, time_precision
+            )
+            VALUES (
+              'dated-watch', 'datedvideo', '2026-06-15T00:00:00Z',
+              '2026-06-15', 'exact'
+            )
+            """
+        )
+        core.upsert_channel(
+            self.conn,
+            "UCproper",
+            title="Proper channel",
+            first_seen_at="2026-06-01T00:00:00Z",
+            updated_at="2026-07-29T00:00:00Z",
+        )
+        core.upsert_channel(
+            self.conn,
+            "UCfallback",
+            title="Fallback channel",
+            updated_at="2026-07-30T00:00:00Z",
+        )
+        self.conn.execute(
+            """
+            UPDATE channels
+            SET first_seen_at = NULL,
+                updated_at = '2026-07-30T00:00:00Z'
+            WHERE channel_id = 'UCfallback'
+            """
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "",
+            filters={
+                "videos",
+                "history_videos",
+                "channels_subscribed",
+                "channels_unsubscribed",
+            },
+            sort="newest",
+            limit=20,
+        )
+
+        self.assertEqual(
+            [
+                (result["kind"], result["item"].get("channel_id") or result["item"].get("video_id"))
+                for result in data["results"]
+            ],
+            [
+                ("video", "datedvideo"),
+                ("channel", "UCproper"),
+                ("channel", "UCfallback"),
+            ],
+        )
+
     def test_omni_search_applies_source_field_subscription_and_availability_filters(self) -> None:
         self.add_video("description1", "Ordinary title", "UC_subscribed")
         self.add_video("unavailable1", "Needle unavailable")

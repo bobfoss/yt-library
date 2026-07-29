@@ -2346,6 +2346,219 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(playlist["is_library_playlist"], 1)
         self.assertEqual(schema_version, core.SCHEMA_VERSION)
 
+    def test_migrate_adds_nullable_channel_first_seen_without_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            legacy_schema = core.SCHEMA.replace("  first_seen_at TEXT,\n", "")
+            raw = sqlite3.connect(db_path)
+            try:
+                raw.executescript(legacy_schema)
+                raw.execute("DELETE FROM schema_migrations")
+                raw.execute(
+                    """
+                    INSERT INTO schema_migrations(version, applied_at)
+                    VALUES (7, '2026-07-29T00:00:00Z')
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO channels(channel_id, title)
+                    VALUES ('UClegacy', 'Legacy channel')
+                    """
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(channels)")
+                }
+                first_seen_at = conn.execute(
+                    "SELECT first_seen_at FROM channels WHERE channel_id = 'UClegacy'"
+                ).fetchone()["first_seen_at"]
+                schema_version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertIn("first_seen_at", columns)
+        self.assertIsNone(first_seen_at)
+        self.assertEqual(schema_version, core.SCHEMA_VERSION)
+
+    def test_channel_first_seen_backfill_uses_earliest_library_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_channel(
+                        conn,
+                        "UCseen",
+                        title="Seen channel",
+                        updated_at="2026-07-29T12:00:00Z",
+                    )
+                    core.upsert_channel(
+                        conn,
+                        "UCunresolved",
+                        title="Unresolved channel",
+                        updated_at="2026-07-29T12:00:00Z",
+                    )
+                    core.upsert_video(
+                        conn,
+                        "seenvideo",
+                        title="Seen video",
+                        channel_id="UCseen",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watched_at, watch_date, time_precision
+                        )
+                        VALUES (
+                          'seen-history', 'seenvideo', '2026-06-15T18:00:00Z',
+                          '2026-06-15', 'exact'
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(playlist_id, title)
+                        VALUES ('PLseen', 'Seen playlist')
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_items(
+                          playlist_id, position, video_id, added_at
+                        )
+                        VALUES ('PLseen', 1, 'seenvideo', '2026-05-01T12:00:00Z')
+                        """
+                    )
+                    conn.execute("UPDATE channels SET first_seen_at = NULL")
+
+                before = conn.execute(
+                    "SELECT first_seen_at FROM channels WHERE channel_id = 'UCseen'"
+                ).fetchone()["first_seen_at"]
+                with conn:
+                    stats = core.backfill_channel_first_seen(conn)
+                rows = {
+                    row["channel_id"]: row["first_seen_at"]
+                    for row in conn.execute(
+                        "SELECT channel_id, first_seen_at FROM channels"
+                    )
+                }
+            finally:
+                conn.close()
+
+        self.assertIsNone(before)
+        self.assertEqual(
+            stats,
+            {"missing": 2, "updated": 1, "unresolved": 1},
+        )
+        self.assertEqual(rows["UCseen"], "2026-05-01T12:00:00Z")
+        self.assertIsNone(rows["UCunresolved"])
+
+    def test_manual_channel_enqueue_identifies_first_seen_without_automatic_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCqueued", title="Queued channel")
+                    core.upsert_video(
+                        conn,
+                        "queuedvideo",
+                        title="Queued video",
+                        channel_id="UCqueued",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watch_date, time_precision
+                        )
+                        VALUES (
+                          'queued-history', 'queuedvideo', '2026-04-03', 'date_only'
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        UPDATE channels
+                        SET first_seen_at = NULL
+                        WHERE channel_id = 'UCqueued'
+                        """
+                    )
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="UCqueued",
+                        channel_id="UCqueued",
+                        metadata_source="channel",
+                        manual=False,
+                    )
+                automatic_value = conn.execute(
+                    "SELECT first_seen_at FROM channels WHERE channel_id = 'UCqueued'"
+                ).fetchone()["first_seen_at"]
+
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="UCqueued",
+                        channel_id="UCqueued",
+                        metadata_source="channel",
+                        manual=True,
+                    )
+                manual_value = conn.execute(
+                    "SELECT first_seen_at FROM channels WHERE channel_id = 'UCqueued'"
+                ).fetchone()["first_seen_at"]
+            finally:
+                conn.close()
+
+        self.assertIsNone(automatic_value)
+        self.assertEqual(manual_value, "2026-04-03")
+
+    def test_metadata_queue_can_scope_video_and_channel_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="videoqueue1",
+                        metadata_source="history",
+                    )
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="UCqueue",
+                        channel_id="UCqueue",
+                        metadata_source="channel",
+                    )
+                self.assertEqual(core.metadata_queue_count(conn), 2)
+                self.assertEqual(
+                    core.metadata_queue_count(conn, metadata_kind="video"),
+                    1,
+                )
+                self.assertEqual(
+                    core.metadata_queue_count(conn, metadata_kind="channel"),
+                    1,
+                )
+
+                with conn:
+                    cleared = core.clear_metadata_queue(
+                        conn,
+                        metadata_kind="video",
+                    )
+                remaining = core.metadata_queue_rows(conn)
+            finally:
+                conn.close()
+
+        self.assertEqual(cleared, 1)
+        self.assertEqual(
+            [(row["metadata_source"], row["channel_id"]) for row in remaining],
+            [("channel", "UCqueue")],
+        )
+
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3377,6 +3590,82 @@ class AdminServerTests(unittest.TestCase):
         )
         self.assertIn("storedTheme() || 'dark'", server.THEME_JS)
         self.assertIn("fields.themeToggle.checked ? 'dark' : 'light'", server.ADMIN_HTML)
+        self.assertIn('id="fetchVideoMetadata"', server.ADMIN_HTML)
+        self.assertIn('id="fetchChannelMetadata"', server.ADMIN_HTML)
+        self.assertIn('id="backfillChannelFirstSeen"', server.ADMIN_HTML)
+        self.assertIn("kind: 'video'", server.ADMIN_HTML)
+        self.assertIn("kind: 'channel'", server.ADMIN_HTML)
+        self.assertLess(
+            server.ADMIN_HTML.index("<h2>Videos</h2>"),
+            server.ADMIN_HTML.index("<h2>Playlists</h2>"),
+        )
+        self.assertLess(
+            server.ADMIN_HTML.index("<h2>Playlists</h2>"),
+            server.ADMIN_HTML.index("<h2>Channels</h2>"),
+        )
+        self.assertLess(
+            server.ADMIN_HTML.index("<h2>Channels</h2>"),
+            server.ADMIN_HTML.index("<h2>History</h2>"),
+        )
+
+    def test_channel_first_seen_endpoint_updates_only_missing_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCendpoint", title="Endpoint channel")
+                    core.upsert_video(
+                        conn,
+                        "endpointvid",
+                        title="Endpoint video",
+                        channel_id="UCendpoint",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watch_date, time_precision
+                        )
+                        VALUES (
+                          'endpoint-history', 'endpointvid', '2026-03-02', 'date_only'
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        UPDATE channels
+                        SET first_seen_at = NULL
+                        WHERE channel_id = 'UCendpoint'
+                        """
+                    )
+            finally:
+                conn.close()
+
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/admin/channels/first-seen"
+            handler.db_path = db_path
+            handler.send_json = Mock()
+
+            handler.do_POST()
+
+            response = handler.send_json.call_args.args[0]
+            conn = core.connect(db_path)
+            try:
+                first_seen_at = conn.execute(
+                    """
+                    SELECT first_seen_at
+                    FROM channels
+                    WHERE channel_id = 'UCendpoint'
+                    """
+                ).fetchone()["first_seen_at"]
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            response,
+            {"ok": True, "missing": 1, "updated": 1, "unresolved": 0},
+        )
+        self.assertEqual(first_seen_at, "2026-03-02")
 
     def test_service_replacement_uses_dedicated_log_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5843,6 +6132,88 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(legacy_log["subject_title"], "Fetched Channel")
             finally:
                 conn.close()
+
+    def test_manual_channel_worker_identifies_first_seen_after_handle_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            channel_id = "UCresolved123456789012"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "resolvedvid",
+                        title="Resolved video",
+                        channel_id=channel_id,
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watch_date, time_precision
+                        )
+                        VALUES (
+                          'resolved-history', 'resolvedvid',
+                          '2026-02-01', 'date_only'
+                        )
+                        """
+                    )
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="@resolved",
+                        channel_id="@resolved",
+                        channel_title="@resolved",
+                        metadata_source="channel",
+                        manual=True,
+                    )
+            finally:
+                conn.close()
+
+            channel_metadata = {
+                "channel_id": channel_id,
+                "channel": "Resolved channel",
+                "channel_url": f"https://www.youtube.com/channel/{channel_id}",
+                "channel_description": "",
+                "channel_aliases": "@resolved",
+                "channel_thumbnail_url": "",
+                "channel_thumbnail_path": "",
+                "archivarix_channel_id": "",
+                "channel_status": "",
+                "channel_status_reason": "",
+            }
+            worker = MetadataWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.fetch_channel_metadata",
+                    return_value=channel_metadata,
+                ),
+            ):
+                worker._run(
+                    "test-channel-first-seen",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=30,
+                    record_summary=False,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                first_seen_at = conn.execute(
+                    """
+                    SELECT first_seen_at
+                    FROM channels
+                    WHERE channel_id = ?
+                    """,
+                    (channel_id,),
+                ).fetchone()["first_seen_at"]
+            finally:
+                conn.close()
+
+        self.assertEqual(first_seen_at, "2026-02-01")
 
     def test_metadata_worker_fetches_new_channel_metadata_discovered_from_video(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

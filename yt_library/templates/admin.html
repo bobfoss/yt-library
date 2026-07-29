@@ -203,14 +203,14 @@
     <section class="workstreams">
       <section class="workstream">
         <div class="workstream-header">
-          <h2>Metadata</h2>
+          <h2>Videos</h2>
         </div>
         <div class="controls">
-          <label>Metadata stale days<input id="metadataStaleDays" type="number" min="0" step="1" value="30"></label>
-          <label class="checkbox"><input id="metadataForce" type="checkbox">Refresh already fetched</label>
-          <button id="fetchMetadata" class="primary" type="button">Fetch metadata</button>
+          <label>Metadata stale days<input id="videoMetadataStaleDays" type="number" min="0" step="1" value="30"></label>
+          <label class="checkbox"><input id="videoMetadataForce" type="checkbox">Refresh already fetched</label>
+          <button id="fetchVideoMetadata" class="primary" type="button">Fetch video metadata</button>
         </div>
-        <div class="grid" id="metadataCounts"></div>
+        <div class="grid" id="videoMetadataCounts"></div>
       </section>
 
       <section class="workstream">
@@ -225,6 +225,20 @@
           <button id="scanPlaylists" class="primary" type="button">Scan all playlists</button>
           <button id="reconcilePlaylists" type="button">Reconcile playlists</button>
         </div>
+      </section>
+
+      <section class="workstream">
+        <div class="workstream-header">
+          <h2>Channels</h2>
+        </div>
+        <div class="controls">
+          <label>Metadata stale days<input id="channelMetadataStaleDays" type="number" min="0" step="1" value="30"></label>
+          <label class="checkbox"><input id="channelMetadataForce" type="checkbox">Refresh already fetched</label>
+          <button id="fetchChannelMetadata" class="primary" type="button">Fetch channel metadata</button>
+          <button id="backfillChannelFirstSeen" type="button">Backfill first seen</button>
+          <span id="channelFirstSeenStatus" class="metric" aria-live="polite"></span>
+        </div>
+        <div class="grid" id="channelCounts"></div>
       </section>
 
       <section class="workstream">
@@ -386,13 +400,17 @@
       historyRows: document.getElementById('historyRows'),
       historyVideos: document.getElementById('historyVideos'),
       liveHistoryRows: document.getElementById('liveHistoryRows'),
-      metadataCounts: document.getElementById('metadataCounts'),
+      videoMetadataCounts: document.getElementById('videoMetadataCounts'),
+      channelCounts: document.getElementById('channelCounts'),
+      channelFirstSeenStatus: document.getElementById('channelFirstSeenStatus'),
       logs: document.getElementById('logs'),
       logSourceFilter: document.getElementById('logSourceFilter'),
       logLevelFilter: document.getElementById('logLevelFilter'),
       providedQueueTarget: document.getElementById('providedQueueTarget'),
-      metadataStaleDays: document.getElementById('metadataStaleDays'),
-      metadataForce: document.getElementById('metadataForce'),
+      videoMetadataStaleDays: document.getElementById('videoMetadataStaleDays'),
+      videoMetadataForce: document.getElementById('videoMetadataForce'),
+      channelMetadataStaleDays: document.getElementById('channelMetadataStaleDays'),
+      channelMetadataForce: document.getElementById('channelMetadataForce'),
       commonQueueCount: document.getElementById('commonQueueCount'),
       commonWorkerState: document.getElementById('commonWorkerState'),
       workerQueueElapsed: document.getElementById('workerQueueElapsed'),
@@ -860,6 +878,8 @@
         { label: 'Channel thumbs cached', count: channelCounts.thumbnail_cached || 0 },
         { label: 'Channel thumbs missing', count: channelCounts.thumbnail_missing || 0 },
         { label: 'Channels terminated', count: channelCounts.terminated || 0 },
+        { label: 'First seen identified', count: channelCounts.first_seen || 0 },
+        { label: 'First seen missing', count: channelCounts.first_seen_missing || 0 },
         { label: 'Channel URLs missing', count: channelCounts.url_missing || 0 },
       ];
       const metadataStatusOrder = new Map([['ok', 0], ['', 1], ['no_metadata', 2]]);
@@ -878,12 +898,14 @@
         label: `Videos ${metadataStatusLabel(row.fetch_status || '')}`,
         count: row.count,
       }));
-      fields.metadataCounts.replaceChildren(...[...channelCards, ...videoMetadataCards].map(row => {
+      const metricCards = rows => rows.map(row => {
         const div = document.createElement('div');
         div.className = 'panel';
         div.innerHTML = `<div class="metric">${escapeHtml(row.label)}</div><div class="value">${row.count}</div>`;
         return div;
-      }));
+      });
+      fields.videoMetadataCounts.replaceChildren(...metricCards(videoMetadataCards));
+      fields.channelCounts.replaceChildren(...metricCards(channelCards));
 
     }
 
@@ -1136,10 +1158,26 @@
     }
 
     document.getElementById('scanPlaylists').addEventListener('click', () => post('/api/admin/playlists/start').catch(error => alert(error.message)));
-    document.getElementById('fetchMetadata').addEventListener('click', () => post('/api/admin/metadata/start', {
-      stale_days: fields.metadataStaleDays.value,
-      force: fields.metadataForce.checked ? '1' : '0',
+    document.getElementById('fetchVideoMetadata').addEventListener('click', () => post('/api/admin/metadata/start', {
+      kind: 'video',
+      stale_days: fields.videoMetadataStaleDays.value,
+      force: fields.videoMetadataForce.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
+    document.getElementById('fetchChannelMetadata').addEventListener('click', () => post('/api/admin/metadata/start', {
+      kind: 'channel',
+      stale_days: fields.channelMetadataStaleDays.value,
+      force: fields.channelMetadataForce.checked ? '1' : '0',
+    }).catch(error => alert(error.message)));
+    document.getElementById('backfillChannelFirstSeen').addEventListener('click', async () => {
+      fields.channelFirstSeenStatus.textContent = 'Working';
+      try {
+        const result = await post('/api/admin/channels/first-seen');
+        fields.channelFirstSeenStatus.textContent =
+          `Updated ${result.updated}; ${result.unresolved} unresolved`;
+      } catch (error) {
+        fields.channelFirstSeenStatus.textContent = error.message;
+      }
+    });
     document.getElementById('queueProvidedTarget').addEventListener('click', async () => {
       const target = fields.providedQueueTarget.value.trim();
       if (!target) {

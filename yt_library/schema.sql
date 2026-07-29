@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS channels (
   status_reason TEXT NOT NULL DEFAULT '',
   fetch_status TEXT NOT NULL DEFAULT '',
   fetch_error TEXT NOT NULL DEFAULT '',
+  first_seen_at TEXT,
   fetched_at TEXT,
   metadata_source TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))

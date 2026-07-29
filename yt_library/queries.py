@@ -800,6 +800,7 @@ def _omni_like_pattern(query: str) -> str:
 
 
 def _omni_result(kind: str, score: int, item: dict[str, Any], *, matched_description: bool) -> dict[str, Any]:
+    sort_date_fallback = False
     if kind == "video":
         title = item.get("metadata_title") or item.get("title") or item.get("video_id") or "Unavailable video"
         sort_date = (
@@ -812,7 +813,9 @@ def _omni_result(kind: str, score: int, item: dict[str, Any], *, matched_descrip
         watch_count = int(item.get("watch_count") or 0)
     elif kind == "channel":
         title = item.get("title") or item.get("channel_id") or ""
-        sort_date = item.get("updated_at") or item.get("fetched_at") or ""
+        first_seen_at = item.get("first_seen_at") or ""
+        sort_date = first_seen_at or item.get("updated_at") or item.get("fetched_at") or ""
+        sort_date_fallback = not bool(first_seen_at)
         watch_count = 0
     else:
         title = item.get("title") or item.get("playlist_id") or ""
@@ -825,6 +828,7 @@ def _omni_result(kind: str, score: int, item: dict[str, Any], *, matched_descrip
         "item": item,
         "_title": str(title).casefold(),
         "_sort_date": str(sort_date),
+        "_sort_date_fallback": sort_date_fallback,
         "_watch_count": watch_count,
     }
 
@@ -836,6 +840,7 @@ def _sort_omni_results(results: list[dict[str, Any]], sort: str) -> None:
         results.sort(key=lambda result: (result["score"], kind_rank.get(result["kind"], 99)))
     elif sort == "newest":
         results.sort(key=lambda result: result["_sort_date"], reverse=True)
+        results.sort(key=lambda result: result["_sort_date_fallback"])
     elif sort == "oldest":
         results.sort(key=lambda result: result["_sort_date"])
     elif sort == "most_watched":
@@ -1330,6 +1335,7 @@ def omni_search_data(
     for result in page:
         result.pop("_title", None)
         result.pop("_sort_date", None)
+        result.pop("_sort_date_fallback", None)
         result.pop("_watch_count", None)
     return {
         "query": query,

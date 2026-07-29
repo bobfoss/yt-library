@@ -202,7 +202,7 @@ LIKED_VIDEOS_PLAYLIST_ID = "LL"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 @dataclass(frozen=True)
@@ -350,6 +350,17 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (7, utc_now()),
+        )
+    if current_version < 8:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(channels)")
+        }
+        if "first_seen_at" not in columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN first_seen_at TEXT")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (8, utc_now()),
         )
 
 
@@ -682,6 +693,10 @@ def merge_channel_value(existing: str, incoming: str) -> str:
     return incoming if incoming else existing
 
 
+def earliest_timestamp(*values: str | None) -> str:
+    return min((str(value).strip() for value in values if str(value or "").strip()), default="")
+
+
 def upsert_channel(
     conn: sqlite3.Connection,
     channel_id: str,
@@ -697,6 +712,7 @@ def upsert_channel(
     status_reason: str = "",
     fetch_status: str = "",
     fetch_error: str = "",
+    first_seen_at: str | None = None,
     fetched_at: str | None = None,
     source: str = "",
     updated_at: str | None = None,
@@ -722,6 +738,7 @@ def upsert_channel(
                 status_reason = ?,
                 fetch_status = ?,
                 fetch_error = ?,
+                first_seen_at = ?,
                 fetched_at = ?,
                 metadata_source = ?,
                 updated_at = ?
@@ -738,6 +755,7 @@ def upsert_channel(
                 merge_channel_value(existing["status_reason"], status_reason),
                 merge_channel_value(existing["fetch_status"], fetch_status),
                 fetch_error if fetch_status else existing["fetch_error"],
+                earliest_timestamp(existing["first_seen_at"], first_seen_at) or None,
                 fetched_at or existing["fetched_at"],
                 merge_channel_value(existing["metadata_source"], source),
                 now,
@@ -750,9 +768,9 @@ def upsert_channel(
             INSERT INTO channels(
               channel_id, title, description, aliases, thumbnail_url, thumbnail_path,
               archivarix_channel_id, status, status_reason, fetch_status, fetch_error,
-              fetched_at, metadata_source, updated_at
+              first_seen_at, fetched_at, metadata_source, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 channel_id,
@@ -766,12 +784,105 @@ def upsert_channel(
                 status_reason,
                 fetch_status,
                 fetch_error,
+                first_seen_at or now,
                 fetched_at,
                 source,
                 now,
             ),
         )
     return channel_id
+
+
+def channel_first_seen_evidence(
+    conn: sqlite3.Connection,
+    channel_id: str = "",
+) -> dict[str, str]:
+    channel_id = (channel_id or "").strip()
+    channel_filter = "AND evidence.channel_id = ?" if channel_id else ""
+    params = (channel_id,) if channel_id else ()
+    rows = conn.execute(
+        f"""
+        WITH evidence AS (
+          SELECT v.channel_id,
+                 MIN(COALESCE(NULLIF(h.watched_at, ''), NULLIF(h.watch_date, ''))) AS first_seen_at
+          FROM videos v
+          JOIN history_events h ON h.video_id = v.video_id
+          WHERE COALESCE(v.channel_id, '') <> ''
+          GROUP BY v.channel_id
+          UNION ALL
+          SELECT v.channel_id,
+                 MIN(NULLIF(pi.added_at, '')) AS first_seen_at
+          FROM videos v
+          JOIN playlist_items pi ON pi.video_id = v.video_id
+          WHERE COALESCE(v.channel_id, '') <> ''
+          GROUP BY v.channel_id
+        )
+        SELECT evidence.channel_id, MIN(evidence.first_seen_at) AS first_seen_at
+        FROM evidence
+        WHERE COALESCE(evidence.first_seen_at, '') <> ''
+          {channel_filter}
+        GROUP BY evidence.channel_id
+        """,
+        params,
+    ).fetchall()
+    return {
+        row["channel_id"]: row["first_seen_at"]
+        for row in rows
+        if row["channel_id"] and row["first_seen_at"]
+    }
+
+
+def identify_channel_first_seen(conn: sqlite3.Connection, channel_id: str) -> str:
+    channel_id = (channel_id or "").strip()
+    if not channel_id:
+        return ""
+    row = conn.execute(
+        "SELECT first_seen_at FROM channels WHERE channel_id = ?",
+        (channel_id,),
+    ).fetchone()
+    if row is None:
+        return ""
+    candidate = channel_first_seen_evidence(conn, channel_id).get(channel_id, "")
+    first_seen_at = earliest_timestamp(row["first_seen_at"], candidate)
+    if first_seen_at and first_seen_at != (row["first_seen_at"] or ""):
+        conn.execute(
+            "UPDATE channels SET first_seen_at = ? WHERE channel_id = ?",
+            (first_seen_at, channel_id),
+        )
+    return first_seen_at
+
+
+def backfill_channel_first_seen(conn: sqlite3.Connection) -> dict[str, int]:
+    missing_ids = {
+        row["channel_id"]
+        for row in conn.execute(
+            """
+            SELECT channel_id
+            FROM channels
+            WHERE COALESCE(first_seen_at, '') = ''
+            """
+        )
+    }
+    evidence = channel_first_seen_evidence(conn)
+    updates = [
+        (first_seen_at, channel_id)
+        for channel_id, first_seen_at in evidence.items()
+        if channel_id in missing_ids
+    ]
+    conn.executemany(
+        """
+        UPDATE channels
+        SET first_seen_at = ?
+        WHERE channel_id = ?
+          AND COALESCE(first_seen_at, '') = ''
+        """,
+        updates,
+    )
+    return {
+        "missing": len(missing_ids),
+        "updated": len(updates),
+        "unresolved": len(missing_ids) - len(updates),
+    }
 
 
 def useful_video_title(value: str) -> bool:
@@ -6063,17 +6174,24 @@ def metadata_queue_candidate_rows(
     offset: int = 0,
     force: bool = False,
     stale_days: int = 30,
+    metadata_kind: str = "all",
 ) -> list[sqlite3.Row]:
     stale_before = utc_days_ago(stale_days)
-    where = ""
+    metadata_kind = (metadata_kind or "all").strip().lower()
+    if metadata_kind not in {"all", "video", "channel"}:
+        raise ValueError("Metadata kind must be all, video, or channel")
+    conditions: list[str] = []
     params: list[Any] = []
     if not force:
-        where = """
-        WHERE fetch_status = 'error'
-           OR fetched_at IS NULL
-           OR fetched_at < ?
-        """
+        conditions.append(
+            "(fetch_status = 'error' OR fetched_at IS NULL OR fetched_at < ?)"
+        )
         params.append(stale_before)
+    if metadata_kind == "channel":
+        conditions.append("metadata_source = 'channel'")
+    elif metadata_kind == "video":
+        conditions.append("metadata_source <> 'channel'")
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     sql = f"""
         WITH candidates AS (
           SELECT ch.channel_id AS video_id,
@@ -6132,8 +6250,16 @@ def metadata_queue_candidate_count(
     conn: sqlite3.Connection,
     force: bool = False,
     stale_days: int = 30,
+    metadata_kind: str = "all",
 ) -> int:
-    return len(metadata_queue_candidate_rows(conn, force=force, stale_days=stale_days))
+    return len(
+        metadata_queue_candidate_rows(
+            conn,
+            force=force,
+            stale_days=stale_days,
+            metadata_kind=metadata_kind,
+        )
+    )
 
 
 def metadata_queue_subject_key(video_id: str, channel_id: str, metadata_source: str) -> str:
@@ -6196,13 +6322,40 @@ def metadata_queue_count(
     conn: sqlite3.Connection,
     force: bool = False,
     stale_days: int = 30,
+    metadata_kind: str = "all",
 ) -> int:
     del force, stale_days
-    return worker_queue_type_count(conn, "metadata")
+    metadata_kind = (metadata_kind or "all").strip().lower()
+    if metadata_kind == "all":
+        return worker_queue_type_count(conn, "metadata")
+    if metadata_kind not in {"video", "channel"}:
+        raise ValueError("Metadata kind must be all, video, or channel")
+    operator = "=" if metadata_kind == "channel" else "<>"
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM worker_queue
+        WHERE worker_type = 'metadata'
+          AND task_type {operator} 'channel'
+        """
+    ).fetchone()
+    return int(row[0] or 0)
 
 
-def clear_metadata_queue(conn: sqlite3.Connection) -> int:
-    return clear_worker_queue_type(conn, "metadata")
+def clear_metadata_queue(conn: sqlite3.Connection, metadata_kind: str = "all") -> int:
+    metadata_kind = (metadata_kind or "all").strip().lower()
+    if metadata_kind == "all":
+        return clear_worker_queue_type(conn, "metadata")
+    count = metadata_queue_count(conn, metadata_kind=metadata_kind)
+    operator = "=" if metadata_kind == "channel" else "<>"
+    conn.execute(
+        f"""
+        DELETE FROM worker_queue
+        WHERE worker_type = 'metadata'
+          AND task_type {operator} 'channel'
+        """
+    )
+    return count
 
 
 def remove_metadata_queue_entry(conn: sqlite3.Connection, queue_id: int) -> bool:
@@ -6301,6 +6454,8 @@ def enqueue_metadata_item(
             now,
         ),
     )
+    if metadata_source == "channel" and manual:
+        identify_channel_first_seen(conn, channel_id or video_id)
     return subject_key
 
 
@@ -6357,9 +6512,15 @@ def rebuild_metadata_queue(
     *,
     force: bool = False,
     stale_days: int = 30,
+    metadata_kind: str = "all",
 ) -> dict[str, int]:
-    rows = metadata_queue_candidate_rows(conn, force=force, stale_days=stale_days)
-    cleared = clear_metadata_queue(conn)
+    rows = metadata_queue_candidate_rows(
+        conn,
+        force=force,
+        stale_days=stale_days,
+        metadata_kind=metadata_kind,
+    )
+    cleared = clear_metadata_queue(conn, metadata_kind=metadata_kind)
     inserted = 0
     for index, row in enumerate(rows, start=1):
         source = row["metadata_source"] or "history"
@@ -6656,6 +6817,8 @@ def admin_status(
                   SUM(CASE WHEN COALESCE(thumbnail_path, '') <> '' THEN 1 ELSE 0 END) AS thumbnail_cached,
                   SUM(CASE WHEN COALESCE(thumbnail_path, '') = '' AND COALESCE(status, '') NOT IN ('terminated', 'deleted') THEN 1 ELSE 0 END) AS thumbnail_missing,
                   SUM(CASE WHEN COALESCE(status, '') IN ('terminated', 'deleted') THEN 1 ELSE 0 END) AS terminated,
+                  SUM(CASE WHEN COALESCE(first_seen_at, '') <> '' THEN 1 ELSE 0 END) AS first_seen,
+                  SUM(CASE WHEN COALESCE(first_seen_at, '') = '' THEN 1 ELSE 0 END) AS first_seen_missing,
                   0 AS url_missing
                 FROM channels
                 WHERE channel_id <> ''

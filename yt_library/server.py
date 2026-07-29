@@ -679,16 +679,38 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/admin/metadata/start":
             stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
             force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
+            metadata_kind = (params.get("kind") or ["all"])[0].strip().lower()
+            if metadata_kind not in {"all", "video", "channel"}:
+                self.send_json(
+                    {"error": "Metadata kind must be all, video, or channel"},
+                    status=400,
+                )
+                return
             conn = connect(self.db_path)
             try:
                 with conn:
-                    if metadata_queue_count(conn, force=False, stale_days=stale_days) == 0:
-                        queue_stats = rebuild_metadata_queue(conn, force=force, stale_days=stale_days)
+                    if metadata_queue_count(
+                        conn,
+                        force=False,
+                        stale_days=stale_days,
+                        metadata_kind=metadata_kind,
+                    ) == 0:
+                        queue_stats = rebuild_metadata_queue(
+                            conn,
+                            force=force,
+                            stale_days=stale_days,
+                            metadata_kind=metadata_kind,
+                        )
                     else:
                         queue_stats = {
                             "cleared": 0,
                             "inserted": 0,
-                            "queued": metadata_queue_count(conn, force=False, stale_days=stale_days),
+                            "queued": metadata_queue_count(
+                                conn,
+                                force=False,
+                                stale_days=stale_days,
+                                metadata_kind=metadata_kind,
+                            ),
                         }
             finally:
                 conn.close()
@@ -699,6 +721,15 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 self.config_data,
             )
             self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
+            return
+        if parsed.path == "/api/admin/channels/first-seen":
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    stats = backfill_channel_first_seen(conn)
+            finally:
+                conn.close()
+            self.send_json({"ok": True, **stats})
             return
         if parsed.path == "/api/admin/queue/add-target":
             target = (params.get("target") or [""])[0]
