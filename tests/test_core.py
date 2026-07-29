@@ -3307,13 +3307,25 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(':root[data-theme="light"]', server.ADMIN_HTML)
         self.assertIn(':root[data-theme="light"]', server.INDEX_HTML)
         self.assertIn('<script src="/theme.js"></script>', server.INDEX_HTML)
-        self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-all-filter='), 3)
-        self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 10)
+        self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-all-filter='), 1)
+        self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 1)
+        self.assertIn("const videoMetaFilterDefinitions = [", server.INDEX_HTML)
+        self.assertIn("const channelMetaFilterDefinitions = [", server.INDEX_HTML)
+        self.assertIn("const playlistMetaFilterDefinitions = [", server.INDEX_HTML)
+        self.assertIn("function metaFilterControlsHtml({", server.INDEX_HTML)
+        self.assertIn("function searchMetaFiltersHtml(metaCounts)", server.INDEX_HTML)
+        self.assertIn("filterAttribute: 'search-meta-filter'", server.INDEX_HTML)
+        self.assertIn("groupName: `search-${key}`", server.INDEX_HTML)
         self.assertEqual(server.INDEX_HTML.count("videoStatusFiltersHtml({"), 4)
-        self.assertIn("['videos', 'available', '']", server.INDEX_HTML)
+        self.assertIn("{ key: 'videos', label: 'available' }", server.INDEX_HTML)
         self.assertIn("let videoMetaCountsCache = new Map();", server.INDEX_HTML)
+        self.assertIn("let omniMetaCountsCache = new Map();", server.INDEX_HTML)
         self.assertIn(
             "const metaCountsKey = JSON.stringify([scope, playlistId, channelId, query]);",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "const metaCountsKey = JSON.stringify([query, searchFiltersValue]);",
             server.INDEX_HTML,
         )
         self.assertIn(

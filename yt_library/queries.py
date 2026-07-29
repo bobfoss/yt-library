@@ -699,6 +699,12 @@ def video_collection_data(
     }
 
 
+def _channel_list_category(channel: dict[str, Any]) -> str:
+    if str(channel.get("status") or "").lower() in {"terminated", "deleted"}:
+        return "terminated"
+    return "subscribed" if int(channel.get("subscribed") or 0) else "non_subscribed"
+
+
 def channel_list_data(
     conn: sqlite3.Connection,
     *,
@@ -727,13 +733,12 @@ def channel_list_data(
         row["url"] = youtube_channel_url(row.get("channel_id") or "")
     if subscribed_only:
         rows = [row for row in rows if int(row.get("subscribed") or 0) == 1]
-    def category(row: dict[str, Any]) -> str:
-        if str(row.get("status") or "").lower() in {"terminated", "deleted"}:
-            return "terminated"
-        return "subscribed" if int(row.get("subscribed") or 0) else "non_subscribed"
-    counts = {key: sum(1 for row in rows if category(row) == key) for key in ("subscribed", "non_subscribed", "terminated")}
+    counts = {
+        key: sum(1 for row in rows if _channel_list_category(row) == key)
+        for key in ("subscribed", "non_subscribed", "terminated")
+    }
     if categories is not None:
-        rows = [row for row in rows if category(row) in categories]
+        rows = [row for row in rows if _channel_list_category(row) in categories]
     if sort == "title_desc":
         rows.sort(key=lambda row: str(row.get("title") or row.get("channel_id") or "").casefold(), reverse=True)
     elif sort == "newest_updated":
@@ -781,6 +786,11 @@ OMNI_SEARCH_FILTERS = {
     "playlists",
 }
 OMNI_SEARCH_SORTS = {"relevance", "title", "newest", "oldest", "most_watched", "type"}
+OMNI_SEARCH_META_FILTERS = {
+    "video": ("videos", "unavailable", "members_only", "removed"),
+    "channel": ("subscribed", "non_subscribed", "terminated"),
+    "playlist": ("private", "public", "unlisted", "others", "unknown", "removed"),
+}
 
 
 def _omni_like_pattern(query: str) -> str:
@@ -831,6 +841,52 @@ def _sort_omni_results(results: list[dict[str, Any]], sort: str) -> None:
         results.sort(key=lambda result: result["_watch_count"], reverse=True)
     elif sort == "type":
         results.sort(key=lambda result: kind_rank.get(result["kind"], 99))
+
+
+def _selected_omni_meta_filters(
+    selected: set[str] | None,
+    kind: str,
+) -> set[str]:
+    allowed = set(OMNI_SEARCH_META_FILTERS[kind])
+    return allowed if selected is None else selected & allowed
+
+
+def _assign_omni_meta_categories(
+    conn: sqlite3.Connection,
+    results: list[dict[str, Any]],
+) -> None:
+    playlist_categories = {
+        row["playlist_id"]: _playlist_list_category(row)
+        for row in _playlist_rows(conn)
+    } if any(result["kind"] == "playlist" for result in results) else {}
+    for result in results:
+        item = result["item"]
+        if result["kind"] == "video":
+            category = str(item.get("collection_category") or _video_collection_category(item))
+        elif result["kind"] == "channel":
+            category = _channel_list_category(item)
+        else:
+            category = playlist_categories.get(
+                item.get("playlist_id") or "",
+                _playlist_list_category(item),
+            )
+        result["metaCategory"] = category
+
+
+def _omni_meta_counts(results: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    counts = {
+        f"{kind}s": {
+            "total": 0,
+            **{category: 0 for category in categories},
+        }
+        for kind, categories in OMNI_SEARCH_META_FILTERS.items()
+    }
+    for result in results:
+        group = counts[f"{result['kind']}s"]
+        category = result["metaCategory"]
+        group["total"] += 1
+        group[category] += 1
+    return counts
 
 
 def _add_omni_video_links(conn: sqlite3.Connection, results: list[dict[str, Any]]) -> None:
@@ -977,7 +1033,9 @@ def omni_search_data(
     query: str,
     *,
     filters: set[str] | None = None,
-    include_unavailable: bool = True,
+    video_meta_filters: set[str] | None = None,
+    channel_meta_filters: set[str] | None = None,
+    playlist_meta_filters: set[str] | None = None,
     sort: str = "relevance",
     limit: int = 100,
     offset: int = 0,
@@ -996,6 +1054,7 @@ def omni_search_data(
             "offset": 0,
             "total": 0,
             "counts": {"videos": 0, "channels": 0, "playlists": 0},
+            "metaCounts": _omni_meta_counts([]),
             "results": [],
         }
 
@@ -1078,8 +1137,8 @@ def omni_search_data(
 
     search_playlist_videos = "playlist_videos" in active_filters
     search_history_videos = "history_videos" in active_filters
-    allow_unavailable = include_unavailable and "unavailable_videos" in active_filters
-    allow_members_only = include_unavailable and "members_only_videos" in active_filters
+    allow_unavailable = "unavailable_videos" in active_filters
+    allow_members_only = "members_only_videos" in active_filters
     if (search_playlist_videos or search_history_videos) and (search_titles or search_descriptions):
         video_title_match = """
             (
@@ -1123,9 +1182,29 @@ def omni_search_data(
             f"""
             WITH candidate_videos AS MATERIALIZED (
               SELECT v.video_id,
-                     CASE WHEN {video_title_match} THEN 1 ELSE 0 END AS title_hit
+                     CASE WHEN {video_title_match} THEN 1 ELSE 0 END AS title_hit,
+                     COALESCE(v.is_playable, 0) AS is_playable,
+                     v.availability,
+                     COALESCE(vr.archivarix_status, '') AS recovered_status,
+                     CASE
+                       WHEN NOT EXISTS (
+                         SELECT 1
+                         FROM playlist_items current_pi
+                         WHERE current_pi.video_id = v.video_id
+                           AND current_pi.membership_state = 'current'
+                       )
+                        AND EXISTS (
+                         SELECT 1
+                         FROM playlist_items removed_pi
+                         WHERE removed_pi.video_id = v.video_id
+                           AND removed_pi.source_quality = 'takeout'
+                           AND removed_pi.match_type = 'ambiguous_hidden_candidate'
+                       )
+                       THEN 1 ELSE 0
+                     END AS removed_membership
               FROM videos v
               LEFT JOIN channels ch ON ch.channel_id = v.channel_id
+              LEFT JOIN video_recovery vr ON vr.video_id = v.video_id
               WHERE ({' OR '.join(source_conditions)})
                 AND ({' OR '.join(availability_conditions)})
                 AND ({' OR '.join(f'({match})' for match in video_matches)})
@@ -1153,7 +1232,11 @@ def omni_search_data(
                    COALESCE(ps.added_at, '') AS added_at,
                    COALESCE(hs.watch_count, 0) AS watch_count,
                    COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
-                   candidate.title_hit
+                   candidate.title_hit,
+                   candidate.is_playable,
+                   candidate.availability,
+                   candidate.recovered_status,
+                   candidate.removed_membership
             FROM candidate_videos candidate
             JOIN videos v ON v.video_id = candidate.video_id
             LEFT JOIN playlist_stats ps ON ps.video_id = v.video_id
@@ -1163,6 +1246,10 @@ def omni_search_data(
         ):
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
+            if item.pop("removed_membership", 0):
+                item["source_quality"] = "takeout"
+                item["match_type"] = "ambiguous_hidden_candidate"
+            item["collection_category"] = _video_collection_category(item)
             results.append(_omni_result("video", 0 if title_hit else 3, item, matched_description=not title_hit))
 
     if search_playlist_videos and allow_unavailable and search_titles:
@@ -1203,6 +1290,7 @@ def omni_search_data(
                     "availability": item.get("unavailable_kind") or "unavailable",
                     "watch_count": 0,
                     "watch_dates": [],
+                    "collection_category": "unavailable",
                     "playlist_url": youtube_playlist_url(item.get("playlist_id") or ""),
                     "playlist_links": [
                         {
@@ -1217,6 +1305,18 @@ def omni_search_data(
             item["match_note"] = playlist_match_type_note(item.get("match_type") or "")
             results.append(_omni_result("video", 0, item, matched_description=False))
 
+    _assign_omni_meta_categories(conn, results)
+    meta_counts = _omni_meta_counts(results)
+    selected_meta_filters = {
+        "video": _selected_omni_meta_filters(video_meta_filters, "video"),
+        "channel": _selected_omni_meta_filters(channel_meta_filters, "channel"),
+        "playlist": _selected_omni_meta_filters(playlist_meta_filters, "playlist"),
+    }
+    results = [
+        result
+        for result in results
+        if result["metaCategory"] in selected_meta_filters[result["kind"]]
+    ]
     _sort_omni_results(results, sort)
     total = len(results)
     if total and offset >= total:
@@ -1241,6 +1341,7 @@ def omni_search_data(
         "offset": offset,
         "total": total,
         "counts": counts,
+        "metaCounts": meta_counts,
         "results": page,
     }
 

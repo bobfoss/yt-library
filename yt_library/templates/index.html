@@ -66,6 +66,7 @@
     .count { color: var(--muted); font-size: 12px; margin-left: 8px; }
     .view-top { flex: 0 0 auto; min-width: 0; }
     .toolbar { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .toolbar > .details { align-items: flex-start; justify-content: flex-end; margin-top: 0; }
     .title { font-size: 28px; line-height: 1.1; margin: 0; }
     .title-link { color: var(--ink); text-decoration: none; }
     .title-link:hover { color: var(--accent); text-decoration: none; }
@@ -77,6 +78,13 @@
     .meta-filter { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; }
     .meta-filter.dimmed { opacity: .42; }
     .meta-filter input { accent-color: var(--accent); }
+    .search-result-meta { display: grid; gap: 8px; justify-items: end; }
+    .search-result-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+    .search-meta-groups { display: grid; gap: 5px; }
+    .search-meta-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: baseline; gap: 10px; }
+    .search-meta-row-title { color: var(--ink); font-weight: 650; text-align: right; }
+    .search-meta-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+    .search-meta-controls .meta-filter { margin-left: 0; }
     .playlist-search { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; min-width: min(360px, 38vw); }
     .view-sort { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
     .view-sort select { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
@@ -226,6 +234,10 @@
       main { padding: 18px 14px; }
       .results-scroll { flex: none; overflow: visible; padding-right: 0; }
       .toolbar { display: block; }
+      .search-result-meta { justify-items: start; }
+      .search-result-summary { justify-content: flex-start; }
+      .search-meta-row { grid-template-columns: 1fr; gap: 3px; }
+      .search-meta-row-title { text-align: left; }
       .view-top.history-top { display: block; margin-bottom: 0; }
       .view-top.history-top .toolbar { display: block; }
       .view-top.history-top .view-context { margin-bottom: 14px; }
@@ -299,10 +311,13 @@
 
     let selected = '';
     let playlistVisibility = { videos: true, unavailable: true, members_only: true, removed: true };
-    let playlistListVisibility = { private: true, public: true, unlisted: true, others: true, unknown: true };
-    let playlistListIncludeRemoved = true;
+    let playlistListVisibility = { private: true, public: true, unlisted: true, others: true, unknown: true, removed: true };
     let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
-    let searchResultVisibility = { unavailable: true };
+    let searchMetaVisibility = {
+      videos: { videos: true, unavailable: true, members_only: true, removed: true },
+      channels: { subscribed: true, non_subscribed: true, terminated: true },
+      playlists: { private: true, public: true, unlisted: true, others: true, unknown: true, removed: true },
+    };
     let searchResultsSort = 'relevance';
     let playlistVisibilityPlaylistId = '';
     let allVideosSort = 'newest_added';
@@ -320,6 +335,7 @@
     let omniSearchState = { key: '', data: null, promise: null };
     let viewDataCache = new Map();
     let videoMetaCountsCache = new Map();
+    let omniMetaCountsCache = new Map();
     let pendingHistoryDate = '';
     let channelHistoryCounts = new Map();
     let channelDetailTab = 'playlists';
@@ -366,6 +382,7 @@
       omniSearchState = { key: '', data: null, promise: null };
       viewDataCache = new Map();
       videoMetaCountsCache = new Map();
+      omniMetaCountsCache = new Map();
       channelHistoryCounts = new Map();
       memberships = new Map();
       for (const item of data.memberships) {
@@ -501,13 +518,41 @@
       return [...activeSearchFilters()].sort().join(',');
     }
 
+    function metaFilterParamValue(visibility) {
+      const selected = Object.entries(visibility)
+        .filter(([, enabled]) => enabled)
+        .map(([key]) => key);
+      return selected.length ? selected.join(',') : '__none__';
+    }
+
+    function allMetaFiltersEnabled(visibility) {
+      return Object.values(visibility).every(Boolean);
+    }
+
+    function applyMetaFilterParam(visibility, value) {
+      const selectedValues = value === null
+        ? new Set(Object.keys(visibility))
+        : new Set(value === '__none__' ? [] : value.split(',').filter(Boolean));
+      for (const key of Object.keys(visibility)) {
+        visibility[key] = selectedValues.has(key);
+      }
+    }
+
     function searchHash() {
       const params = new URLSearchParams();
       const query = search.value.trim();
       if (query) params.set('q', query);
       const filters = searchFilterParamValue();
       if (filters) params.set('f', filters);
-      if (!searchResultVisibility.unavailable) params.set('unavailable', '0');
+      if (!allMetaFiltersEnabled(searchMetaVisibility.videos)) {
+        params.set('vm', metaFilterParamValue(searchMetaVisibility.videos));
+      }
+      if (!allMetaFiltersEnabled(searchMetaVisibility.channels)) {
+        params.set('cm', metaFilterParamValue(searchMetaVisibility.channels));
+      }
+      if (!allMetaFiltersEnabled(searchMetaVisibility.playlists)) {
+        params.set('pm', metaFilterParamValue(searchMetaVisibility.playlists));
+      }
       if (searchResultsSort !== 'relevance') params.set('sort', searchResultsSort);
       if (currentPage > 1) params.set('page', String(currentPage));
       if (pageSize !== '100') params.set('size', pageSize);
@@ -528,7 +573,12 @@
         syncSearchFilterGroups();
         syncSearchForFilters();
       }
-      searchResultVisibility.unavailable = params.get('unavailable') !== '0';
+      applyMetaFilterParam(searchMetaVisibility.videos, params.get('vm'));
+      applyMetaFilterParam(searchMetaVisibility.channels, params.get('cm'));
+      applyMetaFilterParam(searchMetaVisibility.playlists, params.get('pm'));
+      if (!params.has('vm') && params.get('unavailable') === '0') {
+        searchMetaVisibility.videos.unavailable = false;
+      }
       searchResultsSort = params.get('sort') || 'relevance';
       pageSize = params.get('size') || '100';
       const page = Number(params.get('page') || 1);
@@ -685,11 +735,13 @@
         'liked-videos': likedVideosVisibility,
         channels: channelVisibility,
         'playlist-list': playlistListVisibility,
+        'search-videos': searchMetaVisibility.videos,
+        'search-channels': searchMetaVisibility.channels,
+        'search-playlists': searchMetaVisibility.playlists,
       };
       const group = groups[groupName];
       if (!group) return false;
       for (const key of Object.keys(group)) group[key] = checked;
-      if (groupName === 'playlist-list') playlistListIncludeRemoved = checked;
       return true;
     }
 
@@ -1303,24 +1355,98 @@
       `;
     }
 
-    function videoStatusFiltersHtml({ groupName, filterAttribute, visibility, counts }) {
-      const filters = [
-        ['videos', 'available', ''],
-        ['unavailable', 'unavailable', 'badge'],
-        ['members_only', 'members only', 'members-only-filter'],
-      ];
-      if (Object.prototype.hasOwnProperty.call(visibility, 'removed')) {
-        filters.push(['removed', 'removed', 'badge']);
-      }
+    const videoMetaFilterDefinitions = [
+      { key: 'videos', label: 'available' },
+      { key: 'unavailable', label: 'unavailable', className: 'badge' },
+      { key: 'members_only', label: 'members only', className: 'members-only-filter' },
+      { key: 'removed', label: 'removed', className: 'badge' },
+    ];
+    const channelMetaFilterDefinitions = [
+      { key: 'subscribed', label: 'subscribed' },
+      { key: 'non_subscribed', label: 'non-subscribed' },
+      { key: 'terminated', label: 'terminated', className: 'badge' },
+    ];
+    const playlistMetaFilterDefinitions = [
+      { key: 'private', label: 'private', visibilityIcon: true },
+      { key: 'public', label: 'public', visibilityIcon: true },
+      { key: 'unlisted', label: 'unlisted', visibilityIcon: true },
+      { key: 'others', label: 'others' },
+      { key: 'unknown', label: 'unknown' },
+      { key: 'removed', label: 'removed', className: 'status' },
+    ];
+
+    function metaFilterControlsHtml({
+      groupName,
+      filterAttribute,
+      visibility,
+      counts,
+      definitions,
+      filterValuePrefix = '',
+    }) {
+      const applicableDefinitions = definitions.filter(({ key }) =>
+        Object.prototype.hasOwnProperty.call(visibility, key)
+      );
       return `
         <label class="meta-filter"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>All</span></label>
-        ${filters.map(([key, label, className]) => `
+        ${applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false }) => `
           <label class="meta-filter">
-            <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(key)}" ${visibility[key] ? 'checked' : ''}>
-            <span${className ? ` class="${className}"` : ''}>${Number(counts?.[key] || 0)} ${label}</span>
+            <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
+            ${visibilityIcon
+              ? visibilityFilterLabelHtml(key, Number(counts?.[key] || 0))
+              : `<span${className ? ` class="${className}"` : ''}>${Number(counts?.[key] || 0)} ${label}</span>`}
           </label>
         `).join('')}
       `;
+    }
+
+    function videoStatusFiltersHtml({ groupName, filterAttribute, visibility, counts }) {
+      return metaFilterControlsHtml({
+        groupName,
+        filterAttribute,
+        visibility,
+        counts,
+        definitions: videoMetaFilterDefinitions,
+      });
+    }
+
+    function searchMetaFiltersHtml(metaCounts) {
+      const groups = [
+        {
+          title: 'Videos',
+          key: 'videos',
+          visibility: searchMetaVisibility.videos,
+          definitions: videoMetaFilterDefinitions,
+        },
+        {
+          title: 'Channels',
+          key: 'channels',
+          visibility: searchMetaVisibility.channels,
+          definitions: channelMetaFilterDefinitions,
+        },
+        {
+          title: 'Playlists',
+          key: 'playlists',
+          visibility: searchMetaVisibility.playlists,
+          definitions: playlistMetaFilterDefinitions,
+        },
+      ];
+      return groups
+        .filter(({ key }) => Number(metaCounts?.[key]?.total || 0) > 0)
+        .map(({ title, key, visibility, definitions }) => `
+          <div class="search-meta-row">
+            <span class="search-meta-row-title">${title}</span>
+            <span class="search-meta-controls">
+              ${metaFilterControlsHtml({
+                groupName: `search-${key}`,
+                filterAttribute: 'search-meta-filter',
+                filterValuePrefix: `${key}:`,
+                visibility,
+                counts: metaCounts[key],
+                definitions,
+              })}
+            </span>
+          </div>
+        `).join('');
     }
 
     function searchResultsSortHtml() {
@@ -1436,10 +1562,15 @@
       const size = pageSizeNumber();
       const limit = Number.isFinite(size) ? size : 5000;
       const offset = (currentPage - 1) * limit;
+      const searchFiltersValue = searchFilterParamValue() || '__none__';
+      const metaCountsKey = JSON.stringify([query, searchFiltersValue]);
+      const metaCountsCache = omniMetaCountsCache;
       const params = new URLSearchParams({
         q: query,
-        filters: searchFilterParamValue() || '__none__',
-        unavailable: searchResultVisibility.unavailable ? '1' : '0',
+        filters: searchFiltersValue,
+        video_meta: metaFilterParamValue(searchMetaVisibility.videos),
+        channel_meta: metaFilterParamValue(searchMetaVisibility.channels),
+        playlist_meta: metaFilterParamValue(searchMetaVisibility.playlists),
         sort: searchResultsSort,
         limit: String(limit),
         offset: String(offset),
@@ -1450,10 +1581,17 @@
       const promise = fetch(`/api/search?${params}`, { cache: 'no-store' }).then(async response => {
         if (!response.ok) throw new Error(`Search failed: ${response.status}`);
         const payload = await response.json();
-        if (omniSearchState.key === key) {
-          omniSearchState = { key, data: payload, promise: null };
+        if (!metaCountsCache.has(metaCountsKey)) {
+          const stableMetaCounts = Object.fromEntries(
+            Object.entries(payload.metaCounts || {}).map(([group, counts]) => [group, { ...counts }])
+          );
+          metaCountsCache.set(metaCountsKey, stableMetaCounts);
         }
-        return payload;
+        const stablePayload = { ...payload, metaCounts: metaCountsCache.get(metaCountsKey) };
+        if (omniSearchState.key === key) {
+          omniSearchState = { key, data: stablePayload, promise: null };
+        }
+        return stablePayload;
       });
       omniSearchState = { key, data: null, promise };
       return promise;
@@ -1461,12 +1599,12 @@
 
     async function fetchPlaylistList({ unavailableOnly = false, groupKey = '' } = {}) {
       const visibility = Object.entries(playlistListVisibility)
-        .filter(([, enabled]) => enabled)
+        .filter(([key, enabled]) => key !== 'removed' && enabled)
         .map(([key]) => key)
         .join(',');
       const path = remoteListPath('/api/playlists', {
         visibility: visibility || '__none__',
-        removed: playlistListIncludeRemoved ? '1' : '0',
+        removed: playlistListVisibility.removed ? '1' : '0',
         sort: unavailableOnly ? 'most_unavailable' : allPlaylistsSort,
         unavailable_only: unavailableOnly ? '1' : '0',
         group_key: groupKey,
@@ -1823,10 +1961,21 @@
         const remoteLimit = Number(payload.limit || pageSizeNumber() || 100);
         currentPage = Math.floor(Number(payload.offset || 0) / remoteLimit) + 1;
         title.textContent = 'Search results';
+        const searchMetaHtml = searchMetaFiltersHtml(payload.metaCounts);
         meta.innerHTML = `
-          <span>${total} results</span>
-          ${searchResultsSortHtml()}
+          <div class="search-result-meta">
+            <div class="search-result-summary">
+              <span>${total} results</span>
+              ${searchResultsSortHtml()}
+            </div>
+            ${searchMetaHtml ? `<div class="search-meta-groups">${searchMetaHtml}</div>` : ''}
+          </div>
         `;
+        for (const key of ['videos', 'channels', 'playlists']) {
+          if (Number(payload.metaCounts?.[key]?.total || 0) > 0) {
+            syncMetaFilterGroup(`search-${key}`);
+          }
+        }
         renderPager(remotePageInfo(total, rows.length, remoteLimit));
         grid.className = 'grid';
         grid.replaceChildren(...rows.map(searchResultCardFor));
@@ -1961,14 +2110,14 @@
         const payload = await fetchChannelList(categories);
         if (generation !== renderGeneration) return;
         const rows = payload.results || [];
-        const subscribedCount = Number(payload.counts?.subscribed || 0);
-        const nonSubscribedCount = Number(payload.counts?.non_subscribed || 0);
-        const terminatedCount = Number(payload.counts?.terminated || 0);
         meta.innerHTML = `
-          <label class="meta-filter"><input type="checkbox" data-meta-all-filter="channels"> <span>All</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="channels" data-channel-filter="subscribed" ${channelVisibility.subscribed ? 'checked' : ''}> <span>${subscribedCount} subscribed</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="channels" data-channel-filter="non_subscribed" ${channelVisibility.non_subscribed ? 'checked' : ''}> <span>${nonSubscribedCount} non-subscribed</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="channels" data-channel-filter="terminated" ${channelVisibility.terminated ? 'checked' : ''}> <span class="badge">${terminatedCount} terminated</span></label>
+          ${metaFilterControlsHtml({
+            groupName: 'channels',
+            filterAttribute: 'channel-filter',
+            visibility: channelVisibility,
+            counts: payload.counts,
+            definitions: channelMetaFilterDefinitions,
+          })}
           ${channelSortHtml()}
         `;
         syncMetaFilterGroup('channels');
@@ -2028,20 +2177,14 @@
         const payload = await fetchPlaylistList();
         if (generation !== renderGeneration) return;
         const rows = payload.results || [];
-        const privateCount = Number(payload.counts?.private || 0);
-        const publicCount = Number(payload.counts?.public || 0);
-        const unlistedCount = Number(payload.counts?.unlisted || 0);
-        const othersCount = Number(payload.counts?.others || 0);
-        const unknownCount = Number(payload.counts?.unknown || 0);
-        const removedCount = Number(payload.counts?.removed || 0);
         meta.innerHTML = `
-          <label class="meta-filter"><input type="checkbox" data-meta-all-filter="playlist-list"> <span>All</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-visibility-filter="private" ${playlistListVisibility.private ? 'checked' : ''}> ${visibilityFilterLabelHtml('private', privateCount)}</label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-visibility-filter="public" ${playlistListVisibility.public ? 'checked' : ''}> ${visibilityFilterLabelHtml('public', publicCount)}</label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-visibility-filter="unlisted" ${playlistListVisibility.unlisted ? 'checked' : ''}> ${visibilityFilterLabelHtml('unlisted', unlistedCount)}</label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-visibility-filter="others" ${playlistListVisibility.others ? 'checked' : ''}> <span>${othersCount} others</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-visibility-filter="unknown" ${playlistListVisibility.unknown ? 'checked' : ''}> <span>${unknownCount} unknown</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-list" data-playlist-removed-filter ${playlistListIncludeRemoved ? 'checked' : ''}> <span class="status">${removedCount} removed</span></label>
+          ${metaFilterControlsHtml({
+            groupName: 'playlist-list',
+            filterAttribute: 'playlist-visibility-filter',
+            visibility: playlistListVisibility,
+            counts: payload.counts,
+            definitions: playlistMetaFilterDefinitions,
+          })}
           ${playlistSortHtml()}
         `;
         syncMetaFilterGroup('playlist-list');
@@ -2372,12 +2515,19 @@
       const metaAllFilter = target.dataset.metaAllFilter;
       if (metaAllFilter && setMetaFilterGroup(metaAllFilter, target.checked)) {
         currentPage = 1;
-        render();
+        if (metaAllFilter.startsWith('search-')) {
+          syncSearchHashAndRender();
+        } else {
+          render();
+        }
         return;
       }
-      const searchResultFilter = target.dataset.searchResultFilter;
-      if (searchResultFilter) {
-        searchResultVisibility[searchResultFilter] = target.checked;
+      const searchMetaFilter = target.dataset.searchMetaFilter;
+      if (searchMetaFilter) {
+        const [groupName, filterName] = searchMetaFilter.split(':');
+        const visibility = searchMetaVisibility[groupName];
+        if (!visibility || !Object.prototype.hasOwnProperty.call(visibility, filterName)) return;
+        visibility[filterName] = target.checked;
         currentPage = 1;
         syncSearchHashAndRender();
         return;
@@ -2392,12 +2542,6 @@
       const playlistVisibilityFilter = target.dataset.playlistVisibilityFilter;
       if (playlistVisibilityFilter) {
         playlistListVisibility[playlistVisibilityFilter] = target.checked;
-        currentPage = 1;
-        render();
-        return;
-      }
-      if (target.hasAttribute('data-playlist-removed-filter')) {
-        playlistListIncludeRemoved = target.checked;
         currentPage = 1;
         render();
         return;

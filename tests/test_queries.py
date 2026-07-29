@@ -146,16 +146,16 @@ class NormalizedReadModelTests(unittest.TestCase):
             self.conn,
             "needle",
             filters={"videos", "playlist_videos", "unavailable_videos"},
-            include_unavailable=False,
+            video_meta_filters={"videos"},
         )
         self.assertEqual(available_only["results"], [])
         with_unavailable = omni_search_data(
             self.conn,
             "needle",
             filters={"videos", "playlist_videos", "unavailable_videos"},
-            include_unavailable=True,
         )
         self.assertEqual(with_unavailable["results"][0]["item"]["video_id"], "unavailable1")
+        self.assertEqual(available_only["metaCounts"], with_unavailable["metaCounts"])
         members_only = omni_search_data(
             self.conn,
             "needle",
@@ -164,6 +164,129 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(
             [result["item"]["video_id"] for result in members_only["results"]],
             ["members1"],
+        )
+
+    def test_omni_search_meta_filters_count_before_filtering_all_result_types(self) -> None:
+        for video_id, title in (
+            ("available1", "Needle available"),
+            ("unavailable1", "Needle unavailable"),
+            ("members1", "Needle members"),
+            ("removed1", "Needle removed"),
+        ):
+            self.add_video(video_id, title)
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 1 WHERE video_id IN ('available1', 'removed1')"
+        )
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 0, availability = 'private' WHERE video_id = 'unavailable1'"
+        )
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 0, availability = 'subscriber_only' WHERE video_id = 'members1'"
+        )
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLsource', 'Source collection')"
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO playlist_items(
+              playlist_id, position, video_id, membership_state, source_quality, match_type
+            ) VALUES ('PLsource', ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, "available1", "current", "youtube", ""),
+                (2, "unavailable1", "current", "youtube", ""),
+                (3, "members1", "current", "youtube", ""),
+                (
+                    4,
+                    "removed1",
+                    "retained_unavailable",
+                    "takeout",
+                    "ambiguous_hidden_candidate",
+                ),
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO channels(channel_id, title, subscribed, status)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                ("UC_meta_subscribed", "Needle subscribed", 1, ""),
+                ("UC_meta_other", "Needle non-subscribed", 0, ""),
+                ("UC_meta_terminated", "Needle terminated", 0, "terminated"),
+                ("UC_library_owner", "Library owner", 0, ""),
+                ("UC_playlist_other", "Other owner", 0, ""),
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO playlists(
+              playlist_id, title, visibility, owner_channel_id, fetch_status
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                ("PLprivate", "Needle private", "private", None, ""),
+                ("PLpublic", "Needle public", "public", None, ""),
+                ("PLunlisted", "Needle unlisted", "unlisted", None, ""),
+                ("PLremoved", "Needle removed playlist", "private", None, "removed"),
+                ("PLother", "Needle other playlist", "", "UC_playlist_other", ""),
+                *[
+                    (f"PLunknown{index}", f"Needle unknown {index}", "", "UC_library_owner", "")
+                    for index in range(5)
+                ],
+            ],
+        )
+        self.conn.commit()
+
+        unfiltered = omni_search_data(self.conn, "needle", sort="type", limit=100)
+
+        self.assertEqual(
+            unfiltered["metaCounts"],
+            {
+                "videos": {
+                    "total": 4,
+                    "videos": 1,
+                    "unavailable": 1,
+                    "members_only": 1,
+                    "removed": 1,
+                },
+                "channels": {
+                    "total": 3,
+                    "subscribed": 1,
+                    "non_subscribed": 1,
+                    "terminated": 1,
+                },
+                "playlists": {
+                    "total": 10,
+                    "private": 1,
+                    "public": 1,
+                    "unlisted": 1,
+                    "others": 1,
+                    "unknown": 5,
+                    "removed": 1,
+                },
+            },
+        )
+        filtered = omni_search_data(
+            self.conn,
+            "needle",
+            video_meta_filters={"members_only"},
+            channel_meta_filters={"terminated"},
+            playlist_meta_filters={"removed"},
+            sort="type",
+            limit=100,
+        )
+
+        self.assertEqual(filtered["metaCounts"], unfiltered["metaCounts"])
+        self.assertEqual(filtered["counts"], {"videos": 1, "channels": 1, "playlists": 1})
+        self.assertEqual(filtered["total"], 3)
+        self.assertEqual(
+            [(result["kind"], result["metaCategory"]) for result in filtered["results"]],
+            [
+                ("video", "members_only"),
+                ("channel", "terminated"),
+                ("playlist", "removed"),
+            ],
         )
 
     def test_library_bootstrap_contains_counts_without_card_collections(self) -> None:

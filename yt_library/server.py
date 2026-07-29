@@ -64,6 +64,16 @@ COLLECTION_CARD_JS = load_template("collection-card.js")
 FAVICON_SVG = load_template("favicon.svg")
 
 
+def query_set_param(
+    params: dict[str, list[str]],
+    name: str,
+) -> set[str] | None:
+    value = (params.get(name) or [""])[0]
+    if value == "__none__":
+        return set()
+    return {item for item in value.split(",") if item} if value else None
+
+
 def service_restart_command() -> list[str]:
     return [
         sys.executable,
@@ -364,17 +374,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/search":
             params = urllib.parse.parse_qs(parsed.query)
             query = (params.get("q") or [""])[0]
-            filter_value = (params.get("filters") or [""])[0]
-            filters = (
-                set()
-                if filter_value == "__none__"
-                else ({value for value in filter_value.split(",") if value} if filter_value else None)
-            )
-            include_unavailable = (params.get("unavailable") or ["1"])[0].strip().lower() not in {
-                "0",
-                "false",
-                "no",
-            }
+            filters = query_set_param(params, "filters")
             sort = (params.get("sort") or ["relevance"])[0]
             try:
                 limit = max(1, min(5000, int((params.get("limit") or ["100"])[0] or 100)))
@@ -390,7 +390,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     conn,
                     query,
                     filters=filters,
-                    include_unavailable=include_unavailable,
+                    video_meta_filters=query_set_param(params, "video_meta"),
+                    channel_meta_filters=query_set_param(params, "channel_meta"),
+                    playlist_meta_filters=query_set_param(params, "playlist_meta"),
                     sort=sort,
                     limit=limit,
                     offset=offset,
