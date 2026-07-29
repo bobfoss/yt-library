@@ -87,6 +87,7 @@ def record_proxy_hold(
     queue_id: int = 0,
 ) -> str:
     message = str(exc) or "The configured SOCKS5 proxy is unavailable"
+    existing_block = external_service_block(conn, "proxy")
     worker._set_proxy_block_reason(message)
     set_external_service_block(
         conn,
@@ -96,6 +97,16 @@ def record_proxy_hold(
         run_id=run_id,
         queue_id=queue_id,
     )
+    if not existing_block["blocked"]:
+        log_worker_queue_event(
+            conn,
+            "error",
+            (
+                "Worker queue paused because the configured proxy is unavailable; "
+                f"pending items were retained. {message}"
+            ),
+            run_id=run_id,
+        )
     return message
 
 
@@ -2013,6 +2024,20 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         proxy_blocked = bool(proxy_block["blocked"])
         youtube_blocked = False
         self._placeholder_block_reason = str(archivarix_block["message"])
+        if proxy_blocked:
+            conn = connect(db_path)
+            try:
+                with conn:
+                    log_worker_queue_event(
+                        conn,
+                        "error",
+                        (
+                            "Worker queue start blocked because the configured proxy "
+                            f"is still unavailable. {proxy_block['message']}"
+                        ),
+                    )
+            finally:
+                conn.close()
         try:
             while not self._stop.is_set():
                 if self._archivarix_retry_requested.is_set():

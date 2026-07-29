@@ -793,6 +793,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 with conn:
                     cleared = clear_external_service_block(conn, "proxy")
+                    log_worker_queue_event(
+                        conn,
+                        "info",
+                        "Proxy retry requested; restarting the worker queue.",
+                    )
             finally:
                 conn.close()
             WORKER_QUEUE_DISPATCHER.allow_proxy_retry()

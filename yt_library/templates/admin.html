@@ -310,6 +310,7 @@
         <label>Log source
           <select id="logSourceFilter">
             <option value="all">All sources</option>
+            <option value="queue">Queue</option>
             <option value="metadata">Metadata</option>
             <option value="playlist">Playlist</option>
             <option value="history">History</option>
@@ -507,8 +508,10 @@
           ...log,
           subject_id: log.subject_title || (log.display_id ? '' : log.video_id),
           identifier: log.display_id || '',
-          source: String(log.level || '').startsWith('placeholder ') ? 'placeholder' : 'metadata',
-          level: String(log.level || '').replace(/^placeholder\s+/, ''),
+          source: String(log.level || '').startsWith('queue ')
+            ? 'queue'
+            : (String(log.level || '').startsWith('placeholder ') ? 'placeholder' : 'metadata'),
+          level: String(log.level || '').replace(/^(?:queue|placeholder)\s+/, ''),
         })),
         ...(data.placeholderRecoveryLogs || []).map(log => ({
           ...log,

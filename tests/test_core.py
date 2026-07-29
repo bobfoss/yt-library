@@ -2907,6 +2907,8 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('id="proxyUrl"', server.ADMIN_HTML)
         self.assertIn('id="retryProxy"', server.ADMIN_HTML)
         self.assertIn('id="proxyBlock"', server.ADMIN_HTML)
+        self.assertIn('<option value="queue">Queue</option>', server.ADMIN_HTML)
+        self.assertIn("startsWith('queue ')", server.ADMIN_HTML)
         self.assertIn('id="saveSettings"', server.ADMIN_HTML)
         self.assertIn("<legend>Dispatch mode</legend>", server.ADMIN_HTML)
         self.assertIn('id="dispatchModeDelay"', server.ADMIN_HTML)
@@ -2969,6 +2971,16 @@ class AdminServerTests(unittest.TestCase):
             conn = core.connect(db_path)
             try:
                 self.assertFalse(core.external_service_block(conn, "proxy")["blocked"])
+                retry_log = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM metadata_worker_log
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                self.assertEqual(retry_log["level"], "queue info")
+                self.assertIn("Proxy retry requested", retry_log["message"])
             finally:
                 conn.close()
             response = handler.send_json.call_args.args[0]
@@ -3591,6 +3603,18 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(run["status"], "blocked")
                 self.assertEqual(run["processed"], 0)
                 self.assertIn("Metadata worker paused", run["message"])
+                queue_log = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM metadata_worker_log
+                    WHERE level = 'queue error'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                self.assertEqual(queue_log["level"], "queue error")
+                self.assertIn("Worker queue paused", queue_log["message"])
+                self.assertIn("pending items were retained", queue_log["message"])
             finally:
                 conn.close()
 
@@ -5113,6 +5137,63 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
                 self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 0)
                 self.assertTrue(core.external_service_block(conn, "archivarix")["blocked"])
+            finally:
+                conn.close()
+
+    def test_dispatcher_logs_queue_start_blocked_by_failed_proxy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="proxyRestart1",
+                        current_title="Proxy restart",
+                        metadata_source="history",
+                        priority=0,
+                    )
+                    core.set_external_service_block(
+                        conn,
+                        "proxy",
+                        "proxy_unavailable",
+                        "SOCKS5 proxy 127.0.0.1:1081 is unavailable",
+                    )
+            finally:
+                conn.close()
+
+            dispatcher = WorkerQueueDispatcher()
+            with patch.object(MetadataWorker, "start") as start_metadata:
+                dispatcher._run(
+                    db_path,
+                    Path(temp_dir) / "youtube-cookies.txt",
+                    Path(temp_dir) / "video-thumbs",
+                    "UTC",
+                    Path(temp_dir) / "archivarix-cookies.txt",
+                    Path(temp_dir) / "archivarix-thumbs",
+                    15.0,
+                    30.0,
+                    3,
+                    0.0,
+                    "socks5h://127.0.0.1:1081",
+                )
+
+            start_metadata.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 1)
+                queue_log = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM metadata_worker_log
+                    WHERE level = 'queue error'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                self.assertEqual(queue_log["level"], "queue error")
+                self.assertIn("queue start blocked", queue_log["message"].lower())
+                self.assertIn("still unavailable", queue_log["message"])
             finally:
                 conn.close()
 

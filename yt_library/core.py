@@ -4340,6 +4340,21 @@ def log_worker_event(
     )
 
 
+def log_worker_queue_event(
+    conn: sqlite3.Connection,
+    level: str,
+    message: str,
+    *,
+    run_id: str = "",
+) -> None:
+    log_worker_event(
+        conn,
+        run_id,
+        f"queue {(level or 'info').strip().lower()}",
+        message,
+    )
+
+
 def log_playlist_scan_event(
     conn: sqlite3.Connection,
     run_id: str,
