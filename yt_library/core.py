@@ -46,6 +46,7 @@ from .config import (
 )
 from .network import (
     ProxyUnavailableError,
+    probe_socks5_proxy,
     proxy_unavailable_error,
     socks5_proxy_handlers,
     ytdlp_proxy_options,

@@ -209,6 +209,62 @@ class CoreHelperTests(unittest.TestCase):
         )
         self.assertEqual(network.ytdlp_proxy_options(""), {})
 
+    def test_proxy_probe_connects_through_configured_socks5_proxy(self) -> None:
+        calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        class FakeSocket:
+            closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        fake_socket = FakeSocket()
+
+        class FakeSocks:
+            SOCKS5 = 2
+
+            @staticmethod
+            def create_connection(*args, **kwargs):
+                calls.append((args, kwargs))
+                return fake_socket
+
+        with patch("yt_library.network._load_socks_module", return_value=FakeSocks):
+            available, message = network.probe_socks5_proxy(
+                "socks5h://proxy-user:proxy-pass@localhost:1081",
+                timeout=2,
+            )
+
+        self.assertTrue(available)
+        self.assertEqual(message, "")
+        self.assertEqual(calls[0][0], (("www.youtube.com", 443),))
+        self.assertEqual(calls[0][1]["timeout"], 2)
+        self.assertTrue(calls[0][1]["proxy_rdns"])
+        self.assertTrue(fake_socket.closed)
+
+    def test_proxy_probe_reports_sanitized_connection_failure(self) -> None:
+        class ProxyConnectionError(OSError):
+            pass
+
+        class FakeSocks:
+            SOCKS5 = 2
+
+            @staticmethod
+            def create_connection(*_args, **_kwargs):
+                raise ProxyConnectionError(
+                    "Error connecting to SOCKS5 proxy "
+                    "socks5h://secret-user:secret-pass@127.0.0.1:1081"
+                )
+
+        with patch("yt_library.network._load_socks_module", return_value=FakeSocks):
+            available, message = network.probe_socks5_proxy(
+                "socks5h://secret-user:secret-pass@127.0.0.1:1081"
+            )
+
+        self.assertFalse(available)
+        self.assertIn("127.0.0.1:1081", message)
+        self.assertNotIn("secret-user", message)
+        self.assertNotIn("secret-pass", message)
+
     def test_metadata_worker_passes_proxy_to_poll_run(self) -> None:
         entered = threading.Event()
         release = threading.Event()
@@ -255,6 +311,7 @@ class CoreHelperTests(unittest.TestCase):
             config = load_config(Path(temp_dir) / "config.json")
             config["use_proxy"] = True
             config["proxy"] = "socks5h://127.0.0.1:1080"
+            core.migrate_database(Path(temp_dir) / "library.sqlite3")
             with patch.object(dispatcher, "_run", side_effect=hold_dispatcher):
                 result = dispatcher.start(
                     Path(temp_dir) / "library.sqlite3",
@@ -270,6 +327,116 @@ class CoreHelperTests(unittest.TestCase):
                 while dispatcher.is_alive() and time.time() < deadline:
                     time.sleep(0.01)
                 self.assertFalse(dispatcher.is_alive())
+
+    def test_dispatcher_start_clears_proxy_hold_after_successful_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.set_external_service_block(
+                        conn,
+                        "proxy",
+                        "proxy_unavailable",
+                        "SOCKS5 proxy is unavailable",
+                    )
+            finally:
+                conn.close()
+            config = load_config(Path(temp_dir) / "config.json")
+            config["use_proxy"] = True
+            config["proxy"] = "socks5h://127.0.0.1:1081"
+            dispatcher = WorkerQueueDispatcher()
+
+            with (
+                patch(
+                    "yt_library.workers.probe_socks5_proxy",
+                    return_value=(True, ""),
+                ) as probe,
+                patch.object(
+                    dispatcher,
+                    "_start_background",
+                    return_value={"started": True},
+                ) as start_background,
+            ):
+                result = dispatcher.start(
+                    db_path,
+                    Path(temp_dir) / "youtube-cookies.txt",
+                    Path(temp_dir) / "video-thumbs",
+                    config,
+                )
+
+            self.assertTrue(result["started"])
+            probe.assert_called_once_with("socks5h://127.0.0.1:1081")
+            start_background.assert_called_once()
+            conn = core.connect(db_path)
+            try:
+                self.assertFalse(core.external_service_block(conn, "proxy")["blocked"])
+                recovery_log = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM metadata_worker_log
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                self.assertEqual(recovery_log["level"], "queue info")
+                self.assertIn("Proxy connectivity restored", recovery_log["message"])
+            finally:
+                conn.close()
+
+    def test_dispatcher_start_retains_proxy_hold_after_failed_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.set_external_service_block(
+                        conn,
+                        "proxy",
+                        "proxy_unavailable",
+                        "SOCKS5 proxy is unavailable",
+                    )
+            finally:
+                conn.close()
+            config = load_config(Path(temp_dir) / "config.json")
+            config["use_proxy"] = True
+            config["proxy"] = "socks5h://127.0.0.1:1081"
+            dispatcher = WorkerQueueDispatcher()
+            failure = "SOCKS5 proxy 127.0.0.1:1081 is unavailable"
+
+            with (
+                patch(
+                    "yt_library.workers.probe_socks5_proxy",
+                    return_value=(False, failure),
+                ),
+                patch.object(dispatcher, "_start_background") as start_background,
+            ):
+                result = dispatcher.start(
+                    db_path,
+                    Path(temp_dir) / "youtube-cookies.txt",
+                    Path(temp_dir) / "video-thumbs",
+                    config,
+                )
+
+            self.assertFalse(result["started"])
+            self.assertTrue(result["blocked"])
+            self.assertEqual(result["message"], failure)
+            start_background.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                self.assertTrue(core.external_service_block(conn, "proxy")["blocked"])
+                failure_log = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM metadata_worker_log
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                self.assertEqual(failure_log["level"], "queue error")
+                self.assertIn("proxy is unavailable", failure_log["message"])
+            finally:
+                conn.close()
 
     def test_placeholder_worker_passes_general_proxy_to_run(self) -> None:
         entered = threading.Event()
@@ -2948,20 +3115,28 @@ class AdminServerTests(unittest.TestCase):
             handler.config_data = load_config(Path(temp_dir) / "config.json")
             handler.send_json = Mock()
 
-            with (
-                patch.object(
-                    workers.WORKER_QUEUE_DISPATCHER,
-                    "allow_proxy_retry",
-                ) as allow_retry,
-                patch.object(
-                    workers.WORKER_QUEUE_DISPATCHER,
-                    "start",
-                    return_value={"started": True},
-                ) as start,
-            ):
+            blocked_when_started: list[bool] = []
+
+            def recover_proxy(*_args, **_kwargs):
+                conn = core.connect(db_path)
+                try:
+                    blocked_when_started.append(
+                        core.external_service_block(conn, "proxy")["blocked"]
+                    )
+                    with conn:
+                        core.clear_external_service_block(conn, "proxy")
+                finally:
+                    conn.close()
+                return {"started": True}
+
+            with patch.object(
+                workers.WORKER_QUEUE_DISPATCHER,
+                "start",
+                side_effect=recover_proxy,
+            ) as start:
                 handler.do_POST()
 
-            allow_retry.assert_called_once_with()
+            self.assertEqual(blocked_when_started, [True])
             start.assert_called_once_with(
                 db_path,
                 handler.cookie_file,
@@ -2986,6 +3161,7 @@ class AdminServerTests(unittest.TestCase):
             response = handler.send_json.call_args.args[0]
             self.assertTrue(response["ok"])
             self.assertTrue(response["cleared"])
+            self.assertFalse(response["proxyBlock"]["blocked"])
         self.assertIn("return row.playlist_id || row.video_id || '';", server.ADMIN_HTML)
         self.assertIn("identifier: log.display_id || log.playlist_id || ''", server.ADMIN_HTML)
         self.assertIn(".id-col { width: 280px; }", server.ADMIN_HTML)

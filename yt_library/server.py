@@ -792,7 +792,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             conn = connect(self.db_path)
             try:
                 with conn:
-                    cleared = clear_external_service_block(conn, "proxy")
+                    was_blocked = external_service_block(conn, "proxy")["blocked"]
                     log_worker_queue_event(
                         conn,
                         "info",
@@ -800,14 +800,25 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     )
             finally:
                 conn.close()
-            WORKER_QUEUE_DISPATCHER.allow_proxy_retry()
             dispatcher = WORKER_QUEUE_DISPATCHER.start(
                 self.db_path,
                 self.cookie_file,
                 self.video_thumbs,
                 self.config_data,
             )
-            self.send_json({"ok": True, "cleared": cleared, "dispatcher": dispatcher})
+            conn = connect(self.db_path)
+            try:
+                proxy_block = external_service_block(conn, "proxy")
+            finally:
+                conn.close()
+            self.send_json(
+                {
+                    "ok": not bool(dispatcher.get("blocked")),
+                    "cleared": bool(was_blocked and not proxy_block["blocked"]),
+                    "proxyBlock": proxy_block,
+                    "dispatcher": dispatcher,
+                }
+            )
             return
         if parsed.path == "/api/admin/queue/stop":
             result = {

@@ -153,6 +153,43 @@ def ytdlp_proxy_options(proxy_url: str | None) -> dict[str, str]:
     return {"proxy": value} if value else {}
 
 
+def probe_socks5_proxy(
+    proxy_url: str | None,
+    *,
+    timeout: float = 5.0,
+    target_host: str = "www.youtube.com",
+    target_port: int = 443,
+) -> tuple[bool, str]:
+    proxy = parse_socks5_proxy_url(proxy_url)
+    if proxy is None:
+        return True, ""
+    sock = None
+    try:
+        socks_module = _load_socks_module()
+        sock = socks_module.create_connection(
+            (target_host, target_port),
+            timeout=max(0.1, float(timeout)),
+            proxy_type=socks_module.SOCKS5,
+            proxy_addr=proxy.host,
+            proxy_port=proxy.port,
+            proxy_rdns=proxy.remote_dns,
+            proxy_username=proxy.username,
+            proxy_password=proxy.password,
+        )
+    except Exception as exc:
+        proxy_error = proxy_unavailable_error(exc, proxy_url)
+        if proxy_error:
+            return False, str(proxy_error)
+        return False, (
+            f"SOCKS5 proxy {_proxy_endpoint(proxy)} is unavailable: "
+            f"{_safe_proxy_error_detail(exc)}"
+        )
+    finally:
+        if sock is not None:
+            sock.close()
+    return True, ""
+
+
 def _load_socks_module() -> Any:
     try:
         return importlib.import_module("socks")

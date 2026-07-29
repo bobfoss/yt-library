@@ -1805,6 +1805,39 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         job_dispatch_delay = configured_job_dispatch_delay(config)
         youtube_max_in_flight = configured_youtube_max_in_flight(config)
         archivarix_max_in_flight = configured_archivarix_max_in_flight(config)
+        proxy_url = configured_proxy(config)
+
+        conn = connect(db_path)
+        try:
+            proxy_block = external_service_block(conn, "proxy")
+            if proxy_block["blocked"]:
+                proxy_available, proxy_message = probe_socks5_proxy(proxy_url)
+                with conn:
+                    if proxy_available:
+                        clear_external_service_block(conn, "proxy")
+                        log_worker_queue_event(
+                            conn,
+                            "info",
+                            "Proxy connectivity restored; worker queue hold cleared.",
+                        )
+                    else:
+                        log_worker_queue_event(
+                            conn,
+                            "error",
+                            (
+                                "Worker queue start blocked because the configured "
+                                f"proxy is unavailable. {proxy_message}"
+                            ),
+                        )
+                if not proxy_available:
+                    return {
+                        "started": False,
+                        "blocked": True,
+                        "message": proxy_message,
+                    }
+                self.allow_proxy_retry()
+        finally:
+            conn.close()
 
         def prepare_run() -> None:
             self._started_at = utc_now()
@@ -1835,7 +1868,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 configured_archivarix_stream_timeout(config),
                 configured_archivarix_retry_attempts(config),
                 configured_archivarix_retry_backoff(config),
-                configured_proxy(config),
+                proxy_url,
             ),
             started_message="Worker queue dispatcher started",
             already_running_message="Worker queue dispatcher already running",
