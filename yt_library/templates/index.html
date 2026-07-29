@@ -266,10 +266,10 @@
         <label class="filter child"><input class="search-filter video-source-filter" type="checkbox" data-filter="history_videos" checked> History</label>
         <label class="filter child"><input class="search-filter video-source-filter" type="checkbox" data-filter="unavailable_videos" checked> Unavailable</label>
         <label class="filter child"><input class="search-filter video-source-filter" type="checkbox" data-filter="members_only_videos" checked> Members only</label>
+        <label class="filter"><input class="search-filter" type="checkbox" data-filter="playlists" checked> Playlists</label>
         <label class="filter"><input class="search-filter" type="checkbox" data-filter="channels" checked> Channels</label>
         <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_subscribed" checked> Subscribed</label>
         <label class="filter child"><input class="search-filter channel-child-filter" type="checkbox" data-filter="channels_unsubscribed" checked> Non-subscribed</label>
-        <label class="filter"><input class="search-filter" type="checkbox" data-filter="playlists" checked> Playlists</label>
       </div>
       <nav id="groups"></nav>
     </aside>
@@ -1425,16 +1425,16 @@
           definitions: videoMetaFilterDefinitions,
         },
         {
-          title: 'Channels',
-          key: 'channels',
-          visibility: searchMetaVisibility.channels,
-          definitions: channelMetaFilterDefinitions,
-        },
-        {
           title: 'Playlists',
           key: 'playlists',
           visibility: searchMetaVisibility.playlists,
           definitions: playlistMetaFilterDefinitions,
+        },
+        {
+          title: 'Channels',
+          key: 'channels',
+          visibility: searchMetaVisibility.channels,
+          definitions: channelMetaFilterDefinitions,
         },
       ];
       return groups
@@ -1689,20 +1689,20 @@
       videoSection.appendChild(navButton('__liked__', 'Liked videos', counts.liked_videos || 0));
       videoSection.appendChild(navButton('__history__', 'History', counts.history || 0));
 
+      const playlistSection = sectionFor('Playlists');
+      playlistSection.appendChild(navButton('', 'All playlists', counts.playlists || 0));
+      playlistSection.appendChild(navButton('__unavailable_playlists__', 'Playlists with unavailable', counts.unavailable_playlists || 0));
+      for (const group of children.get('') || []) {
+        playlistSection.appendChild(buttonFor(group));
+        for (const child of children.get(group.group_key) || []) {
+          playlistSection.appendChild(buttonFor(child, true));
+        }
+      }
+
       const channelSection = sectionFor('Channels');
       channelSection.appendChild(navButton('__channels__', 'Channels', counts.channels || 0));
       channelSection.appendChild(navButton('__subscribed_channels__', 'Subscribed channels', counts.subscribed_channels || 0));
       channelSection.appendChild(navButton('__terminated_channels__', 'Terminated channels', counts.terminated_channels || 0));
-
-      const pocketTubeSection = sectionFor('Playlists');
-      pocketTubeSection.appendChild(navButton('', 'All playlists', counts.playlists || 0));
-      pocketTubeSection.appendChild(navButton('__unavailable_playlists__', 'Playlists with unavailable', counts.unavailable_playlists || 0));
-      for (const group of children.get('') || []) {
-        pocketTubeSection.appendChild(buttonFor(group));
-        for (const child of children.get(group.group_key) || []) {
-          pocketTubeSection.appendChild(buttonFor(child, true));
-        }
-      }
     }
 
     function videoDetailCardFor(video) {
@@ -1988,7 +1988,7 @@
             ${searchMetaHtml ? `<div class="search-meta-groups">${searchMetaHtml}</div>` : ''}
           </div>
         `;
-        for (const key of ['videos', 'channels', 'playlists']) {
+        for (const key of ['videos', 'playlists', 'channels']) {
           if (Number(payload.metaCounts?.[key]?.total || 0) > 0) {
             syncMetaFilterGroup(`search-${key}`);
           }

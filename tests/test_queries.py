@@ -73,7 +73,7 @@ class NormalizedReadModelTests(unittest.TestCase):
 
         self.assertEqual(data["counts"], {"videos": 2, "channels": 1, "playlists": 1})
         self.assertEqual(data["total"], 4)
-        self.assertEqual([result["kind"] for result in data["results"]], ["video", "video", "channel", "playlist"])
+        self.assertEqual([result["kind"] for result in data["results"]], ["video", "video", "playlist", "channel"])
         video_ids = [result["item"]["video_id"] for result in data["results"] if result["kind"] == "video"]
         self.assertEqual(sorted(video_ids), ["history123", "shared123"])
         shared = next(result["item"] for result in data["results"] if result["item"].get("video_id") == "shared123")
@@ -83,7 +83,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         page = omni_search_data(self.conn, "needle", sort="type", limit=2, offset=2)
         self.assertEqual(page["total"], 4)
         self.assertEqual(page["offset"], 2)
-        self.assertEqual([result["kind"] for result in page["results"]], ["channel", "playlist"])
+        self.assertEqual([result["kind"] for result in page["results"]], ["playlist", "channel"])
 
     def test_omni_search_applies_source_field_subscription_and_availability_filters(self) -> None:
         self.add_video("description1", "Ordinary title", "UC_subscribed")
@@ -284,8 +284,8 @@ class NormalizedReadModelTests(unittest.TestCase):
             [(result["kind"], result["metaCategory"]) for result in filtered["results"]],
             [
                 ("video", "members_only"),
-                ("channel", "terminated"),
                 ("playlist", "removed"),
+                ("channel", "terminated"),
             ],
         )
 

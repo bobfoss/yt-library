@@ -3316,6 +3316,19 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("function searchMetaFiltersHtml(metaCounts)", server.INDEX_HTML)
         self.assertIn("filterAttribute: 'search-meta-filter'", server.INDEX_HTML)
         self.assertIn("groupName: `search-${key}`", server.INDEX_HTML)
+        self.assertLess(
+            server.INDEX_HTML.index('data-filter="playlists"'),
+            server.INDEX_HTML.index('data-filter="channels"'),
+        )
+        self.assertLess(
+            server.INDEX_HTML.index("title: 'Playlists'"),
+            server.INDEX_HTML.index("title: 'Channels'"),
+        )
+        self.assertLess(
+            server.INDEX_HTML.index("const playlistSection = sectionFor('Playlists');"),
+            server.INDEX_HTML.index("const channelSection = sectionFor('Channels');"),
+        )
+        self.assertIn("['videos', 'playlists', 'channels']", server.INDEX_HTML)
         self.assertEqual(server.INDEX_HTML.count("videoStatusFiltersHtml({"), 4)
         self.assertIn("{ key: 'videos', label: 'available' }", server.INDEX_HTML)
         self.assertIn("let videoMetaCountsCache = new Map();", server.INDEX_HTML)

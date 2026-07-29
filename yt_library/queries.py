@@ -786,10 +786,11 @@ OMNI_SEARCH_FILTERS = {
     "playlists",
 }
 OMNI_SEARCH_SORTS = {"relevance", "title", "newest", "oldest", "most_watched", "type"}
+OMNI_SEARCH_KIND_ORDER = ("video", "playlist", "channel")
 OMNI_SEARCH_META_FILTERS = {
     "video": ("videos", "unavailable", "members_only", "removed"),
-    "channel": ("subscribed", "non_subscribed", "terminated"),
     "playlist": ("private", "public", "unlisted", "others", "unknown", "removed"),
+    "channel": ("subscribed", "non_subscribed", "terminated"),
 }
 
 
@@ -829,7 +830,7 @@ def _omni_result(kind: str, score: int, item: dict[str, Any], *, matched_descrip
 
 
 def _sort_omni_results(results: list[dict[str, Any]], sort: str) -> None:
-    kind_rank = {"video": 0, "channel": 1, "playlist": 2}
+    kind_rank = {kind: rank for rank, kind in enumerate(OMNI_SEARCH_KIND_ORDER)}
     results.sort(key=lambda result: (result["_title"], kind_rank.get(result["kind"], 99)))
     if sort == "relevance":
         results.sort(key=lambda result: (result["score"], kind_rank.get(result["kind"], 99)))
@@ -1053,7 +1054,7 @@ def omni_search_data(
             "limit": limit,
             "offset": 0,
             "total": 0,
-            "counts": {"videos": 0, "channels": 0, "playlists": 0},
+            "counts": {"videos": 0, "playlists": 0, "channels": 0},
             "metaCounts": _omni_meta_counts([]),
             "results": [],
         }
@@ -1309,8 +1310,8 @@ def omni_search_data(
     meta_counts = _omni_meta_counts(results)
     selected_meta_filters = {
         "video": _selected_omni_meta_filters(video_meta_filters, "video"),
-        "channel": _selected_omni_meta_filters(channel_meta_filters, "channel"),
         "playlist": _selected_omni_meta_filters(playlist_meta_filters, "playlist"),
+        "channel": _selected_omni_meta_filters(channel_meta_filters, "channel"),
     }
     results = [
         result
@@ -1326,8 +1327,8 @@ def omni_search_data(
     _add_omni_video_links(conn, page)
     counts = {
         "videos": sum(1 for result in results if result["kind"] == "video"),
-        "channels": sum(1 for result in results if result["kind"] == "channel"),
         "playlists": sum(1 for result in results if result["kind"] == "playlist"),
+        "channels": sum(1 for result in results if result["kind"] == "channel"),
     }
     for result in page:
         result.pop("_title", None)
