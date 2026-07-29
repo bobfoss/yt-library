@@ -3329,6 +3329,10 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML.index("const channelSection = sectionFor('Channels');"),
         )
         self.assertIn("['videos', 'playlists', 'channels']", server.INDEX_HTML)
+        self.assertLess(
+            server.INDEX_HTML.index('id="view-meta"'),
+            server.INDEX_HTML.index('id="refresh"'),
+        )
         self.assertEqual(server.INDEX_HTML.count("videoStatusFiltersHtml({"), 4)
         self.assertIn("{ key: 'videos', label: 'available' }", server.INDEX_HTML)
         self.assertIn("let videoMetaCountsCache = new Map();", server.INDEX_HTML)
