@@ -4038,6 +4038,17 @@ class WorkerQueueTests(unittest.TestCase):
                 row = core.placeholder_worker_queue_rows(conn, limit=1)[0]
                 self.assertEqual(row["video_id"], "unavailable1")
                 self.assertEqual(row["priority"], 7)
+                log = conn.execute(
+                    """
+                    SELECT message
+                    FROM metadata_worker_log
+                    WHERE run_id = 'test-archivarix-handoff'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    log["message"],
+                    "no metadata from YouTube; placeholder recovery queued",
+                )
             finally:
                 conn.close()
 

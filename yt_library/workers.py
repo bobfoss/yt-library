@@ -426,6 +426,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                 channel_metadata: dict[str, str] = {}
                 channel_status = ""
                 channel_error = ""
+                placeholder_queue_message = ""
                 if metadata_source != "channel" and status == "ok" and not self._stop.is_set():
                     try:
                         channel_metadata, channel_status, channel_error = fetch_new_channel_metadata_if_needed(
@@ -471,7 +472,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                     else:
                         store_video_metadata(conn, metadata, status, error, updated_at=now)
                         if status == "no_metadata":
-                            enqueue_placeholder_recovery_item(
+                            placeholder_was_queued = enqueue_placeholder_recovery_item(
                                 conn,
                                 video_id=video_id,
                                 current_title=row["current_title"] or video_id,
@@ -479,6 +480,11 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                                 playlist_count=int(row["playlist_count"] or 0),
                                 priority=int(row["priority"] or 0),
                                 updated_at=now,
+                            )
+                            placeholder_queue_message = (
+                                "placeholder recovery queued"
+                                if placeholder_was_queued
+                                else "placeholder recovery already queued"
                             )
                     processed += 1
                     channel_subject_id = (
@@ -503,7 +509,11 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                                 channel_subject_id,
                             )
                         else:
-                            message = f"{status}: {title}"
+                            message = (
+                                f"no metadata from YouTube; {placeholder_queue_message}"
+                                if status == "no_metadata" and placeholder_queue_message
+                                else f"{status}: {title}"
+                            )
                             if status == "ok" and metadata_source in {"history", "provided"}:
                                 reported_progress = bounded_int(metadata.get("watch_progress_percent"))
                                 stored_video = conn.execute(
