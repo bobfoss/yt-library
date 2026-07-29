@@ -30,10 +30,31 @@
     }).format(parsed);
   }
 
+  function formatDate(value) {
+    if (!value) return '';
+    const text = String(value).trim();
+    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+    if (dateOnly) {
+      const parsed = new Date(
+        Number(dateOnly[1]),
+        Number(dateOnly[2]) - 1,
+        Number(dateOnly[3])
+      );
+      return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(parsed);
+    }
+    const parsed = new Date(text);
+    if (Number.isNaN(parsed.getTime())) return text;
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeZone: config.displayTimezone || detected(),
+    }).format(parsed);
+  }
+
   window.YTLibraryTime = {
     apply,
     detected,
     format,
+    formatDate,
     get timeZone() { return config.displayTimezone || ''; },
     persist,
     async reset() {

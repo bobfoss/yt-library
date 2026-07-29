@@ -3590,6 +3590,12 @@ class AdminServerTests(unittest.TestCase):
         )
         self.assertIn("storedTheme() || 'dark'", server.THEME_JS)
         self.assertIn("fields.themeToggle.checked ? 'dark' : 'light'", server.ADMIN_HTML)
+        self.assertIn("function formatDate(value)", server.TIMEZONE_JS)
+        self.assertIn("formatDate,", server.TIMEZONE_JS)
+        self.assertIn(
+            "First seen ${escapeHtml(window.YTLibraryTime.formatDate(channel.first_seen_at))}",
+            server.INDEX_HTML,
+        )
         self.assertIn('id="fetchVideoMetadata"', server.ADMIN_HTML)
         self.assertIn('id="fetchChannelMetadata"', server.ADMIN_HTML)
         self.assertIn('id="backfillChannelFirstSeen"', server.ADMIN_HTML)

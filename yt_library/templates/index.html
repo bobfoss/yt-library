@@ -2409,6 +2409,7 @@
         <div class="details">
           <span>${subscribedLabel}</span>
           ${status ? `<span class="badge">${escapeHtml(status)}</span>` : ''}
+          ${channel.first_seen_at ? `<span>First seen ${escapeHtml(window.YTLibraryTime.formatDate(channel.first_seen_at))}</span>` : ''}
           ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
           ${channel.archivarix_channel_id ? `<span>Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
         </div>
