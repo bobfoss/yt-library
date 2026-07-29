@@ -193,7 +193,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         data = playlist_list_data(self.conn, sort="most_videos", limit=1)
 
         self.assertEqual(data["total"], 3)
-        self.assertEqual(data["counts"]["private"], 2)
+        self.assertEqual(data["counts"]["private"], 1)
         self.assertEqual(data["counts"]["public"], 1)
         self.assertEqual(data["counts"]["removed"], 1)
         self.assertEqual([row["playlist_id"] for row in data["results"]], ["PLa"])
@@ -201,6 +201,15 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(
             [row["playlist_id"] for row in without_removed["results"]],
             ["PLa", "PLz"],
+        )
+        removed_only = playlist_list_data(
+            self.conn,
+            visibilities=set(),
+            include_removed=True,
+        )
+        self.assertEqual(
+            [row["playlist_id"] for row in removed_only["results"]],
+            ["PLremoved"],
         )
         unavailable = playlist_list_data(self.conn, unavailable_only=True)
         self.assertEqual([row["playlist_id"] for row in unavailable["results"]], ["PLz"])

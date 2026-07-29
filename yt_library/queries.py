@@ -349,6 +349,12 @@ def _playlist_visibility_category(playlist: dict[str, Any]) -> str:
     return "unknown"
 
 
+def _playlist_list_category(playlist: dict[str, Any]) -> str:
+    if str(playlist.get("fetch_status") or "") == "removed":
+        return "removed"
+    return _playlist_visibility_category(playlist)
+
+
 def playlist_list_data(
     conn: sqlite3.Connection,
     *,
@@ -396,21 +402,22 @@ def playlist_list_data(
         rows = [row for row in rows if row.get("playlist_id") in group_ids]
     if unavailable_only:
         rows = [row for row in rows if int(row.get("unavailable_count") or 0) > 0]
+    categories = ("private", "public", "unlisted", "others", "unknown", "removed")
     counts = {
-        category: sum(1 for row in rows if _playlist_visibility_category(row) == category)
-        for category in ("private", "public", "unlisted", "others", "unknown")
+        category: sum(1 for row in rows if _playlist_list_category(row) == category)
+        for category in categories
     }
-    counts["removed"] = sum(
-        1 for row in rows if str(row.get("fetch_status") or "") == "removed"
-    )
-    if not include_removed:
+    if visibilities is not None:
+        selected_categories = set(visibilities)
+        if include_removed:
+            selected_categories.add("removed")
         rows = [
             row
             for row in rows
-            if str(row.get("fetch_status") or "") != "removed"
+            if _playlist_list_category(row) in selected_categories
         ]
-    if visibilities is not None:
-        rows = [row for row in rows if _playlist_visibility_category(row) in visibilities]
+    elif not include_removed:
+        rows = [row for row in rows if _playlist_list_category(row) != "removed"]
     if sort == "title_desc":
         rows.sort(key=lambda row: str(row.get("title") or row.get("playlist_id") or "").casefold(), reverse=True)
     elif sort == "newest_updated":
