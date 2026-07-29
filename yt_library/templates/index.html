@@ -1301,6 +1301,26 @@
       `;
     }
 
+    function videoStatusFiltersHtml({ groupName, filterAttribute, visibility, counts }) {
+      const filters = [
+        ['videos', 'available', ''],
+        ['unavailable', 'unavailable', 'badge'],
+        ['members_only', 'members only', 'members-only-filter'],
+      ];
+      if (Object.prototype.hasOwnProperty.call(visibility, 'removed')) {
+        filters.push(['removed', 'removed', 'badge']);
+      }
+      return `
+        <label class="meta-filter"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>All</span></label>
+        ${filters.map(([key, label, className]) => `
+          <label class="meta-filter">
+            <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(key)}" ${visibility[key] ? 'checked' : ''}>
+            <span${className ? ` class="${className}"` : ''}>${Number(counts?.[key] || 0)} ${label}</span>
+          </label>
+        `).join('')}
+      `;
+    }
+
     function searchResultsSortHtml() {
       const options = [
         ['relevance', 'Relevance'],
@@ -1831,10 +1851,6 @@
         }
         if (generation !== renderGeneration) return;
         const rows = payload.results || [];
-        const videoCount = Number(payload.counts?.videos || 0);
-        const hiddenCount = Number(payload.counts?.unavailable || 0);
-        const membersOnlyCount = Number(payload.counts?.members_only || 0);
-        const removedCount = Number(payload.counts?.removed || 0);
         const playlistCount = playlistVideoCountLabel(playlist);
         const playlistHeadingMeta = [
           playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : '',
@@ -1852,11 +1868,12 @@
         `;
         meta.innerHTML = `
           <input class="playlist-search" type="search" data-playlist-page-search placeholder="Search this playlist" autocomplete="off" value="${escapeHtml(playlistPageSearch)}">
-          <label class="meta-filter"><input type="checkbox" data-meta-all-filter="playlist-videos"> <span>All</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="members_only" ${playlistVisibility.members_only ? 'checked' : ''}> <span class="members-only-filter">${membersOnlyCount} members only</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="removed" ${playlistVisibility.removed ? 'checked' : ''}> <span class="badge">${removedCount} removed</span></label>
+          ${videoStatusFiltersHtml({
+            groupName: 'playlist-videos',
+            filterAttribute: 'playlist-filter',
+            visibility: playlistVisibility,
+            counts: payload.counts,
+          })}
           ${videoSortHtml(playlistViewSort, 'playlist')}
         `;
         syncMetaFilterGroup('playlist-videos');
@@ -1872,17 +1889,14 @@
         const payload = await fetchVideoCollection({ sort: allVideosSort });
         if (generation !== renderGeneration) return;
         const rows = payload.results || [];
-        const hiddenCount = Number(payload.counts?.unavailable || 0);
-        const membersOnlyCount = Number(payload.counts?.members_only || 0);
-        const removedCount = Number(payload.counts?.removed || 0);
-        const videoCount = Number(payload.counts?.videos || 0);
         title.textContent = 'Playlist videos';
         meta.innerHTML = `
-          <label class="meta-filter"><input type="checkbox" data-meta-all-filter="playlist-videos"> <span>All</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="videos" ${playlistVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="unavailable" ${playlistVisibility.unavailable ? 'checked' : ''}> <span class="badge">${hiddenCount} unavailable</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="members_only" ${playlistVisibility.members_only ? 'checked' : ''}> <span class="members-only-filter">${membersOnlyCount} members only</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="playlist-videos" data-playlist-filter="removed" ${playlistVisibility.removed ? 'checked' : ''}> <span class="badge">${removedCount} removed</span></label>
+          ${videoStatusFiltersHtml({
+            groupName: 'playlist-videos',
+            filterAttribute: 'playlist-filter',
+            visibility: playlistVisibility,
+            counts: payload.counts,
+          })}
           ${videoSortHtml(allVideosSort, 'all')}
         `;
         syncMetaFilterGroup('playlist-videos');
@@ -1916,14 +1930,13 @@
         const payload = await fetchVideoCollection({ scope: 'liked', sort: likedVideosSort, visibility: likedVideosVisibility });
         if (generation !== renderGeneration) return;
         const rows = payload.results || [];
-        const unavailableCount = Number(payload.counts?.unavailable || 0);
-        const membersOnlyCount = Number(payload.counts?.members_only || 0);
-        const videoCount = Number(payload.counts?.videos || 0);
         meta.innerHTML = `
-          <label class="meta-filter"><input type="checkbox" data-meta-all-filter="liked-videos"> <span>All</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="liked-videos" data-liked-filter="videos" ${likedVideosVisibility.videos ? 'checked' : ''}> <span>${videoCount} videos</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="liked-videos" data-liked-filter="unavailable" ${likedVideosVisibility.unavailable ? 'checked' : ''}> <span class="badge">${unavailableCount} unavailable</span></label>
-          <label class="meta-filter"><input type="checkbox" data-meta-child-filter="liked-videos" data-liked-filter="members_only" ${likedVideosVisibility.members_only ? 'checked' : ''}> <span class="members-only-filter">${membersOnlyCount} members only</span></label>
+          ${videoStatusFiltersHtml({
+            groupName: 'liked-videos',
+            filterAttribute: 'liked-filter',
+            visibility: likedVideosVisibility,
+            counts: payload.counts,
+          })}
           ${videoSortHtml(likedVideosSort, 'liked')}
         `;
         syncMetaFilterGroup('liked-videos');
