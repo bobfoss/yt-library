@@ -15,8 +15,15 @@
       (badges || [])
         .filter(badge => badge && badge.label)
         .map(badge => {
+          const rawLabel = String(badge.label || '').trim();
+          const membersOnly = ['subscriber_only', 'members only'].includes(rawLabel.toLowerCase());
+          const label = membersOnly ? 'Members only' : rawLabel;
           const title = badge.title ? ` title="${escapeHtml(badge.title)}"` : '';
-          return `<span class="badge"${title}>${escapeHtml(badge.label)}</span>`;
+          const className = membersOnly ? 'badge members-only-badge' : 'badge';
+          const icon = membersOnly
+            ? '<span class="members-only-icon" aria-hidden="true">&#10022;</span>'
+            : '';
+          return `<span class="${className}"${title}>${icon}${escapeHtml(label)}</span>`;
         }),
       'details badge-lines'
     );
