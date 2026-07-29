@@ -815,7 +815,10 @@ def upsert_video(
     )
     if not availability and existing and incoming_playability is None:
         canonical_availability = existing["availability"]
-    progress = bounded_int(watch_progress_percent) if watch_progress_percent is not None else (existing["watch_progress_percent"] if existing else 0)
+    existing_progress = bounded_int(existing["watch_progress_percent"]) if existing else 0
+    progress = bounded_int(watch_progress_percent) if watch_progress_percent is not None else existing_progress
+    if progress == 0 and existing_progress > 0:
+        progress = existing_progress
     resume = max(0, int(watch_resume_seconds or 0)) if watch_resume_seconds is not None else (existing["watch_resume_seconds"] if existing else 0)
     last_seen = now if incoming_playability == 1 else (existing["last_seen_available_at"] if existing else None)
     metadata_source = source if authoritative and source else (existing["metadata_source"] if existing else source)

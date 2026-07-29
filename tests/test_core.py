@@ -1683,6 +1683,59 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_metadata_zero_progress_does_not_replace_positive_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "vweQrjtAg0U",
+                        title="Progress video",
+                        watch_progress_percent=64,
+                        source="metadata",
+                    )
+                    core.store_video_metadata(
+                        conn,
+                        {
+                            "video_id": "vweQrjtAg0U",
+                            "title": "Progress video",
+                            "watch_progress_percent": "0",
+                        },
+                        "ok",
+                    )
+
+                progress = conn.execute(
+                    """
+                    SELECT watch_progress_percent
+                    FROM videos
+                    WHERE video_id = 'vweQrjtAg0U'
+                    """
+                ).fetchone()["watch_progress_percent"]
+                self.assertEqual(progress, 64)
+
+                with conn:
+                    core.store_video_metadata(
+                        conn,
+                        {
+                            "video_id": "vweQrjtAg0U",
+                            "title": "Progress video",
+                            "watch_progress_percent": "37",
+                        },
+                        "ok",
+                    )
+
+                progress = conn.execute(
+                    """
+                    SELECT watch_progress_percent
+                    FROM videos
+                    WHERE video_id = 'vweQrjtAg0U'
+                    """
+                ).fetchone()["watch_progress_percent"]
+                self.assertEqual(progress, 37)
+            finally:
+                conn.close()
+
     def test_metadata_from_archivarix_video_includes_channel_metadata(self) -> None:
         metadata = core.metadata_from_archivarix_video(
             "Ax8Yn8DPZe0",
