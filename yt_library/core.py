@@ -3300,16 +3300,6 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     }
 
 
-def fetch_video_card_watch_status(
-    opener: urllib.request.OpenerDirector,
-    video_id: str,
-) -> tuple[int, int]:
-    url = "https://www.youtube.com/results?" + urllib.parse.urlencode({"search_query": video_id})
-    page = request_text(opener, url)
-    initial_data = extract_json_assignment(page, "ytInitialData")
-    return find_video_card_watch_status(initial_data, video_id)
-
-
 def fetch_watch_metadata(
     opener: urllib.request.OpenerDirector,
     video_id: str,
@@ -3321,15 +3311,6 @@ def fetch_watch_metadata(
     if require_authenticated and not youtube_page_is_authenticated(page):
         raise youtube_authentication_error(page, "watch page")
     metadata = extract_watch_metadata(page, video_id)
-    if not bounded_int(metadata.get("watch_progress_percent")) and not int(metadata.get("watch_resume_seconds") or 0):
-        try:
-            progress, resume_seconds = fetch_video_card_watch_status(opener, video_id)
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-            progress, resume_seconds = 0, 0
-        if progress:
-            metadata["watch_progress_percent"] = str(progress)
-        if resume_seconds:
-            metadata["watch_resume_seconds"] = str(resume_seconds)
     metadata["thumbnail_path"] = cache_video_thumbnail(
         opener,
         video_id,

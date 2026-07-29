@@ -1597,6 +1597,31 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_watch_metadata_fetch_uses_only_the_direct_video_page(self) -> None:
+        opener = Mock()
+        video_id = "-AbC123_def"
+        metadata = {
+            "title": "Direct video",
+            "thumbnail_url": "",
+            "channel_thumbnail_url": "",
+            "watch_progress_percent": "0",
+            "watch_resume_seconds": "0",
+        }
+        with (
+            patch.object(core, "request_text", return_value="watch page") as request_text,
+            patch.object(core, "extract_watch_metadata", return_value=metadata),
+            patch.object(core, "cache_video_thumbnail", return_value=""),
+            patch.object(core, "cache_channel_thumbnail", return_value=""),
+        ):
+            result = core.fetch_watch_metadata(opener, video_id, Path("thumbs"))
+
+        request_text.assert_called_once_with(
+            opener,
+            "https://www.youtube.com/watch?v=-AbC123_def",
+        )
+        self.assertEqual(result["watch_progress_percent"], "0")
+        self.assertEqual(result["watch_resume_seconds"], "0")
+
     def test_watch_playability_updates_canonical_video(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "library.sqlite3"
