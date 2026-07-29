@@ -319,6 +319,7 @@
     let historyActivityYearOffset = 0;
     let omniSearchState = { key: '', data: null, promise: null };
     let viewDataCache = new Map();
+    let videoMetaCountsCache = new Map();
     let pendingHistoryDate = '';
     let channelHistoryCounts = new Map();
     let channelDetailTab = 'playlists';
@@ -364,6 +365,7 @@
       historyActivityState = { key: '', loading: false, data: null };
       omniSearchState = { key: '', data: null, promise: null };
       viewDataCache = new Map();
+      videoMetaCountsCache = new Map();
       channelHistoryCounts = new Map();
       memberships = new Map();
       for (const item of data.memberships) {
@@ -1476,6 +1478,8 @@
       const base = playlistId
         ? `/api/playlists/${encodeURIComponent(playlistId)}/videos`
         : '/api/videos';
+      const metaCountsKey = JSON.stringify([scope, playlistId, channelId, query]);
+      const metaCountsCache = videoMetaCountsCache;
       const path = remoteListPath(base, {
         scope,
         channel_id: channelId,
@@ -1486,7 +1490,11 @@
         removed: visibility.removed === false ? '0' : '1',
         sort,
       });
-      return fetchViewData(path);
+      const payload = await fetchViewData(path);
+      if (!metaCountsCache.has(metaCountsKey)) {
+        metaCountsCache.set(metaCountsKey, { ...(payload.counts || {}) });
+      }
+      return { ...payload, counts: metaCountsCache.get(metaCountsKey) };
     }
 
     async function fetchChannelList(categories, subscribedOnly = false) {

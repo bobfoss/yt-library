@@ -3311,6 +3311,15 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 10)
         self.assertEqual(server.INDEX_HTML.count("videoStatusFiltersHtml({"), 4)
         self.assertIn("['videos', 'available', '']", server.INDEX_HTML)
+        self.assertIn("let videoMetaCountsCache = new Map();", server.INDEX_HTML)
+        self.assertIn(
+            "const metaCountsKey = JSON.stringify([scope, playlistId, channelId, query]);",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "return { ...payload, counts: metaCountsCache.get(metaCountsKey) };",
+            server.INDEX_HTML,
+        )
         self.assertIn('data-filter="members_only_videos"', server.INDEX_HTML)
         self.assertIn(".badge.members-only-badge", server.INDEX_HTML)
         self.assertIn("'subscriber_only', 'members only'", server.VIDEO_CARD_JS)
