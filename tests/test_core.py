@@ -2615,6 +2615,8 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(':root[data-theme="light"]', server.ADMIN_HTML)
         self.assertIn(':root[data-theme="light"]', server.INDEX_HTML)
         self.assertIn('<script src="/theme.js"></script>', server.INDEX_HTML)
+        self.assertIn("data-playlist-all-filter", server.INDEX_HTML)
+        self.assertIn("data-playlist-list-child-filter", server.INDEX_HTML)
         self.assertIn("storedTheme() || 'dark'", server.THEME_JS)
         self.assertIn("fields.themeToggle.checked ? 'dark' : 'light'", server.ADMIN_HTML)
 

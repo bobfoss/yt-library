@@ -69,6 +69,7 @@
     .playlist-page-meta { margin-top: 0; font-size: 13px; font-weight: 400; line-height: 1.35; }
     .meta { color: var(--muted); font-size: 14px; }
     .meta-filter { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; }
+    .meta-filter.dimmed { opacity: .42; }
     .meta-filter input { accent-color: var(--accent); }
     .playlist-search { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; min-width: min(360px, 38vw); }
     .view-sort { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
@@ -640,7 +641,7 @@
       );
     }
 
-    function syncSearchFilterGroup(parent, childFilters) {
+    function syncFilterGroup(parent, childFilters) {
       if (!parent || !childFilters.length) return;
       const checkedCount = childFilters.filter(input => input.checked).length;
       parent.checked = checkedCount > 0;
@@ -650,7 +651,7 @@
 
     function syncSearchFilterGroups() {
       for (const group of searchFilterGroups) {
-        syncSearchFilterGroup(group.parent, group.children);
+        syncFilterGroup(group.parent, group.children);
       }
     }
 
@@ -665,7 +666,7 @@
 
     function setFilterDimmed(inputs, dimmed) {
       for (const input of inputs) {
-        const label = input?.closest?.('.filter');
+        const label = input?.closest?.('.filter, .meta-filter');
         if (label) label.classList.toggle('dimmed', dimmed);
       }
     }
@@ -1941,14 +1942,19 @@
         const unknownCount = Number(payload.counts?.unknown || 0);
         const removedCount = Number(payload.counts?.removed || 0);
         meta.innerHTML = `
-          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="private" ${playlistListVisibility.private ? 'checked' : ''}> ${visibilityFilterLabelHtml('private', privateCount)}</label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="public" ${playlistListVisibility.public ? 'checked' : ''}> ${visibilityFilterLabelHtml('public', publicCount)}</label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="unlisted" ${playlistListVisibility.unlisted ? 'checked' : ''}> ${visibilityFilterLabelHtml('unlisted', unlistedCount)}</label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="others" ${playlistListVisibility.others ? 'checked' : ''}> <span>${othersCount} others</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-visibility-filter="unknown" ${playlistListVisibility.unknown ? 'checked' : ''}> <span>${unknownCount} unknown</span></label>
-          <label class="meta-filter"><input type="checkbox" data-playlist-removed-filter ${playlistListIncludeRemoved ? 'checked' : ''}> <span class="status">${removedCount} removed</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-all-filter> <span>All</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-visibility-filter="private" ${playlistListVisibility.private ? 'checked' : ''}> ${visibilityFilterLabelHtml('private', privateCount)}</label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-visibility-filter="public" ${playlistListVisibility.public ? 'checked' : ''}> ${visibilityFilterLabelHtml('public', publicCount)}</label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-visibility-filter="unlisted" ${playlistListVisibility.unlisted ? 'checked' : ''}> ${visibilityFilterLabelHtml('unlisted', unlistedCount)}</label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-visibility-filter="others" ${playlistListVisibility.others ? 'checked' : ''}> <span>${othersCount} others</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-visibility-filter="unknown" ${playlistListVisibility.unknown ? 'checked' : ''}> <span>${unknownCount} unknown</span></label>
+          <label class="meta-filter"><input type="checkbox" data-playlist-list-child-filter data-playlist-removed-filter ${playlistListIncludeRemoved ? 'checked' : ''}> <span class="status">${removedCount} removed</span></label>
           ${playlistSortHtml()}
         `;
+        syncFilterGroup(
+          meta.querySelector('[data-playlist-all-filter]'),
+          [...meta.querySelectorAll('[data-playlist-list-child-filter]')],
+        );
         renderPager(remotePayloadPageInfo(payload, rows.length));
         grid.className = 'grid';
         grid.replaceChildren(...rows.map(cardFor));
@@ -2294,6 +2300,15 @@
         render();
         return;
       }
+      if (target.hasAttribute('data-playlist-all-filter')) {
+        for (const key of Object.keys(playlistListVisibility)) {
+          playlistListVisibility[key] = target.checked;
+        }
+        playlistListIncludeRemoved = target.checked;
+        currentPage = 1;
+        render();
+        return;
+      }
       if (target.hasAttribute('data-playlist-removed-filter')) {
         playlistListIncludeRemoved = target.checked;
         currentPage = 1;
@@ -2375,13 +2390,13 @@
         group.parent.indeterminate = false;
         for (const child of group.children) child.checked = group.parent.checked;
         currentPage = 1;
-        syncSearchFilterGroup(group.parent, group.children);
+        syncFilterGroup(group.parent, group.children);
         syncSearchForFilters();
         syncSearchHashAndRender();
       });
       for (const child of group.children) {
         child.addEventListener('change', () => {
-          syncSearchFilterGroup(group.parent, group.children);
+          syncFilterGroup(group.parent, group.children);
           syncSearchForFilters();
           currentPage = 1;
           syncSearchHashAndRender();
