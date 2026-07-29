@@ -3361,6 +3361,15 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("syncMetaFilterGroup('liked-videos')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('channels')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('playlist-list')", server.INDEX_HTML)
+        self.assertIn(
+            "function syncFilterGroup(parent, childFilters, dimChildrenWhenUnchecked = true)",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            'meta.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)],\n'
+            "        false,",
+            server.INDEX_HTML,
+        )
         self.assertIn("storedTheme() || 'dark'", server.THEME_JS)
         self.assertIn("fields.themeToggle.checked ? 'dark' : 'light'", server.ADMIN_HTML)
 

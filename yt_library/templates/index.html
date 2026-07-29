@@ -723,12 +723,12 @@
       );
     }
 
-    function syncFilterGroup(parent, childFilters) {
+    function syncFilterGroup(parent, childFilters, dimChildrenWhenUnchecked = true) {
       if (!parent || !childFilters.length) return;
       const checkedCount = childFilters.filter(input => input.checked).length;
       parent.checked = checkedCount > 0;
       parent.indeterminate = checkedCount > 0 && checkedCount < childFilters.length;
-      setFilterDimmed(childFilters, !parent.checked);
+      setFilterDimmed(childFilters, dimChildrenWhenUnchecked && !parent.checked);
     }
 
     function setMetaFilterGroup(groupName, checked) {
@@ -751,6 +751,7 @@
       syncFilterGroup(
         meta.querySelector(`[data-meta-all-filter="${groupName}"]`),
         [...meta.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)],
+        false,
       );
     }
 
