@@ -5520,6 +5520,13 @@ class WorkerQueueTests(unittest.TestCase):
             conn = migrated_connection(db_path)
             try:
                 with conn:
+                    core.upsert_video(
+                        conn,
+                        "abc12345678",
+                        title="History video",
+                        watch_progress_percent=64,
+                        source="metadata",
+                    )
                     core.enqueue_metadata_item(
                         conn,
                         video_id="abc12345678",
@@ -5544,7 +5551,7 @@ class WorkerQueueTests(unittest.TestCase):
                     "video_id": video_id,
                     "title": "History video" if video_id == "abc12345678" else "Manual video",
                     "duration_text": "1:00",
-                    "watch_progress_percent": "52" if video_id == "abc12345678" else "87",
+                    "watch_progress_percent": "0" if video_id == "abc12345678" else "87",
                     "watch_resume_seconds": "0",
                     "yt_status": "OK",
                 }
@@ -5582,7 +5589,10 @@ class WorkerQueueTests(unittest.TestCase):
                     [
                         {
                             "level": "history",
-                            "message": "ok: History video\nwatch percentage: 52%",
+                            "message": (
+                                "ok: History video\n"
+                                "watch percentage: 0% reported by YT; 64% retained"
+                            ),
                         },
                         {
                             "level": "provided",
