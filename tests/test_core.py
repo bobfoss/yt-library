@@ -118,6 +118,72 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["proxy_username"], "proxy-user")
         self.assertEqual(calls[0][1]["proxy_password"], "proxy-pass")
 
+    def test_socks5_connection_promotes_proxy_connection_failure(self) -> None:
+        class ProxyConnectionError(OSError):
+            pass
+
+        class FakeSocks:
+            SOCKS5 = 2
+
+            @staticmethod
+            def create_connection(*_args, **_kwargs):
+                raise ProxyConnectionError(
+                    "Error connecting to SOCKS5 proxy "
+                    "socks5h://secret-user:secret-pass@127.0.0.1:1081"
+                )
+
+        proxy = network.parse_socks5_proxy_url(
+            "socks5h://secret-user:secret-pass@127.0.0.1:1081"
+        )
+        connection = network._Socks5HTTPConnection(
+            "www.youtube.com",
+            port=80,
+            timeout=12,
+            socks_module=FakeSocks,
+            proxy=proxy,
+        )
+
+        with self.assertRaises(network.ProxyUnavailableError) as raised:
+            connection.connect()
+
+        self.assertIn("127.0.0.1:1081", str(raised.exception))
+        self.assertNotIn("secret-user", str(raised.exception))
+        self.assertNotIn("secret-pass", str(raised.exception))
+        self.assertIsInstance(
+            network.proxy_unavailable_error(
+                ConnectionResetError("connection reset"),
+                "socks5h://127.0.0.1:1081",
+            ),
+            network.ProxyUnavailableError,
+        )
+
+    def test_proxy_failure_classifier_ignores_non_proxy_request_errors(self) -> None:
+        self.assertIsNone(
+            network.proxy_unavailable_error(
+                urllib.error.URLError("YouTube request timed out"),
+                "socks5h://127.0.0.1:1081",
+            )
+        )
+        self.assertIsNone(
+            network.proxy_unavailable_error(
+                RuntimeError("Error connecting to SOCKS5 proxy"),
+                "",
+            )
+        )
+
+    def test_proxy_failure_classifier_recognizes_ytdlp_proxy_errors(self) -> None:
+        class ProxyError(Exception):
+            pass
+
+        ProxyError.__module__ = "yt_dlp.networking.exceptions"
+        error = network.proxy_unavailable_error(
+            ProxyError("proxy transport failed"),
+            "socks5h://127.0.0.1:1081",
+        )
+
+        self.assertIsInstance(error, network.ProxyUnavailableError)
+        self.assertIn("127.0.0.1:1081", str(error))
+
     def test_socks5_https_handler_uses_its_tls_context(self) -> None:
         class FakeSocks:
             SOCKS5 = 2
@@ -2762,6 +2828,17 @@ class AdminServerTests(unittest.TestCase):
             db_path = Path(temp_dir) / "library.sqlite3"
             config = load_config(config_path)
             core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    core.set_external_service_block(
+                        conn,
+                        "proxy",
+                        "proxy_unavailable",
+                        "Old proxy failed",
+                    )
+            finally:
+                conn.close()
             request_restart = Mock(return_value=True)
             handler = object.__new__(server.LibraryHandler)
             handler.path = "/api/admin/settings?" + urllib.parse.urlencode(
@@ -2787,6 +2864,11 @@ class AdminServerTests(unittest.TestCase):
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertTrue(payload["use_proxy"])
             self.assertEqual(payload["proxy"], "socks5h://127.0.0.1:1081")
+            conn = core.connect(db_path)
+            try:
+                self.assertFalse(core.external_service_block(conn, "proxy")["blocked"])
+            finally:
+                conn.close()
             response = handler.send_json.call_args.args[0]
             self.assertTrue(response["restartScheduled"])
             self.assertEqual(response["service"]["status"], "restarting")
@@ -2823,6 +2905,8 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('id="restartService"', server.ADMIN_HTML)
         self.assertIn('id="useProxy"', server.ADMIN_HTML)
         self.assertIn('id="proxyUrl"', server.ADMIN_HTML)
+        self.assertIn('id="retryProxy"', server.ADMIN_HTML)
+        self.assertIn('id="proxyBlock"', server.ADMIN_HTML)
         self.assertIn('id="saveSettings"', server.ADMIN_HTML)
         self.assertIn("<legend>Dispatch mode</legend>", server.ADMIN_HTML)
         self.assertIn('id="dispatchModeDelay"', server.ADMIN_HTML)
@@ -2838,6 +2922,58 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(server.ADMIN_HTML.count("<th>ID</th>"), 2)
         self.assertNotIn("<th>Video ID</th>", server.ADMIN_HTML)
         self.assertIn("return row.channel_id || row.video_id || '';", server.ADMIN_HTML)
+
+    def test_proxy_retry_clears_hold_and_starts_dispatcher(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.set_external_service_block(
+                        conn,
+                        "proxy",
+                        "proxy_unavailable",
+                        "SOCKS5 proxy is unavailable",
+                    )
+            finally:
+                conn.close()
+
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/admin/proxy/retry"
+            handler.db_path = db_path
+            handler.cookie_file = Path(temp_dir) / "youtube-cookies.txt"
+            handler.video_thumbs = Path(temp_dir) / "video-thumbs"
+            handler.config_data = load_config(Path(temp_dir) / "config.json")
+            handler.send_json = Mock()
+
+            with (
+                patch.object(
+                    workers.WORKER_QUEUE_DISPATCHER,
+                    "allow_proxy_retry",
+                ) as allow_retry,
+                patch.object(
+                    workers.WORKER_QUEUE_DISPATCHER,
+                    "start",
+                    return_value={"started": True},
+                ) as start,
+            ):
+                handler.do_POST()
+
+            allow_retry.assert_called_once_with()
+            start.assert_called_once_with(
+                db_path,
+                handler.cookie_file,
+                handler.video_thumbs,
+                handler.config_data,
+            )
+            conn = core.connect(db_path)
+            try:
+                self.assertFalse(core.external_service_block(conn, "proxy")["blocked"])
+            finally:
+                conn.close()
+            response = handler.send_json.call_args.args[0]
+            self.assertTrue(response["ok"])
+            self.assertTrue(response["cleared"])
         self.assertIn("return row.playlist_id || row.video_id || '';", server.ADMIN_HTML)
         self.assertIn("identifier: log.display_id || log.playlist_id || ''", server.ADMIN_HTML)
         self.assertIn(".id-col { width: 280px; }", server.ADMIN_HTML)
@@ -3361,6 +3497,246 @@ class WorkerQueueTests(unittest.TestCase):
                     tuple(placeholder_run),
                     ("complete", "not_found", "not found"),
                 )
+            finally:
+                conn.close()
+
+    def test_proxy_failure_stops_all_dispatch_and_retains_pending_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="proxyfail01",
+                        current_title="Proxy failure",
+                        metadata_source="history",
+                        priority=0,
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO worker_queue(
+                          subject_key, worker_type, video_id, current_title,
+                          priority, created_at, updated_at
+                        )
+                        VALUES ('placeholder:proxyhold01', 'placeholder', 'proxyhold01',
+                                'Proxy-held placeholder', 1, ?, ?)
+                        """,
+                        (core.utc_now(), core.utc_now()),
+                    )
+            finally:
+                conn.close()
+
+            dispatcher = WorkerQueueDispatcher()
+            config = load_config(Path(temp_dir) / "config.json")
+            config.update(
+                {
+                    "use_proxy": True,
+                    "proxy": "socks5h://127.0.0.1:1081",
+                    "job_dispatch_delay_seconds": 0,
+                    "youtube_max_in_flight": 1,
+                    "archivarix_max_in_flight": 1,
+                }
+            )
+
+            def wait_for_stop(*_args, **kwargs):
+                stop_event = kwargs["stop_event"]
+                stop_event.wait(2)
+                return None, "", "", "stopped", "Stop requested"
+
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.archivarix_session_status", return_value=(True, "")),
+                patch(
+                    "yt_library.workers.fetch_watch_metadata",
+                    side_effect=network.ProxyUnavailableError(
+                        "SOCKS5 proxy 127.0.0.1:1081 is unavailable"
+                    ),
+                ),
+                patch(
+                    "yt_library.workers.recover_archivarix_video",
+                    side_effect=wait_for_stop,
+                ),
+            ):
+                dispatcher._run(
+                    db_path,
+                    Path(temp_dir) / "missing-youtube-cookies.txt",
+                    Path(temp_dir) / "video-thumbs",
+                    "UTC",
+                    Path(temp_dir) / "archivarix-cookies.txt",
+                    Path(temp_dir) / "archivarix-thumbs",
+                    15.0,
+                    30.0,
+                    3,
+                    0.0,
+                    config["proxy"],
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 1)
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
+                block = core.external_service_block(conn, "proxy")
+                self.assertTrue(block["blocked"])
+                self.assertEqual(block["reason_code"], "proxy_unavailable")
+                self.assertEqual(block["queue_id"], 1)
+                run = conn.execute(
+                    """
+                    SELECT status, processed, message
+                    FROM metadata_worker_runs
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                self.assertEqual(run["status"], "blocked")
+                self.assertEqual(run["processed"], 0)
+                self.assertIn("Metadata worker paused", run["message"])
+            finally:
+                conn.close()
+
+    def test_playlist_proxy_failure_retains_queue_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLproxyhold', 'Proxy hold')"
+                    )
+                    core.enqueue_playlist_scan_item(conn, "PLproxyhold", manual=True)
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.request_text",
+                    side_effect=network.ProxyUnavailableError(
+                        "SOCKS5 proxy 127.0.0.1:1081 is unavailable"
+                    ),
+                ),
+            ):
+                worker._run(
+                    "playlist-proxy-hold",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                    proxy_url="socks5h://127.0.0.1:1081",
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "playlist"), 1)
+                self.assertTrue(core.external_service_block(conn, "proxy")["blocked"])
+                run = conn.execute(
+                    "SELECT status, message FROM playlist_scan_worker_runs WHERE run_id = ?",
+                    ("playlist-proxy-hold",),
+                ).fetchone()
+                self.assertEqual(run["status"], "blocked")
+                self.assertIn("Playlist scan paused", run["message"])
+            finally:
+                conn.close()
+
+    def test_history_proxy_failure_retains_queue_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_history_task(conn, "recent", priority=0, manual=True)
+            finally:
+                conn.close()
+
+            worker = LiveHistoryWorker()
+            with patch(
+                "yt_library.workers.fetch_youtube_history_web",
+                side_effect=network.ProxyUnavailableError(
+                    "SOCKS5 proxy 127.0.0.1:1081 is unavailable"
+                ),
+            ):
+                worker._run(
+                    "history-proxy-hold",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    "recent",
+                    "UTC",
+                    "socks5h://127.0.0.1:1081",
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "history"), 1)
+                self.assertTrue(core.external_service_block(conn, "proxy")["blocked"])
+                run = conn.execute(
+                    "SELECT status, message FROM live_history_worker_runs WHERE run_id = ?",
+                    ("history-proxy-hold",),
+                ).fetchone()
+                self.assertEqual(run["status"], "blocked")
+                self.assertIn("History fetch paused", run["message"])
+            finally:
+                conn.close()
+
+    def test_placeholder_proxy_failure_retains_queue_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO worker_queue(
+                          subject_key, worker_type, video_id, current_title,
+                          priority, created_at, updated_at
+                        )
+                        VALUES ('placeholder:proxyhold02', 'placeholder', 'proxyhold02',
+                                'Proxy-held placeholder', 0, ?, ?)
+                        """,
+                        (core.utc_now(), core.utc_now()),
+                    )
+            finally:
+                conn.close()
+
+            worker = PlaceholderRecoveryWorker()
+            with (
+                patch("yt_library.workers.archivarix_session_status", return_value=(True, "")),
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.recover_archivarix_video",
+                    side_effect=network.ProxyUnavailableError(
+                        "SOCKS5 proxy 127.0.0.1:1081 is unavailable"
+                    ),
+                ),
+            ):
+                worker._run(
+                    "placeholder-proxy-hold",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    proxy_url="socks5h://127.0.0.1:1081",
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 1)
+                self.assertTrue(core.external_service_block(conn, "proxy")["blocked"])
+                self.assertTrue(core.admin_status(db_path)["proxyBlock"]["blocked"])
+                self.assertFalse(core.external_service_block(conn, "archivarix")["blocked"])
+                run = conn.execute(
+                    """
+                    SELECT status, recovery_status, message
+                    FROM placeholder_recovery_worker_runs
+                    WHERE run_id = ?
+                    """,
+                    ("placeholder-proxy-hold",),
+                ).fetchone()
+                self.assertEqual(run["status"], "blocked")
+                self.assertEqual(run["recovery_status"], "proxy_unavailable")
+                self.assertIn("Placeholder recovery paused", run["message"])
             finally:
                 conn.close()
 

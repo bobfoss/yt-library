@@ -546,6 +546,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 finally:
                     conn.close()
             if proxy_changed:
+                conn = connect(self.db_path)
+                try:
+                    with conn:
+                        clear_external_service_block(conn, "proxy")
+                finally:
+                    conn.close()
                 self.request_restart()
             self.send_json(
                 {
@@ -774,6 +780,22 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             finally:
                 conn.close()
             WORKER_QUEUE_DISPATCHER.allow_archivarix_retry()
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+            )
+            self.send_json({"ok": True, "cleared": cleared, "dispatcher": dispatcher})
+            return
+        if parsed.path == "/api/admin/proxy/retry":
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    cleared = clear_external_service_block(conn, "proxy")
+            finally:
+                conn.close()
+            WORKER_QUEUE_DISPATCHER.allow_proxy_retry()
             dispatcher = WORKER_QUEUE_DISPATCHER.start(
                 self.db_path,
                 self.cookie_file,

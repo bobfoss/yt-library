@@ -78,6 +78,27 @@ def archivarix_retry_delay(base_seconds: float, retry_number: int) -> float:
     return random.uniform(cap / 2, cap) if cap else 0.0
 
 
+def record_proxy_hold(
+    conn: sqlite3.Connection,
+    worker: "_ThreadWorkerLifecycle",
+    exc: ProxyUnavailableError,
+    *,
+    run_id: str = "",
+    queue_id: int = 0,
+) -> str:
+    message = str(exc) or "The configured SOCKS5 proxy is unavailable"
+    worker._set_proxy_block_reason(message)
+    set_external_service_block(
+        conn,
+        "proxy",
+        "proxy_unavailable",
+        message,
+        run_id=run_id,
+        queue_id=queue_id,
+    )
+    return message
+
+
 class _ThreadWorkerLifecycle:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -85,6 +106,7 @@ class _ThreadWorkerLifecycle:
         self._stop = threading.Event()
         self._run_id = ""
         self._blocked_reason = ""
+        self._proxy_block_reason = ""
 
     def is_running(self) -> bool:
         with self._lock:
@@ -106,6 +128,14 @@ class _ThreadWorkerLifecycle:
         with self._lock:
             self._blocked_reason = reason
 
+    def proxy_block_reason(self) -> str:
+        with self._lock:
+            return self._proxy_block_reason
+
+    def _set_proxy_block_reason(self, reason: str) -> None:
+        with self._lock:
+            self._proxy_block_reason = reason
+
     def _start_background(
         self,
         target: Callable[..., None],
@@ -124,6 +154,7 @@ class _ThreadWorkerLifecycle:
                     result["run_id"] = self._run_id
                 return result
             self._stop.clear()
+            self._proxy_block_reason = ""
             if reset_blocked_reason:
                 self._blocked_reason = ""
             if create_run_id:
@@ -216,6 +247,8 @@ class MetadataWorker(_ThreadWorkerLifecycle):
         proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
+        current_queue_id = 0
+        current_subject_id = ""
         try:
             initial_total = 1 if target_queue_id else worker_queue_type_count(conn, "metadata")
             run_total = min(initial_total, limit) if limit else initial_total
@@ -301,6 +334,8 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                 metadata_source = row["metadata_source"] if "metadata_source" in row.keys() else "history"
                 queued_channel_id = row["channel_id"] if "channel_id" in row.keys() else ""
                 queued_channel_title = row["channel_title"] if "channel_title" in row.keys() else ""
+                current_queue_id = row_queue_id
+                current_subject_id = queued_channel_id if metadata_source == "channel" else video_id
                 status = "ok"
                 error = ""
                 metadata: dict[str, str] = {
@@ -524,6 +559,31 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                 )
                 if record_summary:
                     log_worker_event(conn, run_id, "info", f"Worker complete: {processed} processed")
+        except ProxyUnavailableError as exc:
+            with conn:
+                proxy_message = record_proxy_hold(
+                    conn,
+                    self,
+                    exc,
+                    run_id=run_id,
+                    queue_id=current_queue_id,
+                )
+                message = f"Metadata worker paused: {proxy_message}"
+                conn.execute(
+                    """
+                    UPDATE metadata_worker_runs
+                    SET status = 'blocked', finished_at = ?, message = ?
+                    WHERE run_id = ?
+                    """,
+                    (utc_now(), message, run_id),
+                )
+                log_worker_event(
+                    conn,
+                    run_id,
+                    "proxy error",
+                    message,
+                    current_subject_id,
+                )
         except Exception as exc:
             with conn:
                 conn.execute(
@@ -591,6 +651,8 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
     ) -> None:
         conn = connect(db_path)
         opener = load_cookie_opener(cookie_file, proxy_url)
+        current_queue_id = 0
+        current_playlist_id = ""
         try:
             initial_total = worker_queue_type_count(conn, "playlist")
             run_total = min(initial_total, limit) if limit else initial_total
@@ -643,6 +705,8 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 queue_id = int(row["queue_id"]) if "queue_id" in row.keys() else 0
                 playlist_id = row["playlist_id"]
                 title = row["title"] or playlist_id
+                current_queue_id = queue_id
+                current_playlist_id = playlist_id
                 status = "ok"
                 error = ""
                 ytdlp_error = ""
@@ -681,6 +745,8 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                             cookie_file,
                             proxy_url,
                         )
+                    except ProxyUnavailableError:
+                        raise
                     except Exception as exc:
                         ytdlp_error = str(exc)
                 ytdlp_count = len(videos)
@@ -940,6 +1006,31 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 )
                 if record_summary:
                     log_playlist_scan_event(conn, run_id, "info", f"Playlist scan complete: {processed} processed")
+        except ProxyUnavailableError as exc:
+            with conn:
+                proxy_message = record_proxy_hold(
+                    conn,
+                    self,
+                    exc,
+                    run_id=run_id,
+                    queue_id=current_queue_id,
+                )
+                message = f"Playlist scan paused: {proxy_message}"
+                conn.execute(
+                    """
+                    UPDATE playlist_scan_worker_runs
+                    SET status = 'blocked', finished_at = ?, message = ?
+                    WHERE run_id = ?
+                    """,
+                    (utc_now(), message, run_id),
+                )
+                log_playlist_scan_event(
+                    conn,
+                    run_id,
+                    "proxy error",
+                    message,
+                    current_playlist_id,
+                )
         except Exception as exc:
             with conn:
                 conn.execute(
@@ -1011,6 +1102,17 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
         skipped_total = 0
         takeout_matches_total = 0
         metadata_queued_ids: set[str] = set()
+        queue_row = conn.execute(
+            """
+            SELECT queue_id
+            FROM worker_queue
+            WHERE worker_type = 'history' AND task_type = ?
+            ORDER BY priority, queue_id
+            LIMIT 1
+            """,
+            (mode,),
+        ).fetchone()
+        current_queue_id = int(queue_row["queue_id"] or 0) if queue_row else 0
         try:
             occurrence_snapshot = youtube_history_occurrence_snapshot(conn)
             overlap_tracker = (
@@ -1036,13 +1138,6 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                     ),
                 )
                 log_live_history_event(conn, run_id, "info", f"{label} started with {batch_size} per batch")
-                conn.execute(
-                    """
-                    DELETE FROM worker_queue
-                    WHERE worker_type = 'history' AND task_type = ?
-                    """,
-                    (mode,),
-                )
 
             if self._stop.is_set():
                 with conn:
@@ -1172,6 +1267,14 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                     f"{len(metadata_queued_ids)} metadata queued"
                 )
             with conn:
+                if status == "complete":
+                    conn.execute(
+                        """
+                        DELETE FROM worker_queue
+                        WHERE worker_type = 'history' AND task_type = ?
+                        """,
+                        (mode,),
+                    )
                 conn.execute(
                     """
                     UPDATE live_history_worker_runs
@@ -1192,6 +1295,30 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                     ),
                 )
                 log_live_history_event(conn, run_id, "info" if status == "complete" else "warn", final_message, last_video_id)
+        except ProxyUnavailableError as exc:
+            with conn:
+                proxy_message = record_proxy_hold(
+                    conn,
+                    self,
+                    exc,
+                    run_id=run_id,
+                    queue_id=current_queue_id,
+                )
+                message = f"{label} paused: {proxy_message}"
+                conn.execute(
+                    """
+                    UPDATE live_history_worker_runs
+                    SET status = 'blocked', finished_at = ?, message = ?
+                    WHERE run_id = ?
+                    """,
+                    (utc_now(), message, run_id),
+                )
+                log_live_history_event(
+                    conn,
+                    run_id,
+                    "proxy error",
+                    message,
+                )
         except Exception as exc:
             if isinstance(exc, YouTubeAuthenticationError):
                 error_message = str(exc)
@@ -1408,6 +1535,32 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                         thumbnail_timeout=request_timeout,
                         channel_thumbnail_timeout=stream_timeout,
                     )
+                except ProxyUnavailableError as exc:
+                    with conn:
+                        proxy_message = record_proxy_hold(
+                            conn,
+                            self,
+                            exc,
+                            run_id=run_id,
+                            queue_id=queue_id,
+                        )
+                        message = f"Placeholder recovery paused: {proxy_message}"
+                        self._finish_run(
+                            conn,
+                            run_id,
+                            status="blocked",
+                            message=message,
+                            recovery_status="proxy_unavailable",
+                            failed=1,
+                        )
+                        log_placeholder_recovery_event(
+                            conn,
+                            run_id,
+                            "proxy error",
+                            message,
+                            video_id,
+                        )
+                    return
                 except (
                     urllib.error.HTTPError,
                     urllib.error.URLError,
@@ -1543,6 +1696,31 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                     failed=1 if status == "error" else 0,
                 )
                 log_placeholder_recovery_event(conn, run_id, level, message, video_id)
+        except ProxyUnavailableError as exc:
+            with conn:
+                proxy_message = record_proxy_hold(
+                    conn,
+                    self,
+                    exc,
+                    run_id=run_id,
+                    queue_id=queue_id,
+                )
+                message = f"Placeholder recovery paused: {proxy_message}"
+                self._finish_run(
+                    conn,
+                    run_id,
+                    status="blocked",
+                    message=message,
+                    recovery_status="proxy_unavailable",
+                    failed=1,
+                )
+                log_placeholder_recovery_event(
+                    conn,
+                    run_id,
+                    "proxy error",
+                    message,
+                    video_id,
+                )
         except Exception as exc:
             with conn:
                 self._finish_run(
@@ -1572,6 +1750,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         self._metadata_workers: dict[int, tuple[MetadataWorker, str]] = {}
         self._placeholder_workers: dict[int, tuple[PlaceholderRecoveryWorker, str]] = {}
         self._archivarix_retry_requested = threading.Event()
+        self._proxy_retry_requested = threading.Event()
         self._dispatch_mode = "delay"
         self._job_dispatch_delay = 0.0
         self._youtube_max_in_flight = 1
@@ -1624,6 +1803,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             self._metadata_workers = {}
             self._placeholder_workers = {}
             self._archivarix_retry_requested.clear()
+            self._proxy_retry_requested.clear()
             self._set_dispatch_settings_unlocked(
                 dispatch_mode,
                 job_dispatch_delay,
@@ -1678,6 +1858,9 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
     def allow_archivarix_retry(self) -> None:
         self._placeholder_block_reason = ""
         self._archivarix_retry_requested.set()
+
+    def allow_proxy_retry(self) -> None:
+        self._proxy_retry_requested.set()
 
     def _set_dispatch_settings_unlocked(
         self,
@@ -1822,19 +2005,25 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         dispatch_revision = -1
         conn = connect(db_path)
         try:
-            block = external_service_block(conn, "archivarix")
+            archivarix_block = external_service_block(conn, "archivarix")
+            proxy_block = external_service_block(conn, "proxy")
         finally:
             conn.close()
-        archivarix_blocked = bool(block["blocked"])
+        archivarix_blocked = bool(archivarix_block["blocked"])
+        proxy_blocked = bool(proxy_block["blocked"])
         youtube_blocked = False
-        self._placeholder_block_reason = str(block["message"])
+        self._placeholder_block_reason = str(archivarix_block["message"])
         try:
             while not self._stop.is_set():
                 if self._archivarix_retry_requested.is_set():
                     self._archivarix_retry_requested.clear()
                     archivarix_blocked = False
                     self._placeholder_block_reason = ""
+                if self._proxy_retry_requested.is_set():
+                    self._proxy_retry_requested.clear()
+                    proxy_blocked = False
                 authentication_blocked = False
+                detected_proxy_block = ""
                 with self._lock:
                     metadata_workers = dict(self._metadata_workers)
                 placeholder_workers = dict(self._placeholder_workers)
@@ -1843,7 +2032,9 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     if worker.is_alive():
                         continue
                     self._mark_completed(self._metadata_run_processed(db_path, run_id))
-                    if worker.blocked_reason():
+                    if worker.proxy_block_reason():
+                        detected_proxy_block = worker.proxy_block_reason()
+                    elif worker.blocked_reason():
                         authentication_blocked = True
                     with self._lock:
                         self._metadata_workers.pop(queue_id, None)
@@ -1851,8 +2042,11 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 for queue_id, (worker, _run_id) in placeholder_workers.items():
                     if worker.is_alive():
                         continue
+                    proxy_reason = worker.proxy_block_reason()
                     reason = worker.blocked_reason()
-                    if reason:
+                    if proxy_reason:
+                        detected_proxy_block = proxy_reason
+                    elif reason:
                         self._placeholder_block_reason = reason
                         archivarix_blocked = True
                     else:
@@ -1867,6 +2061,16 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                             worker for worker, _run_id in self._metadata_workers.values()
                         ]
                     for worker in active_metadata_workers:
+                        worker.stop()
+                if detected_proxy_block:
+                    proxy_blocked = True
+                    with self._lock:
+                        active_network_workers = [
+                            worker for worker, _run_id in self._metadata_workers.values()
+                        ] + [
+                            worker for worker, _run_id in self._placeholder_workers.values()
+                        ]
+                    for worker in active_network_workers:
                         worker.stop()
 
                 now = time.monotonic()
@@ -1891,17 +2095,19 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
 
                 eligible_worker_types: list[str] = []
                 if (
-                    not youtube_blocked
+                    not proxy_blocked
+                    and not youtube_blocked
                     and len(metadata_queue_ids) < youtube_max_in_flight
                 ):
                     eligible_worker_types.append("metadata")
                 if (
-                    not archivarix_blocked
+                    not proxy_blocked
+                    and not archivarix_blocked
                     and len(placeholder_queue_ids) < archivarix_max_in_flight
                 ):
                     eligible_worker_types.append("placeholder")
                 has_active = bool(metadata_queue_ids or placeholder_queue_ids)
-                if not has_active and not youtube_blocked:
+                if not proxy_blocked and not has_active and not youtube_blocked:
                     eligible_worker_types.extend(("playlist", "history"))
                 if not eligible_worker_types:
                     if has_active:
@@ -2005,7 +2211,9 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     if not result.get("started") and not PLAYLIST_SCAN_WORKER.is_running():
                         time.sleep(0.5)
                     self._wait_for_worker(PLAYLIST_SCAN_WORKER)
-                    if not self._stop.is_set():
+                    if PLAYLIST_SCAN_WORKER.proxy_block_reason():
+                        proxy_blocked = True
+                    elif not self._stop.is_set():
                         self._mark_completed()
                 elif worker_type == "history":
                     mode = "verify" if row.get("task_type") == "verify" else "recent"
@@ -2022,7 +2230,9 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     if not result.get("started") and not LIVE_HISTORY_WORKER.is_running():
                         time.sleep(0.5)
                     self._wait_for_worker(LIVE_HISTORY_WORKER)
-                    if not self._stop.is_set():
+                    if LIVE_HISTORY_WORKER.proxy_block_reason():
+                        proxy_blocked = True
+                    elif not self._stop.is_set():
                         self._mark_completed()
                 else:
                     self._drop_unknown_row(db_path, row)

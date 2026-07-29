@@ -266,7 +266,11 @@
         <button id="clearWorkerQueue" type="button">Clear queue</button>
         <button id="stopWorkerQueue" type="button">Stop queue</button>
         <button id="retryArchivarix" type="button">Retry Archivarix</button>
+        <button id="retryProxy" type="button" hidden>Retry proxy</button>
         <button id="refresh" type="button">Refresh status</button>
+      </div>
+      <div id="proxyBlock" class="service-block" hidden>
+        <div><strong>Proxy paused</strong><div id="proxyBlockMessage" class="message"></div></div>
       </div>
       <div id="archivarixBlock" class="service-block" hidden>
         <div><strong>Archivarix paused</strong><div id="archivarixBlockMessage" class="message"></div></div>
@@ -378,6 +382,9 @@
       stopWorkerQueue: document.getElementById('stopWorkerQueue'),
       workerQueueRows: document.getElementById('workerQueueRows'),
       workerQueuePanel: document.getElementById('workerQueuePanel'),
+      retryProxy: document.getElementById('retryProxy'),
+      proxyBlock: document.getElementById('proxyBlock'),
+      proxyBlockMessage: document.getElementById('proxyBlockMessage'),
       archivarixBlock: document.getElementById('archivarixBlock'),
       archivarixBlockMessage: document.getElementById('archivarixBlockMessage'),
       placeholderRunStatus: document.getElementById('placeholderRunStatus'),
@@ -780,6 +787,12 @@
         }
         syncDispatchModeInputs();
       }
+      const proxyBlock = data.proxyBlock || {};
+      fields.retryProxy.hidden = !proxyBlock.blocked;
+      fields.proxyBlock.hidden = !proxyBlock.blocked;
+      fields.proxyBlockMessage.textContent = proxyBlock.blocked
+        ? `${proxyBlock.message || 'The configured proxy is unavailable.'}${proxyBlock.blocked_at ? ` Blocked ${window.YTLibraryTime.format(proxyBlock.blocked_at)}.` : ''}`
+        : '';
       const archivarixBlock = data.archivarixBlock || {};
       fields.archivarixBlock.hidden = !archivarixBlock.blocked;
       fields.archivarixBlockMessage.textContent = archivarixBlock.blocked
@@ -1129,6 +1142,7 @@
     document.getElementById('reconcileHistory').addEventListener('click', () => post('/api/admin/history/reconcile').catch(error => alert(error.message)));
     document.getElementById('reconcilePlaylists').addEventListener('click', () => post('/api/admin/playlists/reconcile').catch(error => alert(error.message)));
     document.getElementById('startWorkerQueue').addEventListener('click', () => post('/api/admin/queue/start').catch(error => alert(error.message)));
+    fields.retryProxy.addEventListener('click', () => post('/api/admin/proxy/retry').catch(error => alert(error.message)));
     document.getElementById('retryArchivarix').addEventListener('click', () => post('/api/admin/archivarix/retry').catch(error => alert(error.message)));
     document.getElementById('rebuildWorkerQueue').addEventListener('click', () => post('/api/admin/queue/rebuild').catch(error => alert(error.message)));
     document.getElementById('clearWorkerQueue').addEventListener('click', () => {

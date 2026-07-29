@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import http.client
 import importlib
+import re
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
+
+
+class ProxyUnavailableError(RuntimeError):
+    """Raised when the configured SOCKS proxy cannot accept requests."""
 
 
 @dataclass(frozen=True)
@@ -18,6 +23,97 @@ class Socks5Proxy:
     remote_dns: bool
     username: str | None
     password: str | None
+
+
+def _proxy_endpoint(proxy: Socks5Proxy) -> str:
+    return f"{proxy.host}:{proxy.port}"
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    chain: list[BaseException] = []
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        chain.append(current)
+        for nested in (
+            getattr(current, "reason", None),
+            current.__cause__,
+            current.__context__,
+        ):
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+        for value in current.args:
+            if isinstance(value, BaseException):
+                pending.append(value)
+    return chain
+
+
+def _explicit_proxy_failure(exc: BaseException) -> bool:
+    for current in _exception_chain(exc):
+        if isinstance(current, ProxyUnavailableError):
+            return True
+        if isinstance(
+            current,
+            (
+                ConnectionAbortedError,
+                ConnectionRefusedError,
+                ConnectionResetError,
+                BrokenPipeError,
+            ),
+        ):
+            return True
+        class_name = type(current).__name__
+        module_name = type(current).__module__
+        if class_name in {"ProxyConnectionError", "SOCKS5AuthError"}:
+            return True
+        if any(
+            base.__name__ == "ProxyError" and base.__module__ == "socks"
+            for base in type(current).__mro__
+        ):
+            return True
+        if class_name == "ProxyError" and module_name.startswith("yt_dlp."):
+            return True
+        message = str(current).lower()
+        if any(
+            marker in message
+            for marker in (
+                "error connecting to socks5 proxy",
+                "failed to connect to socks5 proxy",
+                "unable to connect to socks5 proxy",
+                "socks5 proxy authentication failed",
+                "socks5 authentication failed",
+            )
+        ):
+            return True
+    return False
+
+
+def _safe_proxy_error_detail(exc: BaseException) -> str:
+    detail = " ".join(str(exc).split()) or type(exc).__name__
+    return re.sub(
+        r"(?i)(socks5h?://)[^@\s/]+@",
+        r"\1",
+        detail,
+    )
+
+
+def proxy_unavailable_error(
+    exc: BaseException,
+    proxy_url: str | None,
+) -> ProxyUnavailableError | None:
+    proxy = parse_socks5_proxy_url(proxy_url)
+    if proxy is None or not _explicit_proxy_failure(exc):
+        return None
+    if isinstance(exc, ProxyUnavailableError):
+        return ProxyUnavailableError(_safe_proxy_error_detail(exc))
+    detail = _safe_proxy_error_detail(exc)
+    return ProxyUnavailableError(
+        f"SOCKS5 proxy {_proxy_endpoint(proxy)} is unavailable: {detail}"
+    )
 
 
 def parse_socks5_proxy_url(value: str | None) -> Socks5Proxy | None:
@@ -71,17 +167,25 @@ def _create_socks_socket(
     socks_module: Any,
     proxy: Socks5Proxy,
 ) -> Any:
-    return socks_module.create_connection(
-        (connection.host, connection.port),
-        timeout=connection.timeout,
-        source_address=connection.source_address,
-        proxy_type=socks_module.SOCKS5,
-        proxy_addr=proxy.host,
-        proxy_port=proxy.port,
-        proxy_rdns=proxy.remote_dns,
-        proxy_username=proxy.username,
-        proxy_password=proxy.password,
-    )
+    try:
+        return socks_module.create_connection(
+            (connection.host, connection.port),
+            timeout=connection.timeout,
+            source_address=connection.source_address,
+            proxy_type=socks_module.SOCKS5,
+            proxy_addr=proxy.host,
+            proxy_port=proxy.port,
+            proxy_rdns=proxy.remote_dns,
+            proxy_username=proxy.username,
+            proxy_password=proxy.password,
+        )
+    except Exception as exc:
+        if _explicit_proxy_failure(exc):
+            detail = _safe_proxy_error_detail(exc)
+            raise ProxyUnavailableError(
+                f"SOCKS5 proxy {_proxy_endpoint(proxy)} is unavailable: {detail}"
+            ) from exc
+        raise
 
 
 class _Socks5HTTPConnection(http.client.HTTPConnection):

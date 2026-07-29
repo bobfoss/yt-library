@@ -44,7 +44,12 @@ from .config import (
     configured_request_delay_range,
     effective_display_timezone,
 )
-from .network import socks5_proxy_handlers, ytdlp_proxy_options
+from .network import (
+    ProxyUnavailableError,
+    proxy_unavailable_error,
+    socks5_proxy_handlers,
+    ytdlp_proxy_options,
+)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
@@ -1166,6 +1171,9 @@ def youtube_session_status(
                 "https://www.youtube.com/feed/history",
             )
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+            proxy_error = proxy_unavailable_error(exc, proxy_url)
+            if proxy_error:
+                raise proxy_error from exc
             return False, youtube_request_error_diagnostics(exc, "history authentication check")
         if "Watch history isn't viewable when signed out" in page:
             return False, (
@@ -3716,19 +3724,25 @@ def scan_playlist_ytdlp(
         def error(self, message: str) -> None:
             messages.append(message)
 
-    with temporary_ytdlp_cookie_file(cookie_file) as working_cookie_file:
-        options = {
-            "cookiefile": str(working_cookie_file) if working_cookie_file else None,
-            "extract_flat": "in_playlist",
-            "ignoreerrors": True,
-            "logger": YtdlpLogger(),
-            "no_warnings": True,
-            "quiet": True,
-            "skip_download": True,
-            **ytdlp_proxy_options(proxy_url),
-        }
-        with request_paced_youtube_dl(yt_dlp, options) as ydl:
-            info = ydl.extract_info(url, download=False)
+    try:
+        with temporary_ytdlp_cookie_file(cookie_file) as working_cookie_file:
+            options = {
+                "cookiefile": str(working_cookie_file) if working_cookie_file else None,
+                "extract_flat": "in_playlist",
+                "ignoreerrors": True,
+                "logger": YtdlpLogger(),
+                "no_warnings": True,
+                "quiet": True,
+                "skip_download": True,
+                **ytdlp_proxy_options(proxy_url),
+            }
+            with request_paced_youtube_dl(yt_dlp, options) as ydl:
+                info = ydl.extract_info(url, download=False)
+    except Exception as exc:
+        proxy_error = proxy_unavailable_error(exc, proxy_url)
+        if proxy_error:
+            raise proxy_error from exc
+        raise
     if not info:
         text = "\n".join(messages).strip()
         raise RuntimeError(text or "yt-dlp returned no playlist data")
@@ -3795,20 +3809,26 @@ def fetch_youtube_history_ytdlp(
         def error(self, msg: str) -> None:
             pass
 
-    with temporary_ytdlp_cookie_file(cookie_file) as working_cookie_file:
-        options = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "extract_flat": "in_playlist",
-            "playliststart": max(1, start),
-            "playlistend": max(1, start) + max(1, limit) - 1,
-            "cookiefile": str(working_cookie_file) if working_cookie_file else None,
-            "logger": YtdlpLogger(),
-            **ytdlp_proxy_options(proxy_url),
-        }
-        with request_paced_youtube_dl(yt_dlp, options) as ydl:
-            info = ydl.extract_info(":ythistory", download=False)
+    try:
+        with temporary_ytdlp_cookie_file(cookie_file) as working_cookie_file:
+            options = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "extract_flat": "in_playlist",
+                "playliststart": max(1, start),
+                "playlistend": max(1, start) + max(1, limit) - 1,
+                "cookiefile": str(working_cookie_file) if working_cookie_file else None,
+                "logger": YtdlpLogger(),
+                **ytdlp_proxy_options(proxy_url),
+            }
+            with request_paced_youtube_dl(yt_dlp, options) as ydl:
+                info = ydl.extract_info(":ythistory", download=False)
+    except Exception as exc:
+        proxy_error = proxy_unavailable_error(exc, proxy_url)
+        if proxy_error:
+            raise proxy_error from exc
+        raise
     entries = (info or {}).get("entries") or []
     rows: list[dict[str, Any]] = []
     for entry in entries:
@@ -6664,6 +6684,7 @@ def admin_status(
             ).fetchone()
         )
         archivarix_block = external_service_block(conn, "archivarix")
+        proxy_block = external_service_block(conn, "proxy")
         metadata_logs: list[dict[str, Any]] = []
         playlist_logs: list[dict[str, Any]] = []
         live_history_logs: list[dict[str, Any]] = []
@@ -6714,6 +6735,7 @@ def admin_status(
         ),
         "archivarixRequestCounts": archivarix_request_counts,
         "archivarixBlock": archivarix_block,
+        "proxyBlock": proxy_block,
         "logs": metadata_logs,
         "metadataLogs": metadata_logs,
         "playlistScanLogs": playlist_logs,
