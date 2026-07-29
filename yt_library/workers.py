@@ -1258,7 +1258,7 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                         """,
                         (processed, processed, inserted_total, skipped_total, last_video_id, final_message, run_id),
                     )
-                    log_live_history_event(conn, run_id, "info", final_message, last_video_id)
+                    log_live_history_event(conn, run_id, "info", final_message)
                 if seen < batch_size:
                     completion_reason = "reached the end of available history"
                     break
@@ -1320,7 +1320,7 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                         run_id,
                     ),
                 )
-                log_live_history_event(conn, run_id, "info" if status == "complete" else "warn", final_message, last_video_id)
+                log_live_history_event(conn, run_id, "info" if status == "complete" else "warn", final_message)
         except ProxyUnavailableError as exc:
             with conn:
                 proxy_message = record_proxy_hold(

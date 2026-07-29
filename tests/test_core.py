@@ -3338,16 +3338,13 @@ class WorkerQueueTests(unittest.TestCase):
                 second_run = conn.execute(
                     "SELECT * FROM live_history_worker_runs WHERE run_id = 'second-recent-history-run'"
                 ).fetchone()
-                logs = [
-                    row["message"]
-                    for row in conn.execute(
-                        """
-                        SELECT message FROM live_history_worker_log
-                        WHERE run_id = 'recent-history-run'
-                        ORDER BY rowid
-                        """
-                    )
-                ]
+                logs = conn.execute(
+                    """
+                    SELECT video_id, message FROM live_history_worker_log
+                    WHERE run_id = 'recent-history-run'
+                    ORDER BY rowid
+                    """
+                ).fetchall()
                 event_counts = conn.execute(
                     """
                     SELECT COUNT(*) AS events,
@@ -3380,9 +3377,10 @@ class WorkerQueueTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "196 new watches, 4 existing watches, 1 Takeout matches" in message
-                for message in logs
+                for message in (row["message"] for row in logs)
             )
         )
+        self.assertTrue(all(row["video_id"] == "" for row in logs))
         self.assertEqual(second_run["found"], 0)
         self.assertEqual(second_run["skipped"], 200)
         self.assertEqual(dict(event_counts), {
