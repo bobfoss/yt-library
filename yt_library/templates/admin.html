@@ -570,7 +570,8 @@
 
     function compareQueueRows(left, right) {
       return (Number(left.priority || 0) - Number(right.priority || 0))
-        || (Number(left.queue_id || 0) - Number(right.queue_id || 0));
+        || String(right.updated_at || '').localeCompare(String(left.updated_at || ''))
+        || (Number(right.queue_id || 0) - Number(left.queue_id || 0));
     }
 
     function queueRowIndex(row) {

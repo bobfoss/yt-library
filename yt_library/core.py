@@ -124,6 +124,15 @@ class ArchivarixQuotaExceeded(RuntimeError):
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
 
 
+def worker_queue_order_sql(alias: str = "") -> str:
+    prefix = f"{alias}." if alias else ""
+    return (
+        f"{prefix}priority, "
+        f"{prefix}updated_at DESC, "
+        f"{prefix}queue_id DESC"
+    )
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=60)
     conn.row_factory = sqlite3.Row
@@ -4387,11 +4396,11 @@ def placeholder_worker_queue_rows(
     limit: int = 0,
     queue_id: int = 0,
 ) -> list[sqlite3.Row]:
-    sql = """
+    sql = f"""
         SELECT queue_id, video_id, playlist_id, current_title, source_key, priority
         FROM worker_queue
         WHERE worker_type = 'placeholder'
-        ORDER BY priority, queue_id
+        ORDER BY {worker_queue_order_sql()}
     """
     params: list[Any] = []
     if queue_id:
@@ -5407,7 +5416,7 @@ def worker_queue_rows(
     limit: int = 0,
     offset: int = 0,
 ) -> list[sqlite3.Row]:
-    sql = """
+    sql = f"""
         SELECT w.queue_id,
                w.subject_key,
                w.worker_type,
@@ -5438,7 +5447,7 @@ def worker_queue_rows(
               THEN COALESCE(NULLIF(w.channel_id, ''), w.video_id)
             ELSE ''
           END
-        ORDER BY w.priority, w.queue_id
+        ORDER BY {worker_queue_order_sql("w")}
     """
     params: list[Any] = []
     if limit:
@@ -5491,7 +5500,7 @@ def worker_queue_rows_by_id(
             ELSE ''
           END
         WHERE w.queue_id IN ({placeholders})
-        ORDER BY w.priority, w.queue_id
+        ORDER BY {worker_queue_order_sql("w")}
         """,
         ids,
     ).fetchall()
@@ -5812,7 +5821,7 @@ def playlist_scan_queue_rows(
     stale_days: int = 7,
 ) -> list[sqlite3.Row]:
     del force, stale_days
-    sql = """
+    sql = f"""
         SELECT w.queue_id,
                w.subject_key,
                w.playlist_id,
@@ -5830,7 +5839,7 @@ def playlist_scan_queue_rows(
         LEFT JOIN playlists p ON p.playlist_id = w.playlist_id
         LEFT JOIN playlist_scans ps ON ps.playlist_id = w.playlist_id
         WHERE w.worker_type = 'playlist'
-        ORDER BY w.priority, w.queue_id
+        ORDER BY {worker_queue_order_sql("w")}
     """
     params: list[Any] = []
     if limit:
@@ -5981,7 +5990,7 @@ def metadata_queue_rows(
     queue_id: int = 0,
 ) -> list[sqlite3.Row]:
     del force, stale_days
-    sql = """
+    sql = f"""
         SELECT queue_id,
                subject_key,
                video_id,
@@ -5997,7 +6006,7 @@ def metadata_queue_rows(
                updated_at
         FROM worker_queue
         WHERE worker_type = 'metadata'
-        ORDER BY priority, queue_id
+        ORDER BY {worker_queue_order_sql()}
     """
     params: list[Any] = []
     if queue_id:
@@ -6125,6 +6134,54 @@ def enqueue_metadata_item(
         ),
     )
     return subject_key
+
+
+def enqueue_new_history_metadata_targets(
+    conn: sqlite3.Connection,
+    assignments: list[dict[str, Any]],
+    *,
+    excluded_video_ids: set[str] | None = None,
+) -> list[str]:
+    excluded = excluded_video_ids or set()
+    video_ids: list[str] = []
+    seen: set[str] = set()
+    for assignment in assignments:
+        video_id = str(assignment.get("video_id") or "").strip()
+        if (
+            not video_id
+            or assignment.get("old_ordinal") is not None
+            or video_id in excluded
+            or video_id in seen
+        ):
+            continue
+        seen.add(video_id)
+        video_ids.append(video_id)
+    if not video_ids:
+        return []
+    placeholders = ", ".join("?" for _ in video_ids)
+    titles = {
+        row["video_id"]: row["title"] or row["video_id"]
+        for row in conn.execute(
+            f"""
+            SELECT video_id, title
+            FROM videos
+            WHERE video_id IN ({placeholders})
+            """,
+            video_ids,
+        )
+    }
+    # Insert oldest to newest so the newest fetched item receives the highest
+    # queue ID and wins the recency tie-break within this action.
+    for video_id in reversed(video_ids):
+        enqueue_metadata_item(
+            conn,
+            video_id=video_id,
+            current_title=titles.get(video_id, video_id),
+            metadata_source="history",
+            priority=0,
+            manual=False,
+        )
+    return video_ids
 
 
 def rebuild_metadata_queue(

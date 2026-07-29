@@ -1010,6 +1010,7 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
         inserted_total = 0
         skipped_total = 0
         takeout_matches_total = 0
+        metadata_queued_ids: set[str] = set()
         try:
             occurrence_snapshot = youtube_history_occurrence_snapshot(conn)
             overlap_tracker = (
@@ -1109,6 +1110,12 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                         complete_scan=complete_scan,
                     )
                     rebuild_history_reconciliation(conn, timezone_name)
+                    batch_metadata_ids = enqueue_new_history_metadata_targets(
+                        conn,
+                        save_stats["assignments"],
+                        excluded_video_ids=metadata_queued_ids,
+                    )
+                    metadata_queued_ids.update(batch_metadata_ids)
                     batch_takeout_matches = youtube_takeout_match_count(conn, start, seen)
                     takeout_matches_total += batch_takeout_matches
                     batch_last_video_id = save_stats["last_video_id"]
@@ -1118,7 +1125,8 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                         f"{label}: entries {start}-{end}; {seen} fetched, "
                         f"{save_stats['new']} new watches, "
                         f"{save_stats['existing']} existing watches, "
-                        f"{batch_takeout_matches} Takeout matches"
+                        f"{batch_takeout_matches} Takeout matches, "
+                        f"{len(batch_metadata_ids)} metadata queued"
                     )
                     conn.execute(
                         """
@@ -1153,13 +1161,15 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                     f"{f' ({completion_reason})' if completion_reason else ''}: "
                     f"{processed} fetched, {inserted_total} new watches, "
                     f"{skipped_total} existing watches, "
-                    f"{takeout_matches_total} Takeout matches"
+                    f"{takeout_matches_total} Takeout matches, "
+                    f"{len(metadata_queued_ids)} metadata queued"
                 )
             else:
                 final_message = (
                     f"{label} stopped: {processed} fetched, "
                     f"{inserted_total} new watches, {skipped_total} existing watches, "
-                    f"{takeout_matches_total} Takeout matches"
+                    f"{takeout_matches_total} Takeout matches, "
+                    f"{len(metadata_queued_ids)} metadata queued"
                 )
             with conn:
                 conn.execute(
@@ -1743,7 +1753,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 SELECT *
                 FROM worker_queue
                 {where}
-                ORDER BY priority, queue_id
+                ORDER BY {worker_queue_order_sql()}
                 LIMIT 1
                 """,
                 params,

@@ -2750,6 +2750,7 @@ class WorkerQueueTests(unittest.TestCase):
                     WHERE event_id = 'existing-1'
                     """
                 ).fetchone()
+                queued_metadata = core.metadata_queue_rows(conn)
             finally:
                 conn.close()
 
@@ -2778,6 +2779,11 @@ class WorkerQueueTests(unittest.TestCase):
         self.assertEqual(reconciled["time_precision"], "exact")
         self.assertEqual(reconciled["watched_at"], "2026-07-27T12:00:00Z")
         self.assertEqual(reconciled["youtube_ordinal"], 196)
+        self.assertIn("2 metadata queued", run["message"])
+        self.assertEqual(
+            [row["video_id"] for row in queued_metadata],
+            ["repeat-current", "older-new"],
+        )
 
     def test_dispatcher_caps_concurrent_metadata_tasks_from_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3706,6 +3712,79 @@ class WorkerQueueTests(unittest.TestCase):
                     [(queue_id, "upsert"), (queue_id, "remove")],
                 )
                 self.assertEqual(core.worker_queue_rows_by_id(conn, [queue_id]), [])
+            finally:
+                conn.close()
+
+    def test_worker_queue_prefers_recent_actions_within_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="olderaction1",
+                        current_title="Older action",
+                        metadata_source="provided",
+                        priority=5,
+                    )
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="neweraction1",
+                        current_title="Newer action",
+                        metadata_source="provided",
+                        priority=5,
+                    )
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="higherpriority1",
+                        current_title="Higher priority",
+                        metadata_source="provided",
+                        priority=4,
+                    )
+                    conn.execute(
+                        """
+                        UPDATE worker_queue
+                        SET updated_at = CASE video_id
+                          WHEN 'olderaction1' THEN '2026-07-28T10:00:00Z'
+                          WHEN 'neweraction1' THEN '2026-07-28T11:00:00Z'
+                          WHEN 'higherpriority1' THEN '2026-07-28T09:00:00Z'
+                        END
+                        """
+                    )
+
+                rows = core.worker_queue_rows(conn)
+                self.assertEqual(
+                    [row["video_id"] for row in rows],
+                    ["higherpriority1", "neweraction1", "olderaction1"],
+                )
+                next_row = WorkerQueueDispatcher()._next_row(db_path)
+                self.assertEqual(next_row["video_id"], "higherpriority1")
+                higher_priority_id = int(next_row["queue_id"])
+                next_same_priority = WorkerQueueDispatcher()._next_row(
+                    db_path,
+                    excluded_queue_ids={higher_priority_id},
+                )
+                self.assertEqual(next_same_priority["video_id"], "neweraction1")
+
+                with conn:
+                    conn.execute(
+                        """
+                        UPDATE worker_queue
+                        SET updated_at = '2026-07-28T12:00:00Z'
+                        WHERE video_id = 'olderaction1'
+                        """
+                    )
+                same_priority = core.metadata_queue_rows(conn)
+                self.assertEqual(
+                    [row["video_id"] for row in same_priority],
+                    ["higherpriority1", "olderaction1", "neweraction1"],
+                )
+                next_refreshed = WorkerQueueDispatcher()._next_row(
+                    db_path,
+                    excluded_queue_ids={higher_priority_id},
+                )
+                self.assertEqual(next_refreshed["video_id"], "olderaction1")
             finally:
                 conn.close()
 
