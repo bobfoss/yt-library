@@ -23,24 +23,23 @@ from yt_library import server
 from yt_library import workers
 from yt_library.config import (
     configured_archivarix_max_in_flight,
-    configured_archivarix_request_delay_range,
-    configured_archivarix_request_interval,
     configured_archivarix_request_timeout,
     configured_archivarix_retry_attempts,
     configured_archivarix_retry_backoff,
     configured_archivarix_stream_timeout,
+    configured_dispatch_mode,
     configured_display_timezone,
+    configured_job_dispatch_delay,
     configured_proxy_address,
+    configured_request_delay_range,
     configured_use_proxy,
     configured_youtube_max_in_flight,
     configured_proxy,
-    configured_request_jitter_enabled,
-    configured_youtube_request_delay_range,
-    configured_youtube_request_interval,
     effective_display_timezone,
     ensure_config_file,
     ensure_directory,
     load_config,
+    save_config,
 )
 from yt_library.workers import (
     LiveHistoryWorker,
@@ -289,14 +288,10 @@ class CoreHelperTests(unittest.TestCase):
         self.assertFalse(core.is_archivarix_request_url("https://archivarix.net.example.test/search"))
         self.assertFalse(core.is_archivarix_request_url("https://www.youtube.com/watch?v=abc"))
 
-    def test_request_pacing_routes_sites_to_independent_pacers(self) -> None:
+    def test_request_pacing_routes_both_sites_to_one_global_pacer(self) -> None:
         opener = Mock()
-        youtube_pacer = Mock()
-        archivarix_pacer = Mock()
-        with (
-            patch.object(core, "_youtube_request_pacer", youtube_pacer),
-            patch.object(core, "_archivarix_request_pacer", archivarix_pacer),
-        ):
+        request_pacer = Mock()
+        with patch.object(core, "_request_pacer", request_pacer):
             core.open_with_request_pacing(
                 opener,
                 urllib.request.Request("https://yt3.ggpht.com/avatar"),
@@ -313,9 +308,31 @@ class CoreHelperTests(unittest.TestCase):
                 timeout=6,
             )
 
-        youtube_pacer.wait.assert_called_once_with()
-        archivarix_pacer.wait.assert_called_once_with()
+        self.assertEqual(request_pacer.wait.call_count, 2)
         self.assertEqual(opener.open.call_count, 3)
+
+    def test_ytdlp_urlopen_uses_the_shared_request_pacer(self) -> None:
+        class BaseYoutubeDL:
+            def __init__(self, options):
+                self.options = options
+
+            def urlopen(self, request):
+                return f"opened:{request}"
+
+        class FakeYtdlpModule:
+            YoutubeDL = BaseYoutubeDL
+
+        request_pacer = Mock()
+        with patch.object(core, "_request_pacer", request_pacer):
+            ydl = core.request_paced_youtube_dl(
+                FakeYtdlpModule,
+                {"quiet": True},
+            )
+            result = ydl.urlopen("playlist-request")
+
+        request_pacer.wait.assert_called_once_with()
+        self.assertEqual(result, "opened:playlist-request")
+        self.assertEqual(ydl.options, {"quiet": True})
 
     def test_placeholder_recovery_exposes_its_persisted_run_id(self) -> None:
         entered = threading.Event()
@@ -2480,12 +2497,10 @@ class ConfigTests(unittest.TestCase):
                 configured_proxy(config),
                 "socks5h://127.0.0.1:1080",
             )
-            self.assertEqual(configured_youtube_request_interval(config), 5.0)
-            self.assertFalse(configured_request_jitter_enabled(config))
-            self.assertEqual(configured_youtube_request_delay_range(config), (6.0, 10.0))
+            self.assertEqual(configured_dispatch_mode(config), "delay")
+            self.assertEqual(configured_job_dispatch_delay(config), 5.0)
+            self.assertEqual(configured_request_delay_range(config), (6.0, 10.0))
             self.assertEqual(configured_youtube_max_in_flight(config), 10)
-            self.assertEqual(configured_archivarix_request_interval(config), 3.0)
-            self.assertEqual(configured_archivarix_request_delay_range(config), (6.0, 10.0))
             self.assertEqual(configured_archivarix_max_in_flight(config), 1)
             self.assertEqual(configured_archivarix_request_timeout(config), 15.0)
             self.assertEqual(configured_archivarix_stream_timeout(config), 30.0)
@@ -2510,7 +2525,10 @@ class ConfigTests(unittest.TestCase):
             "UTC",
         )
         self.assertEqual(effective_display_timezone({"display_timezone": ""}), "UTC")
-        self.assertEqual(configured_youtube_request_interval({"youtube_request_interval_seconds": -1}), 0.0)
+        self.assertEqual(
+            configured_job_dispatch_delay({"job_dispatch_delay_seconds": -1}),
+            0.0,
+        )
         self.assertEqual(configured_proxy({"proxy": ""}), "")
         self.assertEqual(
             configured_proxy(
@@ -2531,28 +2549,21 @@ class ConfigTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             configured_proxy({"proxy": "http://127.0.0.1:1080"})
-        self.assertTrue(configured_request_jitter_enabled({"request_jitter_enabled": "yes"}))
         self.assertEqual(
-            configured_youtube_request_delay_range(
+            configured_dispatch_mode({"request_jitter_enabled": "yes"}),
+            "throttle",
+        )
+        self.assertEqual(
+            configured_request_delay_range(
                 {
-                    "youtube_request_delay_min_seconds": 6,
-                    "youtube_request_delay_max_seconds": 2,
+                    "request_delay_min_seconds": 6,
+                    "request_delay_max_seconds": 2,
                 }
             ),
             (6.0, 6.0),
         )
-        self.assertEqual(
-            configured_archivarix_request_delay_range(
-                {
-                    "archivarix_request_delay_min_seconds": 4,
-                    "archivarix_request_delay_max_seconds": 2,
-                }
-            ),
-            (4.0, 4.0),
-        )
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 0}), 1)
         self.assertEqual(configured_youtube_max_in_flight({"youtube_max_in_flight": 5000}), 100)
-        self.assertEqual(configured_archivarix_request_interval({"archivarix_request_interval_seconds": -1}), 0.0)
         self.assertEqual(configured_archivarix_max_in_flight({"archivarix_max_in_flight": 5000}), 20)
         self.assertEqual(configured_archivarix_request_timeout({"archivarix_request_timeout_seconds": 0}), 1.0)
         self.assertEqual(configured_archivarix_stream_timeout({"archivarix_stream_timeout_seconds": 5000}), 300.0)
@@ -2576,6 +2587,40 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "socks5"):
                 load_config(config_path)
 
+    def test_load_config_migrates_legacy_dispatch_and_request_delays(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "request_jitter_enabled": True,
+                        "youtube_request_interval_seconds": 4,
+                        "archivarix_request_interval_seconds": 7,
+                        "youtube_request_delay_min_seconds": 2,
+                        "youtube_request_delay_max_seconds": 4,
+                        "archivarix_request_delay_min_seconds": 6,
+                        "archivarix_request_delay_max_seconds": 10,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertEqual(configured_dispatch_mode(config), "throttle")
+            self.assertEqual(configured_job_dispatch_delay(config), 7.0)
+            self.assertEqual(configured_request_delay_range(config), (6.0, 10.0))
+
+            save_config(config)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["dispatch_mode"], "throttle")
+            self.assertEqual(payload["job_dispatch_delay_seconds"], 7.0)
+            self.assertEqual(payload["request_delay_min_seconds"], 6.0)
+            self.assertEqual(payload["request_delay_max_seconds"], 10.0)
+            self.assertNotIn("request_jitter_enabled", payload)
+            self.assertNotIn("youtube_request_interval_seconds", payload)
+            self.assertNotIn("archivarix_request_delay_max_seconds", payload)
+
     def test_migrate_creates_default_config_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"
@@ -2593,15 +2638,12 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["archivarix_cookies"], "archivarix_cookies.txt")
             self.assertFalse(payload["use_proxy"])
             self.assertEqual(payload["proxy"], "")
-            self.assertFalse(payload["request_jitter_enabled"])
+            self.assertEqual(payload["dispatch_mode"], "delay")
             self.assertNotIn("youtube_proxy", payload)
-            self.assertEqual(payload["youtube_request_interval_seconds"], 5.0)
-            self.assertEqual(payload["youtube_request_delay_min_seconds"], 6.0)
-            self.assertEqual(payload["youtube_request_delay_max_seconds"], 10.0)
+            self.assertEqual(payload["job_dispatch_delay_seconds"], 5.0)
+            self.assertEqual(payload["request_delay_min_seconds"], 6.0)
+            self.assertEqual(payload["request_delay_max_seconds"], 10.0)
             self.assertEqual(payload["youtube_max_in_flight"], 10)
-            self.assertEqual(payload["archivarix_request_interval_seconds"], 3.0)
-            self.assertEqual(payload["archivarix_request_delay_min_seconds"], 6.0)
-            self.assertEqual(payload["archivarix_request_delay_max_seconds"], 10.0)
             self.assertEqual(payload["archivarix_max_in_flight"], 1)
             self.assertEqual(payload["archivarix_request_timeout_seconds"], 15.0)
             self.assertEqual(payload["archivarix_stream_timeout_seconds"], 30.0)
@@ -2646,20 +2688,19 @@ class ConfigTests(unittest.TestCase):
 
 
 class AdminServerTests(unittest.TestCase):
-    def test_request_intervals_save_jitter_config_and_reconfigure_live_pacers(self) -> None:
+    def test_dispatch_settings_save_config_and_reconfigure_live_behavior(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"
             config = load_config(config_path)
             handler = object.__new__(server.LibraryHandler)
-            handler.path = "/api/admin/request-intervals?" + urllib.parse.urlencode(
+            handler.path = "/api/admin/dispatch-settings?" + urllib.parse.urlencode(
                 {
-                    "youtube_seconds": "5",
-                    "archivarix_seconds": "3",
-                    "jitter_enabled": "1",
-                    "youtube_delay_min_seconds": "6",
-                    "youtube_delay_max_seconds": "10",
-                    "archivarix_delay_min_seconds": "2",
-                    "archivarix_delay_max_seconds": "4",
+                    "dispatch_mode": "throttle",
+                    "job_dispatch_delay_seconds": "5",
+                    "request_delay_min_seconds": "6",
+                    "request_delay_max_seconds": "10",
+                    "youtube_max_in_flight": "8",
+                    "archivarix_max_in_flight": "2",
                 }
             )
             handler.config_data = config
@@ -2668,39 +2709,42 @@ class AdminServerTests(unittest.TestCase):
             with (
                 patch.object(
                     server.WORKER_QUEUE_DISPATCHER,
-                    "update_request_intervals",
-                ) as update_intervals,
+                    "update_dispatch_settings",
+                ) as update_settings,
                 patch("yt_library.server.configure_request_pacing") as configure_pacing,
             ):
                 handler.do_POST()
 
-            update_intervals.assert_called_once_with(5.0, 3.0)
+            update_settings.assert_called_once_with("throttle", 5.0, 8, 2)
             configure_pacing.assert_called_once_with(config)
             payload = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertTrue(payload["request_jitter_enabled"])
-            self.assertEqual(payload["youtube_request_delay_min_seconds"], 6.0)
-            self.assertEqual(payload["youtube_request_delay_max_seconds"], 10.0)
-            self.assertEqual(payload["archivarix_request_delay_min_seconds"], 2.0)
-            self.assertEqual(payload["archivarix_request_delay_max_seconds"], 4.0)
+            self.assertEqual(payload["dispatch_mode"], "throttle")
+            self.assertEqual(payload["job_dispatch_delay_seconds"], 5.0)
+            self.assertEqual(payload["request_delay_min_seconds"], 6.0)
+            self.assertEqual(payload["request_delay_max_seconds"], 10.0)
+            self.assertEqual(payload["youtube_max_in_flight"], 8)
+            self.assertEqual(payload["archivarix_max_in_flight"], 2)
             response = handler.send_json.call_args.args[0]
-            self.assertTrue(response["requestIntervals"]["jitter_enabled"])
             self.assertEqual(
-                response["requestIntervals"]["archivarix_delay_max_seconds"],
-                4.0,
+                response["dispatchSettings"]["dispatch_mode"],
+                "throttle",
+            )
+            self.assertEqual(
+                response["dispatchSettings"]["effective_job_dispatch_delay_seconds"],
+                0.0,
             )
 
-    def test_request_intervals_reject_jitter_maximum_below_minimum(self) -> None:
+    def test_dispatch_settings_reject_throttle_maximum_below_minimum(self) -> None:
         config = load_config(Path("missing-test-config.json"))
         handler = object.__new__(server.LibraryHandler)
-        handler.path = "/api/admin/request-intervals?" + urllib.parse.urlencode(
+        handler.path = "/api/admin/dispatch-settings?" + urllib.parse.urlencode(
             {
-                "youtube_seconds": "5",
-                "archivarix_seconds": "3",
-                "jitter_enabled": "1",
-                "youtube_delay_min_seconds": "10",
-                "youtube_delay_max_seconds": "6",
-                "archivarix_delay_min_seconds": "2",
-                "archivarix_delay_max_seconds": "4",
+                "dispatch_mode": "throttle",
+                "job_dispatch_delay_seconds": "5",
+                "request_delay_min_seconds": "10",
+                "request_delay_max_seconds": "6",
+                "youtube_max_in_flight": "8",
+                "archivarix_max_in_flight": "2",
             }
         )
         handler.config_data = config
@@ -2709,7 +2753,7 @@ class AdminServerTests(unittest.TestCase):
         handler.do_POST()
 
         response = handler.send_json.call_args.args[0]
-        self.assertIn("maximums", response["error"])
+        self.assertIn("maximum", response["error"])
         self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
 
     def test_admin_settings_save_proxy_and_schedule_restart(self) -> None:
@@ -2780,13 +2824,17 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('id="useProxy"', server.ADMIN_HTML)
         self.assertIn('id="proxyUrl"', server.ADMIN_HTML)
         self.assertIn('id="saveSettings"', server.ADMIN_HTML)
-        self.assertIn('id="requestJitterEnabled"', server.ADMIN_HTML)
-        self.assertIn('id="youtubeDelayMin"', server.ADMIN_HTML)
-        self.assertIn('id="youtubeDelayMax"', server.ADMIN_HTML)
-        self.assertIn('id="archivarixDelayMin"', server.ADMIN_HTML)
-        self.assertIn('id="archivarixDelayMax"', server.ADMIN_HTML)
-        self.assertIn("syncRequestJitterInputs();", server.ADMIN_HTML)
-        self.assertIn("field.addEventListener('change', flushRequestIntervalSave);", server.ADMIN_HTML)
+        self.assertIn("<legend>Dispatch mode</legend>", server.ADMIN_HTML)
+        self.assertIn('id="dispatchModeDelay"', server.ADMIN_HTML)
+        self.assertIn('id="dispatchModeThrottle"', server.ADMIN_HTML)
+        self.assertIn('id="jobDispatchDelay"', server.ADMIN_HTML)
+        self.assertIn('id="requestDelayMin"', server.ADMIN_HTML)
+        self.assertIn('id="requestDelayMax"', server.ADMIN_HTML)
+        self.assertIn('id="youtubeMaxInFlight"', server.ADMIN_HTML)
+        self.assertIn('id="archivarixMaxInFlight"', server.ADMIN_HTML)
+        self.assertIn("syncDispatchModeInputs();", server.ADMIN_HTML)
+        self.assertIn("field.addEventListener('blur', flushDispatchSettingsSave);", server.ADMIN_HTML)
+        self.assertIn("including requests made by yt-dlp", server.ADMIN_HTML)
         self.assertEqual(server.ADMIN_HTML.count("<th>ID</th>"), 2)
         self.assertNotIn("<th>Video ID</th>", server.ADMIN_HTML)
         self.assertIn("return row.channel_id || row.video_id || '';", server.ADMIN_HTML)
@@ -3018,9 +3066,9 @@ class WorkerQueueTests(unittest.TestCase):
             config = load_config(Path(temp_dir) / "config.json")
             config.update(
                 {
-                    "youtube_request_interval_seconds": 0.0,
+                    "dispatch_mode": "throttle",
+                    "job_dispatch_delay_seconds": 10.0,
                     "youtube_max_in_flight": 2,
-                    "archivarix_request_interval_seconds": 0.0,
                     "archivarix_max_in_flight": 1,
                 }
             )
@@ -3052,7 +3100,7 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_dispatcher_request_interval_changes_apply_during_active_run(self) -> None:
+    def test_dispatcher_settings_changes_apply_during_active_run(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
             conn = migrated_connection(db_path)
@@ -3090,7 +3138,8 @@ class WorkerQueueTests(unittest.TestCase):
             config = load_config(Path(temp_dir) / "config.json")
             config.update(
                 {
-                    "youtube_request_interval_seconds": 10.0,
+                    "dispatch_mode": "delay",
+                    "job_dispatch_delay_seconds": 10.0,
                     "youtube_max_in_flight": 1,
                 }
             )
@@ -3108,10 +3157,21 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertTrue(first_started.wait(1))
                 self.assertFalse(second_started.wait(0.2))
 
-                intervals = dispatcher.update_request_intervals(0.0, 2.5)
+                settings = dispatcher.update_dispatch_settings(
+                    "delay",
+                    0.0,
+                    2,
+                    1,
+                )
                 self.assertEqual(
-                    intervals,
-                    {"youtube_seconds": 0.0, "archivarix_seconds": 2.5},
+                    settings,
+                    {
+                        "dispatch_mode": "delay",
+                        "job_dispatch_delay_seconds": 0.0,
+                        "effective_job_dispatch_delay_seconds": 0.0,
+                        "youtube_max_in_flight": 2,
+                        "archivarix_max_in_flight": 1,
+                    },
                 )
                 self.assertTrue(second_started.wait(1))
 
@@ -3122,6 +3182,104 @@ class WorkerQueueTests(unittest.TestCase):
             self.assertFalse(dispatcher.is_running())
             self.assertEqual(len(started_at), 2)
             self.assertLess(started_at[1] - started_at[0], 2.0)
+
+    def test_dispatch_delay_is_global_across_worker_types(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLglobal', 'Global')"
+                    )
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="global-delay-video",
+                        current_title="Global delay video",
+                        priority=0,
+                    )
+                    core.enqueue_playlist_scan_item(
+                        conn,
+                        "PLglobal",
+                        priority=1,
+                    )
+            finally:
+                conn.close()
+
+            launches: list[tuple[str, float]] = []
+
+            def metadata_start(
+                _worker,
+                worker_db_path,
+                _cookie_file,
+                _thumb_dir,
+                **kwargs,
+            ):
+                launches.append(("metadata", time.monotonic()))
+                queue_id = int(kwargs["queue_id"])
+                worker_conn = core.connect(worker_db_path)
+                try:
+                    with worker_conn:
+                        core.remove_worker_queue_entry(worker_conn, queue_id)
+                finally:
+                    worker_conn.close()
+                return {"started": True, "run_id": "fake-metadata"}
+
+            def playlist_start(worker_db_path, *_args, **_kwargs):
+                launches.append(("playlist", time.monotonic()))
+                worker_conn = core.connect(worker_db_path)
+                try:
+                    with worker_conn:
+                        row = worker_conn.execute(
+                            "SELECT queue_id FROM worker_queue WHERE worker_type = 'playlist'"
+                        ).fetchone()
+                        core.remove_worker_queue_entry(
+                            worker_conn,
+                            int(row["queue_id"]),
+                        )
+                finally:
+                    worker_conn.close()
+                return {"started": True, "run_id": "fake-playlist"}
+
+            dispatcher = WorkerQueueDispatcher()
+            config = load_config(Path(temp_dir) / "config.json")
+            config.update(
+                {
+                    "dispatch_mode": "delay",
+                    "job_dispatch_delay_seconds": 0.2,
+                    "youtube_max_in_flight": 1,
+                    "archivarix_max_in_flight": 1,
+                }
+            )
+            with (
+                patch.object(MetadataWorker, "start", new=metadata_start),
+                patch.object(MetadataWorker, "is_alive", return_value=False),
+                patch.object(MetadataWorker, "blocked_reason", return_value=""),
+                patch.object(
+                    workers.PLAYLIST_SCAN_WORKER,
+                    "start",
+                    side_effect=playlist_start,
+                ),
+                patch.object(
+                    workers.PLAYLIST_SCAN_WORKER,
+                    "is_running",
+                    return_value=False,
+                ),
+            ):
+                result = dispatcher.start(
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    config,
+                )
+                self.assertTrue(result["started"])
+                deadline = time.time() + 2
+                while dispatcher.is_running() and time.time() < deadline:
+                    time.sleep(0.01)
+
+            self.assertFalse(dispatcher.is_running())
+            self.assertEqual([worker_type for worker_type, _ in launches], ["metadata", "playlist"])
+            self.assertGreaterEqual(launches[1][1] - launches[0][1], 0.18)
 
     def test_youtube_authentication_block_does_not_stop_placeholder_work(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3474,6 +3632,79 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertIn("2 videos", log["message"])
             finally:
                 conn.close()
+
+    def test_playlist_worker_still_uses_ytdlp_in_throttle_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLthrottle', 'Throttle')"
+                    )
+                    core.enqueue_playlist_scan_item(
+                        conn,
+                        "PLthrottle",
+                        manual=False,
+                    )
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            header = {
+                "video_count": 1,
+                "has_video_count": True,
+                "visibility": "private",
+            }
+            videos = [{"video_id": "private-video"}]
+            core.configure_request_pacing(
+                {
+                    "dispatch_mode": "throttle",
+                    "request_delay_min_seconds": 0,
+                    "request_delay_max_seconds": 0,
+                }
+            )
+            try:
+                with (
+                    patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                    patch("yt_library.workers.request_text", return_value="header page"),
+                    patch(
+                        "yt_library.workers.extract_playlist_metadata",
+                        return_value=header,
+                    ),
+                    patch(
+                        "yt_library.workers.scan_playlist_ytdlp",
+                        return_value=(videos, {}),
+                    ) as scan_ytdlp,
+                    patch("yt_library.workers.scan_playlist_videos") as scan_web,
+                    patch(
+                        "yt_library.workers.save_playlist_scan",
+                        return_value=(1, 0),
+                    ),
+                    patch(
+                        "yt_library.workers.enqueue_placeholder_recovery_targets",
+                        return_value={"inserted": 0},
+                    ),
+                ):
+                    worker._run(
+                        "test-playlist-throttle-ytdlp",
+                        db_path,
+                        Path(temp_dir) / "cookies.txt",
+                        delay=0,
+                        limit=1,
+                        force=False,
+                        stale_days=7,
+                        record_summary=False,
+                    )
+            finally:
+                core.configure_request_pacing({"dispatch_mode": "delay"})
+
+            scan_ytdlp.assert_called_once_with(
+                "PLthrottle",
+                Path(temp_dir) / "cookies.txt",
+                "",
+            )
+            scan_web.assert_not_called()
 
     def test_playlist_worker_skips_when_header_count_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

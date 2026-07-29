@@ -16,14 +16,14 @@ from typing import Any
 from .config import (
     config_path,
     configured_archivarix_max_in_flight,
-    configured_archivarix_request_interval,
     configured_archivarix_request_timeout,
     configured_archivarix_retry_attempts,
     configured_archivarix_retry_backoff,
     configured_archivarix_stream_timeout,
+    configured_dispatch_mode,
+    configured_job_dispatch_delay,
     configured_youtube_max_in_flight,
     configured_proxy,
-    configured_youtube_request_interval,
     effective_display_timezone,
 )
 from .core import *
@@ -1572,9 +1572,11 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         self._metadata_workers: dict[int, tuple[MetadataWorker, str]] = {}
         self._placeholder_workers: dict[int, tuple[PlaceholderRecoveryWorker, str]] = {}
         self._archivarix_retry_requested = threading.Event()
-        self._youtube_request_interval = 0.0
-        self._archivarix_request_interval = 0.0
-        self._timing_revision = 0
+        self._dispatch_mode = "delay"
+        self._job_dispatch_delay = 0.0
+        self._youtube_max_in_flight = 1
+        self._archivarix_max_in_flight = 1
+        self._dispatch_revision = 0
 
     def stats(self, remaining_count: int) -> dict[str, Any]:
         with self._lock:
@@ -1609,8 +1611,10 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         config_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         config = config_data or {}
-        youtube_interval = configured_youtube_request_interval(config)
-        archivarix_interval = configured_archivarix_request_interval(config)
+        dispatch_mode = configured_dispatch_mode(config)
+        job_dispatch_delay = configured_job_dispatch_delay(config)
+        youtube_max_in_flight = configured_youtube_max_in_flight(config)
+        archivarix_max_in_flight = configured_archivarix_max_in_flight(config)
 
         def prepare_run() -> None:
             self._started_at = utc_now()
@@ -1620,7 +1624,12 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             self._metadata_workers = {}
             self._placeholder_workers = {}
             self._archivarix_retry_requested.clear()
-            self._set_request_intervals_unlocked(youtube_interval, archivarix_interval)
+            self._set_dispatch_settings_unlocked(
+                dispatch_mode,
+                job_dispatch_delay,
+                youtube_max_in_flight,
+                archivarix_max_in_flight,
+            )
 
         return self._start_background(
             self._run,
@@ -1631,10 +1640,6 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 effective_display_timezone(config),
                 config_path(config, "archivarix_cookies"),
                 config_path(config, "archivarix_thumbnail_dir"),
-                configured_youtube_request_interval(config),
-                configured_youtube_max_in_flight(config),
-                configured_archivarix_request_interval(config),
-                configured_archivarix_max_in_flight(config),
                 configured_archivarix_request_timeout(config),
                 configured_archivarix_stream_timeout(config),
                 configured_archivarix_retry_attempts(config),
@@ -1674,33 +1679,56 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         self._placeholder_block_reason = ""
         self._archivarix_retry_requested.set()
 
-    def _set_request_intervals_unlocked(
+    def _set_dispatch_settings_unlocked(
         self,
-        youtube_seconds: float,
-        archivarix_seconds: float,
+        mode: str,
+        job_delay_seconds: float,
+        youtube_max_in_flight: int,
+        archivarix_max_in_flight: int,
     ) -> None:
-        self._youtube_request_interval = max(0.0, float(youtube_seconds))
-        self._archivarix_request_interval = max(0.0, float(archivarix_seconds))
-        self._timing_revision += 1
+        self._dispatch_mode = "throttle" if mode == "throttle" else "delay"
+        self._job_dispatch_delay = max(0.0, float(job_delay_seconds))
+        self._youtube_max_in_flight = max(
+            1,
+            min(100, int(youtube_max_in_flight)),
+        )
+        self._archivarix_max_in_flight = max(
+            1,
+            min(20, int(archivarix_max_in_flight)),
+        )
+        self._dispatch_revision += 1
 
-    def update_request_intervals(
+    def update_dispatch_settings(
         self,
-        youtube_seconds: float,
-        archivarix_seconds: float,
-    ) -> dict[str, float]:
+        mode: str,
+        job_delay_seconds: float,
+        youtube_max_in_flight: int,
+        archivarix_max_in_flight: int,
+    ) -> dict[str, Any]:
         with self._lock:
-            self._set_request_intervals_unlocked(youtube_seconds, archivarix_seconds)
-            return {
-                "youtube_seconds": self._youtube_request_interval,
-                "archivarix_seconds": self._archivarix_request_interval,
-            }
+            self._set_dispatch_settings_unlocked(
+                mode,
+                job_delay_seconds,
+                youtube_max_in_flight,
+                archivarix_max_in_flight,
+            )
+            return self._dispatch_settings_unlocked()
 
-    def request_intervals(self) -> dict[str, float]:
+    def _dispatch_settings_unlocked(self) -> dict[str, Any]:
+        effective_delay = (
+            0.0 if self._dispatch_mode == "throttle" else self._job_dispatch_delay
+        )
+        return {
+            "dispatch_mode": self._dispatch_mode,
+            "job_dispatch_delay_seconds": self._job_dispatch_delay,
+            "effective_job_dispatch_delay_seconds": effective_delay,
+            "youtube_max_in_flight": self._youtube_max_in_flight,
+            "archivarix_max_in_flight": self._archivarix_max_in_flight,
+        }
+
+    def dispatch_settings(self) -> dict[str, Any]:
         with self._lock:
-            return {
-                "youtube_seconds": self._youtube_request_interval,
-                "archivarix_seconds": self._archivarix_request_interval,
-            }
+            return self._dispatch_settings_unlocked()
 
     def _mark_initial_count(self, count: int) -> None:
         with self._lock:
@@ -1778,29 +1806,20 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         timezone_name: str,
         archivarix_cookie_file: Path,
         archivarix_thumb_dir: Path,
-        youtube_interval: float,
-        youtube_max_in_flight: int,
-        archivarix_interval: float,
-        archivarix_max_in_flight: int,
         archivarix_request_timeout: float = 15.0,
         archivarix_stream_timeout: float = 30.0,
         archivarix_retry_attempts: int = 3,
         archivarix_retry_backoff_seconds: float = 2.0,
         proxy_url: str = "",
     ) -> None:
-        with self._lock:
-            if self._timing_revision == 0:
-                self._set_request_intervals_unlocked(youtube_interval, archivarix_interval)
         conn = connect(db_path)
         try:
             self._mark_initial_count(worker_queue_count(conn))
         finally:
             conn.close()
-        last_youtube_launch: float | None = None
-        last_archivarix_launch: float | None = None
-        next_youtube_launch = time.monotonic()
-        next_archivarix_launch = next_youtube_launch
-        timing_revision = -1
+        last_dispatch: float | None = None
+        next_dispatch = time.monotonic()
+        dispatch_revision = -1
         conn = connect(db_path)
         try:
             block = external_service_block(conn, "archivarix")
@@ -1854,118 +1873,122 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 with self._lock:
                     metadata_queue_ids = set(self._metadata_workers)
                     placeholder_queue_ids = set(self._placeholder_workers)
-                    current_youtube_interval = self._youtube_request_interval
-                    current_archivarix_interval = self._archivarix_request_interval
-                    current_timing_revision = self._timing_revision
-                if current_timing_revision != timing_revision:
-                    next_youtube_launch = (
-                        last_youtube_launch + current_youtube_interval
-                        if last_youtube_launch is not None
+                    current_mode = self._dispatch_mode
+                    current_job_delay = self._job_dispatch_delay
+                    youtube_max_in_flight = self._youtube_max_in_flight
+                    archivarix_max_in_flight = self._archivarix_max_in_flight
+                    current_dispatch_revision = self._dispatch_revision
+                effective_job_delay = (
+                    0.0 if current_mode == "throttle" else current_job_delay
+                )
+                if current_dispatch_revision != dispatch_revision:
+                    next_dispatch = (
+                        last_dispatch + effective_job_delay
+                        if last_dispatch is not None
                         else now
                     )
-                    next_archivarix_launch = (
-                        last_archivarix_launch + current_archivarix_interval
-                        if last_archivarix_launch is not None
-                        else now
-                    )
-                    timing_revision = current_timing_revision
+                    dispatch_revision = current_dispatch_revision
 
+                eligible_worker_types: list[str] = []
                 if (
                     not youtube_blocked
                     and len(metadata_queue_ids) < youtube_max_in_flight
-                    and now >= next_youtube_launch
                 ):
-                    row = self._next_row(db_path, ("metadata",), metadata_queue_ids)
-                    if row:
-                        queue_id = int(row.get("queue_id") or 0)
-                        worker = MetadataWorker()
-                        result = worker.start(
-                            db_path,
-                            cookie_file,
-                            thumb_dir,
-                            delay=0.0,
-                            limit=1,
-                            force=False,
-                            stale_days=30,
-                            record_summary=False,
-                            queue_id=queue_id,
-                            proxy_url=proxy_url,
-                        )
-                        if result.get("started"):
-                            with self._lock:
-                                self._metadata_workers[queue_id] = (worker, str(result.get("run_id") or ""))
-                            last_youtube_launch = now
-                            next_youtube_launch = now + current_youtube_interval
-
+                    eligible_worker_types.append("metadata")
                 if (
                     not archivarix_blocked
                     and len(placeholder_queue_ids) < archivarix_max_in_flight
-                    and now >= next_archivarix_launch
                 ):
-                    row = self._next_row(db_path, ("placeholder",), placeholder_queue_ids)
-                    if row:
-                        queue_id = int(row.get("queue_id") or 0)
-                        worker = PlaceholderRecoveryWorker()
-                        result = worker.start(
-                            db_path,
-                            archivarix_cookie_file,
-                            archivarix_thumb_dir,
-                            queue_id=queue_id,
-                            request_timeout=archivarix_request_timeout,
-                            stream_timeout=archivarix_stream_timeout,
-                            retry_attempts=archivarix_retry_attempts,
-                            retry_backoff_seconds=archivarix_retry_backoff_seconds,
-                            proxy_url=proxy_url,
-                        )
-                        if result.get("blocked"):
-                            reason = str(result.get("message") or "unavailable")
-                            conn = connect(db_path)
-                            try:
-                                with conn:
-                                    if reason != self._placeholder_block_reason:
-                                        log_worker_event(
-                                            conn,
-                                            "",
-                                            "placeholder warn",
-                                            f"Automatic recovery skipped: {reason}",
-                                            row.get("video_id") or "",
-                                        )
-                            finally:
-                                conn.close()
-                            self._placeholder_block_reason = reason
-                            archivarix_blocked = True
-                        elif result.get("started"):
-                            self._placeholder_block_reason = ""
-                            with self._lock:
-                                self._placeholder_workers[queue_id] = (
-                                    worker,
-                                    str(result.get("run_id") or ""),
-                                )
-                            last_archivarix_launch = now
-                            next_archivarix_launch = now + current_archivarix_interval
-
-                with self._lock:
-                    has_active = bool(self._metadata_workers or self._placeholder_workers)
-                if has_active:
-                    self._stop.wait(0.05)
-                    continue
-
-                eligible_worker_types: list[str] = []
-                if not youtube_blocked:
-                    eligible_worker_types.extend(("metadata", "playlist", "history"))
-                if not archivarix_blocked:
                     eligible_worker_types.append("placeholder")
+                has_active = bool(metadata_queue_ids or placeholder_queue_ids)
+                if not has_active and not youtube_blocked:
+                    eligible_worker_types.extend(("playlist", "history"))
                 if not eligible_worker_types:
+                    if has_active:
+                        self._stop.wait(0.05)
+                        continue
                     return
-                row = self._next_row(db_path, tuple(eligible_worker_types))
+                row = self._next_row(
+                    db_path,
+                    tuple(eligible_worker_types),
+                    metadata_queue_ids | placeholder_queue_ids,
+                )
                 if not row:
+                    if has_active:
+                        self._stop.wait(0.05)
+                        continue
                     return
-                worker_type = row.get("worker_type") or ""
-                if worker_type in {"metadata", "placeholder"}:
-                    wait_until = next_youtube_launch if worker_type == "metadata" else next_archivarix_launch
-                    self._stop.wait(max(0.01, min(0.1, wait_until - time.monotonic())))
+                if now < next_dispatch:
+                    self._stop.wait(
+                        max(0.01, min(0.1, next_dispatch - time.monotonic()))
+                    )
                     continue
-                if worker_type == "playlist":
+                worker_type = row.get("worker_type") or ""
+                queue_id = int(row.get("queue_id") or 0)
+                launched = False
+                launched_at: float | None = None
+                if worker_type == "metadata":
+                    worker = MetadataWorker()
+                    result = worker.start(
+                        db_path,
+                        cookie_file,
+                        thumb_dir,
+                        delay=0.0,
+                        limit=1,
+                        force=False,
+                        stale_days=30,
+                        record_summary=False,
+                        queue_id=queue_id,
+                        proxy_url=proxy_url,
+                    )
+                    if result.get("started"):
+                        with self._lock:
+                            self._metadata_workers[queue_id] = (
+                                worker,
+                                str(result.get("run_id") or ""),
+                            )
+                        launched = True
+                        launched_at = time.monotonic()
+                elif worker_type == "placeholder":
+                    worker = PlaceholderRecoveryWorker()
+                    result = worker.start(
+                        db_path,
+                        archivarix_cookie_file,
+                        archivarix_thumb_dir,
+                        queue_id=queue_id,
+                        request_timeout=archivarix_request_timeout,
+                        stream_timeout=archivarix_stream_timeout,
+                        retry_attempts=archivarix_retry_attempts,
+                        retry_backoff_seconds=archivarix_retry_backoff_seconds,
+                        proxy_url=proxy_url,
+                    )
+                    if result.get("blocked"):
+                        reason = str(result.get("message") or "unavailable")
+                        conn = connect(db_path)
+                        try:
+                            with conn:
+                                if reason != self._placeholder_block_reason:
+                                    log_worker_event(
+                                        conn,
+                                        "",
+                                        "placeholder warn",
+                                        f"Automatic recovery skipped: {reason}",
+                                        row.get("video_id") or "",
+                                    )
+                        finally:
+                            conn.close()
+                        self._placeholder_block_reason = reason
+                        archivarix_blocked = True
+                    elif result.get("started"):
+                        self._placeholder_block_reason = ""
+                        with self._lock:
+                            self._placeholder_workers[queue_id] = (
+                                worker,
+                                str(result.get("run_id") or ""),
+                            )
+                        launched = True
+                        launched_at = time.monotonic()
+                elif worker_type == "playlist":
                     result = PLAYLIST_SCAN_WORKER.start(
                         db_path,
                         cookie_file,
@@ -1976,6 +1999,9 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         record_summary=False,
                         proxy_url=proxy_url,
                     )
+                    launched = bool(result.get("started"))
+                    if launched:
+                        launched_at = time.monotonic()
                     if not result.get("started") and not PLAYLIST_SCAN_WORKER.is_running():
                         time.sleep(0.5)
                     self._wait_for_worker(PLAYLIST_SCAN_WORKER)
@@ -1990,6 +2016,9 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         timezone_name=timezone_name,
                         proxy_url=proxy_url,
                     )
+                    launched = bool(result.get("started"))
+                    if launched:
+                        launched_at = time.monotonic()
                     if not result.get("started") and not LIVE_HISTORY_WORKER.is_running():
                         time.sleep(0.5)
                     self._wait_for_worker(LIVE_HISTORY_WORKER)
@@ -1998,6 +2027,9 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 else:
                     self._drop_unknown_row(db_path, row)
                     self._mark_completed()
+                if launched:
+                    last_dispatch = launched_at or time.monotonic()
+                    next_dispatch = last_dispatch + effective_job_delay
         finally:
             with self._lock:
                 metadata_workers = [worker for worker, _run_id in self._metadata_workers.values()]

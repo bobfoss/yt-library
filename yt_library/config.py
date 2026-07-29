@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -26,20 +27,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "display_timezone": "",
     "use_proxy": False,
     "proxy": "",
-    "request_jitter_enabled": False,
-    "youtube_request_interval_seconds": 5.0,
-    "youtube_request_delay_min_seconds": 6.0,
-    "youtube_request_delay_max_seconds": 10.0,
+    "dispatch_mode": "delay",
+    "job_dispatch_delay_seconds": 5.0,
+    "request_delay_min_seconds": 6.0,
+    "request_delay_max_seconds": 10.0,
     "youtube_max_in_flight": 10,
-    "archivarix_request_interval_seconds": 3.0,
-    "archivarix_request_delay_min_seconds": 6.0,
-    "archivarix_request_delay_max_seconds": 10.0,
     "archivarix_max_in_flight": 1,
     "archivarix_request_timeout_seconds": 15.0,
     "archivarix_stream_timeout_seconds": 30.0,
     "archivarix_retry_attempts": 3,
     "archivarix_retry_backoff_seconds": 2.0,
 }
+
+_LEGACY_YOUTUBE_REQUEST_INTERVAL_SECONDS = 5.0
+_LEGACY_ARCHIVARIX_REQUEST_INTERVAL_SECONDS = 3.0
 
 
 def configured_display_timezone(config: dict[str, Any]) -> str:
@@ -57,10 +58,29 @@ def effective_display_timezone(config: dict[str, Any]) -> str:
     return configured_display_timezone(config) or "UTC"
 
 
-def configured_youtube_request_interval(config: dict[str, Any]) -> float:
+def configured_dispatch_mode(config: dict[str, Any]) -> str:
+    value = str(config.get("dispatch_mode") or "").strip().lower()
+    if value in {"delay", "throttle"}:
+        return value
+    legacy_value = config.get("request_jitter_enabled", False)
+    if isinstance(legacy_value, bool):
+        return "throttle" if legacy_value else "delay"
+    return (
+        "throttle"
+        if str(legacy_value).strip().lower() in {"1", "true", "yes", "on"}
+        else "delay"
+    )
+
+
+def configured_job_dispatch_delay(config: dict[str, Any]) -> float:
     return max(
         0.0,
-        float(config.get("youtube_request_interval_seconds", DEFAULT_CONFIG["youtube_request_interval_seconds"])),
+        float(
+            config.get(
+                "job_dispatch_delay_seconds",
+                DEFAULT_CONFIG["job_dispatch_delay_seconds"],
+            )
+        ),
     )
 
 
@@ -84,28 +104,13 @@ def configured_proxy(config: dict[str, Any]) -> str:
     return proxy_url if configured_use_proxy(config) else ""
 
 
-def configured_request_jitter_enabled(config: dict[str, Any]) -> bool:
-    value = config.get(
-        "request_jitter_enabled",
-        DEFAULT_CONFIG["request_jitter_enabled"],
-    )
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _configured_request_delay_range(
-    config: dict[str, Any],
-    site: str,
-) -> tuple[float, float]:
-    minimum_key = f"{site}_request_delay_min_seconds"
-    maximum_key = f"{site}_request_delay_max_seconds"
+def configured_request_delay_range(config: dict[str, Any]) -> tuple[float, float]:
     minimum = max(
         0.0,
         float(
             config.get(
-                minimum_key,
-                DEFAULT_CONFIG[minimum_key],
+                "request_delay_min_seconds",
+                DEFAULT_CONFIG["request_delay_min_seconds"],
             )
         ),
     )
@@ -113,31 +118,16 @@ def _configured_request_delay_range(
         minimum,
         float(
             config.get(
-                maximum_key,
-                DEFAULT_CONFIG[maximum_key],
+                "request_delay_max_seconds",
+                DEFAULT_CONFIG["request_delay_max_seconds"],
             )
         ),
     )
     return minimum, maximum
 
 
-def configured_youtube_request_delay_range(config: dict[str, Any]) -> tuple[float, float]:
-    return _configured_request_delay_range(config, "youtube")
-
-
-def configured_archivarix_request_delay_range(config: dict[str, Any]) -> tuple[float, float]:
-    return _configured_request_delay_range(config, "archivarix")
-
-
 def configured_youtube_max_in_flight(config: dict[str, Any]) -> int:
     return max(1, min(100, int(config.get("youtube_max_in_flight", DEFAULT_CONFIG["youtube_max_in_flight"]))))
-
-
-def configured_archivarix_request_interval(config: dict[str, Any]) -> float:
-    return max(
-        0.0,
-        float(config.get("archivarix_request_interval_seconds", DEFAULT_CONFIG["archivarix_request_interval_seconds"])),
-    )
 
 
 def configured_archivarix_max_in_flight(config: dict[str, Any]) -> int:
@@ -224,8 +214,69 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
                 if key in DEFAULT_CONFIG and value is not None
             }
         )
+        if "dispatch_mode" not in loaded:
+            config["dispatch_mode"] = configured_dispatch_mode(loaded)
+        if "job_dispatch_delay_seconds" not in loaded:
+            legacy_delays: list[float] = []
+            for key, fallback in (
+                (
+                    "youtube_request_interval_seconds",
+                    _LEGACY_YOUTUBE_REQUEST_INTERVAL_SECONDS,
+                ),
+                (
+                    "archivarix_request_interval_seconds",
+                    _LEGACY_ARCHIVARIX_REQUEST_INTERVAL_SECONDS,
+                ),
+            ):
+                try:
+                    value = float(loaded.get(key, fallback))
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(value):
+                    legacy_delays.append(max(0.0, value))
+            if legacy_delays:
+                config["job_dispatch_delay_seconds"] = max(legacy_delays)
+        if "request_delay_min_seconds" not in loaded:
+            legacy_minimums: list[float] = []
+            for key in (
+                "youtube_request_delay_min_seconds",
+                "archivarix_request_delay_min_seconds",
+            ):
+                try:
+                    value = float(
+                        loaded.get(key, DEFAULT_CONFIG["request_delay_min_seconds"])
+                    )
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(value):
+                    legacy_minimums.append(max(0.0, value))
+            if legacy_minimums:
+                config["request_delay_min_seconds"] = max(legacy_minimums)
+        if "request_delay_max_seconds" not in loaded:
+            legacy_maximums: list[float] = []
+            for key in (
+                "youtube_request_delay_max_seconds",
+                "archivarix_request_delay_max_seconds",
+            ):
+                try:
+                    value = float(
+                        loaded.get(key, DEFAULT_CONFIG["request_delay_max_seconds"])
+                    )
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(value):
+                    legacy_maximums.append(max(0.0, value))
+            if legacy_maximums:
+                config["request_delay_max_seconds"] = max(legacy_maximums)
         if "use_proxy" not in loaded and str(loaded.get("proxy") or "").strip():
             config["use_proxy"] = True
+    config["dispatch_mode"] = configured_dispatch_mode(config)
+    config["job_dispatch_delay_seconds"] = configured_job_dispatch_delay(config)
+    request_delay_min, request_delay_max = configured_request_delay_range(config)
+    config["request_delay_min_seconds"] = request_delay_min
+    config["request_delay_max_seconds"] = request_delay_max
+    config["youtube_max_in_flight"] = configured_youtube_max_in_flight(config)
+    config["archivarix_max_in_flight"] = configured_archivarix_max_in_flight(config)
     configured_proxy_address(config)
     config["_config_path"] = str(path)
     return config

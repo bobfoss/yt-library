@@ -65,14 +65,11 @@ in the generated config file:
   "display_timezone": "",
   "use_proxy": false,
   "proxy": "",
-  "request_jitter_enabled": false,
-  "youtube_request_interval_seconds": 5.0,
-  "youtube_request_delay_min_seconds": 6.0,
-  "youtube_request_delay_max_seconds": 10.0,
+  "dispatch_mode": "delay",
+  "job_dispatch_delay_seconds": 5.0,
+  "request_delay_min_seconds": 6.0,
+  "request_delay_max_seconds": 10.0,
   "youtube_max_in_flight": 10,
-  "archivarix_request_interval_seconds": 3.0,
-  "archivarix_request_delay_min_seconds": 6.0,
-  "archivarix_request_delay_max_seconds": 10.0,
   "archivarix_max_in_flight": 1,
   "archivarix_request_timeout_seconds": 15.0,
   "archivarix_stream_timeout_seconds": 30.0,
@@ -95,26 +92,26 @@ API, stream, thumbnail, and yt-dlp request through a SOCKS5 proxy. Use `socks5h`
 for proxy-side DNS resolution. The Admin header can update the timezone and
 proxy settings together; changing either proxy setting restarts the service so
 all new network clients use the saved configuration.
-The request interval settings control how often each site's next task may launch.
-The matching `max_in_flight` settings cap concurrent tasks; long Archivarix
-lookups therefore do not delay the YouTube launch cadence.
-The Admin worker queue controls expose both request intervals. Changes are saved
-to the config file and retime an active dispatcher without restarting it.
+`dispatch_mode` selects one of two queue policies. In `delay` mode,
+`job_dispatch_delay_seconds` spaces every worker launch, regardless of worker
+type. In `throttle` mode, jobs launch without that dispatch delay and every
+direct YouTube, Archivarix, and yt-dlp request passes through one global
+randomized request gate using `request_delay_min_seconds` and
+`request_delay_max_seconds`.
+The domain-based `youtube_max_in_flight` and `archivarix_max_in_flight` settings
+still cap concurrent jobs. Lowering a cap does not stop active jobs; it prevents
+new jobs from launching until the active count falls below the new limit.
+The Admin worker queue exposes the two policies as stacked **Dispatch mode**
+radio choices, along with both in-flight caps. Changes are saved to the config
+file and update an active dispatcher and request pacer without restarting the
+service.
 When YouTube rejects an authenticated request, the worker stops its YouTube task
 group and records one cached, low-volume yt-dlp authentication probe in the debug
 log. Public-only yt-dlp clients are diagnostic only and are not used to complete
 authenticated metadata tasks that require private access or reaction state.
-
-Set `request_jitter_enabled` to `true` to add randomized spacing between
-app-managed requests. YouTube uses `youtube_request_delay_min_seconds` and
-`youtube_request_delay_max_seconds`; Archivarix and its archived thumbnail
-requests use the matching `archivarix_request_delay_*` settings. Each site's
-delay is shared across concurrent workers, so increasing `max_in_flight` does
-not bypass it. The Admin worker queue exposes one **Add jitter** checkbox plus
-both sites' minimum and maximum delays, and saves changes to the config file
-without restarting the service. Both sites default to a 6-to-10-second range,
-while jitter remains disabled until **Add jitter** is checked. Network activity
-managed internally by `yt-dlp` is not paced.
+Legacy per-site dispatch and jitter settings are migrated automatically: the
+largest prior site delay becomes the global job delay, and the largest prior
+minimum and maximum become the shared throttle range.
 
 Open:
 

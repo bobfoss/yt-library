@@ -69,6 +69,16 @@
     .proxy-input { width: 320px; }
     .delay-input { width: 150px; }
     .settings-status { align-self: center; min-width: 64px; }
+    .dispatch-settings { display: grid; gap: 10px; margin: 14px 0 10px; padding: 0; border: 0; }
+    .dispatch-settings legend { margin-bottom: 7px; color: var(--ink); font-size: 14px; font-weight: 700; }
+    .dispatch-option { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+    .dispatch-option-heading { display: flex; grid-template-columns: none; flex-direction: row; align-items: flex-start; gap: 9px; color: var(--ink); cursor: pointer; }
+    .dispatch-option-heading input { width: auto; margin: 3px 0 0; }
+    .dispatch-option-heading strong { display: block; font-size: 14px; }
+    .dispatch-option-heading small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 400; }
+    .dispatch-option-fields { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 10px 0 0 25px; }
+    .dispatch-helper { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 12px; }
+    .capacity-controls { margin-top: 10px; }
     label.checkbox { display: flex; flex-direction: row; align-items: center; gap: 7px; padding-bottom: 8px; }
     label.checkbox input { width: auto; }
     input:disabled { cursor: not-allowed; opacity: 0.55; }
@@ -218,15 +228,33 @@
         <div class="panel"><div class="metric">Archivarix requests (24h)</div><div id="archivarixRequests24h" class="value">0</div></div>
         <div class="panel"><div class="metric">Archivarix requests tracked</div><div id="archivarixRequestsTotal" class="value">0</div></div>
       </div>
-      <div class="controls">
-        <label>YouTube delay (seconds)<input id="youtubeRequestInterval" class="delay-input" type="number" min="0" step="0.1"></label>
-        <label>Archivarix delay (seconds)<input id="archivarixRequestInterval" class="delay-input" type="number" min="0" step="0.1"></label>
-        <label class="checkbox"><input id="requestJitterEnabled" type="checkbox">Add jitter</label>
-        <label>YouTube jitter min<input id="youtubeDelayMin" class="delay-input" type="number" min="0" step="0.1" disabled></label>
-        <label>YouTube jitter max<input id="youtubeDelayMax" class="delay-input" type="number" min="0" step="0.1" disabled></label>
-        <label>Archivarix jitter min<input id="archivarixDelayMin" class="delay-input" type="number" min="0" step="0.1" disabled></label>
-        <label>Archivarix jitter max<input id="archivarixDelayMax" class="delay-input" type="number" min="0" step="0.1" disabled></label>
-        <span id="requestIntervalStatus" class="metric settings-status" aria-live="polite"></span>
+      <fieldset class="dispatch-settings">
+        <legend>Dispatch mode</legend>
+        <div class="dispatch-option">
+          <label class="dispatch-option-heading">
+            <input id="dispatchModeDelay" name="dispatchMode" type="radio" value="delay">
+            <span><strong>Delay job dispatches</strong><small>Space out all worker job launches by a fixed delay.</small></span>
+          </label>
+          <div class="dispatch-option-fields">
+            <label>Job delay (seconds)<input id="jobDispatchDelay" class="delay-input" type="number" min="0" step="0.1"></label>
+          </div>
+        </div>
+        <div class="dispatch-option">
+          <label class="dispatch-option-heading">
+            <input id="dispatchModeThrottle" name="dispatchMode" type="radio" value="throttle">
+            <span><strong>Throttle requests</strong><small>Launch jobs up to their in-flight limits and globally space their requests.</small></span>
+          </label>
+          <div class="dispatch-option-fields">
+            <label>Minimum delay (seconds)<input id="requestDelayMin" class="delay-input" type="number" min="0" step="0.1" disabled></label>
+            <label>Maximum delay (seconds)<input id="requestDelayMax" class="delay-input" type="number" min="0" step="0.1" disabled></label>
+            <p class="dispatch-helper">Applies globally to direct YouTube and Archivarix requests, including requests made by yt-dlp.</p>
+          </div>
+        </div>
+      </fieldset>
+      <div class="controls capacity-controls">
+        <label>YouTube max in flight<input id="youtubeMaxInFlight" class="delay-input" type="number" min="1" max="100" step="1"></label>
+        <label>Archivarix max in flight<input id="archivarixMaxInFlight" class="delay-input" type="number" min="1" max="20" step="1"></label>
+        <span id="dispatchSettingsStatus" class="metric settings-status" aria-live="polite"></span>
       </div>
       <div class="controls">
         <label>URL/video/channel/playlist ID<input id="providedQueueTarget" class="wide-input" type="text" placeholder="YouTube URL, local URL, video ID, channel ID, @handle, or playlist ID"></label>
@@ -338,14 +366,14 @@
       workerQueueEta: document.getElementById('workerQueueEta'),
       archivarixRequests24h: document.getElementById('archivarixRequests24h'),
       archivarixRequestsTotal: document.getElementById('archivarixRequestsTotal'),
-      youtubeRequestInterval: document.getElementById('youtubeRequestInterval'),
-      archivarixRequestInterval: document.getElementById('archivarixRequestInterval'),
-      requestJitterEnabled: document.getElementById('requestJitterEnabled'),
-      youtubeDelayMin: document.getElementById('youtubeDelayMin'),
-      youtubeDelayMax: document.getElementById('youtubeDelayMax'),
-      archivarixDelayMin: document.getElementById('archivarixDelayMin'),
-      archivarixDelayMax: document.getElementById('archivarixDelayMax'),
-      requestIntervalStatus: document.getElementById('requestIntervalStatus'),
+      dispatchModeDelay: document.getElementById('dispatchModeDelay'),
+      dispatchModeThrottle: document.getElementById('dispatchModeThrottle'),
+      jobDispatchDelay: document.getElementById('jobDispatchDelay'),
+      requestDelayMin: document.getElementById('requestDelayMin'),
+      requestDelayMax: document.getElementById('requestDelayMax'),
+      youtubeMaxInFlight: document.getElementById('youtubeMaxInFlight'),
+      archivarixMaxInFlight: document.getElementById('archivarixMaxInFlight'),
+      dispatchSettingsStatus: document.getElementById('dispatchSettingsStatus'),
       startWorkerQueue: document.getElementById('startWorkerQueue'),
       stopWorkerQueue: document.getElementById('stopWorkerQueue'),
       workerQueueRows: document.getElementById('workerQueueRows'),
@@ -376,8 +404,10 @@
     const queueRowHeight = 72;
     const queueOverscan = 10;
     const statusPollMs = 30000;
-    let requestIntervalsSaving = false;
-    let requestIntervalSaveTimer = null;
+    let dispatchSettingsSaving = false;
+    let dispatchSettingsDirty = false;
+    let dispatchSettingsRevision = 0;
+    let dispatchSettingsSaveTimer = null;
     let settingsSaving = false;
     let settingsDirty = false;
     let currentServicePid = 0;
@@ -392,12 +422,11 @@
       }[ch]));
     }
 
-    function syncRequestJitterInputs() {
-      const disabled = !fields.requestJitterEnabled.checked;
-      fields.youtubeDelayMin.disabled = disabled;
-      fields.youtubeDelayMax.disabled = disabled;
-      fields.archivarixDelayMin.disabled = disabled;
-      fields.archivarixDelayMax.disabled = disabled;
+    function syncDispatchModeInputs() {
+      const throttling = fields.dispatchModeThrottle.checked;
+      fields.jobDispatchDelay.disabled = throttling;
+      fields.requestDelayMin.disabled = !throttling;
+      fields.requestDelayMax.disabled = !throttling;
     }
 
     function fmtTime(value) {
@@ -729,28 +758,27 @@
         ? `Latest request ${fmtTime(archivarixRequestCounts.latest_at)}`
         : 'No tracked requests';
       fields.archivarixRequestsTotal.title = fields.archivarixRequests24h.title;
-      const requestIntervals = data.requestIntervals || {};
-      if (!requestIntervalsSaving) {
-        fields.requestJitterEnabled.checked = Boolean(requestIntervals.jitter_enabled);
-        if (document.activeElement !== fields.youtubeRequestInterval) {
-          fields.youtubeRequestInterval.value = Number(requestIntervals.youtube_seconds ?? 0);
+      const dispatchSettings = data.dispatchSettings || {};
+      if (!dispatchSettingsSaving && !dispatchSettingsDirty) {
+        const dispatchMode = dispatchSettings.dispatch_mode === 'throttle' ? 'throttle' : 'delay';
+        fields.dispatchModeDelay.checked = dispatchMode === 'delay';
+        fields.dispatchModeThrottle.checked = dispatchMode === 'throttle';
+        if (document.activeElement !== fields.jobDispatchDelay) {
+          fields.jobDispatchDelay.value = Number(dispatchSettings.job_dispatch_delay_seconds ?? 0);
         }
-        if (document.activeElement !== fields.archivarixRequestInterval) {
-          fields.archivarixRequestInterval.value = Number(requestIntervals.archivarix_seconds ?? 0);
+        if (document.activeElement !== fields.requestDelayMin) {
+          fields.requestDelayMin.value = Number(dispatchSettings.request_delay_min_seconds ?? 0);
         }
-        if (document.activeElement !== fields.youtubeDelayMin) {
-          fields.youtubeDelayMin.value = Number(requestIntervals.youtube_delay_min_seconds ?? 0);
+        if (document.activeElement !== fields.requestDelayMax) {
+          fields.requestDelayMax.value = Number(dispatchSettings.request_delay_max_seconds ?? 0);
         }
-        if (document.activeElement !== fields.youtubeDelayMax) {
-          fields.youtubeDelayMax.value = Number(requestIntervals.youtube_delay_max_seconds ?? 0);
+        if (document.activeElement !== fields.youtubeMaxInFlight) {
+          fields.youtubeMaxInFlight.value = Number(dispatchSettings.youtube_max_in_flight ?? 1);
         }
-        if (document.activeElement !== fields.archivarixDelayMin) {
-          fields.archivarixDelayMin.value = Number(requestIntervals.archivarix_delay_min_seconds ?? 0);
+        if (document.activeElement !== fields.archivarixMaxInFlight) {
+          fields.archivarixMaxInFlight.value = Number(dispatchSettings.archivarix_max_in_flight ?? 1);
         }
-        if (document.activeElement !== fields.archivarixDelayMax) {
-          fields.archivarixDelayMax.value = Number(requestIntervals.archivarix_delay_max_seconds ?? 0);
-        }
-        syncRequestJitterInputs();
+        syncDispatchModeInputs();
       }
       const archivarixBlock = data.archivarixBlock || {};
       fields.archivarixBlock.hidden = !archivarixBlock.blocked;
@@ -976,75 +1004,91 @@
       return response.json();
     }
 
-    async function saveRequestIntervals() {
-      const youtubeSeconds = Number(fields.youtubeRequestInterval.value);
-      const archivarixSeconds = Number(fields.archivarixRequestInterval.value);
-      const youtubeDelayMin = Number(fields.youtubeDelayMin.value);
-      const youtubeDelayMax = Number(fields.youtubeDelayMax.value);
-      const archivarixDelayMin = Number(fields.archivarixDelayMin.value);
-      const archivarixDelayMax = Number(fields.archivarixDelayMax.value);
-      const requestDelays = [
-        youtubeSeconds,
-        archivarixSeconds,
-        youtubeDelayMin,
-        youtubeDelayMax,
-        archivarixDelayMin,
-        archivarixDelayMax,
-      ];
+    async function saveDispatchSettings() {
+      if (dispatchSettingsSaving) {
+        dispatchSettingsDirty = true;
+        return;
+      }
+      if (!dispatchSettingsDirty) return;
+      const saveRevision = dispatchSettingsRevision;
+      const dispatchMode = fields.dispatchModeThrottle.checked ? 'throttle' : 'delay';
+      const jobDispatchDelay = Number(fields.jobDispatchDelay.value);
+      const requestDelayMin = Number(fields.requestDelayMin.value);
+      const requestDelayMax = Number(fields.requestDelayMax.value);
+      const youtubeMaxInFlight = Number(fields.youtubeMaxInFlight.value);
+      const archivarixMaxInFlight = Number(fields.archivarixMaxInFlight.value);
+      const requestDelays = [jobDispatchDelay, requestDelayMin, requestDelayMax];
       if (requestDelays.some(value => !Number.isFinite(value) || value < 0)) {
-        fields.requestIntervalStatus.textContent = 'Invalid value';
+        fields.dispatchSettingsStatus.textContent = 'Invalid value';
         return;
       }
-      if (youtubeDelayMax < youtubeDelayMin || archivarixDelayMax < archivarixDelayMin) {
-        fields.requestIntervalStatus.textContent = 'Max must be at least min';
+      if (requestDelayMax < requestDelayMin) {
+        fields.dispatchSettingsStatus.textContent = 'Max must be at least min';
         return;
       }
-      requestIntervalsSaving = true;
-      fields.requestIntervalStatus.textContent = 'Saving';
+      if (!Number.isInteger(youtubeMaxInFlight) || youtubeMaxInFlight < 1 || youtubeMaxInFlight > 100) {
+        fields.dispatchSettingsStatus.textContent = 'Invalid YouTube limit';
+        return;
+      }
+      if (!Number.isInteger(archivarixMaxInFlight) || archivarixMaxInFlight < 1 || archivarixMaxInFlight > 20) {
+        fields.dispatchSettingsStatus.textContent = 'Invalid Archivarix limit';
+        return;
+      }
+      dispatchSettingsDirty = false;
+      dispatchSettingsSaving = true;
+      fields.dispatchSettingsStatus.textContent = 'Saving';
       try {
-        const payload = await post('/api/admin/request-intervals', {
-          youtube_seconds: youtubeSeconds,
-          archivarix_seconds: archivarixSeconds,
-          jitter_enabled: fields.requestJitterEnabled.checked ? '1' : '0',
-          youtube_delay_min_seconds: youtubeDelayMin,
-          youtube_delay_max_seconds: youtubeDelayMax,
-          archivarix_delay_min_seconds: archivarixDelayMin,
-          archivarix_delay_max_seconds: archivarixDelayMax,
+        const payload = await requestJson('/api/admin/dispatch-settings', {
+          dispatch_mode: dispatchMode,
+          job_dispatch_delay_seconds: jobDispatchDelay,
+          request_delay_min_seconds: requestDelayMin,
+          request_delay_max_seconds: requestDelayMax,
+          youtube_max_in_flight: youtubeMaxInFlight,
+          archivarix_max_in_flight: archivarixMaxInFlight,
         });
-        const saved = payload.requestIntervals || {};
-        fields.youtubeRequestInterval.value = Number(saved.youtube_seconds ?? youtubeSeconds);
-        fields.archivarixRequestInterval.value = Number(saved.archivarix_seconds ?? archivarixSeconds);
-        fields.requestJitterEnabled.checked = Boolean(saved.jitter_enabled);
-        fields.youtubeDelayMin.value = Number(saved.youtube_delay_min_seconds ?? youtubeDelayMin);
-        fields.youtubeDelayMax.value = Number(saved.youtube_delay_max_seconds ?? youtubeDelayMax);
-        fields.archivarixDelayMin.value = Number(saved.archivarix_delay_min_seconds ?? archivarixDelayMin);
-        fields.archivarixDelayMax.value = Number(saved.archivarix_delay_max_seconds ?? archivarixDelayMax);
-        syncRequestJitterInputs();
-        fields.requestIntervalStatus.textContent = 'Saved';
+        const saved = payload.dispatchSettings || {};
+        if (dispatchSettingsRevision === saveRevision) {
+          fields.dispatchModeDelay.checked = saved.dispatch_mode !== 'throttle';
+          fields.dispatchModeThrottle.checked = saved.dispatch_mode === 'throttle';
+          fields.jobDispatchDelay.value = Number(saved.job_dispatch_delay_seconds ?? jobDispatchDelay);
+          fields.requestDelayMin.value = Number(saved.request_delay_min_seconds ?? requestDelayMin);
+          fields.requestDelayMax.value = Number(saved.request_delay_max_seconds ?? requestDelayMax);
+          fields.youtubeMaxInFlight.value = Number(saved.youtube_max_in_flight ?? youtubeMaxInFlight);
+          fields.archivarixMaxInFlight.value = Number(saved.archivarix_max_in_flight ?? archivarixMaxInFlight);
+          syncDispatchModeInputs();
+          fields.dispatchSettingsStatus.textContent = 'Saved';
+        }
       } catch (error) {
-        fields.requestIntervalStatus.textContent = 'Save failed';
+        dispatchSettingsDirty = true;
+        fields.dispatchSettingsStatus.textContent = 'Save failed';
         alert(error.message);
       } finally {
-        requestIntervalsSaving = false;
+        dispatchSettingsSaving = false;
+        if (
+          dispatchSettingsDirty
+          && dispatchSettingsRevision !== saveRevision
+        ) {
+          scheduleDispatchSettingsSave();
+        }
       }
     }
 
-    function scheduleRequestIntervalSave() {
-      if (requestIntervalSaveTimer !== null) {
-        window.clearTimeout(requestIntervalSaveTimer);
+    function scheduleDispatchSettingsSave() {
+      if (dispatchSettingsSaveTimer !== null) {
+        window.clearTimeout(dispatchSettingsSaveTimer);
       }
-      requestIntervalSaveTimer = window.setTimeout(() => {
-        requestIntervalSaveTimer = null;
-        saveRequestIntervals();
+      dispatchSettingsSaveTimer = window.setTimeout(() => {
+        dispatchSettingsSaveTimer = null;
+        saveDispatchSettings();
       }, 350);
     }
 
-    function flushRequestIntervalSave() {
-      if (requestIntervalSaveTimer !== null) {
-        window.clearTimeout(requestIntervalSaveTimer);
-        requestIntervalSaveTimer = null;
+    function flushDispatchSettingsSave() {
+      if (dispatchSettingsSaveTimer !== null) {
+        window.clearTimeout(dispatchSettingsSaveTimer);
+        dispatchSettingsSaveTimer = null;
       }
-      saveRequestIntervals();
+      saveDispatchSettings();
     }
 
     document.getElementById('scanPlaylists').addEventListener('click', () => post('/api/admin/playlists/start').catch(error => alert(error.message)));
@@ -1094,20 +1138,27 @@
     document.getElementById('stopWorkerQueue').addEventListener('click', () => stopWorkersNow().catch(error => alert(error.message)));
     document.getElementById('refresh').addEventListener('click', () => loadStatus({ force: true }).catch(error => alert(error.message)));
     for (const field of [
-      fields.youtubeRequestInterval,
-      fields.archivarixRequestInterval,
-      fields.youtubeDelayMin,
-      fields.youtubeDelayMax,
-      fields.archivarixDelayMin,
-      fields.archivarixDelayMax,
+      fields.jobDispatchDelay,
+      fields.requestDelayMin,
+      fields.requestDelayMax,
+      fields.youtubeMaxInFlight,
+      fields.archivarixMaxInFlight,
     ]) {
-      field.addEventListener('input', scheduleRequestIntervalSave);
-      field.addEventListener('change', flushRequestIntervalSave);
+      field.addEventListener('input', () => {
+        dispatchSettingsDirty = true;
+        dispatchSettingsRevision += 1;
+        scheduleDispatchSettingsSave();
+      });
+      field.addEventListener('blur', flushDispatchSettingsSave);
     }
-    fields.requestJitterEnabled.addEventListener('change', () => {
-      syncRequestJitterInputs();
-      flushRequestIntervalSave();
-    });
+    for (const field of [fields.dispatchModeDelay, fields.dispatchModeThrottle]) {
+      field.addEventListener('change', () => {
+        dispatchSettingsDirty = true;
+        dispatchSettingsRevision += 1;
+        syncDispatchModeInputs();
+        flushDispatchSettingsSave();
+      });
+    }
     fields.logSourceFilter.addEventListener('change', renderLogs);
     fields.logLevelFilter.addEventListener('change', renderLogs);
     fields.themeToggle.addEventListener('change', () => {

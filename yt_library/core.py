@@ -39,10 +39,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .schema import load_schema
 from .config import (
-    configured_archivarix_request_delay_range,
+    configured_dispatch_mode,
     configured_proxy,
-    configured_request_jitter_enabled,
-    configured_youtube_request_delay_range,
+    configured_request_delay_range,
     effective_display_timezone,
 )
 from .network import socks5_proxy_handlers, ytdlp_proxy_options
@@ -116,19 +115,16 @@ _ARCHIVARIX_REQUEST_HOSTS = (
     "archivarix.net",
     "web.archive.org",
 )
-_youtube_request_pacer = RequestPacer()
-_archivarix_request_pacer = RequestPacer()
+_request_pacer = RequestPacer()
 
 
 def configure_request_pacing(config: dict[str, Any]) -> None:
-    global _youtube_request_pacer, _archivarix_request_pacer
-    youtube_range = configured_youtube_request_delay_range(config)
-    archivarix_range = configured_archivarix_request_delay_range(config)
-    if not configured_request_jitter_enabled(config):
-        youtube_range = (0.0, 0.0)
-        archivarix_range = (0.0, 0.0)
-    _youtube_request_pacer = RequestPacer(*youtube_range)
-    _archivarix_request_pacer = RequestPacer(*archivarix_range)
+    global _request_pacer
+    throttle_requests = configured_dispatch_mode(config) == "throttle"
+    request_range = configured_request_delay_range(config)
+    if not throttle_requests:
+        request_range = (0.0, 0.0)
+    _request_pacer = RequestPacer(*request_range)
 
 
 def request_url_matches_hosts(url: str, hosts: tuple[str, ...]) -> bool:
@@ -150,10 +146,10 @@ def open_with_request_pacing(
     *,
     timeout: float,
 ) -> Any:
-    if is_youtube_request_url(request.full_url):
-        _youtube_request_pacer.wait()
-    elif is_archivarix_request_url(request.full_url):
-        _archivarix_request_pacer.wait()
+    if is_youtube_request_url(request.full_url) or is_archivarix_request_url(
+        request.full_url
+    ):
+        _request_pacer.wait()
     return opener.open(request, timeout=timeout)
 
 PLAYLIST_MATCH_TYPE_NOTES = {
@@ -1021,6 +1017,18 @@ def temporary_ytdlp_cookie_file(cookie_file: Path) -> Iterator[Path | None]:
         yield working_cookie_file
 
 
+def request_paced_youtube_dl(
+    yt_dlp_module: Any,
+    options: dict[str, Any],
+) -> Any:
+    class RequestPacedYoutubeDL(yt_dlp_module.YoutubeDL):
+        def urlopen(self, req: Any) -> Any:
+            _request_pacer.wait()
+            return super().urlopen(req)
+
+    return RequestPacedYoutubeDL(options)
+
+
 def youtube_ytdlp_probe_diagnostics(
     messages: list[str],
     *,
@@ -1116,7 +1124,7 @@ def probe_youtube_authentication_ytdlp(cookie_file: Path, proxy_url: str = "") -
                 "socket_timeout": 15,
                 **ytdlp_proxy_options(proxy_url),
             }
-            with yt_dlp.YoutubeDL(options) as ydl:
+            with request_paced_youtube_dl(yt_dlp, options) as ydl:
                 info = ydl.extract_info(":ythistory", download=False)
             succeeded = bool(info)
     except Exception as exc:
@@ -3719,7 +3727,7 @@ def scan_playlist_ytdlp(
             "skip_download": True,
             **ytdlp_proxy_options(proxy_url),
         }
-        with yt_dlp.YoutubeDL(options) as ydl:
+        with request_paced_youtube_dl(yt_dlp, options) as ydl:
             info = ydl.extract_info(url, download=False)
     if not info:
         text = "\n".join(messages).strip()
@@ -3799,7 +3807,7 @@ def fetch_youtube_history_ytdlp(
             "logger": YtdlpLogger(),
             **ytdlp_proxy_options(proxy_url),
         }
-        with yt_dlp.YoutubeDL(options) as ydl:
+        with request_paced_youtube_dl(yt_dlp, options) as ydl:
             info = ydl.extract_info(":ythistory", download=False)
     entries = (info or {}).get("entries") or []
     rows: list[dict[str, Any]] = []

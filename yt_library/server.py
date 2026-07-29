@@ -18,14 +18,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import (
-    configured_archivarix_request_delay_range,
-    configured_archivarix_request_interval,
+    configured_archivarix_max_in_flight,
+    configured_dispatch_mode,
     configured_display_timezone,
+    configured_job_dispatch_delay,
     configured_proxy_address,
-    configured_request_jitter_enabled,
+    configured_request_delay_range,
     configured_use_proxy,
-    configured_youtube_request_delay_range,
-    configured_youtube_request_interval,
+    configured_youtube_max_in_flight,
     effective_display_timezone,
     ensure_config_file,
     ensure_directory,
@@ -452,7 +452,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 include_logs,
                 worker_queue_limit,
             )
-            data["requestIntervals"] = self.request_interval_settings()
+            data["dispatchSettings"] = self.dispatch_settings()
             data["settings"] = self.admin_settings()
             data["service"] = self.service_status()
             self.send_json(data)
@@ -581,76 +581,88 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 conn.close()
             self.send_json({"ok": True, "displayTimezone": value})
             return
-        if parsed.path == "/api/admin/request-intervals":
+        if parsed.path == "/api/admin/dispatch-settings":
             try:
-                youtube_seconds = float(
-                    (params.get("youtube_seconds") or [""])[0]
+                job_dispatch_delay = float(
+                    (params.get("job_dispatch_delay_seconds") or [""])[0]
                 )
-                archivarix_seconds = float(
-                    (params.get("archivarix_seconds") or [""])[0]
+                request_delay_min = float(
+                    (params.get("request_delay_min_seconds") or [""])[0]
                 )
-                youtube_delay_min = float(
-                    (params.get("youtube_delay_min_seconds") or [""])[0]
+                request_delay_max = float(
+                    (params.get("request_delay_max_seconds") or [""])[0]
                 )
-                youtube_delay_max = float(
-                    (params.get("youtube_delay_max_seconds") or [""])[0]
+                youtube_max_in_flight = int(
+                    (params.get("youtube_max_in_flight") or [""])[0]
                 )
-                archivarix_delay_min = float(
-                    (params.get("archivarix_delay_min_seconds") or [""])[0]
-                )
-                archivarix_delay_max = float(
-                    (params.get("archivarix_delay_max_seconds") or [""])[0]
+                archivarix_max_in_flight = int(
+                    (params.get("archivarix_max_in_flight") or [""])[0]
                 )
             except ValueError:
-                self.send_json({"error": "Request delays must be numbers"}, status=400)
+                self.send_json(
+                    {"error": "Dispatch settings must be numbers"},
+                    status=400,
+                )
                 return
             request_delays = (
-                youtube_seconds,
-                archivarix_seconds,
-                youtube_delay_min,
-                youtube_delay_max,
-                archivarix_delay_min,
-                archivarix_delay_max,
+                job_dispatch_delay,
+                request_delay_min,
+                request_delay_max,
             )
             if (
                 any(not math.isfinite(value) for value in request_delays)
                 or any(value < 0 for value in request_delays)
             ):
                 self.send_json(
-                    {"error": "Request delays must be finite and zero or greater"},
+                    {"error": "Delays must be finite and zero or greater"},
                     status=400,
                 )
                 return
-            if (
-                youtube_delay_max < youtube_delay_min
-                or archivarix_delay_max < archivarix_delay_min
-            ):
+            if request_delay_max < request_delay_min:
                 self.send_json(
-                    {"error": "Jitter maximums must be greater than or equal to minimums"},
+                    {"error": "Throttle maximum must be greater than or equal to minimum"},
                     status=400,
                 )
                 return
-            jitter_enabled = (
-                (params.get("jitter_enabled") or ["0"])[0].strip().lower()
-                in {"1", "true", "yes", "on"}
+            if not 1 <= youtube_max_in_flight <= 100:
+                self.send_json(
+                    {"error": "YouTube max in flight must be between 1 and 100"},
+                    status=400,
+                )
+                return
+            if not 1 <= archivarix_max_in_flight <= 20:
+                self.send_json(
+                    {"error": "Archivarix max in flight must be between 1 and 20"},
+                    status=400,
+                )
+                return
+            dispatch_mode = (
+                (params.get("dispatch_mode") or [""])[0].strip().lower()
             )
-            self.config_data["youtube_request_interval_seconds"] = youtube_seconds
-            self.config_data["archivarix_request_interval_seconds"] = archivarix_seconds
-            self.config_data["request_jitter_enabled"] = jitter_enabled
-            self.config_data["youtube_request_delay_min_seconds"] = youtube_delay_min
-            self.config_data["youtube_request_delay_max_seconds"] = youtube_delay_max
-            self.config_data["archivarix_request_delay_min_seconds"] = archivarix_delay_min
-            self.config_data["archivarix_request_delay_max_seconds"] = archivarix_delay_max
+            if dispatch_mode not in {"delay", "throttle"}:
+                self.send_json(
+                    {"error": "Dispatch mode must be delay or throttle"},
+                    status=400,
+                )
+                return
+            self.config_data["dispatch_mode"] = dispatch_mode
+            self.config_data["job_dispatch_delay_seconds"] = job_dispatch_delay
+            self.config_data["request_delay_min_seconds"] = request_delay_min
+            self.config_data["request_delay_max_seconds"] = request_delay_max
+            self.config_data["youtube_max_in_flight"] = youtube_max_in_flight
+            self.config_data["archivarix_max_in_flight"] = archivarix_max_in_flight
             save_config(self.config_data)
-            WORKER_QUEUE_DISPATCHER.update_request_intervals(
-                youtube_seconds,
-                archivarix_seconds,
+            WORKER_QUEUE_DISPATCHER.update_dispatch_settings(
+                dispatch_mode,
+                job_dispatch_delay,
+                youtube_max_in_flight,
+                archivarix_max_in_flight,
             )
             configure_request_pacing(self.config_data)
             self.send_json(
                 {
                     "ok": True,
-                    "requestIntervals": self.request_interval_settings(),
+                    "dispatchSettings": self.dispatch_settings(),
                 }
             )
             return
@@ -1001,21 +1013,26 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def display_timezone_name(self, conn: sqlite3.Connection) -> str:
         return configured_display_timezone(self.config_data)
 
-    def request_interval_settings(self) -> dict[str, Any]:
-        youtube_delay_min, youtube_delay_max = configured_youtube_request_delay_range(
+    def dispatch_settings(self) -> dict[str, Any]:
+        request_delay_min, request_delay_max = configured_request_delay_range(
             self.config_data
         )
-        archivarix_delay_min, archivarix_delay_max = (
-            configured_archivarix_request_delay_range(self.config_data)
-        )
+        dispatch_mode = configured_dispatch_mode(self.config_data)
+        job_dispatch_delay = configured_job_dispatch_delay(self.config_data)
         return {
-            "youtube_seconds": configured_youtube_request_interval(self.config_data),
-            "archivarix_seconds": configured_archivarix_request_interval(self.config_data),
-            "jitter_enabled": configured_request_jitter_enabled(self.config_data),
-            "youtube_delay_min_seconds": youtube_delay_min,
-            "youtube_delay_max_seconds": youtube_delay_max,
-            "archivarix_delay_min_seconds": archivarix_delay_min,
-            "archivarix_delay_max_seconds": archivarix_delay_max,
+            "dispatch_mode": dispatch_mode,
+            "job_dispatch_delay_seconds": job_dispatch_delay,
+            "effective_job_dispatch_delay_seconds": (
+                0.0 if dispatch_mode == "throttle" else job_dispatch_delay
+            ),
+            "request_delay_min_seconds": request_delay_min,
+            "request_delay_max_seconds": request_delay_max,
+            "youtube_max_in_flight": configured_youtube_max_in_flight(
+                self.config_data
+            ),
+            "archivarix_max_in_flight": configured_archivarix_max_in_flight(
+                self.config_data
+            ),
         }
 
     def admin_settings(self) -> dict[str, Any]:
@@ -1182,6 +1199,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
 def serve(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     ensure_config_file(args.config_data)
+    configure_request_pacing(args.config_data)
     migrate_database(db_path)
     conn = connect(db_path)
     try:
