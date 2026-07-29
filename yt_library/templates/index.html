@@ -340,6 +340,7 @@
     let channelHistoryCounts = new Map();
     let channelDetailTab = 'playlists';
     let renderGeneration = 0;
+    let renderedOmniSearchQuery = '';
     let searchProgressTimer = null;
     let searchInputTimer = null;
     let playlistSearchTimer = null;
@@ -380,6 +381,7 @@
       historyPageState = { key: '', loading: false, data: null };
       historyActivityState = { key: '', loading: false, data: null };
       omniSearchState = { key: '', data: null, promise: null };
+      renderedOmniSearchQuery = '';
       viewDataCache = new Map();
       videoMetaCountsCache = new Map();
       omniMetaCountsCache = new Map();
@@ -1021,11 +1023,16 @@
         clearInterval(searchProgressTimer);
         searchProgressTimer = null;
       }
+      grid.removeAttribute('aria-busy');
+      meta.removeAttribute('aria-busy');
       empty.classList.remove('searching-status');
     }
 
-    function showSearchProgress() {
+    function showSearchProgress({ preserveContent = false } = {}) {
       stopSearchProgress();
+      grid.setAttribute('aria-busy', 'true');
+      meta.setAttribute('aria-busy', 'true');
+      if (preserveContent) return;
       grid.className = 'grid';
       grid.replaceChildren();
       empty.hidden = false;
@@ -1931,6 +1938,7 @@
       }
       if (selected === '__search__') {
         if (!query) {
+          renderedOmniSearchQuery = '';
           title.textContent = 'Search';
           meta.textContent = '';
           grid.replaceChildren();
@@ -1938,11 +1946,19 @@
           empty.textContent = 'Enter a search query.';
           return;
         }
-        title.textContent = 'Searching';
-        meta.textContent = '';
-        showSearchProgress();
-        await new Promise(resolve => requestAnimationFrame(resolve));
-        if (generation !== renderGeneration) return;
+        const preserveSearchContent = (
+          renderedOmniSearchQuery === query
+          && title.textContent === 'Search results'
+        );
+        if (preserveSearchContent) {
+          showSearchProgress({ preserveContent: true });
+        } else {
+          title.textContent = 'Searching';
+          meta.textContent = '';
+          showSearchProgress();
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          if (generation !== renderGeneration) return;
+        }
         let payload;
         try {
           payload = await fetchOmniSearch(query);
@@ -1960,6 +1976,7 @@
         const total = Number(payload.total || 0);
         const remoteLimit = Number(payload.limit || pageSizeNumber() || 100);
         currentPage = Math.floor(Number(payload.offset || 0) / remoteLimit) + 1;
+        renderedOmniSearchQuery = query;
         title.textContent = 'Search results';
         const searchMetaHtml = searchMetaFiltersHtml(payload.metaCounts);
         meta.innerHTML = `

@@ -3320,6 +3320,9 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("{ key: 'videos', label: 'available' }", server.INDEX_HTML)
         self.assertIn("let videoMetaCountsCache = new Map();", server.INDEX_HTML)
         self.assertIn("let omniMetaCountsCache = new Map();", server.INDEX_HTML)
+        self.assertIn("let renderedOmniSearchQuery = '';", server.INDEX_HTML)
+        self.assertIn("showSearchProgress({ preserveContent: true });", server.INDEX_HTML)
+        self.assertIn("grid.setAttribute('aria-busy', 'true');", server.INDEX_HTML)
         self.assertIn(
             "const metaCountsKey = JSON.stringify([scope, playlistId, channelId, query]);",
             server.INDEX_HTML,
