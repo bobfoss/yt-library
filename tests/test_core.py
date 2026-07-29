@@ -3288,6 +3288,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(".badge.members-only-badge", server.INDEX_HTML)
         self.assertIn("'subscriber_only', 'members only'", server.VIDEO_CARD_JS)
         self.assertIn("members-only-icon", server.VIDEO_CARD_JS)
+        self.assertIn("M6 .5a5.5 5.5 0 100 11", server.VIDEO_CARD_JS)
         self.assertIn("syncMetaFilterGroup('playlist-videos')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('liked-videos')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('channels')", server.INDEX_HTML)

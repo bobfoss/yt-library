@@ -21,7 +21,7 @@
           const title = badge.title ? ` title="${escapeHtml(badge.title)}"` : '';
           const className = membersOnly ? 'badge members-only-badge' : 'badge';
           const icon = membersOnly
-            ? '<span class="members-only-icon" aria-hidden="true">&#10022;</span>'
+            ? '<svg class="members-only-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" width="12" height="12" focusable="false" aria-hidden="true"><path d="M6 .5a5.5 5.5 0 100 11 5.5 5.5 0 000-11Zm.27 2.045.906 1.837 2.027.295a.3.3 0 01.166.511l-1.467 1.43.346 2.019a.3.3 0 01-.435.316L6 8l-1.813.953a.3.3 0 01-.435-.316l.346-2.019-1.467-1.43a.3.3 0 01.166-.511l2.027-.295.907-1.837a.3.3 0 01.539 0Z"></path></svg>'
             : '';
           return `<span class="${className}"${title}>${icon}${escapeHtml(label)}</span>`;
         }),
