@@ -803,8 +803,8 @@ def _omni_result(kind: str, score: int, item: dict[str, Any], *, matched_descrip
     if kind == "video":
         title = item.get("metadata_title") or item.get("title") or item.get("video_id") or "Unavailable video"
         sort_date = (
-            item.get("added_at")
-            or item.get("latest_watch_at")
+            item.get("latest_watch_at")
+            or item.get("added_at")
             or item.get("metadata_upload_date")
             or item.get("updated_at")
             or ""
@@ -1037,35 +1037,23 @@ def omni_search_data(
     video_meta_filters: set[str] | None = None,
     channel_meta_filters: set[str] | None = None,
     playlist_meta_filters: set[str] | None = None,
-    sort: str = "relevance",
+    sort: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
     query = query.strip()
     active_filters = set(filters if filters is not None else OMNI_SEARCH_FILTERS) & OMNI_SEARCH_FILTERS
-    sort = sort if sort in OMNI_SEARCH_SORTS else "relevance"
+    default_sort = "relevance" if query else "newest"
+    sort = sort if sort in OMNI_SEARCH_SORTS else default_sort
     limit = max(1, min(int(limit), 5000))
     offset = max(0, int(offset))
-    if not query:
-        return {
-            "query": "",
-            "filters": sorted(active_filters),
-            "sort": sort,
-            "limit": limit,
-            "offset": 0,
-            "total": 0,
-            "counts": {"videos": 0, "playlists": 0, "channels": 0},
-            "metaCounts": _omni_meta_counts([]),
-            "results": [],
-        }
-
-    pattern = _omni_like_pattern(query)
+    pattern = _omni_like_pattern(query) if query else "%"
     params = {"pattern": pattern}
     search_titles = "videos" in active_filters
     search_descriptions = "descriptions" in active_filters
     results: list[dict[str, Any]] = []
 
-    if "playlists" in active_filters and (search_titles or search_descriptions):
+    if "playlists" in active_filters and (not query or search_titles or search_descriptions):
         playlist_title_match = """
             lower(
               p.title || ' ' || COALESCE(owner.title, '') || ' ' ||
@@ -1074,10 +1062,13 @@ def omni_search_data(
         """
         playlist_description_match = "lower(p.description) LIKE :pattern ESCAPE '\\'"
         playlist_matches = []
-        if search_titles:
-            playlist_matches.append(playlist_title_match)
-        if search_descriptions:
-            playlist_matches.append(playlist_description_match)
+        if query:
+            if search_titles:
+                playlist_matches.append(playlist_title_match)
+            if search_descriptions:
+                playlist_matches.append(playlist_description_match)
+        else:
+            playlist_matches.append("1 = 1")
         for row in conn.execute(
             f"""
             SELECT p.*,
@@ -1103,7 +1094,7 @@ def omni_search_data(
             results.append(_omni_result("playlist", 2 if title_hit else 5, item, matched_description=not title_hit))
 
     subscribed_filters = active_filters & {"channels_subscribed", "channels_unsubscribed"}
-    if subscribed_filters and (search_titles or search_descriptions):
+    if subscribed_filters and (not query or search_titles or search_descriptions):
         channel_title_match = """
             lower(
               ch.title || ' ' || ch.channel_id || ' ' || ch.aliases || ' ' ||
@@ -1112,10 +1103,13 @@ def omni_search_data(
         """
         channel_description_match = "lower(ch.description || ' ' || ch.status_reason) LIKE :pattern ESCAPE '\\'"
         channel_matches = []
-        if search_titles:
-            channel_matches.append(channel_title_match)
-        if search_descriptions:
-            channel_matches.append(channel_description_match)
+        if query:
+            if search_titles:
+                channel_matches.append(channel_title_match)
+            if search_descriptions:
+                channel_matches.append(channel_description_match)
+        else:
+            channel_matches.append("1 = 1")
         subscription_conditions = []
         if "channels_subscribed" in subscribed_filters:
             subscription_conditions.append("ch.subscribed = 1")
@@ -1140,7 +1134,7 @@ def omni_search_data(
     search_history_videos = "history_videos" in active_filters
     allow_unavailable = "unavailable_videos" in active_filters
     allow_members_only = "members_only_videos" in active_filters
-    if (search_playlist_videos or search_history_videos) and (search_titles or search_descriptions):
+    if (search_playlist_videos or search_history_videos) and (not query or search_titles or search_descriptions):
         video_title_match = """
             (
               lower(
@@ -1158,10 +1152,13 @@ def omni_search_data(
         """
         video_description_match = "lower(v.description) LIKE :pattern ESCAPE '\\'"
         video_matches = []
-        if search_titles:
-            video_matches.append(video_title_match)
-        if search_descriptions:
-            video_matches.append(video_description_match)
+        if query:
+            if search_titles:
+                video_matches.append(video_title_match)
+            if search_descriptions:
+                video_matches.append(video_description_match)
+        else:
+            video_matches.append("1 = 1")
         source_conditions = []
         if search_playlist_videos:
             source_conditions.append(
@@ -1253,7 +1250,7 @@ def omni_search_data(
             item["collection_category"] = _video_collection_category(item)
             results.append(_omni_result("video", 0 if title_hit else 3, item, matched_description=not title_hit))
 
-    if search_playlist_videos and allow_unavailable and search_titles:
+    if search_playlist_videos and allow_unavailable and (not query or search_titles):
         for row in conn.execute(
             """
             SELECT pi.playlist_id,

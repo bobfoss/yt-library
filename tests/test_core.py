@@ -3338,6 +3338,11 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("let videoMetaCountsCache = new Map();", server.INDEX_HTML)
         self.assertIn("let omniMetaCountsCache = new Map();", server.INDEX_HTML)
         self.assertIn("let renderedOmniSearchQuery = '';", server.INDEX_HTML)
+        self.assertIn("let searchResultsSort = 'newest';", server.INDEX_HTML)
+        self.assertIn("function defaultSearchResultsSort(query = search.value.trim())", server.INDEX_HTML)
+        self.assertIn("searchSortExplicit = params.has('sort');", server.INDEX_HTML)
+        self.assertIn("return '__search__';", server.INDEX_HTML)
+        self.assertNotIn("Enter a search query.", server.INDEX_HTML)
         self.assertIn("showSearchProgress({ preserveContent: true });", server.INDEX_HTML)
         self.assertIn("grid.setAttribute('aria-busy', 'true');", server.INDEX_HTML)
         self.assertIn(

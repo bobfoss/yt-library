@@ -375,7 +375,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             params = urllib.parse.parse_qs(parsed.query)
             query = (params.get("q") or [""])[0]
             filters = query_set_param(params, "filters")
-            sort = (params.get("sort") or ["relevance"])[0]
+            sort = (params.get("sort") or [None])[0]
             try:
                 limit = max(1, min(5000, int((params.get("limit") or ["100"])[0] or 100)))
             except ValueError:

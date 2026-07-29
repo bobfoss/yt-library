@@ -318,7 +318,8 @@
       channels: { subscribed: true, non_subscribed: true, terminated: true },
       playlists: { private: true, public: true, unlisted: true, others: true, unknown: true, removed: true },
     };
-    let searchResultsSort = 'relevance';
+    let searchResultsSort = 'newest';
+    let searchSortExplicit = false;
     let playlistVisibilityPlaylistId = '';
     let allVideosSort = 'newest_added';
     let likedVideosVisibility = { videos: true, unavailable: true, members_only: true };
@@ -531,6 +532,10 @@
       return Object.values(visibility).every(Boolean);
     }
 
+    function defaultSearchResultsSort(query = search.value.trim()) {
+      return query ? 'relevance' : 'newest';
+    }
+
     function applyMetaFilterParam(visibility, value) {
       const selectedValues = value === null
         ? new Set(Object.keys(visibility))
@@ -555,7 +560,9 @@
       if (!allMetaFiltersEnabled(searchMetaVisibility.playlists)) {
         params.set('pm', metaFilterParamValue(searchMetaVisibility.playlists));
       }
-      if (searchResultsSort !== 'relevance') params.set('sort', searchResultsSort);
+      if (searchSortExplicit || searchResultsSort !== defaultSearchResultsSort(query)) {
+        params.set('sort', searchResultsSort);
+      }
       if (currentPage > 1) params.set('page', String(currentPage));
       if (pageSize !== '100') params.set('size', pageSize);
       return `#search${params.toString() ? `?${params.toString()}` : ''}`;
@@ -581,7 +588,8 @@
       if (!params.has('vm') && params.get('unavailable') === '0') {
         searchMetaVisibility.videos.unavailable = false;
       }
-      searchResultsSort = params.get('sort') || 'relevance';
+      searchSortExplicit = params.has('sort');
+      searchResultsSort = params.get('sort') || defaultSearchResultsSort(search.value.trim());
       pageSize = params.get('size') || '100';
       const page = Number(params.get('page') || 1);
       currentPage = Number.isFinite(page) && page > 0 ? page : 1;
@@ -659,7 +667,7 @@
         const groupKey = decodeURIComponent(base.slice('#group='.length));
         if (groupKey) return groupKey;
       }
-      return '';
+      return '__search__';
     }
 
     function setSelected(value) {
@@ -1938,15 +1946,6 @@
         return;
       }
       if (selected === '__search__') {
-        if (!query) {
-          renderedOmniSearchQuery = '';
-          title.textContent = 'Search';
-          meta.textContent = '';
-          grid.replaceChildren();
-          empty.hidden = false;
-          empty.textContent = 'Enter a search query.';
-          return;
-        }
         const preserveSearchContent = (
           renderedOmniSearchQuery === query
           && title.textContent === 'Search results'
@@ -2453,23 +2452,16 @@
         searchInputTimer = null;
       }
       currentPage = 1;
-      if (search.value.trim()) {
-        const wasSearchHash = window.location.hash === '#search' || window.location.hash.startsWith('#search?');
-        selected = '__search__';
-        renderGroups();
-        const changed = updateSearchHash(wasSearchHash);
-        if (changed && !wasSearchHash) return;
-        searchInputTimer = setTimeout(() => {
-          searchInputTimer = null;
-          render();
-        }, 250);
-        return;
-      }
-      if (selected === '__search__') {
-        setSelected('');
-        return;
-      }
-      render();
+      if (!searchSortExplicit) searchResultsSort = defaultSearchResultsSort();
+      const wasSearchHash = window.location.hash === '#search' || window.location.hash.startsWith('#search?');
+      selected = '__search__';
+      renderGroups();
+      const changed = updateSearchHash(wasSearchHash);
+      if (changed && !wasSearchHash) return;
+      searchInputTimer = setTimeout(() => {
+        searchInputTimer = null;
+        render();
+      }, 250);
     });
     searchNav?.addEventListener('click', () => setSelected('__search__'));
     viewContext.addEventListener('click', event => {
@@ -2524,6 +2516,7 @@
       }
       if (target instanceof HTMLSelectElement && target.dataset.searchSort !== undefined) {
         searchResultsSort = target.value || 'relevance';
+        searchSortExplicit = true;
         currentPage = 1;
         scrollResultsToTop();
         syncSearchHashAndRender();

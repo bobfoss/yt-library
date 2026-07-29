@@ -85,6 +85,42 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(page["offset"], 2)
         self.assertEqual([result["kind"] for result in page["results"]], ["playlist", "channel"])
 
+    def test_omni_search_empty_query_returns_all_results_newest_first(self) -> None:
+        self.add_video("older123", "Older video", "UC_older")
+        self.add_video("newer123", "Newer video", "UC_newer")
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 1 WHERE video_id IN ('older123', 'newer123')"
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES (?, ?, ?, 'date_only')
+            """,
+            [
+                ("older-watch", "older123", "2026-07-01"),
+                ("newer-watch", "newer123", "2026-07-02"),
+            ],
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "",
+            filters={"history_videos"},
+            limit=20,
+        )
+
+        self.assertEqual(data["sort"], "newest")
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(
+            [result["item"]["video_id"] for result in data["results"]],
+            ["newer123", "older123"],
+        )
+
+        all_data = omni_search_data(self.conn, "", limit=20)
+        self.assertEqual(all_data["counts"], {"videos": 2, "playlists": 0, "channels": 2})
+        self.assertEqual(all_data["total"], 4)
+
     def test_omni_search_applies_source_field_subscription_and_availability_filters(self) -> None:
         self.add_video("description1", "Ordinary title", "UC_subscribed")
         self.add_video("unavailable1", "Needle unavailable")
