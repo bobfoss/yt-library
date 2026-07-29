@@ -4912,7 +4912,6 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(
                     [tuple(row) for row in logs],
                     [
-                        ("test-placeholder-stopped", "info", "Placeholder recovery started"),
                         ("test-placeholder-stopped", "warn", "Stop requested"),
                     ],
                 )
@@ -5070,8 +5069,8 @@ class WorkerQueueTests(unittest.TestCase):
                     """,
                     ("test-placeholder-timeout-recovered",),
                 ).fetchall()
-                self.assertEqual(logs[1]["level"], "warn")
-                self.assertIn("attempt 1/3", logs[1]["message"])
+                self.assertEqual(logs[0]["level"], "warn")
+                self.assertIn("attempt 1/3", logs[0]["message"])
                 self.assertEqual(logs[-1]["message"], "not found")
                 self.assertEqual(core.admin_status(db_path)["archivarixRequestCounts"]["total"], 2)
             finally:

@@ -1452,7 +1452,6 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                     """,
                     (run_id, utc_now(), queue_id, "Placeholder recovery started"),
                 )
-                log_placeholder_recovery_event(conn, run_id, "info", "Placeholder recovery started")
             rows = placeholder_worker_queue_rows(conn, limit=1, queue_id=queue_id)
             if not rows:
                 with conn:
