@@ -5193,7 +5193,8 @@ class WorkerQueueTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(queue_log["level"], "queue error")
                 self.assertIn("queue start blocked", queue_log["message"].lower())
-                self.assertIn("still unavailable", queue_log["message"])
+                self.assertIn("proxy is unavailable", queue_log["message"])
+                self.assertNotIn("still unavailable", queue_log["message"])
             finally:
                 conn.close()
 

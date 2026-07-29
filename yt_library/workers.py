@@ -2033,7 +2033,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         "error",
                         (
                             "Worker queue start blocked because the configured proxy "
-                            f"is still unavailable. {proxy_block['message']}"
+                            f"is unavailable. {proxy_block['message']}"
                         ),
                     )
             finally:
