@@ -564,6 +564,8 @@ def _video_is_unavailable(item: dict[str, Any]) -> bool:
 
 
 def _video_collection_category(item: dict[str, Any]) -> str:
+    if str(item.get("availability") or "").strip().lower() == "subscriber_only":
+        return "members_only"
     if _video_is_unavailable(item):
         return "unavailable"
     if (
@@ -583,6 +585,7 @@ def video_collection_data(
     query: str = "",
     include_videos: bool = True,
     include_unavailable: bool = True,
+    include_members_only: bool | None = None,
     include_removed: bool = True,
     sort: str = "newest_added",
     limit: int = 100,
@@ -598,9 +601,19 @@ def video_collection_data(
     categories = {
         "videos": include_videos,
         "unavailable": include_unavailable,
+        "members_only": (
+            include_unavailable
+            if include_members_only is None
+            else include_members_only
+        ),
         "removed": include_removed,
     }
-    count_keys = {"videos": set(), "unavailable": set(), "removed": set()}
+    count_keys = {
+        "videos": set(),
+        "unavailable": set(),
+        "members_only": set(),
+        "removed": set(),
+    }
     for index, item in enumerate(candidates):
         category = _video_collection_category(item)
         item["collection_category"] = category
@@ -762,6 +775,7 @@ OMNI_SEARCH_FILTERS = {
     "playlist_videos",
     "history_videos",
     "unavailable_videos",
+    "members_only_videos",
     "channels_subscribed",
     "channels_unsubscribed",
     "playlists",
@@ -1065,6 +1079,7 @@ def omni_search_data(
     search_playlist_videos = "playlist_videos" in active_filters
     search_history_videos = "history_videos" in active_filters
     allow_unavailable = include_unavailable and "unavailable_videos" in active_filters
+    allow_members_only = include_unavailable and "members_only_videos" in active_filters
     if (search_playlist_videos or search_history_videos) and (search_titles or search_descriptions):
         video_title_match = """
             (
@@ -1089,13 +1104,21 @@ def omni_search_data(
             video_matches.append(video_description_match)
         source_conditions = []
         if search_playlist_videos:
-            playlist_availability = "1 = 1" if allow_unavailable else "COALESCE(v.is_playable, 0) = 1"
             source_conditions.append(
-                "(EXISTS (SELECT 1 FROM playlist_items source_pi WHERE source_pi.video_id = v.video_id) "
-                f"AND ({playlist_availability}))"
+                "EXISTS (SELECT 1 FROM playlist_items source_pi WHERE source_pi.video_id = v.video_id)"
             )
         if search_history_videos:
             source_conditions.append("EXISTS (SELECT 1 FROM history_events source_he WHERE source_he.video_id = v.video_id)")
+        availability_conditions = ["COALESCE(v.is_playable, 0) = 1"]
+        if allow_unavailable:
+            availability_conditions.append(
+                "(COALESCE(v.is_playable, 0) = 0 "
+                "AND lower(COALESCE(v.availability, '')) != 'subscriber_only')"
+            )
+        if allow_members_only:
+            availability_conditions.append(
+                "lower(COALESCE(v.availability, '')) = 'subscriber_only'"
+            )
         for row in conn.execute(
             f"""
             WITH candidate_videos AS MATERIALIZED (
@@ -1104,6 +1127,7 @@ def omni_search_data(
               FROM videos v
               LEFT JOIN channels ch ON ch.channel_id = v.channel_id
               WHERE ({' OR '.join(source_conditions)})
+                AND ({' OR '.join(availability_conditions)})
                 AND ({' OR '.join(f'({match})' for match in video_matches)})
             ),
             playlist_stats AS (

@@ -88,11 +88,15 @@ class NormalizedReadModelTests(unittest.TestCase):
     def test_omni_search_applies_source_field_subscription_and_availability_filters(self) -> None:
         self.add_video("description1", "Ordinary title", "UC_subscribed")
         self.add_video("unavailable1", "Needle unavailable")
+        self.add_video("members1", "Needle members only")
         self.conn.execute(
-            "UPDATE videos SET description = 'Needle in description' WHERE video_id = 'description1'"
+            "UPDATE videos SET description = 'Needle in description', is_playable = 1 WHERE video_id = 'description1'"
         )
         self.conn.execute(
             "UPDATE videos SET is_playable = 0, availability = 'private' WHERE video_id = 'unavailable1'"
+        )
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 0, availability = 'subscriber_only' WHERE video_id = 'members1'"
         )
         self.conn.execute(
             "UPDATE channels SET title = 'Needle subscribed', subscribed = 1 WHERE channel_id = 'UC_subscribed'"
@@ -104,7 +108,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             INSERT INTO playlist_items(playlist_id, position, video_id, membership_state)
             VALUES ('PLfilters', ?, ?, 'current')
             """,
-            [(1, "description1"), (2, "unavailable1")],
+            [(1, "description1"), (2, "unavailable1"), (3, "members1")],
         )
         self.conn.execute(
             """
@@ -133,6 +137,10 @@ class NormalizedReadModelTests(unittest.TestCase):
             [result["item"]["channel_id"] for result in subscribed["results"]],
             ["UC_subscribed"],
         )
+        self.conn.execute(
+            "UPDATE channels SET title = 'Subscribed channel' WHERE channel_id = 'UC_subscribed'"
+        )
+        self.conn.commit()
 
         available_only = omni_search_data(
             self.conn,
@@ -148,6 +156,15 @@ class NormalizedReadModelTests(unittest.TestCase):
             include_unavailable=True,
         )
         self.assertEqual(with_unavailable["results"][0]["item"]["video_id"], "unavailable1")
+        members_only = omni_search_data(
+            self.conn,
+            "needle",
+            filters={"videos", "playlist_videos", "members_only_videos"},
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in members_only["results"]],
+            ["members1"],
+        )
 
     def test_library_bootstrap_contains_counts_without_card_collections(self) -> None:
         self.add_video("liked1", "Liked", "UC_subscribed")
@@ -217,10 +234,14 @@ class NormalizedReadModelTests(unittest.TestCase):
     def test_video_and_channel_collections_hydrate_only_requested_page(self) -> None:
         self.add_video("available1", "Alpha", "UC_subscribed")
         self.add_video("unavailable1", "Beta", "UC_other")
+        self.add_video("members1", "Members", "UC_other")
         self.conn.execute("UPDATE channels SET subscribed = 1 WHERE channel_id = 'UC_subscribed'")
         self.conn.execute("UPDATE videos SET is_playable = 1, reaction = 'L' WHERE video_id = 'available1'")
         self.conn.execute(
             "UPDATE videos SET is_playable = 0, availability = 'private', reaction = 'L' WHERE video_id = 'unavailable1'"
+        )
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 0, availability = 'subscriber_only', reaction = 'L' WHERE video_id = 'members1'"
         )
         self.conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLone', 'One')")
         self.conn.executemany(
@@ -230,7 +251,10 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.conn.commit()
 
         liked = video_collection_data(self.conn, scope="liked", include_unavailable=False, limit=1)
-        self.assertEqual(liked["counts"], {"videos": 1, "unavailable": 1, "removed": 0})
+        self.assertEqual(
+            liked["counts"],
+            {"videos": 1, "unavailable": 1, "members_only": 1, "removed": 0},
+        )
         self.assertEqual([row["video_id"] for row in liked["results"]], ["available1"])
         self.assertIn("metadata_description", liked["results"][0])
         channels = channel_list_data(self.conn, categories={"subscribed"})
@@ -241,10 +265,14 @@ class NormalizedReadModelTests(unittest.TestCase):
     def test_playlist_video_collection_separates_removed_from_unavailable(self) -> None:
         self.add_video("available1", "Available")
         self.add_video("unavailable1", "Unavailable")
+        self.add_video("members1", "Members only")
         self.add_video("removed1", "Removed")
         self.conn.execute("UPDATE videos SET is_playable = 1 WHERE video_id = 'available1'")
         self.conn.execute(
             "UPDATE videos SET is_playable = 0, availability = 'private' WHERE video_id = 'unavailable1'"
+        )
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 0, availability = 'subscriber_only' WHERE video_id = 'members1'"
         )
         self.conn.execute("UPDATE videos SET is_playable = 1 WHERE video_id = 'removed1'")
         self.conn.executemany(
@@ -260,6 +288,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             [
                 (1, "available1", "current", "youtube", ""),
                 (2, "unavailable1", "current", "youtube", ""),
+                (3, "members1", "current", "youtube", ""),
                 (
                     2000,
                     "removed1",
@@ -284,11 +313,11 @@ class NormalizedReadModelTests(unittest.TestCase):
         all_rows = video_collection_data(self.conn)
         self.assertEqual(
             all_rows["counts"],
-            {"videos": 1, "unavailable": 1, "removed": 2},
+            {"videos": 1, "unavailable": 1, "members_only": 1, "removed": 2},
         )
         self.assertEqual(
             {row["video_id"] for row in all_rows["results"]},
-            {"available1", "unavailable1", "removed1"},
+            {"available1", "unavailable1", "members1", "removed1"},
         )
 
         removed = video_collection_data(
@@ -309,11 +338,23 @@ class NormalizedReadModelTests(unittest.TestCase):
             self.conn,
             include_videos=False,
             include_unavailable=True,
+            include_members_only=False,
             include_removed=False,
         )
         self.assertEqual(
             [row["video_id"] for row in unavailable["results"]],
             ["unavailable1"],
+        )
+        members_only = video_collection_data(
+            self.conn,
+            include_videos=False,
+            include_unavailable=False,
+            include_members_only=True,
+            include_removed=False,
+        )
+        self.assertEqual(
+            [row["video_id"] for row in members_only["results"]],
+            ["members1"],
         )
 
     def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:

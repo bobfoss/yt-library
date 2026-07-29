@@ -1545,6 +1545,58 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(metadata["playability_status"], "OK")
         self.assertEqual(core.watch_playability_value(metadata), 1)
 
+    def test_watch_metadata_classifies_members_only_playability(self) -> None:
+        html = """
+        <html><body>
+        <script>
+        var ytInitialPlayerResponse = {
+          "playabilityStatus": {
+            "status": "UNPLAYABLE",
+            "reason": "Join this channel to get access to members-only content like this video.",
+            "errorScreen": {
+              "playerLegacyDesktopYpcOfferRenderer": {
+                "itemTitle": "Members-only content",
+                "offerDescription": "Join this channel to get access.",
+                "offerId": "sponsors_only_video"
+              }
+            }
+          },
+          "videoDetails": {
+            "title": "Members video",
+            "author": "Creator",
+            "channelId": "UCmembers123456789012345"
+          },
+          "microformat": {"playerMicroformatRenderer": {}}
+        };
+        var ytInitialData = {};
+        </script>
+        </body></html>
+        """
+
+        metadata = core.extract_watch_metadata(html, "members1234")
+
+        self.assertEqual(metadata["playability_status"], "UNPLAYABLE")
+        self.assertEqual(metadata["availability"], "subscriber_only")
+        self.assertEqual(core.storable_watch_playability_value(metadata), 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.store_video_metadata(conn, metadata, "ok")
+                stored = conn.execute(
+                    """
+                    SELECT is_playable, availability
+                    FROM videos
+                    WHERE video_id = 'members1234'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    dict(stored),
+                    {"is_playable": 0, "availability": "subscriber_only"},
+                )
+            finally:
+                conn.close()
+
     def test_watch_playability_updates_canonical_video(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "library.sqlite3"
@@ -3231,7 +3283,8 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(':root[data-theme="light"]', server.INDEX_HTML)
         self.assertIn('<script src="/theme.js"></script>', server.INDEX_HTML)
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-all-filter='), 5)
-        self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 17)
+        self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 20)
+        self.assertIn('data-filter="members_only_videos"', server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('playlist-videos')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('liked-videos')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('channels')", server.INDEX_HTML)

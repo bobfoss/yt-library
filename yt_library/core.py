@@ -492,6 +492,38 @@ def storable_watch_playability_value(metadata: dict[str, Any]) -> int | None:
     return None
 
 
+def watch_playability_availability(playability: dict[str, Any]) -> str:
+    if not isinstance(playability, dict):
+        return ""
+    error_screen = playability.get("errorScreen")
+    offer = (
+        error_screen.get("playerLegacyDesktopYpcOfferRenderer", {})
+        if isinstance(error_screen, dict)
+        else {}
+    )
+    if not isinstance(offer, dict):
+        offer = {}
+    offer_id = str(offer.get("offerId") or "").strip().lower()
+    text = " ".join(
+        text_from_runs(value).strip()
+        for value in (
+            playability.get("reason"),
+            offer.get("itemTitle"),
+            offer.get("offerDescription"),
+        )
+    ).lower()
+    if offer_id == "sponsors_only_video" or any(
+        marker in text
+        for marker in (
+            "members-only",
+            "members only",
+            "join this channel",
+        )
+    ):
+        return "subscriber_only"
+    return ""
+
+
 def apply_watch_playability_to_playlist_rows(
     conn: sqlite3.Connection,
     video_id: str,
@@ -3237,6 +3269,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     reaction = extract_reaction_from_initial_data(initial_data)
     status = str(playability.get("status") or "").strip()
     reason = text_from_runs(playability.get("reason")).strip()
+    availability = watch_playability_availability(playability)
     playability_status = status
     if reason and status and reason not in status:
         status = f"{status}: {reason}"
@@ -3259,6 +3292,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         "thumbnail_url": thumbnail_url,
         "channel_thumbnail_url": channel_thumbnail_url,
         "reaction": reaction,
+        "availability": availability,
         "watch_progress_percent": str(watch_progress_percent),
         "watch_resume_seconds": str(watch_resume_seconds),
         "playability_status": playability_status,
