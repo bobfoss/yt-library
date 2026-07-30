@@ -320,15 +320,35 @@
     let playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
     let playlistListVisibility = { private: true, public: true, unlisted: true, others: true, unknown: true, removed: true };
     let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
-    let searchMetaVisibility = {
-      videos: { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true },
+    const defaultSearchMetaVisibility = {
+      videos: { public: true, unlisted: true, members_only: true, unavailable: false, unknown: true },
       reactions: { none: true, liked: true, disliked: true },
       completion: { complete: true, partial: true, unknown: true, never_watched: true },
       membership: { member: true, non_member: true },
       channelSubscription: { subscribed: true, non_subscribed: true },
-      channelStatus: { active: true, terminated: true },
-      playlists: { private: true, public: true, unlisted: true, others: true, unknown: true, removed: true },
+      channelStatus: { active: true, terminated: false },
+      playlists: { private: true, public: true, unlisted: true, others: true, unknown: true, removed: false },
     };
+    let searchMetaVisibility = Object.fromEntries(
+      Object.entries(defaultSearchMetaVisibility).map(([groupName, visibility]) => [
+        groupName,
+        { ...visibility },
+      ])
+    );
+    const searchMetaParamNames = {
+      videos: 'vm',
+      reactions: 'vr',
+      completion: 'vc',
+      membership: 'vpm',
+      channelSubscription: 'csub',
+      channelStatus: 'cstatus',
+      playlists: 'pm',
+    };
+    const searchOptInMetaFilters = [
+      { groupName: 'videos', key: 'unavailable', paramName: 'unavailable' },
+      { groupName: 'playlists', key: 'removed', paramName: 'removed' },
+      { groupName: 'channelStatus', key: 'terminated', paramName: 'terminated' },
+    ];
     let searchResultsSort = 'newest';
     let searchSortExplicit = false;
     let playlistVisibilityPlaylistId = '';
@@ -528,26 +548,43 @@
       return [...activeSearchFields()].sort().join(',');
     }
 
-    function metaFilterParamValue(visibility) {
+    function metaFilterParamValue(visibility, excludedKeys = []) {
+      const excluded = new Set(excludedKeys);
       const selected = Object.entries(visibility)
-        .filter(([, enabled]) => enabled)
+        .filter(([key, enabled]) => enabled && !excluded.has(key))
         .map(([key]) => key);
       return selected.length ? selected.join(',') : '__none__';
     }
 
-    function allMetaFiltersEnabled(visibility) {
-      return Object.values(visibility).every(Boolean);
+    function allMetaFiltersEnabled(visibility, excludedKeys = []) {
+      const excluded = new Set(excludedKeys);
+      return Object.entries(visibility)
+        .filter(([key]) => !excluded.has(key))
+        .every(([, enabled]) => enabled);
+    }
+
+    function searchOptInKeys(groupName) {
+      return searchOptInMetaFilters
+        .filter(filter => filter.groupName === groupName)
+        .map(filter => filter.key);
+    }
+
+    function resetSearchMetaVisibility() {
+      for (const [groupName, defaults] of Object.entries(defaultSearchMetaVisibility)) {
+        Object.assign(searchMetaVisibility[groupName], defaults);
+      }
     }
 
     function defaultSearchResultsSort(query = search.value.trim()) {
       return query ? 'relevance' : 'newest';
     }
 
-    function applyMetaFilterParam(visibility, value) {
-      const selectedValues = value === null
-        ? new Set(Object.keys(visibility))
-        : new Set(value === '__none__' ? [] : value.split(',').filter(Boolean));
+    function applyMetaFilterParam(visibility, value, excludedKeys = []) {
+      if (value === null) return;
+      const excluded = new Set(excludedKeys);
+      const selectedValues = new Set(value === '__none__' ? [] : value.split(',').filter(Boolean));
       for (const key of Object.keys(visibility)) {
+        if (excluded.has(key)) continue;
         visibility[key] = selectedValues.has(key);
       }
     }
@@ -559,26 +596,15 @@
       if (activeSearchFields().size !== searchFields.length) {
         params.set('in', searchFieldParamValue() || '__none__');
       }
-      if (!allMetaFiltersEnabled(searchMetaVisibility.videos)) {
-        params.set('vm', metaFilterParamValue(searchMetaVisibility.videos));
+      for (const [groupName, paramName] of Object.entries(searchMetaParamNames)) {
+        const visibility = searchMetaVisibility[groupName];
+        const optInKeys = searchOptInKeys(groupName);
+        if (!allMetaFiltersEnabled(visibility, optInKeys)) {
+          params.set(paramName, metaFilterParamValue(visibility, optInKeys));
+        }
       }
-      if (!allMetaFiltersEnabled(searchMetaVisibility.reactions)) {
-        params.set('vr', metaFilterParamValue(searchMetaVisibility.reactions));
-      }
-      if (!allMetaFiltersEnabled(searchMetaVisibility.completion)) {
-        params.set('vc', metaFilterParamValue(searchMetaVisibility.completion));
-      }
-      if (!allMetaFiltersEnabled(searchMetaVisibility.membership)) {
-        params.set('vpm', metaFilterParamValue(searchMetaVisibility.membership));
-      }
-      if (!allMetaFiltersEnabled(searchMetaVisibility.channelSubscription)) {
-        params.set('csub', metaFilterParamValue(searchMetaVisibility.channelSubscription));
-      }
-      if (!allMetaFiltersEnabled(searchMetaVisibility.channelStatus)) {
-        params.set('cstatus', metaFilterParamValue(searchMetaVisibility.channelStatus));
-      }
-      if (!allMetaFiltersEnabled(searchMetaVisibility.playlists)) {
-        params.set('pm', metaFilterParamValue(searchMetaVisibility.playlists));
+      for (const { groupName, key, paramName } of searchOptInMetaFilters) {
+        if (searchMetaVisibility[groupName][key]) params.set(paramName, '1');
       }
       if (searchSortExplicit || searchResultsSort !== defaultSearchResultsSort(query)) {
         params.set('sort', searchResultsSort);
@@ -603,19 +629,35 @@
       } else {
         for (const input of searchFields) input.checked = true;
       }
-      const videoMetaParam = params.get('vm');
+      resetSearchMetaVisibility();
+      const videoMetaParam = params.get(searchMetaParamNames.videos);
       const compatibleVideoMetaParam = videoMetaParam === null
         ? null
         : videoMetaParam.split(',').map(value => value === 'videos' ? 'public' : value).join(',');
-      applyMetaFilterParam(searchMetaVisibility.videos, compatibleVideoMetaParam);
-      applyMetaFilterParam(searchMetaVisibility.reactions, params.get('vr'));
-      applyMetaFilterParam(searchMetaVisibility.completion, params.get('vc'));
-      applyMetaFilterParam(searchMetaVisibility.membership, params.get('vpm'));
-      applyMetaFilterParam(searchMetaVisibility.channelSubscription, params.get('csub'));
-      applyMetaFilterParam(searchMetaVisibility.channelStatus, params.get('cstatus'));
-      applyMetaFilterParam(searchMetaVisibility.playlists, params.get('pm'));
-      if (!params.has('vm') && params.get('unavailable') === '0') {
-        searchMetaVisibility.videos.unavailable = false;
+      const metaParamValues = {
+        videos: compatibleVideoMetaParam,
+        reactions: params.get(searchMetaParamNames.reactions),
+        completion: params.get(searchMetaParamNames.completion),
+        membership: params.get(searchMetaParamNames.membership),
+        channelSubscription: params.get(searchMetaParamNames.channelSubscription),
+        channelStatus: params.get(searchMetaParamNames.channelStatus),
+        playlists: params.get(searchMetaParamNames.playlists),
+      };
+      for (const [groupName, value] of Object.entries(metaParamValues)) {
+        applyMetaFilterParam(
+          searchMetaVisibility[groupName],
+          value,
+          searchOptInKeys(groupName),
+        );
+      }
+      for (const { groupName, key, paramName } of searchOptInMetaFilters) {
+        const legacyValue = metaParamValues[groupName];
+        const legacySelected = (
+          legacyValue !== null
+          && legacyValue !== '__none__'
+          && legacyValue.split(',').includes(key)
+        );
+        searchMetaVisibility[groupName][key] = params.get(paramName) === '1' || legacySelected;
       }
       searchSortExplicit = params.has('sort');
       searchResultsSort = params.get('sort') || defaultSearchResultsSort(search.value.trim());

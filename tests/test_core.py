@@ -3597,7 +3597,33 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn(
-            "channelStatus: { active: true, terminated: true }",
+            "channelStatus: { active: true, terminated: false }",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "playlists: { private: true, public: true, unlisted: true, others: true, unknown: true, removed: false }",
+            server.INDEX_HTML,
+        )
+        self.assertIn("const searchOptInMetaFilters = [", server.INDEX_HTML)
+        self.assertIn(
+            "{ groupName: 'videos', key: 'unavailable', paramName: 'unavailable' }",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "{ groupName: 'playlists', key: 'removed', paramName: 'removed' }",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "{ groupName: 'channelStatus', key: 'terminated', paramName: 'terminated' }",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "if (searchMetaVisibility[groupName][key]) params.set(paramName, '1');",
+            server.INDEX_HTML,
+        )
+        self.assertIn("resetSearchMetaVisibility();", server.INDEX_HTML)
+        self.assertIn(
+            "params.get(paramName) === '1' || legacySelected",
             server.INDEX_HTML,
         )
         self.assertNotIn("Search For", server.INDEX_HTML)
@@ -3743,7 +3769,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("{ key: 'unlisted', label: 'unlisted', visibilityIcon: true }", server.INDEX_HTML)
         self.assertIn("{ key: 'unknown', label: 'unknown' }", server.INDEX_HTML)
         self.assertIn(
-            "videos: { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true }",
+            "videos: { public: true, unlisted: true, members_only: true, unavailable: false, unknown: true }",
             server.INDEX_HTML,
         )
         self.assertIn("value === 'videos' ? 'public' : value", server.INDEX_HTML)
