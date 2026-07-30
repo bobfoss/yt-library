@@ -482,7 +482,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                             placeholder_was_queued = enqueue_placeholder_recovery_item(
                                 conn,
                                 video_id=video_id,
-                                current_title=row["current_title"] or video_id,
+                                current_title=row["current_title"] or "",
                                 source_key=row["source_key"] or "",
                                 playlist_count=int(row["playlist_count"] or 0),
                                 priority=int(row["priority"] or 0),

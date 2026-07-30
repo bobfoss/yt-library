@@ -202,7 +202,7 @@ LIKED_VIDEOS_PLAYLIST_ID = "LL"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 @dataclass(frozen=True)
@@ -378,6 +378,26 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (9, utc_now()),
+        )
+    if current_version < 10:
+        conn.execute(
+            """
+            UPDATE videos
+            SET title = ''
+            WHERE TRIM(title) = video_id
+            """
+        )
+        conn.execute(
+            """
+            UPDATE worker_queue
+            SET current_title = ''
+            WHERE video_id <> ''
+              AND TRIM(current_title) = video_id
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (10, utc_now()),
         )
 
 
@@ -932,6 +952,11 @@ def useful_video_title(value: str, video_id: str = "") -> bool:
     }
 
 
+def video_title_or_blank(value: Any, video_id: str = "") -> str:
+    title = str(value or "").strip()
+    return title if useful_video_title(title, video_id) else ""
+
+
 def upsert_video(
     conn: sqlite3.Connection,
     video_id: str,
@@ -983,13 +1008,14 @@ def upsert_video(
             return incoming
         return (existing[name] if existing else "") or incoming
 
-    raw_title = (title or "").strip()
-    incoming_title = raw_title if useful_video_title(raw_title, video_id) else ""
+    incoming_title = video_title_or_blank(title, video_id)
     existing_title = str(existing["title"] or "").strip() if existing else ""
     if incoming_title and (authoritative or not useful_video_title(existing_title, video_id)):
         canonical_title = incoming_title
+    elif useful_video_title(existing_title, video_id):
+        canonical_title = existing_title
     else:
-        canonical_title = existing_title or (raw_title if raw_title == video_id else "")
+        canonical_title = ""
     canonical_channel = channel_id if authoritative and channel_id else ((existing["channel_id"] if existing else None) or channel_id)
     incoming_playability = None if is_playable is None else int(bool(is_playable))
     canonical_playability = incoming_playability if incoming_playability is not None else (existing["is_playable"] if existing else None)
@@ -2985,7 +3011,7 @@ def parse_history_lockup(lockup: dict[str, Any], normalized_date: str) -> dict[s
         url = f"https://www.youtube.com/watch?v={video_id}"
     return {
         "video_id": video_id,
-        "title": title or video_id,
+        "title": video_title_or_blank(title, video_id),
         "url": url,
         "channel": channel,
         "channel_url": channel_url,
@@ -3092,13 +3118,11 @@ def parse_shorts_lockup(
     title = text
     if "," in title:
         title = title.rsplit(",", 1)[0].strip()
-    if not title:
-        title = video_id or "(untitled)"
     return {
         "playlist_id": playlist_id,
         "position": fallback_position,
         "video_id": video_id,
-        "title": title,
+        "title": video_title_or_blank(title, video_id),
         "channel": "",
         "duration_text": "Short",
         "is_playable": 1,
@@ -3690,7 +3714,10 @@ def store_video_metadata(
 
 
 def useful_video_metadata(metadata: dict[str, str]) -> bool:
-    title = (metadata.get("title") or "").strip()
+    title = video_title_or_blank(
+        metadata.get("title"),
+        metadata.get("video_id", ""),
+    )
     yt_status = (metadata.get("yt_status") or "").strip().upper()
     has_recovered_fields = bool(
         metadata.get("channel_id")
@@ -4045,7 +4072,7 @@ def scan_playlist_ytdlp(
         video_id = str(entry.get("id") or entry.get("url") or "")
         if not video_id:
             continue
-        title = str(entry.get("title") or video_id).strip()
+        title = video_title_or_blank(entry.get("title"), video_id)
         channel = str(entry.get("channel") or entry.get("uploader") or "").strip()
         channel_id = str(entry.get("channel_id") or entry.get("uploader_id") or "").strip()
         channel_url = str(entry.get("channel_url") or entry.get("uploader_url") or "").strip()
@@ -4137,7 +4164,7 @@ def fetch_youtube_history_ytdlp(
         rows.append(
             {
                 "video_id": video_id,
-                "title": entry.get("title") or video_id,
+                "title": video_title_or_blank(entry.get("title"), video_id),
                 "url": watch_url,
                 "channel_id": entry.get("channel_id") or entry.get("uploader_id") or youtube_channel_id_from_url(entry.get("channel_url") or entry.get("uploader_url") or ""),
                 "channel": entry.get("channel") or entry.get("uploader") or "",
@@ -4758,7 +4785,7 @@ def enqueue_placeholder_recovery_targets(
             conn,
             video_id=video_id,
             playlist_id=playlist_id,
-            current_title=row["title"] or video_id,
+            current_title=row["title"] or "",
             playlist_count=int(row["playlist_count"] or 0),
             priority=tail_priority,
             updated_at=now,
@@ -4809,7 +4836,7 @@ def enqueue_placeholder_recovery_item(
             subject_key,
             video_id,
             playlist_id or "",
-            current_title or video_id,
+            current_title or "",
             source_key or "",
             max(0, int(playlist_count or 0)),
             int(priority),
@@ -6014,7 +6041,7 @@ def worker_log_select(name: str) -> str:
             SELECT l.*,
                    CASE
                      WHEN v.video_id IS NOT NULL
-                       THEN COALESCE(NULLIF(v.title, ''), l.video_id)
+                       THEN COALESCE(NULLIF(v.title, ''), '')
                      WHEN c.channel_id IS NOT NULL
                        THEN COALESCE(NULLIF(c.title, ''), l.video_id)
                      WHEN legacy_c.channel_id IS NOT NULL
@@ -6043,7 +6070,7 @@ def worker_log_select(name: str) -> str:
         """
     return f"""
         SELECT l.*,
-               COALESCE(NULLIF(v.title, ''), l.video_id) AS subject_title,
+               COALESCE(NULLIF(v.title, ''), '') AS subject_title,
                CASE WHEN v.video_id IS NULL THEN '' ELSE l.video_id END AS display_id
         FROM {table} l
         LEFT JOIN videos v ON v.video_id = l.video_id
@@ -6383,7 +6410,7 @@ def metadata_queue_candidate_rows(
                  COALESCE(v.channel_id, '') AS channel_id,
                  COALESCE(ch.title, '') AS channel_title,
                  COUNT(DISTINCT pi.playlist_id) AS playlist_count,
-                 COALESCE(NULLIF(v.title, ''), v.video_id) AS current_title,
+                 COALESCE(v.title, '') AS current_title,
                  CASE WHEN COUNT(pi.playlist_id) > 0 THEN 'playlist' ELSE 'history' END AS metadata_source,
                  CASE WHEN COUNT(pi.playlist_id) > 0 THEN 2 ELSE 3 END AS priority,
                  v.fetch_status,
@@ -6654,7 +6681,7 @@ def enqueue_new_history_metadata_targets(
         return []
     placeholders = ", ".join("?" for _ in video_ids)
     titles = {
-        row["video_id"]: row["title"] or row["video_id"]
+        row["video_id"]: row["title"] or ""
         for row in conn.execute(
             f"""
             SELECT video_id, title
@@ -6670,7 +6697,7 @@ def enqueue_new_history_metadata_targets(
         enqueue_metadata_item(
             conn,
             video_id=video_id,
-            current_title=titles.get(video_id, video_id),
+            current_title=titles.get(video_id, ""),
             metadata_source="history",
             priority=0,
             manual=False,
@@ -6898,7 +6925,7 @@ def enqueue_worker_queue_target(conn: sqlite3.Connection, target: str) -> dict[s
     subject_key = enqueue_metadata_item(
         conn,
         video_id=video_id,
-        current_title=video_id,
+        current_title="",
         metadata_source="provided",
         source_key="local",
         priority=0,
@@ -7477,7 +7504,7 @@ def parse_takeout_watch_history_text(text: str) -> list[dict[str, str]]:
                 {
                     "url": url,
                     "video_id": video_id,
-                    "title": title or video_id,
+                    "title": video_title_or_blank(title, video_id),
                     "channel_id": youtube_channel_id_from_url(channel_url),
                     "channel_url": channel_url,
                     "channel": channel,

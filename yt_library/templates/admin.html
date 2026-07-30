@@ -530,6 +530,9 @@
     }
 
     function workerSubject(row) {
+      if (row.video_id && ['metadata', 'placeholder'].includes(row.worker_type)) {
+        return row.current_title && row.current_title !== row.video_id ? row.current_title : '';
+      }
       if (row.worker_type === 'metadata' && row.task_type === 'channel') {
         const identifier = workerId(row);
         return [row.known_channel_title, row.channel_title, row.current_title]

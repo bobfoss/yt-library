@@ -122,6 +122,32 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(all_data["counts"], {"videos": 2, "playlists": 0, "channels": 2})
         self.assertEqual(all_data["total"], 4)
 
+    def test_omni_search_keeps_missing_video_titles_blank(self) -> None:
+        self.add_video("missing123", "missing123")
+        self.conn.execute(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES ('missing-watch', 'missing123', '2026-07-02', 'date_only')
+            """
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "",
+            channel_subscription_filters=set(),
+            playlist_meta_filters=set(),
+            limit=20,
+        )
+
+        item = next(
+            result["item"]
+            for result in data["results"]
+            if result["item"].get("video_id") == "missing123"
+        )
+        self.assertEqual(item["title"], "")
+        self.assertEqual(item["metadata_title"], "")
+
     def test_omni_search_newest_ranks_unwatched_videos_last(self) -> None:
         self.add_video("watched123", "Watched video")
         self.add_video("unwatched123", "Unwatched video")

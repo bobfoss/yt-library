@@ -504,8 +504,8 @@ def _video_candidate_rows(
             where.append("v.channel_id = :channel_id")
             params["channel_id"] = channel_id
         sql = history_cte + f"""
-          SELECT pi.video_id, COALESCE(v.title, 'Unavailable video') AS title,
-                 COALESCE(v.title, 'Unavailable video') AS metadata_title,
+          SELECT pi.video_id, COALESCE(v.title, '') AS title,
+                 COALESCE(v.title, '') AS metadata_title,
                  COALESCE(v.upload_date, '') AS metadata_upload_date,
                  COALESCE(v.updated_at, pi.updated_at) AS updated_at,
                  pi.playlist_id, p.title AS playlist_title, pi.position,
@@ -698,7 +698,7 @@ def video_collection_data(
     ]
     if not playlist_id:
         candidates = _deduplicate_video_candidates(candidates)
-    title_key = lambda item: str(item.get("metadata_title") or item.get("title") or item.get("video_id") or "").casefold()
+    title_key = lambda item: str(item.get("metadata_title") or item.get("title") or "").casefold()
     if sort == "oldest_added":
         candidates.sort(key=lambda item: (str(item.get("added_at") or item.get("metadata_upload_date") or ""), title_key(item)))
     elif sort == "most_watched":
@@ -895,7 +895,7 @@ def _omni_result(
 ) -> dict[str, Any]:
     sort_date_fallback = False
     if kind == "video":
-        title = item.get("metadata_title") or item.get("title") or item.get("video_id") or "Unavailable video"
+        title = item.get("metadata_title") or item.get("title") or ""
         latest_watch_at = item.get("latest_watch_at") or ""
         latest_watch_sort_at = _date_only_sort_at(latest_watch_at, display_timezone)
         sort_date = (

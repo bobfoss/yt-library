@@ -1428,16 +1428,63 @@ class CoreHelperTests(unittest.TestCase):
                   "url": "https://www.youtube.com/channel/UCvmGOqGlxOgpZDoszBbWxmA"
                 }],
                 "time": "2026-07-04T05:27:45.123Z"
+              },
+              {
+                "titleUrl": "https://www.youtube.com/watch?v=blanktitle1",
+                "time": "2026-07-05T05:27:45.123Z"
               }
             ]
             """
         )
 
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["video_id"], "vid123")
         self.assertEqual(rows[0]["title"], "Example Video")
         self.assertEqual(rows[0]["channel"], "Example Channel")
         self.assertEqual(rows[0]["channel_id"], "UCvmGOqGlxOgpZDoszBbWxmA")
+        self.assertEqual(rows[1]["video_id"], "blanktitle1")
+        self.assertEqual(rows[1]["title"], "")
+
+    def test_missing_video_titles_remain_blank(self) -> None:
+        video_id = "abc12345678"
+        self.assertEqual(core.video_title_or_blank(video_id, video_id), "")
+        self.assertEqual(core.video_title_or_blank("Unavailable video", video_id), "")
+        self.assertEqual(core.video_title_or_blank("A real title", video_id), "A real title")
+
+        history_row = core.parse_history_lockup({"contentId": video_id}, "2026-07-30")
+        self.assertIsNotNone(history_row)
+        self.assertEqual(history_row["title"], "")
+
+        shorts_row = core.parse_shorts_lockup(
+            "PLexample",
+            {
+                "onTap": {
+                    "innertubeCommand": {
+                        "reelWatchEndpoint": {"videoId": video_id}
+                    }
+                }
+            },
+            1,
+        )
+        self.assertEqual(shorts_row["title"], "")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        video_id,
+                        title=video_id,
+                        source="playlist",
+                    )
+                stored_title = conn.execute(
+                    "SELECT title FROM videos WHERE video_id = ?",
+                    (video_id,),
+                ).fetchone()["title"]
+            finally:
+                conn.close()
+        self.assertEqual(stored_title, "")
 
     def test_import_history_syncs_takeout_subscriptions(self) -> None:
         original_root = core.ROOT
@@ -2760,6 +2807,65 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(notification_level, "")
         self.assertEqual(schema_version, core.SCHEMA_VERSION)
 
+    def test_migrate_clears_video_id_title_placeholders(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            raw = sqlite3.connect(db_path)
+            try:
+                raw.executescript(core.SCHEMA)
+                raw.execute("DELETE FROM schema_migrations")
+                raw.execute(
+                    """
+                    INSERT INTO schema_migrations(version, applied_at)
+                    VALUES (9, '2026-07-30T00:00:00Z')
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO videos(video_id, title)
+                    VALUES ('abc12345678', 'abc12345678')
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO worker_queue(
+                      subject_key, worker_type, task_type, video_id, current_title,
+                      created_at, updated_at
+                    )
+                    VALUES (
+                      'metadata:video:abc12345678', 'metadata', 'provided',
+                      'abc12345678', 'abc12345678',
+                      '2026-07-30T00:00:00Z', '2026-07-30T00:00:00Z'
+                    )
+                    """
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                title = conn.execute(
+                    "SELECT title FROM videos WHERE video_id = 'abc12345678'"
+                ).fetchone()["title"]
+                current_title = conn.execute(
+                    """
+                    SELECT current_title
+                    FROM worker_queue
+                    WHERE video_id = 'abc12345678'
+                    """
+                ).fetchone()["current_title"]
+                schema_version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(title, "")
+        self.assertEqual(current_title, "")
+        self.assertEqual(schema_version, core.SCHEMA_VERSION)
+
     def test_channel_first_seen_backfill_uses_earliest_library_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
@@ -2928,6 +3034,28 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(
             [(row["metadata_source"], row["channel_id"]) for row in remaining],
             [("channel", "UCqueue")],
+        )
+
+    def test_manual_video_queue_keeps_missing_subject_title_blank(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    result = core.enqueue_worker_queue_target(conn, "abc12345678")
+                row = conn.execute(
+                    """
+                    SELECT video_id, current_title
+                    FROM worker_queue
+                    WHERE subject_key = ?
+                    """,
+                    (result["subject_key"],),
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            dict(row),
+            {"video_id": "abc12345678", "current_title": ""},
         )
 
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
@@ -4247,11 +4375,24 @@ class AdminServerTests(unittest.TestCase):
         )
         self.assertIn(".video-card-channel .creator-link", server.INDEX_HTML)
         self.assertIn(
+            "return usefulMetadataTitle(video) || video.title || '';",
+            server.INDEX_HTML,
+        )
+        self.assertNotIn(
+            "return usefulMetadataTitle(video) || video.title || video.video_id;",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
             "${channelName ? `<div class=\"details video-card-channel\">"
             "${creatorHtml(video.metadata_channel_thumbnail_path, channelName, channelUrl)}"
             "</div>` : ''}\n"
             '            <div class="title-row">',
             server.INDEX_HTML,
+        )
+        self.assertIn(
+            "return row.current_title && row.current_title !== row.video_id ? "
+            "row.current_title : '';",
+            server.ADMIN_HTML,
         )
         self.assertIn(
             "channelHtml: video.channel\n"
@@ -4622,7 +4763,7 @@ class WorkerQueueTests(unittest.TestCase):
                     active -= 1
                 return {
                     "video_id": video_id,
-                    "title": video_id,
+                    "title": f"Fetched {video_id}",
                     "duration_text": "1:00",
                     "yt_status": "OK",
                 }
@@ -4694,7 +4835,7 @@ class WorkerQueueTests(unittest.TestCase):
                     second_started.set()
                 return {
                     "video_id": video_id,
-                    "title": video_id,
+                    "title": f"Fetched {video_id}",
                     "duration_text": "1:00",
                     "yt_status": "OK",
                 }
