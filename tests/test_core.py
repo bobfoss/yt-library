@@ -3554,7 +3554,7 @@ class AdminServerTests(unittest.TestCase):
             "function showSearchMetaProgress(groupName)"
         )
         show_progress_end = server.INDEX_HTML.index(
-            "function stopSearchRefreshProgress()"
+            "function stopSearchHeaderProgress()"
         )
         self.assertNotIn(
             "stopSearchMetaProgress();",
@@ -3564,17 +3564,17 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("allLabel: 'Availability'", server.INDEX_HTML)
         self.assertIn("allLabel: 'Reactions'", server.INDEX_HTML)
         self.assertIn("title: '',\n          key: 'reactions'", server.INDEX_HTML)
-        self.assertIn('id="search-refresh-status"', server.INDEX_HTML)
+        self.assertIn('id="search-progress-status"', server.INDEX_HTML)
         self.assertIn(
             '<div class="toolbar-heading">\n'
             '            <h2 id="view-title" class="title"></h2>\n'
-            '            <div id="search-refresh-status"',
+            '            <div id="search-progress-status"',
             server.INDEX_HTML,
         )
         self.assertIn("function progressMessageAnimation(container, labelText)", server.INDEX_HTML)
-        self.assertIn("function showSearchRefreshProgress()", server.INDEX_HTML)
+        self.assertIn("function showSearchHeaderProgress()", server.INDEX_HTML)
         self.assertIn("loadData({ preserveSearchContent })", server.INDEX_HTML)
-        self.assertIn("}).finally(stopSearchRefreshProgress);", server.INDEX_HTML)
+        self.assertIn("}).finally(stopSearchHeaderProgress);", server.INDEX_HTML)
         self.assertIn("await render();", server.INDEX_HTML)
         self.assertIn(
             "showSearchMetaProgress(metaAllFilter.slice('search-'.length));",
@@ -3584,7 +3584,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(
             "if (selected !== '__search__') {\n"
             "        stopSearchMetaProgress();\n"
-            "        stopSearchRefreshProgress();\n"
+            "        stopSearchHeaderProgress();\n"
             "      }",
             server.INDEX_HTML,
         )
@@ -3618,7 +3618,15 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("searchSortExplicit = params.has('sort');", server.INDEX_HTML)
         self.assertIn("return '__search__';", server.INDEX_HTML)
         self.assertNotIn("Enter a search query.", server.INDEX_HTML)
+        self.assertIn(
+            "title.textContent = 'Search results';\n"
+            "          meta.textContent = '';\n"
+            "          showSearchHeaderProgress();\n"
+            "          showSearchProgress();",
+            server.INDEX_HTML,
+        )
         self.assertIn("showSearchProgress({ preserveContent: true });", server.INDEX_HTML)
+        self.assertNotIn("progressMessageAnimation(empty, 'Searching')", server.INDEX_HTML)
         self.assertIn("grid.setAttribute('aria-busy', 'true');", server.INDEX_HTML)
         self.assertIn(
             "const metaCountsKey = JSON.stringify([scope, playlistId, channelId, query]);",

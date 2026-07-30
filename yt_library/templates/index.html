@@ -86,8 +86,8 @@
     .search-meta-progress { display: inline-block; width: 1.4em; text-align: left; visibility: hidden; font-weight: 400; }
     .search-meta-progress.active { visibility: visible; }
     .toolbar-heading { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
-    .search-refresh-status { color: var(--muted); display: inline-flex; min-width: 8em; font-size: 14px; }
-    .search-refresh-status[hidden] { display: none; }
+    .search-progress-status { color: var(--muted); display: inline-flex; min-width: 8em; font-size: 14px; }
+    .search-progress-status[hidden] { display: none; }
     .search-meta-controls { display: flex; flex-wrap: wrap; gap: 8px; }
     .search-meta-controls .meta-filter { margin-left: 0; }
     .playlist-search { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; min-width: min(360px, 38vw); }
@@ -231,7 +231,6 @@
     .position { color: var(--muted); font-size: 12px; text-transform: uppercase; }
     .status { color: var(--warn); }
     .empty { color: var(--muted); padding: 36px 0; }
-    .searching-status { display: inline-flex; min-width: 8em; }
     .searching-dots { display: inline-block; width: 1.4em; text-align: left; }
     @media (max-width: 760px) {
       body { overflow: auto; }
@@ -284,7 +283,7 @@
         <div class="toolbar">
           <div class="toolbar-heading">
             <h2 id="view-title" class="title"></h2>
-            <div id="search-refresh-status" class="search-refresh-status" hidden aria-live="polite"></div>
+            <div id="search-progress-status" class="search-progress-status" hidden aria-live="polite"></div>
           </div>
           <div class="details">
             <div id="view-meta" class="meta"></div>
@@ -353,9 +352,8 @@
     let channelDetailTab = 'playlists';
     let renderGeneration = 0;
     let renderedOmniSearchQuery = '';
-    let searchProgressTimer = null;
     let searchMetaProgressTimer = null;
-    let searchRefreshProgressTimer = null;
+    let searchHeaderProgressTimer = null;
     let pendingSearchMetaGroups = new Set();
     let searchMetaProgressDots = '';
     let searchInputTimer = null;
@@ -387,7 +385,7 @@
     const resultsScroll = document.querySelector('.results-scroll');
     const viewTop = document.getElementById('view-top');
     const viewContext = document.getElementById('view-context');
-    const searchRefreshStatus = document.getElementById('search-refresh-status');
+    const searchProgressStatus = document.getElementById('search-progress-status');
 
     async function loadData({ preserveSearchContent = false } = {}) {
       refresh.disabled = true;
@@ -1050,13 +1048,8 @@
     }
 
     function stopSearchProgress() {
-      if (searchProgressTimer !== null) {
-        clearInterval(searchProgressTimer);
-        searchProgressTimer = null;
-      }
       grid.removeAttribute('aria-busy');
       meta.removeAttribute('aria-busy');
-      empty.classList.remove('searching-status');
     }
 
     function animateProgressDots(update) {
@@ -1113,21 +1106,21 @@
       }
     }
 
-    function stopSearchRefreshProgress() {
-      if (searchRefreshProgressTimer !== null) {
-        clearInterval(searchRefreshProgressTimer);
-        searchRefreshProgressTimer = null;
+    function stopSearchHeaderProgress() {
+      if (searchHeaderProgressTimer !== null) {
+        clearInterval(searchHeaderProgressTimer);
+        searchHeaderProgressTimer = null;
       }
-      searchRefreshStatus.hidden = true;
-      searchRefreshStatus.removeAttribute('aria-busy');
-      searchRefreshStatus.replaceChildren();
+      searchProgressStatus.hidden = true;
+      searchProgressStatus.removeAttribute('aria-busy');
+      searchProgressStatus.replaceChildren();
     }
 
-    function showSearchRefreshProgress() {
-      stopSearchRefreshProgress();
-      searchRefreshStatus.hidden = false;
-      searchRefreshStatus.setAttribute('aria-busy', 'true');
-      searchRefreshProgressTimer = progressMessageAnimation(searchRefreshStatus, 'Searching');
+    function showSearchHeaderProgress() {
+      stopSearchHeaderProgress();
+      searchProgressStatus.hidden = false;
+      searchProgressStatus.setAttribute('aria-busy', 'true');
+      searchHeaderProgressTimer = progressMessageAnimation(searchProgressStatus, 'Searching');
     }
 
     function showSearchProgress({ preserveContent = false } = {}) {
@@ -1137,9 +1130,7 @@
       if (preserveContent) return;
       grid.className = 'grid';
       grid.replaceChildren();
-      empty.hidden = false;
-      empty.classList.add('searching-status');
-      searchProgressTimer = progressMessageAnimation(empty, 'Searching');
+      empty.hidden = true;
     }
 
     function remotePageInfo(total, rowsLength, remoteLimit = 0) {
@@ -1947,7 +1938,7 @@
       const generation = ++renderGeneration;
       if (selected !== '__search__') {
         stopSearchMetaProgress();
-        stopSearchRefreshProgress();
+        stopSearchHeaderProgress();
       }
       if (!data) {
         title.textContent = '';
@@ -2080,8 +2071,9 @@
         if (preserveSearchContent) {
           showSearchProgress({ preserveContent: true });
         } else {
-          title.textContent = 'Searching';
+          title.textContent = 'Search results';
           meta.textContent = '';
+          showSearchHeaderProgress();
           showSearchProgress();
           await new Promise(resolve => requestAnimationFrame(resolve));
           if (generation !== renderGeneration) return;
@@ -2092,6 +2084,7 @@
         } catch (error) {
           if (generation !== renderGeneration) return;
           stopSearchMetaProgress();
+          stopSearchHeaderProgress();
           stopSearchProgress();
           title.textContent = 'Search unavailable';
           empty.hidden = false;
@@ -2100,6 +2093,7 @@
         }
         if (generation !== renderGeneration) return;
         stopSearchMetaProgress();
+        stopSearchHeaderProgress();
         stopSearchProgress();
         const rows = payload.results || [];
         const total = Number(payload.total || 0);
@@ -2818,12 +2812,12 @@
         && title.textContent === 'Search results'
         && renderedOmniSearchQuery === search.value.trim().toLowerCase()
       );
-      if (preserveSearchContent) showSearchRefreshProgress();
+      if (preserveSearchContent) showSearchHeaderProgress();
       loadData({ preserveSearchContent }).catch(error => {
         meta.textContent = error.message;
         refresh.disabled = false;
         refresh.textContent = 'Refresh';
-      }).finally(stopSearchRefreshProgress);
+      }).finally(stopSearchHeaderProgress);
     });
     loadData().catch(error => {
       title.textContent = 'Unable to load data';
