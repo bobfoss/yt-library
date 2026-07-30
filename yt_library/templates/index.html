@@ -78,6 +78,8 @@
     .meta-filter { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; }
     .meta-filter.dimmed { opacity: .42; }
     .meta-filter input { accent-color: var(--accent); }
+    .meta-filter-decorated { display: inline-flex; align-items: center; gap: 4px; }
+    .meta-filter-decorated .reaction-icon { width: 14px; height: 14px; flex: 0 0 14px; }
     .search-result-meta { display: grid; gap: 8px; justify-items: end; }
     .search-result-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
     .search-meta-groups { display: grid; gap: 5px; }
@@ -298,9 +300,11 @@
     const creatorHtml = VideoCard.creatorHtml;
     const detailRowHtml = VideoCard.detailRowHtml;
     const escapeHtml = VideoCard.escapeHtml;
+    const membersOnlyIconHtml = VideoCard.membersOnlyIconHtml;
     const reactionIconsHtml = VideoCard.reactionIconsHtml;
     const reactionLabel = VideoCard.reactionLabel;
     const thumbnailWithProgress = VideoCard.thumbnailWithProgress;
+    const thumbIconHtml = VideoCard.thumbIconHtml;
     const watchProgressPercent = VideoCard.watchProgressPercent;
     const watchedLineHtml = VideoCard.watchedLineHtml;
     const watchSparklineHtml = (video, detail = false) => VideoCard.watchSparklineHtml(video, { detail });
@@ -1430,15 +1434,20 @@
     const videoMetaFilterDefinitions = [
       { key: 'public', label: 'public', visibilityIcon: true },
       { key: 'unlisted', label: 'unlisted', visibilityIcon: true },
-      { key: 'members_only', label: 'members only', className: 'members-only-filter' },
+      {
+        key: 'members_only',
+        label: 'members only',
+        className: 'members-only-filter',
+        decoratorHtml: membersOnlyIconHtml(),
+      },
       { key: 'unavailable', label: 'unavailable', className: 'badge' },
       { key: 'unknown', label: 'unknown' },
       { key: 'removed', label: 'removed', className: 'badge' },
     ];
     const reactionMetaFilterDefinitions = [
       { key: 'none', label: 'no reaction' },
-      { key: 'liked', label: 'liked' },
-      { key: 'disliked', label: 'disliked' },
+      { key: 'liked', label: 'liked', decoratorHtml: thumbIconHtml('like', false) },
+      { key: 'disliked', label: 'disliked', decoratorHtml: thumbIconHtml('dislike', false) },
     ];
     const completionMetaFilterDefinitions = [
       { key: 'complete', label: 'complete' },
@@ -1478,12 +1487,12 @@
       );
       return `
         <label class="meta-filter"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>${escapeHtml(allLabel)}</span></label>
-        ${applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false }) => `
+        ${applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '' }) => `
           <label class="meta-filter">
             <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
             ${visibilityIcon
               ? visibilityFilterLabelHtml(key, Number(counts?.[key] || 0))
-              : `<span${className ? ` class="${className}"` : ''}>${Number(counts?.[key] || 0)} ${label}</span>`}
+              : `<span${className || decoratorHtml ? ` class="${[className, decoratorHtml ? 'meta-filter-decorated' : ''].filter(Boolean).join(' ')}"` : ''}>${decoratorHtml}${Number(counts?.[key] || 0)} ${label}</span>`}
           </label>
         `).join('')}
       `;

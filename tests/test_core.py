@@ -3733,6 +3733,12 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("'subscriber_only', 'members only'", server.VIDEO_CARD_JS)
         self.assertIn("members-only-icon", server.VIDEO_CARD_JS)
         self.assertIn("M6 .5a5.5 5.5 0 100 11", server.VIDEO_CARD_JS)
+        self.assertIn("membersOnlyIconHtml,", server.VIDEO_CARD_JS)
+        self.assertIn("thumbIconHtml,", server.VIDEO_CARD_JS)
+        self.assertIn("decoratorHtml: membersOnlyIconHtml()", server.INDEX_HTML)
+        self.assertIn("decoratorHtml: thumbIconHtml('like', false)", server.INDEX_HTML)
+        self.assertIn("decoratorHtml: thumbIconHtml('dislike', false)", server.INDEX_HTML)
+        self.assertIn("meta-filter-decorated", server.INDEX_HTML)
         self.assertIn(
             "M9 18c.226 0 .448-.012.667-.037A8.001 8.001 0 018.07 16H7",
             server.INDEX_HTML,
