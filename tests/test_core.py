@@ -3524,6 +3524,18 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 1)
         self.assertIn("const videoMetaFilterDefinitions = [", server.INDEX_HTML)
         self.assertIn("const reactionMetaFilterDefinitions = [", server.INDEX_HTML)
+        self.assertLess(
+            server.ADMIN_HTML.index('id="fetchVideoMetadata"'),
+            server.ADMIN_HTML.index('id="videoMetadataStaleDays"'),
+        )
+        self.assertLess(
+            server.ADMIN_HTML.index('id="fetchChannelMetadata"'),
+            server.ADMIN_HTML.index('id="channelMetadataStaleDays"'),
+        )
+        self.assertLess(
+            server.ADMIN_HTML.index('id="channelMetadataForce"'),
+            server.ADMIN_HTML.index('id="backfillChannelFirstSeen"'),
+        )
         self.assertIn("reactions: { none: true, liked: true, disliked: true }", server.INDEX_HTML)
         self.assertIn("video_reaction: metaFilterParamValue(searchMetaVisibility.reactions)", server.INDEX_HTML)
         self.assertIn("const channelMetaFilterDefinitions = [", server.INDEX_HTML)

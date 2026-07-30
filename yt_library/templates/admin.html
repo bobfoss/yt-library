@@ -206,9 +206,9 @@
           <h2>Videos</h2>
         </div>
         <div class="controls">
+          <button id="fetchVideoMetadata" class="primary" type="button">Fetch video metadata</button>
           <label>Metadata stale days<input id="videoMetadataStaleDays" type="number" min="0" step="1" value="30"></label>
           <label class="checkbox"><input id="videoMetadataForce" type="checkbox">Refresh already fetched</label>
-          <button id="fetchVideoMetadata" class="primary" type="button">Fetch video metadata</button>
         </div>
         <div class="grid" id="videoMetadataCounts"></div>
       </section>
@@ -232,9 +232,9 @@
           <h2>Channels</h2>
         </div>
         <div class="controls">
+          <button id="fetchChannelMetadata" class="primary" type="button">Fetch channel metadata</button>
           <label>Metadata stale days<input id="channelMetadataStaleDays" type="number" min="0" step="1" value="30"></label>
           <label class="checkbox"><input id="channelMetadataForce" type="checkbox">Refresh already fetched</label>
-          <button id="fetchChannelMetadata" class="primary" type="button">Fetch channel metadata</button>
           <button id="backfillChannelFirstSeen" type="button">Backfill first seen</button>
           <span id="channelFirstSeenStatus" class="metric" aria-live="polite"></span>
         </div>
