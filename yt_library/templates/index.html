@@ -132,6 +132,8 @@
     .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
     .visibility-label { display: inline-flex; align-items: center; gap: 4px; }
     .visibility-label svg { width: 14px; height: 14px; flex: 0 0 auto; }
+    .video-availability { color: var(--muted); font-size: 13px; margin-top: 7px; }
+    .video-availability.unavailable { color: var(--warn); font-weight: 650; }
     .playlist-sources { display: grid; gap: 3px; justify-items: start; }
     .badge-lines { display: grid; gap: 2px; justify-items: start; }
     .badge-lines .badge { display: block; }
@@ -827,7 +829,7 @@
         return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M2 12h20"></path><path d="M12 2a15.3 15.3 0 0 1 0 20"></path><path d="M12 2a15.3 15.3 0 0 0 0 20"></path></svg>';
       }
       if (value === 'unlisted') {
-        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7H7a5 5 0 0 0 0 10h2"></path><path d="M15 7h2a5 5 0 0 1 0 10h-2"></path><path d="M8 12h8"></path><path d="M3 3l18 18"></path></svg>';
+        return '<svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24" fill="currentColor" focusable="false" aria-hidden="true"><path d="M9 18c.226 0 .448-.012.667-.037A8.001 8.001 0 018.07 16H7a4 4 0 110-8h2a4 4 0 014 4 2 2 0 001.668 1.973A5.999 5.999 0 009 6H7a6 6 0 100 12h2Zm8 0a6 6 0 100-12h-2c-.225 0-.448.012-.667.036A8 8 0 0115.93 8H17a4 4 0 110 8h-2a4 4 0 01-4-4 2 2 0 00-1.668-1.973A6 6 0 0015 18h2Z"></path></svg>';
       }
       return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>';
     }
@@ -1657,6 +1659,38 @@
       return availability;
     }
 
+    function videoAvailabilityValue(video) {
+      const availability = String(video.availability || '').trim().toLowerCase();
+      if (availability === 'subscriber_only') return 'members_only';
+      if (['public', 'unlisted', 'unknown'].includes(availability)) return availability;
+      if (['private', 'deleted', 'removed', 'unavailable', 'needs_auth', 'premium_only'].includes(availability)) {
+        return 'unavailable';
+      }
+      const recoveredStatus = String(video.recovered_status || '').trim().toUpperCase();
+      if (recoveredStatus === 'LIVE') return 'public';
+      if (recoveredStatus === 'NOT_FOUND' || recoveredStatus.startsWith('DELETED_')) return 'unavailable';
+      if (Object.prototype.hasOwnProperty.call(video, 'is_playable')) {
+        if (video.is_playable === true || Number(video.is_playable) === 1) return 'public';
+        if (video.is_playable === false || video.is_playable === 0) return 'unavailable';
+      }
+      return 'unknown';
+    }
+
+    function videoAvailabilityHtml(video) {
+      const availability = videoAvailabilityValue(video);
+      if (availability === 'members_only') {
+        return badgeRowsHtml([{ label: 'Members only' }]);
+      }
+      if (availability === 'public' || availability === 'unlisted') {
+        const label = availability === 'public' ? 'Public' : 'Unlisted';
+        return `<div class="video-availability">${visibilityLabelHtml(availability, label)}</div>`;
+      }
+      if (availability === 'unavailable') {
+        return '<div class="video-availability unavailable">Unavailable</div>';
+      }
+      return '<div class="video-availability">Unknown</div>';
+    }
+
     function recoveredAvailabilityLabel(video) {
       if (video.availability) return availabilityLabel(video.availability);
       const status = String(video.recovered_status || '');
@@ -1872,7 +1906,6 @@
               ${watchUrl ? `<a class="external-link" href="${escapeHtml(watchUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
             </div>
             ${badgeRowsHtml([
-              { label: unavailableLabel(video) },
               { label: archivarixStatusLabel(video) },
               { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
               { label: matchTypeLabel(video), title: video.match_note },
@@ -1884,6 +1917,7 @@
               video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
               archivarixLinkHtml(video),
             ])}
+            ${videoAvailabilityHtml(video)}
             ${watchedLineHtml(video)}
             ${watchSparklineHtml(video, true)}
             ${reactionIconsHtml(video)}
@@ -2485,8 +2519,6 @@
         localUrl: video.video_id ? localVideoHref(video.video_id) : '',
         externalUrl: watchUrl,
         badges: [
-          { label: String(video.availability || '').toLowerCase() === 'unlisted' ? 'Unlisted' : '' },
-          { label: unavailableLabel(video) },
           { label: archivarixStatusLabel(video) },
           { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
           { label: matchTypeLabel(video), title: video.match_note },
@@ -2499,6 +2531,8 @@
         channelHtml: creatorHtml(video.metadata_channel_thumbnail_path, channelName, channelUrl),
         sources: options.sources || [],
         playlistSourcesHtml: options.playlistSourcesHtml === undefined ? playlistSourceLinksHtml(video) : options.playlistSourcesHtml,
+        watchDateHtml: options.watchDateHtml || '',
+        availabilityHtml: videoAvailabilityHtml(video),
         watchedHtml: watchedLineHtml(video),
         sparklineHtml: watchSparklineHtml(video),
         reactionHtml: reactionIconsHtml(video),
@@ -2514,8 +2548,12 @@
     }
 
     function historyRowCardFor(video) {
+      const watched = historyWatchedAtLabel(video);
       const article = playlistVideoCardFor(video, {
         playlistSourcesHtml: playlistSourceLinksHtml(video),
+        watchDateHtml: watched
+          ? `<div class="details"><span>Watched ${escapeHtml(watched)}</span></div>`
+          : '',
       });
       article.classList.add('history-row');
       if (video.watch_date) article.dataset.watchDate = video.watch_date;
@@ -2523,16 +2561,6 @@
         const placeholder = document.createElement('div');
         placeholder.className = 'thumb-wrap';
         article.insertBefore(placeholder, article.firstChild);
-      }
-      const body = article.querySelector('.body');
-      if (body) {
-        const watched = historyWatchedAtLabel(video);
-        if (watched) {
-          const line = document.createElement('div');
-          line.className = 'details';
-          line.innerHTML = `<span>Watched ${escapeHtml(watched)}</span>`;
-          body.insertBefore(line, body.querySelector('.watched-line') || body.querySelector('.watch-sparkline') || null);
-        }
       }
       return article;
     }
@@ -2601,11 +2629,11 @@
         title: video.title,
         localUrl: video.video_id ? localVideoHref(video.video_id) : '',
         externalUrl: watchUrl,
-        badges: [{ label: availabilityLabel(video.availability) }],
         details: [
           video.channel ? creatorHtml('', video.channel, video.channel_id ? localChannelHref(video.channel_id) : '') : '',
           video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
         ],
+        availabilityHtml: videoAvailabilityHtml(video),
         reactionHtml: reactionIconsHtml(video),
         sparklineHtml: watchSparklineHtml(video),
         sources: [

@@ -184,6 +184,8 @@
       ${badgeRowsHtml(options.badges)}
       ${options.channelHtml ? `<div class="details">${options.channelHtml}</div>` : ''}
       ${detailRowHtml(options.details)}
+      ${options.watchDateHtml || ''}
+      ${options.availabilityHtml || ''}
       ${options.watchedHtml || ''}
       ${options.sparklineHtml || ''}
       ${options.reactionHtml || ''}

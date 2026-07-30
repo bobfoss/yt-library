@@ -3733,6 +3733,24 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("'subscriber_only', 'members only'", server.VIDEO_CARD_JS)
         self.assertIn("members-only-icon", server.VIDEO_CARD_JS)
         self.assertIn("M6 .5a5.5 5.5 0 100 11", server.VIDEO_CARD_JS)
+        self.assertIn(
+            "M9 18c.226 0 .448-.012.667-.037A8.001 8.001 0 018.07 16H7",
+            server.INDEX_HTML,
+        )
+        self.assertNotIn("M3 3l18 18", server.INDEX_HTML)
+        self.assertIn('class="video-availability"', server.INDEX_HTML)
+        self.assertIn("availabilityHtml: videoAvailabilityHtml(video)", server.INDEX_HTML)
+        self.assertIn("watchDateHtml: watched", server.INDEX_HTML)
+        self.assertIn(
+            "${options.watchDateHtml || ''}\n"
+            "      ${options.availabilityHtml || ''}\n"
+            "      ${options.watchedHtml || ''}",
+            server.VIDEO_CARD_JS,
+        )
+        self.assertNotIn(
+            "{ label: String(video.availability || '').toLowerCase() === 'unlisted'",
+            server.INDEX_HTML,
+        )
         self.assertIn("syncMetaFilterGroup('playlist-videos')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('liked-videos')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('channels')", server.INDEX_HTML)
