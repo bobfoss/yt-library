@@ -4235,6 +4235,18 @@ class AdminServerTests(unittest.TestCase):
             ".view-top.video-collection-top #view-meta",
             server.INDEX_HTML,
         )
+        self.assertIn(
+            ".video-filter-groups.has-search .video-filter-completion",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            '<span class="video-filter-facet video-filter-availability">',
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            '<span class="video-filter-facet video-filter-completion">',
+            server.INDEX_HTML,
+        )
         self.assertIn("syncMetaFilterGroup('liked-videos')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('channels')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('playlist-list')", server.INDEX_HTML)

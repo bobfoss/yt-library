@@ -109,7 +109,34 @@
       min-width: 0;
     }
     .video-filter-groups { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; min-width: 0; }
+    .video-filter-search, .video-filter-facet { display: contents; }
     .view-top.video-collection-top .view-sort { grid-column: 2; margin-left: 0; white-space: nowrap; }
+    @media (min-width: 761px) {
+      .video-filter-groups.has-search {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: start;
+      }
+      .video-filter-groups.has-search .video-filter-search {
+        display: block;
+        grid-column: 1;
+        grid-row: 1;
+      }
+      .video-filter-groups.has-search .video-filter-facet {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        min-width: 0;
+      }
+      .video-filter-groups.has-search .video-filter-availability {
+        grid-column: 2;
+        grid-row: 1;
+      }
+      .video-filter-groups.has-search .video-filter-completion {
+        grid-column: 2;
+        grid-row: 2;
+      }
+    }
     .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; color: var(--muted); font-size: 14px; margin: 0 0 14px; }
     .pager.bottom { margin: 18px 0 0; }
     .pager button, .pager select, .pager input { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
@@ -1680,22 +1707,26 @@
 
     function playlistVideoFiltersHtml(counts, completionCounts, searchHtml = '') {
       return `
-        <span class="video-filter-groups">
-          ${searchHtml}
-          ${videoStatusFiltersHtml({
-            groupName: 'playlist-videos',
-            filterAttribute: 'playlist-filter',
-            visibility: playlistVisibility,
-            counts,
-          })}
-          ${metaFilterControlsHtml({
-            groupName: 'playlist-completion',
-            filterAttribute: 'playlist-completion-filter',
-            visibility: playlistCompletionVisibility,
-            counts: completionCounts,
-            definitions: completionMetaFilterDefinitions,
-            allLabel: 'Completion',
-          })}
+        <span class="video-filter-groups${searchHtml ? ' has-search' : ''}">
+          ${searchHtml ? `<span class="video-filter-search">${searchHtml}</span>` : ''}
+          <span class="video-filter-facet video-filter-availability">
+            ${videoStatusFiltersHtml({
+              groupName: 'playlist-videos',
+              filterAttribute: 'playlist-filter',
+              visibility: playlistVisibility,
+              counts,
+            })}
+          </span>
+          <span class="video-filter-facet video-filter-completion">
+            ${metaFilterControlsHtml({
+              groupName: 'playlist-completion',
+              filterAttribute: 'playlist-completion-filter',
+              visibility: playlistCompletionVisibility,
+              counts: completionCounts,
+              definitions: completionMetaFilterDefinitions,
+              allLabel: 'Completion',
+            })}
+          </span>
         </span>
       `;
     }
