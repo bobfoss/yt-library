@@ -959,6 +959,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         for video_id, title in [
             ("complete1", "Complete"),
             ("partial1", "Partial"),
+            ("history-complete1", "History complete"),
             ("unknown1", "Unknown"),
             ("never1", "Never watched"),
         ]:
@@ -975,21 +976,28 @@ class NormalizedReadModelTests(unittest.TestCase):
             [
                 (1, "complete1"),
                 (2, "partial1"),
-                (3, "unknown1"),
-                (4, "never1"),
+                (3, "history-complete1"),
+                (4, "unknown1"),
+                (5, "never1"),
             ],
         )
-        self.conn.execute(
+        self.conn.executemany(
             """
-            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
-            VALUES ('unknown-watch', 'unknown1', '2026-07-30', 'date_only')
-            """
+            INSERT INTO history_events(
+              event_id, video_id, watch_date, time_precision, watch_progress_percent
+            )
+            VALUES (?, ?, '2026-07-30', 'date_only', ?)
+            """,
+            [
+                ("history-complete-watch", "history-complete1", 100),
+                ("unknown-watch", "unknown1", 0),
+            ],
         )
         self.conn.commit()
 
         all_rows = video_collection_data(self.conn, playlist_id="PLcompletion")
         expected_counts = {
-            "complete": 1,
+            "complete": 2,
             "partial": 1,
             "unknown": 1,
             "never_watched": 1,

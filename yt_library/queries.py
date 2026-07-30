@@ -474,7 +474,8 @@ def _video_candidate_rows(
       WITH history_stats AS (
         SELECT video_id,
                COUNT(*) AS watch_count,
-               MAX(COALESCE(watched_at, watch_date)) AS latest_watch_at
+               MAX(COALESCE(watched_at, watch_date)) AS latest_watch_at,
+               MAX(watch_progress_percent) AS watch_progress_percent
         FROM history_events
         GROUP BY video_id
       )
@@ -485,7 +486,12 @@ def _video_candidate_rows(
                  v.updated_at, '' AS playlist_id, '' AS playlist_title, 0 AS position,
                  '' AS membership_state, '' AS unavailable_kind, '' AS source_quality,
                  '' AS match_type, '' AS match_confidence, '' AS added_at,
-                 v.is_playable, v.availability, v.watch_progress_percent,
+                 v.is_playable, v.availability,
+                 COALESCE(
+                   NULLIF(v.watch_progress_percent, 0),
+                   hs.watch_progress_percent,
+                   0
+                 ) AS watch_progress_percent,
                  COALESCE(hs.watch_count, 0) AS watch_count,
                  COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
                  100 AS completeness_score
@@ -511,7 +517,12 @@ def _video_candidate_rows(
                  pi.playlist_id, p.title AS playlist_title, pi.position,
                  pi.membership_state, pi.unavailable_kind, pi.source_quality,
                  pi.match_type, pi.match_confidence, COALESCE(pi.added_at, '') AS added_at,
-                 v.is_playable, COALESCE(v.watch_progress_percent, 0) AS watch_progress_percent,
+                 v.is_playable,
+                 COALESCE(
+                   NULLIF(v.watch_progress_percent, 0),
+                   hs.watch_progress_percent,
+                   0
+                 ) AS watch_progress_percent,
                  CASE WHEN pi.video_id IS NULL THEN pi.unavailable_kind ELSE v.availability END AS availability,
                  COALESCE(hs.watch_count, 0) AS watch_count,
                  COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
