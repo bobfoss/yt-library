@@ -356,7 +356,8 @@
     let searchProgressTimer = null;
     let searchMetaProgressTimer = null;
     let searchRefreshProgressTimer = null;
-    let pendingSearchMetaGroup = '';
+    let pendingSearchMetaGroups = new Set();
+    let searchMetaProgressDots = '';
     let searchInputTimer = null;
     let playlistSearchTimer = null;
     const search = document.getElementById('search');
@@ -1078,10 +1079,10 @@
       });
     }
 
-    function updateSearchMetaProgress(dotsText = '') {
+    function updateSearchMetaProgress(dotsText = searchMetaProgressDots) {
+      searchMetaProgressDots = dotsText;
       for (const dots of meta.querySelectorAll('[data-search-meta-progress]')) {
-        const active = Boolean(pendingSearchMetaGroup)
-          && dots.dataset.searchMetaProgress === pendingSearchMetaGroup;
+        const active = pendingSearchMetaGroups.has(dots.dataset.searchMetaProgress);
         dots.classList.toggle('active', active);
         dots.textContent = active ? dotsText : '';
         const row = dots.closest('.search-meta-row');
@@ -1099,14 +1100,17 @@
         clearInterval(searchMetaProgressTimer);
         searchMetaProgressTimer = null;
       }
-      pendingSearchMetaGroup = '';
-      updateSearchMetaProgress();
+      pendingSearchMetaGroups.clear();
+      updateSearchMetaProgress('');
     }
 
     function showSearchMetaProgress(groupName) {
-      stopSearchMetaProgress();
-      pendingSearchMetaGroup = groupName === 'reactions' ? 'videos' : groupName;
-      searchMetaProgressTimer = animateProgressDots(updateSearchMetaProgress);
+      pendingSearchMetaGroups.add(groupName === 'reactions' ? 'videos' : groupName);
+      if (searchMetaProgressTimer === null) {
+        searchMetaProgressTimer = animateProgressDots(updateSearchMetaProgress);
+      } else {
+        updateSearchMetaProgress();
+      }
     }
 
     function stopSearchRefreshProgress() {

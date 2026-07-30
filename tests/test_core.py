@@ -3539,9 +3539,28 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("function animateProgressDots(update)", server.INDEX_HTML)
         self.assertIn("function showSearchMetaProgress(groupName)", server.INDEX_HTML)
         self.assertIn(
-            "pendingSearchMetaGroup = groupName === 'reactions' ? 'videos' : groupName;",
+            "pendingSearchMetaGroups.add(groupName === 'reactions' ? 'videos' : groupName);",
             server.INDEX_HTML,
         )
+        self.assertIn(
+            "const active = pendingSearchMetaGroups.has(dots.dataset.searchMetaProgress);",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "if (searchMetaProgressTimer === null) {",
+            server.INDEX_HTML,
+        )
+        show_progress_start = server.INDEX_HTML.index(
+            "function showSearchMetaProgress(groupName)"
+        )
+        show_progress_end = server.INDEX_HTML.index(
+            "function stopSearchRefreshProgress()"
+        )
+        self.assertNotIn(
+            "stopSearchMetaProgress();",
+            server.INDEX_HTML[show_progress_start:show_progress_end],
+        )
+        self.assertIn("pendingSearchMetaGroups.clear();", server.INDEX_HTML)
         self.assertIn("allLabel: 'Availability'", server.INDEX_HTML)
         self.assertIn("allLabel: 'Reactions'", server.INDEX_HTML)
         self.assertIn("title: '',\n          key: 'reactions'", server.INDEX_HTML)
