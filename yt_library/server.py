@@ -374,7 +374,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/search":
             params = urllib.parse.parse_qs(parsed.query)
             query = (params.get("q") or [""])[0]
-            filters = query_set_param(params, "filters")
+            search_fields = query_set_param(params, "search_fields")
             sort = (params.get("sort") or [None])[0]
             try:
                 limit = max(1, min(5000, int((params.get("limit") or ["100"])[0] or 100)))
@@ -389,9 +389,14 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 data = omni_search_data(
                     conn,
                     query,
-                    filters=filters,
+                    search_fields=search_fields,
                     video_meta_filters=query_set_param(params, "video_meta"),
                     video_reaction_filters=query_set_param(params, "video_reaction"),
+                    video_completion_filters=query_set_param(params, "video_completion"),
+                    video_playlist_membership_filters=query_set_param(
+                        params,
+                        "video_playlist_membership",
+                    ),
                     channel_meta_filters=query_set_param(params, "channel_meta"),
                     playlist_meta_filters=query_set_param(params, "playlist_meta"),
                     sort=sort,

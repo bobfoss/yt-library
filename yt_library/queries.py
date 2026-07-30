@@ -776,17 +776,7 @@ def video_detail_data(conn: sqlite3.Connection, video_id: str) -> dict[str, Any]
     return wrappers[0]["item"]
 
 
-OMNI_SEARCH_FILTERS = {
-    "videos",
-    "descriptions",
-    "playlist_videos",
-    "history_videos",
-    "unavailable_videos",
-    "members_only_videos",
-    "channels_subscribed",
-    "channels_unsubscribed",
-    "playlists",
-}
+OMNI_SEARCH_FIELDS = {"titles", "descriptions"}
 OMNI_SEARCH_SORTS = {"relevance", "title", "newest", "oldest", "most_watched", "type"}
 OMNI_SEARCH_KIND_ORDER = ("video", "playlist", "channel")
 OMNI_SEARCH_META_FILTERS = {
@@ -795,6 +785,8 @@ OMNI_SEARCH_META_FILTERS = {
     "channel": ("subscribed", "non_subscribed", "terminated"),
 }
 OMNI_SEARCH_REACTION_FILTERS = ("none", "liked", "disliked")
+OMNI_SEARCH_COMPLETION_FILTERS = ("complete", "partial", "unknown", "never_watched")
+OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS = ("member", "non_member")
 
 
 def _omni_like_pattern(query: str) -> str:
@@ -942,6 +934,53 @@ def _omni_reaction_counts(results: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _omni_video_completion_category(result: dict[str, Any]) -> str:
+    item = result["item"]
+    if not item.get("video_id"):
+        return "unknown"
+    progress = int(item.get("watch_progress_percent") or 0)
+    if progress >= 100:
+        return "complete"
+    if progress > 0:
+        return "partial"
+    if int(item.get("watch_count") or 0) > 0:
+        return "unknown"
+    return "never_watched"
+
+
+def _omni_completion_counts(results: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {
+        "total": 0,
+        **{category: 0 for category in OMNI_SEARCH_COMPLETION_FILTERS},
+    }
+    for result in results:
+        if result["kind"] != "video":
+            continue
+        counts["total"] += 1
+        counts[_omni_video_completion_category(result)] += 1
+    return counts
+
+
+def _omni_video_playlist_membership_category(result: dict[str, Any]) -> str:
+    item = result["item"]
+    if not item.get("video_id") or int(item.get("playlist_count") or 0) > 0:
+        return "member"
+    return "non_member"
+
+
+def _omni_playlist_membership_counts(results: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {
+        "total": 0,
+        **{category: 0 for category in OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS},
+    }
+    for result in results:
+        if result["kind"] != "video":
+            continue
+        counts["total"] += 1
+        counts[_omni_video_playlist_membership_category(result)] += 1
+    return counts
+
+
 def _add_omni_video_links(conn: sqlite3.Connection, results: list[dict[str, Any]]) -> None:
     video_ids = sorted(
         {
@@ -1085,9 +1124,11 @@ def omni_search_data(
     conn: sqlite3.Connection,
     query: str,
     *,
-    filters: set[str] | None = None,
+    search_fields: set[str] | None = None,
     video_meta_filters: set[str] | None = None,
     video_reaction_filters: set[str] | None = None,
+    video_completion_filters: set[str] | None = None,
+    video_playlist_membership_filters: set[str] | None = None,
     channel_meta_filters: set[str] | None = None,
     playlist_meta_filters: set[str] | None = None,
     sort: str | None = None,
@@ -1096,18 +1137,20 @@ def omni_search_data(
     display_timezone: str = "UTC",
 ) -> dict[str, Any]:
     query = query.strip()
-    active_filters = set(filters if filters is not None else OMNI_SEARCH_FILTERS) & OMNI_SEARCH_FILTERS
+    active_search_fields = set(
+        search_fields if search_fields is not None else OMNI_SEARCH_FIELDS
+    ) & OMNI_SEARCH_FIELDS
     default_sort = "relevance" if query else "newest"
     sort = sort if sort in OMNI_SEARCH_SORTS else default_sort
     limit = max(1, min(int(limit), 5000))
     offset = max(0, int(offset))
     pattern = _omni_like_pattern(query) if query else "%"
     params = {"pattern": pattern}
-    search_titles = "videos" in active_filters
-    search_descriptions = "descriptions" in active_filters
+    search_titles = "titles" in active_search_fields
+    search_descriptions = "descriptions" in active_search_fields
     results: list[dict[str, Any]] = []
 
-    if "playlists" in active_filters and (not query or search_titles or search_descriptions):
+    if not query or search_titles or search_descriptions:
         playlist_title_match = """
             lower(
               p.title || ' ' || COALESCE(owner.title, '') || ' ' ||
@@ -1123,6 +1166,7 @@ def omni_search_data(
                 playlist_matches.append(playlist_description_match)
         else:
             playlist_matches.append("1 = 1")
+        playlist_title_hit = playlist_title_match if not query or search_titles else "0"
         for row in conn.execute(
             f"""
             SELECT p.*,
@@ -1133,7 +1177,7 @@ def omni_search_data(
                    COALESCE(owner.title, '') AS owner_channel_title,
                    COALESCE(owner.thumbnail_path, '') AS owner_channel_thumbnail_path,
                    COALESCE(owner.status, '') AS owner_channel_status,
-                   CASE WHEN {playlist_title_match} THEN 1 ELSE 0 END AS title_hit
+                   CASE WHEN {playlist_title_hit} THEN 1 ELSE 0 END AS title_hit
             FROM playlists p
             LEFT JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
             LEFT JOIN channels owner ON owner.channel_id = p.owner_channel_id
@@ -1147,8 +1191,7 @@ def omni_search_data(
             item["owner_channel_url"] = youtube_channel_url(item.get("owner_channel_id") or "")
             results.append(_omni_result("playlist", 2 if title_hit else 5, item, matched_description=not title_hit))
 
-    subscribed_filters = active_filters & {"channels_subscribed", "channels_unsubscribed"}
-    if subscribed_filters and (not query or search_titles or search_descriptions):
+    if not query or search_titles or search_descriptions:
         channel_title_match = """
             lower(
               ch.title || ' ' || ch.channel_id || ' ' || ch.aliases || ' ' ||
@@ -1164,18 +1207,13 @@ def omni_search_data(
                 channel_matches.append(channel_description_match)
         else:
             channel_matches.append("1 = 1")
-        subscription_conditions = []
-        if "channels_subscribed" in subscribed_filters:
-            subscription_conditions.append("ch.subscribed = 1")
-        if "channels_unsubscribed" in subscribed_filters:
-            subscription_conditions.append("ch.subscribed = 0")
+        channel_title_hit = channel_title_match if not query or search_titles else "0"
         for row in conn.execute(
             f"""
             SELECT ch.*,
-                   CASE WHEN {channel_title_match} THEN 1 ELSE 0 END AS title_hit
+                   CASE WHEN {channel_title_hit} THEN 1 ELSE 0 END AS title_hit
             FROM channels ch
-            WHERE ({' OR '.join(subscription_conditions)})
-              AND ({' OR '.join(f'({match})' for match in channel_matches)})
+            WHERE {' OR '.join(f'({match})' for match in channel_matches)}
             """,
             params,
         ):
@@ -1184,11 +1222,7 @@ def omni_search_data(
             item["url"] = youtube_channel_url(item.get("channel_id") or "")
             results.append(_omni_result("channel", 1 if title_hit else 4, item, matched_description=not title_hit))
 
-    search_playlist_videos = "playlist_videos" in active_filters
-    search_history_videos = "history_videos" in active_filters
-    allow_unavailable = "unavailable_videos" in active_filters
-    allow_members_only = "members_only_videos" in active_filters
-    if (search_playlist_videos or search_history_videos) and (not query or search_titles or search_descriptions):
+    if not query or search_titles or search_descriptions:
         video_title_match = """
             (
               lower(
@@ -1213,28 +1247,12 @@ def omni_search_data(
                 video_matches.append(video_description_match)
         else:
             video_matches.append("1 = 1")
-        source_conditions = []
-        if search_playlist_videos:
-            source_conditions.append(
-                "EXISTS (SELECT 1 FROM playlist_items source_pi WHERE source_pi.video_id = v.video_id)"
-            )
-        if search_history_videos:
-            source_conditions.append("EXISTS (SELECT 1 FROM history_events source_he WHERE source_he.video_id = v.video_id)")
-        availability_conditions = ["COALESCE(v.is_playable, 0) = 1"]
-        if allow_unavailable:
-            availability_conditions.append(
-                "(COALESCE(v.is_playable, 0) = 0 "
-                "AND lower(COALESCE(v.availability, '')) != 'subscriber_only')"
-            )
-        if allow_members_only:
-            availability_conditions.append(
-                "lower(COALESCE(v.availability, '')) = 'subscriber_only'"
-            )
+        video_title_hit = video_title_match if not query or search_titles else "0"
         for row in conn.execute(
             f"""
             WITH candidate_videos AS MATERIALIZED (
               SELECT v.video_id,
-                     CASE WHEN {video_title_match} THEN 1 ELSE 0 END AS title_hit,
+                     CASE WHEN {video_title_hit} THEN 1 ELSE 0 END AS title_hit,
                      COALESCE(v.is_playable, 0) AS is_playable,
                      v.availability,
                      COALESCE(vr.archivarix_status, '') AS recovered_status,
@@ -1257,13 +1275,12 @@ def omni_search_data(
               FROM videos v
               LEFT JOIN channels ch ON ch.channel_id = v.channel_id
               LEFT JOIN video_recovery vr ON vr.video_id = v.video_id
-              WHERE ({' OR '.join(source_conditions)})
-                AND ({' OR '.join(availability_conditions)})
-                AND ({' OR '.join(f'({match})' for match in video_matches)})
+              WHERE {' OR '.join(f'({match})' for match in video_matches)}
             ),
             playlist_stats AS (
               SELECT pi.video_id,
-                     MIN(COALESCE(pi.added_at, '')) AS added_at
+                     MIN(COALESCE(pi.added_at, '')) AS added_at,
+                     COUNT(*) AS playlist_count
               FROM playlist_items pi
               JOIN candidate_videos candidate ON candidate.video_id = pi.video_id
               GROUP BY pi.video_id
@@ -1271,7 +1288,8 @@ def omni_search_data(
             history_stats AS (
               SELECT he.video_id,
                      COUNT(*) AS watch_count,
-                     MAX(COALESCE(he.watched_at, he.watch_date)) AS latest_watch_at
+                     MAX(COALESCE(he.watched_at, he.watch_date)) AS latest_watch_at,
+                     MAX(he.watch_progress_percent) AS watch_progress_percent
               FROM history_events he
               JOIN candidate_videos candidate ON candidate.video_id = he.video_id
               GROUP BY he.video_id
@@ -1283,8 +1301,14 @@ def omni_search_data(
                    v.updated_at,
                    v.reaction,
                    COALESCE(ps.added_at, '') AS added_at,
+                   COALESCE(ps.playlist_count, 0) AS playlist_count,
                    COALESCE(hs.watch_count, 0) AS watch_count,
                    COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
+                   COALESCE(
+                     NULLIF(v.watch_progress_percent, 0),
+                     hs.watch_progress_percent,
+                     0
+                   ) AS watch_progress_percent,
                    candidate.title_hit,
                    candidate.is_playable,
                    candidate.availability,
@@ -1313,7 +1337,7 @@ def omni_search_data(
                 )
             )
 
-    if search_playlist_videos and allow_unavailable and (not query or search_titles):
+    if not query or search_titles:
         for row in conn.execute(
             """
             SELECT pi.playlist_id,
@@ -1350,6 +1374,7 @@ def omni_search_data(
                     "reaction": "",
                     "is_playable": 0,
                     "availability": item.get("unavailable_kind") or "unavailable",
+                    "playlist_count": 1,
                     "watch_count": 0,
                     "watch_dates": [],
                     "collection_category": "unavailable",
@@ -1370,6 +1395,8 @@ def omni_search_data(
     _assign_omni_meta_categories(conn, results)
     meta_counts = _omni_meta_counts(results)
     reaction_counts = _omni_reaction_counts(results)
+    completion_counts = _omni_completion_counts(results)
+    playlist_membership_counts = _omni_playlist_membership_counts(results)
     selected_meta_filters = {
         "video": _selected_omni_meta_filters(video_meta_filters, "video"),
         "playlist": _selected_omni_meta_filters(playlist_meta_filters, "playlist"),
@@ -1380,6 +1407,17 @@ def omni_search_data(
         if video_reaction_filters is None
         else set(video_reaction_filters) & set(OMNI_SEARCH_REACTION_FILTERS)
     )
+    selected_completion_filters = (
+        set(OMNI_SEARCH_COMPLETION_FILTERS)
+        if video_completion_filters is None
+        else set(video_completion_filters) & set(OMNI_SEARCH_COMPLETION_FILTERS)
+    )
+    selected_playlist_membership_filters = (
+        set(OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS)
+        if video_playlist_membership_filters is None
+        else set(video_playlist_membership_filters)
+        & set(OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS)
+    )
     results = [
         result
         for result in results
@@ -1387,7 +1425,13 @@ def omni_search_data(
             result["metaCategory"] in selected_meta_filters[result["kind"]]
             and (
                 result["kind"] != "video"
-                or _omni_video_reaction_category(result) in selected_reaction_filters
+                or (
+                    _omni_video_reaction_category(result) in selected_reaction_filters
+                    and _omni_video_completion_category(result)
+                    in selected_completion_filters
+                    and _omni_video_playlist_membership_category(result)
+                    in selected_playlist_membership_filters
+                )
             )
         )
     ]
@@ -1410,7 +1454,7 @@ def omni_search_data(
         result.pop("_watch_count", None)
     return {
         "query": query,
-        "filters": sorted(active_filters),
+        "searchFields": sorted(active_search_fields),
         "sort": sort,
         "limit": limit,
         "offset": offset,
@@ -1418,6 +1462,8 @@ def omni_search_data(
         "counts": counts,
         "metaCounts": meta_counts,
         "reactionCounts": reaction_counts,
+        "completionCounts": completion_counts,
+        "playlistMembershipCounts": playlist_membership_counts,
         "results": page,
     }
 

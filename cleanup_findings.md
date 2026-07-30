@@ -110,6 +110,7 @@ Implement this as a shared saved-view/search specification with optional special
 - PocketTube import is deferred and is not a current configuration concern. Revisit group ingestion as a new design rather than restoring the removed config directive.
 - Previous-database queue backfill remains a one-off recovery operation. Promote it to a supported command only if the workflow repeats and can define source-version and conflict rules.
 - `watch_resume_seconds` remains less trustworthy than the observed progress percentage. Do not expand resume-time behavior until additional examples explain the mismatch.
+- Watch-progress history needs an evidence survey before expanding the model. `history_events` already stores progress observed on individual live-history occurrences, while metadata scans maintain the latest canonical percentage on `videos`; there is no durable chronology that associates successive metadata observations with distinct rewatches. Survey progress coverage by watch date and observation date to estimate when YouTube stops exposing completion data. If repeated watches produce lower percentages alongside corresponding new history occurrences, evaluate retaining those observations per occurrence instead of replacing the prior canonical completion.
 - Foreign playlist continuation work remains fixture-driven; current best-nonzero preservation is the safe behavior.
 
 ## Suggested Order

@@ -3537,12 +3537,35 @@ class AdminServerTests(unittest.TestCase):
             server.ADMIN_HTML.index('id="backfillChannelFirstSeen"'),
         )
         self.assertIn("reactions: { none: true, liked: true, disliked: true }", server.INDEX_HTML)
+        self.assertIn(
+            "completion: { complete: true, partial: true, unknown: true, never_watched: true }",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "membership: { member: true, non_member: true }",
+            server.INDEX_HTML,
+        )
+        self.assertNotIn("Search For", server.INDEX_HTML)
+        self.assertNotIn("playlist_videos\" checked> Playlist videos", server.INDEX_HTML)
         self.assertIn("video_reaction: metaFilterParamValue(searchMetaVisibility.reactions)", server.INDEX_HTML)
+        self.assertIn(
+            "video_completion: metaFilterParamValue(searchMetaVisibility.completion)",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "video_playlist_membership: metaFilterParamValue(searchMetaVisibility.membership)",
+            server.INDEX_HTML,
+        )
         self.assertIn("const channelMetaFilterDefinitions = [", server.INDEX_HTML)
         self.assertIn("const playlistMetaFilterDefinitions = [", server.INDEX_HTML)
+        self.assertIn("const completionMetaFilterDefinitions = [", server.INDEX_HTML)
+        self.assertIn(
+            "const playlistMembershipMetaFilterDefinitions = [",
+            server.INDEX_HTML,
+        )
         self.assertIn("function metaFilterControlsHtml({", server.INDEX_HTML)
         self.assertIn(
-            "function searchMetaFiltersHtml(metaCounts, reactionCounts)",
+            "function searchMetaFiltersHtml(",
             server.INDEX_HTML,
         )
         self.assertIn("filterAttribute: 'search-meta-filter'", server.INDEX_HTML)
@@ -3551,7 +3574,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("function animateProgressDots(update)", server.INDEX_HTML)
         self.assertIn("function showSearchMetaProgress(groupName)", server.INDEX_HTML)
         self.assertIn(
-            "pendingSearchMetaGroups.add(groupName === 'reactions' ? 'videos' : groupName);",
+            "const progressGroup = ['reactions', 'completion', 'membership'].includes(groupName)",
             server.INDEX_HTML,
         )
         self.assertIn(
@@ -3575,6 +3598,8 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("pendingSearchMetaGroups.clear();", server.INDEX_HTML)
         self.assertIn("allLabel: 'Availability'", server.INDEX_HTML)
         self.assertIn("allLabel: 'Reactions'", server.INDEX_HTML)
+        self.assertIn("allLabel: 'Completion'", server.INDEX_HTML)
+        self.assertIn("allLabel: 'Playlist membership'", server.INDEX_HTML)
         self.assertIn("title: '',\n          key: 'reactions'", server.INDEX_HTML)
         self.assertIn('id="search-progress-status"', server.INDEX_HTML)
         self.assertIn(
@@ -3601,10 +3626,6 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertLess(
-            server.INDEX_HTML.index('data-filter="playlists"'),
-            server.INDEX_HTML.index('data-filter="channels"'),
-        )
-        self.assertLess(
             server.INDEX_HTML.index("title: 'Playlists'"),
             server.INDEX_HTML.index("title: 'Channels'"),
         )
@@ -3613,7 +3634,7 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML.index("const channelSection = sectionFor('Channels');"),
         )
         self.assertIn(
-            "['videos', 'reactions', 'playlists', 'channels']",
+            "['videos', 'reactions', 'completion', 'membership', 'playlists', 'channels']",
             server.INDEX_HTML,
         )
         self.assertLess(
@@ -3645,14 +3666,14 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn(
-            "const metaCountsKey = JSON.stringify([query, searchFiltersValue]);",
+            "const metaCountsKey = JSON.stringify([query, searchFieldsValue]);",
             server.INDEX_HTML,
         )
         self.assertIn(
             "return { ...payload, counts: metaCountsCache.get(metaCountsKey) };",
             server.INDEX_HTML,
         )
-        self.assertIn('data-filter="members_only_videos"', server.INDEX_HTML)
+        self.assertNotIn('data-filter="members_only_videos"', server.INDEX_HTML)
         self.assertIn(".badge.members-only-badge", server.INDEX_HTML)
         self.assertIn("'subscriber_only', 'members only'", server.VIDEO_CARD_JS)
         self.assertIn("members-only-icon", server.VIDEO_CARD_JS)

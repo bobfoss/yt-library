@@ -106,7 +106,8 @@ class NormalizedReadModelTests(unittest.TestCase):
         data = omni_search_data(
             self.conn,
             "",
-            filters={"history_videos"},
+            channel_meta_filters=set(),
+            playlist_meta_filters=set(),
             limit=20,
         )
 
@@ -158,7 +159,8 @@ class NormalizedReadModelTests(unittest.TestCase):
         data = omni_search_data(
             self.conn,
             "",
-            filters={"playlist_videos", "history_videos"},
+            channel_meta_filters=set(),
+            playlist_meta_filters=set(),
             sort="newest",
             limit=20,
         )
@@ -192,12 +194,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         data = omni_search_data(
             self.conn,
             "",
-            filters={
-                "videos",
-                "history_videos",
-                "channels_subscribed",
-                "channels_unsubscribed",
-            },
+            playlist_meta_filters=set(),
             sort="newest",
             limit=20,
             display_timezone="America/Los_Angeles",
@@ -263,12 +260,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         data = omni_search_data(
             self.conn,
             "",
-            filters={
-                "videos",
-                "history_videos",
-                "channels_subscribed",
-                "channels_unsubscribed",
-            },
+            playlist_meta_filters=set(),
             sort="newest",
             limit=20,
         )
@@ -285,7 +277,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             ],
         )
 
-    def test_omni_search_applies_source_field_subscription_and_availability_filters(self) -> None:
+    def test_omni_search_applies_field_and_visibility_filters(self) -> None:
         self.add_video("description1", "Ordinary title", "UC_subscribed")
         self.add_video("unavailable1", "Needle unavailable")
         self.add_video("members1", "Needle members only")
@@ -297,6 +289,9 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.conn.execute(
             "UPDATE videos SET is_playable = 0, availability = 'subscriber_only' WHERE video_id = 'members1'"
+        )
+        self.conn.execute(
+            "UPDATE videos SET description = '' WHERE video_id IN ('unavailable1', 'members1')"
         )
         self.conn.execute(
             "UPDATE channels SET title = 'Needle subscribed', subscribed = 1 WHERE channel_id = 'UC_subscribed'"
@@ -321,7 +316,9 @@ class NormalizedReadModelTests(unittest.TestCase):
         descriptions = omni_search_data(
             self.conn,
             "needle",
-            filters={"descriptions", "history_videos"},
+            search_fields={"descriptions"},
+            channel_meta_filters=set(),
+            playlist_meta_filters=set(),
         )
         self.assertEqual(
             [result["item"]["video_id"] for result in descriptions["results"]],
@@ -331,7 +328,10 @@ class NormalizedReadModelTests(unittest.TestCase):
         subscribed = omni_search_data(
             self.conn,
             "needle",
-            filters={"videos", "channels_subscribed"},
+            search_fields={"titles"},
+            video_meta_filters=set(),
+            channel_meta_filters={"subscribed"},
+            playlist_meta_filters=set(),
         )
         self.assertEqual(
             [result["item"]["channel_id"] for result in subscribed["results"]],
@@ -345,26 +345,52 @@ class NormalizedReadModelTests(unittest.TestCase):
         available_only = omni_search_data(
             self.conn,
             "needle",
-            filters={"videos", "playlist_videos", "unavailable_videos"},
+            search_fields={"titles"},
             video_meta_filters={"videos"},
+            channel_meta_filters=set(),
+            playlist_meta_filters=set(),
         )
         self.assertEqual(available_only["results"], [])
         with_unavailable = omni_search_data(
             self.conn,
             "needle",
-            filters={"videos", "playlist_videos", "unavailable_videos"},
+            search_fields={"titles"},
+            video_meta_filters={"unavailable"},
+            channel_meta_filters=set(),
+            playlist_meta_filters=set(),
         )
         self.assertEqual(with_unavailable["results"][0]["item"]["video_id"], "unavailable1")
         self.assertEqual(available_only["metaCounts"], with_unavailable["metaCounts"])
         members_only = omni_search_data(
             self.conn,
             "needle",
-            filters={"videos", "playlist_videos", "members_only_videos"},
+            search_fields={"titles"},
+            video_meta_filters={"members_only"},
+            channel_meta_filters=set(),
+            playlist_meta_filters=set(),
         )
         self.assertEqual(
             [result["item"]["video_id"] for result in members_only["results"]],
             ["members1"],
         )
+
+    def test_omni_search_description_only_match_ignores_title_relevance(self) -> None:
+        self.add_video("both1", "Needle title")
+        self.conn.execute(
+            "UPDATE videos SET description = 'Needle description' WHERE video_id = 'both1'"
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "needle",
+            search_fields={"descriptions"},
+            channel_meta_filters=set(),
+            playlist_meta_filters=set(),
+        )
+
+        self.assertEqual(data["results"][0]["item"]["video_id"], "both1")
+        self.assertTrue(data["results"][0]["matchedDescription"])
 
     def test_omni_search_meta_filters_count_before_filtering_all_result_types(self) -> None:
         for video_id, title in (
@@ -529,6 +555,105 @@ class NormalizedReadModelTests(unittest.TestCase):
                 ("playlist", "removed"),
                 ("channel", "terminated"),
             ],
+        )
+
+    def test_omni_search_completion_and_playlist_membership_facets(self) -> None:
+        for video_id, title in (
+            ("complete1", "Facet complete"),
+            ("partial1", "Facet partial"),
+            ("unknown1", "Facet unknown"),
+            ("never1", "Facet never watched"),
+        ):
+            self.add_video(video_id, title)
+        self.conn.executemany(
+            "UPDATE videos SET is_playable = 1, watch_progress_percent = ? WHERE video_id = ?",
+            [(100, "complete1"), (45, "partial1"), (0, "unknown1"), (0, "never1")],
+        )
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLfacet', 'Facet playlist')"
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO playlist_items(
+              playlist_id, position, video_id, membership_state, unavailable_kind
+            ) VALUES ('PLfacet', ?, ?, ?, ?)
+            """,
+            [
+                (1, "complete1", "current", ""),
+                (2, "partial1", "current", ""),
+                (3, None, "unresolved_unavailable", "unavailable"),
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watch_date, time_precision, watch_progress_percent
+            ) VALUES (?, ?, '2026-07-01', 'date_only', ?)
+            """,
+            [
+                ("complete-watch", "complete1", 100),
+                ("partial-watch", "partial1", 45),
+                ("unknown-watch", "unknown1", 0),
+            ],
+        )
+        self.conn.commit()
+
+        unfiltered = omni_search_data(self.conn, "facet", sort="type", limit=100)
+
+        self.assertEqual(
+            unfiltered["completionCounts"],
+            {
+                "total": 5,
+                "complete": 1,
+                "partial": 1,
+                "unknown": 2,
+                "never_watched": 1,
+            },
+        )
+        self.assertEqual(
+            unfiltered["playlistMembershipCounts"],
+            {
+                "total": 5,
+                "member": 3,
+                "non_member": 2,
+            },
+        )
+
+        partial_members = omni_search_data(
+            self.conn,
+            "facet",
+            video_completion_filters={"partial"},
+            video_playlist_membership_filters={"member"},
+            channel_meta_filters=set(),
+            playlist_meta_filters=set(),
+            sort="type",
+            limit=100,
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in partial_members["results"]],
+            ["partial1"],
+        )
+        self.assertEqual(
+            partial_members["completionCounts"],
+            unfiltered["completionCounts"],
+        )
+        self.assertEqual(
+            partial_members["playlistMembershipCounts"],
+            unfiltered["playlistMembershipCounts"],
+        )
+
+        non_members = omni_search_data(
+            self.conn,
+            "facet",
+            video_playlist_membership_filters={"non_member"},
+            channel_meta_filters=set(),
+            playlist_meta_filters=set(),
+            sort="type",
+            limit=100,
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in non_members["results"]],
+            ["never1", "unknown1"],
         )
 
     def test_library_bootstrap_contains_counts_without_card_collections(self) -> None:
