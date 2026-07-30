@@ -1224,6 +1224,13 @@ class CoreHelperTests(unittest.TestCase):
                                     "subscribed": True,
                                 }
                             }
+                        },
+                        {
+                            "payload": {
+                                "subscriptionNotificationStateEntity": {
+                                    "state": "SUBSCRIPTION_NOTIFICATION_STATE_ALL",
+                                }
+                            }
                         }
                     ]
                 }
@@ -1231,6 +1238,20 @@ class CoreHelperTests(unittest.TestCase):
         }
 
         self.assertIs(core.extract_channel_subscription_state(initial_data), True)
+        self.assertEqual(core.extract_channel_notification_level(initial_data), "all")
+        self.assertEqual(
+            core.normalize_channel_notification_level(
+                "SUBSCRIPTION_NOTIFICATION_STATE_OCCASIONAL"
+            ),
+            "personalized",
+        )
+        self.assertEqual(
+            core.normalize_channel_notification_level(
+                "SUBSCRIPTION_NOTIFICATION_STATE_NONE"
+            ),
+            "none",
+        )
+        self.assertEqual(core.normalize_channel_notification_level("unknown"), "")
         self.assertIs(
             core.extract_channel_subscription_state(
                 {
@@ -1265,7 +1286,14 @@ class CoreHelperTests(unittest.TestCase):
                         {
                             "payload": {
                                 "subscriptionStateEntity": {
-                                    "subscribed": False,
+                                    "subscribed": True,
+                                }
+                            }
+                        },
+                        {
+                            "payload": {
+                                "subscriptionNotificationStateEntity": {
+                                    "state": "SUBSCRIPTION_NOTIFICATION_STATE_ALL",
                                 }
                             }
                         }
@@ -1297,7 +1325,66 @@ class CoreHelperTests(unittest.TestCase):
             )
 
         self.assertEqual(logged_out["channel_subscribed"], "")
-        self.assertEqual(authenticated["channel_subscribed"], "0")
+        self.assertEqual(logged_out["channel_notification_level"], "")
+        self.assertEqual(authenticated["channel_subscribed"], "1")
+        self.assertEqual(authenticated["channel_notification_level"], "all")
+
+    def test_channel_notification_level_preserves_unknown_and_clears_unsubscribed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCchannel", title="Example Channel")
+                    conn.execute(
+                        """
+                        UPDATE channels
+                        SET subscribed = 1, notification_level = 'all'
+                        WHERE channel_id = 'UCchannel'
+                        """
+                    )
+                    core.store_channel_metadata(
+                        conn,
+                        {
+                            "channel_id": "UCchannel",
+                            "channel": "Example Channel",
+                            "channel_subscribed": "",
+                            "channel_notification_level": "",
+                        },
+                        "ok",
+                    )
+                preserved = conn.execute(
+                    """
+                    SELECT subscribed, notification_level
+                    FROM channels
+                    WHERE channel_id = 'UCchannel'
+                    """
+                ).fetchone()
+                self.assertEqual(preserved["subscribed"], 1)
+                self.assertEqual(preserved["notification_level"], "all")
+
+                with conn:
+                    core.store_channel_metadata(
+                        conn,
+                        {
+                            "channel_id": "UCchannel",
+                            "channel": "Example Channel",
+                            "channel_subscribed": "0",
+                            "channel_notification_level": "",
+                        },
+                        "ok",
+                    )
+                unsubscribed = conn.execute(
+                    """
+                    SELECT subscribed, notification_level
+                    FROM channels
+                    WHERE channel_id = 'UCchannel'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(unsubscribed["subscribed"], 0)
+        self.assertEqual(unsubscribed["notification_level"], "")
 
     def test_playlist_continuation_prefers_command_executor_token(self) -> None:
         data = {
@@ -2577,6 +2664,57 @@ class SchemaTests(unittest.TestCase):
 
         self.assertIn("first_seen_at", columns)
         self.assertIsNone(first_seen_at)
+        self.assertEqual(schema_version, core.SCHEMA_VERSION)
+
+    def test_migrate_adds_channel_notification_level_without_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            legacy_schema = core.SCHEMA.replace(
+                "  notification_level TEXT NOT NULL DEFAULT ''\n"
+                "    CHECK (notification_level IN ('', 'all', 'personalized', 'none')),\n",
+                "",
+            )
+            raw = sqlite3.connect(db_path)
+            try:
+                raw.executescript(legacy_schema)
+                raw.execute("DELETE FROM schema_migrations")
+                raw.execute(
+                    """
+                    INSERT INTO schema_migrations(version, applied_at)
+                    VALUES (8, '2026-07-30T00:00:00Z')
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO channels(channel_id, title)
+                    VALUES ('UClegacy', 'Legacy channel')
+                    """
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(channels)")
+                }
+                notification_level = conn.execute(
+                    """
+                    SELECT notification_level
+                    FROM channels
+                    WHERE channel_id = 'UClegacy'
+                    """
+                ).fetchone()["notification_level"]
+                schema_version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertIn("notification_level", columns)
+        self.assertEqual(notification_level, "")
         self.assertEqual(schema_version, core.SCHEMA_VERSION)
 
     def test_channel_first_seen_backfill_uses_earliest_library_evidence(self) -> None:
@@ -4079,6 +4217,23 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('class="details channel-first-seen"', server.INDEX_HTML)
         self.assertIn("First seen ${escapeHtml(date)}", server.INDEX_HTML)
         self.assertEqual(server.INDEX_HTML.count("${channelFirstSeenHtml(channel)}"), 2)
+        self.assertIn("function channelNotificationHtml(channel)", server.INDEX_HTML)
+        self.assertEqual(server.INDEX_HTML.count("${channelNotificationHtml(channel)}"), 2)
+        self.assertIn("All notifications", server.INDEX_HTML)
+        self.assertIn("Personalized notifications", server.INDEX_HTML)
+        self.assertIn("No notifications", server.INDEX_HTML)
+        self.assertIn(
+            "M19.395 1.196a1 1 0 00-.199 1.4A9 9 0 0121 8",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "M16 19a4 4 0 11-8 0H4.765C3.21 19",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "M12 1a7 7 0 00-6.213 3.774l1.719 1.032",
+            server.INDEX_HTML,
+        )
         self.assertIn('id="fetchVideoMetadata"', server.ADMIN_HTML)
         self.assertIn('id="fetchChannelMetadata"', server.ADMIN_HTML)
         self.assertIn('id="backfillChannelFirstSeen"', server.ADMIN_HTML)
@@ -6749,6 +6904,7 @@ class WorkerQueueTests(unittest.TestCase):
                 "channel_status": "",
                 "channel_status_reason": "",
                 "channel_subscribed": "1",
+                "channel_notification_level": "all",
             }
             worker = MetadataWorker()
             with (
@@ -6779,11 +6935,16 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(log["level"], "channel")
                 self.assertEqual(log["video_id"], channel_id)
                 self.assertEqual(log["message"], "ok: Fetched Channel")
-                subscribed = conn.execute(
-                    "SELECT subscribed FROM channels WHERE channel_id = ?",
+                channel_state = conn.execute(
+                    """
+                    SELECT subscribed, notification_level
+                    FROM channels
+                    WHERE channel_id = ?
+                    """,
                     (channel_id,),
-                ).fetchone()["subscribed"]
-                self.assertEqual(subscribed, 1)
+                ).fetchone()
+                self.assertEqual(channel_state["subscribed"], 1)
+                self.assertEqual(channel_state["notification_level"], "all")
                 display_log = core.worker_log_snapshot(conn)["metadataLogs"][0]
                 self.assertEqual(display_log["display_id"], channel_id)
                 self.assertEqual(display_log["subject_title"], "Fetched Channel")

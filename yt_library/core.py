@@ -202,7 +202,7 @@ LIKED_VIDEOS_PLAYLIST_ID = "LL"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 @dataclass(frozen=True)
@@ -361,6 +361,23 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (8, utc_now()),
+        )
+    if current_version < 9:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(channels)")
+        }
+        if "notification_level" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE channels
+                ADD COLUMN notification_level TEXT NOT NULL DEFAULT ''
+                CHECK (notification_level IN ('', 'all', 'personalized', 'none'))
+                """
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (9, utc_now()),
         )
 
 
@@ -3209,6 +3226,29 @@ def extract_channel_subscription_state(initial_data: dict[str, Any]) -> bool | N
     return None
 
 
+def normalize_channel_notification_level(value: str) -> str:
+    normalized = str(value or "").strip().upper()
+    normalized = normalized.removeprefix("SUBSCRIPTION_NOTIFICATION_STATE_")
+    return {
+        "ALL": "all",
+        "OCCASIONAL": "personalized",
+        "PERSONALIZED": "personalized",
+        "NONE": "none",
+        "OFF": "none",
+    }.get(normalized, "")
+
+
+def extract_channel_notification_level(initial_data: dict[str, Any]) -> str:
+    for node in walk(initial_data):
+        entity = node.get("subscriptionNotificationStateEntity")
+        if not isinstance(entity, dict):
+            continue
+        level = normalize_channel_notification_level(str(entity.get("state") or ""))
+        if level:
+            return level
+    return ""
+
+
 def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, str]:
     initial_data = extract_json_assignment(html_text, "ytInitialData")
     title = ""
@@ -3255,6 +3295,7 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
             title = html.unescape(re.sub(r"\s+", " ", found.group(1))).strip()
             title = re.sub(r"\s+-\s+YouTube$", "", title)
     subscribed = extract_channel_subscription_state(initial_data)
+    notification_level = extract_channel_notification_level(initial_data)
     return {
         "channel_id": found_channel_id or channel_id,
         "channel": title,
@@ -3265,6 +3306,7 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
         "channel_status": status,
         "channel_status_reason": status_reason,
         "channel_subscribed": "" if subscribed is None else str(int(subscribed)),
+        "channel_notification_level": notification_level,
         "archivarix_channel_id": "",
     }
 
@@ -3291,6 +3333,7 @@ def channel_renderer_metadata(renderer: dict[str, Any]) -> dict[str, str]:
         "channel_status": "",
         "channel_status_reason": "",
         "channel_subscribed": "",
+        "channel_notification_level": "",
         "archivarix_channel_id": "",
     }
 
@@ -3335,6 +3378,7 @@ def extract_channel_search_metadata(
         "channel_status": "",
         "channel_status_reason": "",
         "channel_subscribed": "",
+        "channel_notification_level": "",
         "archivarix_channel_id": "",
     }
 
@@ -3343,6 +3387,13 @@ def merge_channel_metadata(primary: dict[str, str], fallback: dict[str, str]) ->
     subscribed = primary.get("channel_subscribed", "")
     if subscribed not in {"0", "1"}:
         subscribed = fallback.get("channel_subscribed", "")
+    notification_level = normalize_channel_notification_level(
+        primary.get("channel_notification_level", "")
+    )
+    if not notification_level:
+        notification_level = normalize_channel_notification_level(
+            fallback.get("channel_notification_level", "")
+        )
     return {
         "channel_id": primary.get("channel_id", "") or fallback.get("channel_id", ""),
         "channel": primary.get("channel", "") or fallback.get("channel", ""),
@@ -3353,6 +3404,7 @@ def merge_channel_metadata(primary: dict[str, str], fallback: dict[str, str]) ->
         "channel_status": primary.get("channel_status", "") or fallback.get("channel_status", ""),
         "channel_status_reason": primary.get("channel_status_reason", "") or fallback.get("channel_status_reason", ""),
         "channel_subscribed": subscribed if subscribed in {"0", "1"} else "",
+        "channel_notification_level": notification_level,
         "archivarix_channel_id": primary.get("archivarix_channel_id", "") or fallback.get("archivarix_channel_id", ""),
     }
 
@@ -3370,6 +3422,7 @@ def archivarix_channel_metadata(fields: dict[str, Any], channel_id: str) -> dict
         "channel_status": status,
         "channel_status_reason": status_reason,
         "channel_subscribed": "",
+        "channel_notification_level": "",
         "archivarix_channel_id": str(fields.get("archivarixChannelId") or "").strip(),
     }
 
@@ -3390,6 +3443,7 @@ def fetch_channel_metadata(
     metadata = extract_channel_page_metadata(page, channel_id)
     if not authenticated:
         metadata["channel_subscribed"] = ""
+        metadata["channel_notification_level"] = ""
     if not (metadata.get("channel") and metadata.get("channel_thumbnail_url")):
         search_terms = [
             term.strip()
@@ -3733,6 +3787,19 @@ def store_channel_metadata(
         conn.execute(
             "UPDATE channels SET subscribed = ? WHERE channel_id = ?",
             (int(subscribed), channel_id),
+        )
+    notification_level = normalize_channel_notification_level(
+        metadata.get("channel_notification_level", "")
+    )
+    if channel_id and notification_level:
+        conn.execute(
+            "UPDATE channels SET notification_level = ? WHERE channel_id = ?",
+            (notification_level, channel_id),
+        )
+    elif channel_id and subscribed == "0":
+        conn.execute(
+            "UPDATE channels SET notification_level = '' WHERE channel_id = ?",
+            (channel_id,),
         )
     return channel_id
 

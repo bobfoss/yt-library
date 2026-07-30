@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS channels (
   description TEXT NOT NULL DEFAULT '',
   aliases TEXT NOT NULL DEFAULT '',
   subscribed INTEGER NOT NULL DEFAULT 0 CHECK (subscribed IN (0, 1)),
+  notification_level TEXT NOT NULL DEFAULT ''
+    CHECK (notification_level IN ('', 'all', 'personalized', 'none')),
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
   archivarix_channel_id TEXT NOT NULL DEFAULT '',
