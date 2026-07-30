@@ -3538,6 +3538,13 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('data-search-meta-progress="${key}"', server.INDEX_HTML)
         self.assertIn("function animateProgressDots(update)", server.INDEX_HTML)
         self.assertIn("function showSearchMetaProgress(groupName)", server.INDEX_HTML)
+        self.assertIn(
+            "pendingSearchMetaGroup = groupName === 'reactions' ? 'videos' : groupName;",
+            server.INDEX_HTML,
+        )
+        self.assertIn("allLabel: 'Availability'", server.INDEX_HTML)
+        self.assertIn("allLabel: 'Reactions'", server.INDEX_HTML)
+        self.assertIn("title: '',\n          key: 'reactions'", server.INDEX_HTML)
         self.assertIn('id="search-refresh-status"', server.INDEX_HTML)
         self.assertIn(
             '<div class="toolbar-heading">\n'

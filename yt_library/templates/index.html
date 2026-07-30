@@ -1105,7 +1105,7 @@
 
     function showSearchMetaProgress(groupName) {
       stopSearchMetaProgress();
-      pendingSearchMetaGroup = groupName;
+      pendingSearchMetaGroup = groupName === 'reactions' ? 'videos' : groupName;
       searchMetaProgressTimer = animateProgressDots(updateSearchMetaProgress);
     }
 
@@ -1482,12 +1482,13 @@
       counts,
       definitions,
       filterValuePrefix = '',
+      allLabel = 'All',
     }) {
       const applicableDefinitions = definitions.filter(({ key }) =>
         Object.prototype.hasOwnProperty.call(visibility, key)
       );
       return `
-        <label class="meta-filter"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>All</span></label>
+        <label class="meta-filter"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>${escapeHtml(allLabel)}</span></label>
         ${applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false }) => `
           <label class="meta-filter">
             <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
@@ -1517,13 +1518,15 @@
           visibility: searchMetaVisibility.videos,
           definitions: videoMetaFilterDefinitions,
           counts: metaCounts?.videos,
+          allLabel: 'Availability',
         },
         {
-          title: 'Reactions',
+          title: '',
           key: 'reactions',
           visibility: searchMetaVisibility.reactions,
           definitions: reactionMetaFilterDefinitions,
           counts: reactionCounts,
+          allLabel: 'Reactions',
         },
         {
           title: 'Playlists',
@@ -1542,12 +1545,14 @@
       ];
       return groups
         .filter(({ counts }) => Number(counts?.total || 0) > 0)
-        .map(({ title, key, visibility, definitions, counts }) => `
+        .map(({ title, key, visibility, definitions, counts, allLabel = 'All' }) => `
           <div class="search-meta-row">
-            <span class="search-meta-row-title">
-              <span class="search-meta-progress" data-search-meta-progress="${key}" aria-hidden="true"></span>
-              <span>${title}</span>
-            </span>
+            ${title
+              ? `<span class="search-meta-row-title">
+                  <span class="search-meta-progress" data-search-meta-progress="${key}" aria-hidden="true"></span>
+                  <span>${title}</span>
+                </span>`
+              : '<span class="search-meta-row-title" aria-hidden="true"></span>'}
             <span class="search-meta-controls">
               ${metaFilterControlsHtml({
                 groupName: `search-${key}`,
@@ -1556,6 +1561,7 @@
                 visibility,
                 counts,
                 definitions,
+                allLabel,
               })}
             </span>
           </div>
