@@ -281,6 +281,8 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.conn.execute(
             "UPDATE videos SET is_playable = 1 WHERE video_id IN ('available1', 'removed1')"
         )
+        self.conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'available1'")
+        self.conn.execute("UPDATE videos SET reaction = 'D' WHERE video_id = 'unavailable1'")
         self.conn.execute(
             "UPDATE videos SET is_playable = 0, availability = 'private' WHERE video_id = 'unavailable1'"
         )
@@ -370,6 +372,46 @@ class NormalizedReadModelTests(unittest.TestCase):
                     "removed": 1,
                 },
             },
+        )
+        self.assertEqual(
+            unfiltered["reactionCounts"],
+            {
+                "total": 4,
+                "none": 2,
+                "liked": 1,
+                "disliked": 1,
+            },
+        )
+        liked = omni_search_data(
+            self.conn,
+            "needle",
+            video_reaction_filters={"liked"},
+            sort="type",
+            limit=100,
+        )
+        self.assertEqual(liked["reactionCounts"], unfiltered["reactionCounts"])
+        self.assertEqual(
+            [
+                result["item"]["video_id"]
+                for result in liked["results"]
+                if result["kind"] == "video"
+            ],
+            ["available1"],
+        )
+        disliked = omni_search_data(
+            self.conn,
+            "needle",
+            video_reaction_filters={"disliked"},
+            sort="type",
+            limit=100,
+        )
+        self.assertEqual(
+            [
+                result["item"]["video_id"]
+                for result in disliked["results"]
+                if result["kind"] == "video"
+            ],
+            ["unavailable1"],
         )
         filtered = omni_search_data(
             self.conn,

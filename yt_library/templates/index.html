@@ -324,6 +324,7 @@
     let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
     let searchMetaVisibility = {
       videos: { videos: true, unavailable: true, members_only: true, removed: true },
+      reactions: { none: true, liked: true, disliked: true },
       channels: { subscribed: true, non_subscribed: true, terminated: true },
       playlists: { private: true, public: true, unlisted: true, others: true, unknown: true, removed: true },
     };
@@ -346,6 +347,7 @@
     let viewDataCache = new Map();
     let videoMetaCountsCache = new Map();
     let omniMetaCountsCache = new Map();
+    let omniReactionCountsCache = new Map();
     let pendingHistoryDate = '';
     let channelHistoryCounts = new Map();
     let channelDetailTab = 'playlists';
@@ -399,6 +401,7 @@
       viewDataCache = new Map();
       videoMetaCountsCache = new Map();
       omniMetaCountsCache = new Map();
+      omniReactionCountsCache = new Map();
       channelHistoryCounts = new Map();
       memberships = new Map();
       for (const item of data.memberships) {
@@ -567,6 +570,9 @@
       if (!allMetaFiltersEnabled(searchMetaVisibility.videos)) {
         params.set('vm', metaFilterParamValue(searchMetaVisibility.videos));
       }
+      if (!allMetaFiltersEnabled(searchMetaVisibility.reactions)) {
+        params.set('vr', metaFilterParamValue(searchMetaVisibility.reactions));
+      }
       if (!allMetaFiltersEnabled(searchMetaVisibility.channels)) {
         params.set('cm', metaFilterParamValue(searchMetaVisibility.channels));
       }
@@ -596,6 +602,7 @@
         syncSearchForFilters();
       }
       applyMetaFilterParam(searchMetaVisibility.videos, params.get('vm'));
+      applyMetaFilterParam(searchMetaVisibility.reactions, params.get('vr'));
       applyMetaFilterParam(searchMetaVisibility.channels, params.get('cm'));
       applyMetaFilterParam(searchMetaVisibility.playlists, params.get('pm'));
       if (!params.has('vm') && params.get('unavailable') === '0') {
@@ -759,6 +766,7 @@
         channels: channelVisibility,
         'playlist-list': playlistListVisibility,
         'search-videos': searchMetaVisibility.videos,
+        'search-reactions': searchMetaVisibility.reactions,
         'search-channels': searchMetaVisibility.channels,
         'search-playlists': searchMetaVisibility.playlists,
       };
@@ -1448,6 +1456,11 @@
       { key: 'members_only', label: 'members only', className: 'members-only-filter' },
       { key: 'removed', label: 'removed', className: 'badge' },
     ];
+    const reactionMetaFilterDefinitions = [
+      { key: 'none', label: 'no reaction' },
+      { key: 'liked', label: 'liked' },
+      { key: 'disliked', label: 'disliked' },
+    ];
     const channelMetaFilterDefinitions = [
       { key: 'subscribed', label: 'subscribed' },
       { key: 'non_subscribed', label: 'non-subscribed' },
@@ -1496,30 +1509,40 @@
       });
     }
 
-    function searchMetaFiltersHtml(metaCounts) {
+    function searchMetaFiltersHtml(metaCounts, reactionCounts) {
       const groups = [
         {
           title: 'Videos',
           key: 'videos',
           visibility: searchMetaVisibility.videos,
           definitions: videoMetaFilterDefinitions,
+          counts: metaCounts?.videos,
+        },
+        {
+          title: 'Reactions',
+          key: 'reactions',
+          visibility: searchMetaVisibility.reactions,
+          definitions: reactionMetaFilterDefinitions,
+          counts: reactionCounts,
         },
         {
           title: 'Playlists',
           key: 'playlists',
           visibility: searchMetaVisibility.playlists,
           definitions: playlistMetaFilterDefinitions,
+          counts: metaCounts?.playlists,
         },
         {
           title: 'Channels',
           key: 'channels',
           visibility: searchMetaVisibility.channels,
           definitions: channelMetaFilterDefinitions,
+          counts: metaCounts?.channels,
         },
       ];
       return groups
-        .filter(({ key }) => Number(metaCounts?.[key]?.total || 0) > 0)
-        .map(({ title, key, visibility, definitions }) => `
+        .filter(({ counts }) => Number(counts?.total || 0) > 0)
+        .map(({ title, key, visibility, definitions, counts }) => `
           <div class="search-meta-row">
             <span class="search-meta-row-title">
               <span class="search-meta-progress" data-search-meta-progress="${key}" aria-hidden="true"></span>
@@ -1531,7 +1554,7 @@
                 filterAttribute: 'search-meta-filter',
                 filterValuePrefix: `${key}:`,
                 visibility,
-                counts: metaCounts[key],
+                counts,
                 definitions,
               })}
             </span>
@@ -1655,10 +1678,12 @@
       const searchFiltersValue = searchFilterParamValue() || '__none__';
       const metaCountsKey = JSON.stringify([query, searchFiltersValue]);
       const metaCountsCache = omniMetaCountsCache;
+      const reactionCountsCache = omniReactionCountsCache;
       const params = new URLSearchParams({
         q: query,
         filters: searchFiltersValue,
         video_meta: metaFilterParamValue(searchMetaVisibility.videos),
+        video_reaction: metaFilterParamValue(searchMetaVisibility.reactions),
         channel_meta: metaFilterParamValue(searchMetaVisibility.channels),
         playlist_meta: metaFilterParamValue(searchMetaVisibility.playlists),
         sort: searchResultsSort,
@@ -1677,7 +1702,14 @@
           );
           metaCountsCache.set(metaCountsKey, stableMetaCounts);
         }
-        const stablePayload = { ...payload, metaCounts: metaCountsCache.get(metaCountsKey) };
+        if (!reactionCountsCache.has(metaCountsKey)) {
+          reactionCountsCache.set(metaCountsKey, { ...(payload.reactionCounts || {}) });
+        }
+        const stablePayload = {
+          ...payload,
+          metaCounts: metaCountsCache.get(metaCountsKey),
+          reactionCounts: reactionCountsCache.get(metaCountsKey),
+        };
         if (omniSearchState.key === key) {
           omniSearchState = { key, data: stablePayload, promise: null };
         }
@@ -2065,7 +2097,7 @@
         currentPage = Math.floor(Number(payload.offset || 0) / remoteLimit) + 1;
         renderedOmniSearchQuery = query;
         title.textContent = 'Search results';
-        const searchMetaHtml = searchMetaFiltersHtml(payload.metaCounts);
+        const searchMetaHtml = searchMetaFiltersHtml(payload.metaCounts, payload.reactionCounts);
         meta.innerHTML = `
           <div class="search-result-meta">
             <div class="search-result-summary">
@@ -2075,8 +2107,11 @@
             ${searchMetaHtml ? `<div class="search-meta-groups">${searchMetaHtml}</div>` : ''}
           </div>
         `;
-        for (const key of ['videos', 'playlists', 'channels']) {
-          if (Number(payload.metaCounts?.[key]?.total || 0) > 0) {
+        for (const key of ['videos', 'reactions', 'playlists', 'channels']) {
+          const total = key === 'reactions'
+            ? Number(payload.reactionCounts?.total || 0)
+            : Number(payload.metaCounts?.[key]?.total || 0);
+          if (total > 0) {
             syncMetaFilterGroup(`search-${key}`);
           }
         }

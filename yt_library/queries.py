@@ -792,6 +792,7 @@ OMNI_SEARCH_META_FILTERS = {
     "playlist": ("private", "public", "unlisted", "others", "unknown", "removed"),
     "channel": ("subscribed", "non_subscribed", "terminated"),
 }
+OMNI_SEARCH_REACTION_FILTERS = ("none", "liked", "disliked")
 
 
 def _omni_like_pattern(query: str) -> str:
@@ -892,6 +893,28 @@ def _omni_meta_counts(results: list[dict[str, Any]]) -> dict[str, dict[str, int]
         category = result["metaCategory"]
         group["total"] += 1
         group[category] += 1
+    return counts
+
+
+def _omni_video_reaction_category(result: dict[str, Any]) -> str:
+    reaction = str(result["item"].get("reaction") or "").strip().upper()
+    if reaction == "L":
+        return "liked"
+    if reaction == "D":
+        return "disliked"
+    return "none"
+
+
+def _omni_reaction_counts(results: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {
+        "total": 0,
+        **{category: 0 for category in OMNI_SEARCH_REACTION_FILTERS},
+    }
+    for result in results:
+        if result["kind"] != "video":
+            continue
+        counts["total"] += 1
+        counts[_omni_video_reaction_category(result)] += 1
     return counts
 
 
@@ -1040,6 +1063,7 @@ def omni_search_data(
     *,
     filters: set[str] | None = None,
     video_meta_filters: set[str] | None = None,
+    video_reaction_filters: set[str] | None = None,
     channel_meta_filters: set[str] | None = None,
     playlist_meta_filters: set[str] | None = None,
     sort: str | None = None,
@@ -1232,6 +1256,7 @@ def omni_search_data(
                    v.title AS metadata_title,
                    v.upload_date AS metadata_upload_date,
                    v.updated_at,
+                   v.reaction,
                    COALESCE(ps.added_at, '') AS added_at,
                    COALESCE(hs.watch_count, 0) AS watch_count,
                    COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
@@ -1289,6 +1314,7 @@ def omni_search_data(
                     "metadata_channel": "",
                     "metadata_channel_id": "",
                     "metadata_duration": "",
+                    "reaction": "",
                     "is_playable": 0,
                     "availability": item.get("unavailable_kind") or "unavailable",
                     "watch_count": 0,
@@ -1310,15 +1336,27 @@ def omni_search_data(
 
     _assign_omni_meta_categories(conn, results)
     meta_counts = _omni_meta_counts(results)
+    reaction_counts = _omni_reaction_counts(results)
     selected_meta_filters = {
         "video": _selected_omni_meta_filters(video_meta_filters, "video"),
         "playlist": _selected_omni_meta_filters(playlist_meta_filters, "playlist"),
         "channel": _selected_omni_meta_filters(channel_meta_filters, "channel"),
     }
+    selected_reaction_filters = (
+        set(OMNI_SEARCH_REACTION_FILTERS)
+        if video_reaction_filters is None
+        else set(video_reaction_filters) & set(OMNI_SEARCH_REACTION_FILTERS)
+    )
     results = [
         result
         for result in results
-        if result["metaCategory"] in selected_meta_filters[result["kind"]]
+        if (
+            result["metaCategory"] in selected_meta_filters[result["kind"]]
+            and (
+                result["kind"] != "video"
+                or _omni_video_reaction_category(result) in selected_reaction_filters
+            )
+        )
     ]
     _sort_omni_results(results, sort)
     total = len(results)
@@ -1346,6 +1384,7 @@ def omni_search_data(
         "total": total,
         "counts": counts,
         "metaCounts": meta_counts,
+        "reactionCounts": reaction_counts,
         "results": page,
     }
 

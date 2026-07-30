@@ -391,6 +391,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     query,
                     filters=filters,
                     video_meta_filters=query_set_param(params, "video_meta"),
+                    video_reaction_filters=query_set_param(params, "video_reaction"),
                     channel_meta_filters=query_set_param(params, "channel_meta"),
                     playlist_meta_filters=query_set_param(params, "playlist_meta"),
                     sort=sort,

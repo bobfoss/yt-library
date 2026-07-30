@@ -3523,10 +3523,16 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-all-filter='), 1)
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 1)
         self.assertIn("const videoMetaFilterDefinitions = [", server.INDEX_HTML)
+        self.assertIn("const reactionMetaFilterDefinitions = [", server.INDEX_HTML)
+        self.assertIn("reactions: { none: true, liked: true, disliked: true }", server.INDEX_HTML)
+        self.assertIn("video_reaction: metaFilterParamValue(searchMetaVisibility.reactions)", server.INDEX_HTML)
         self.assertIn("const channelMetaFilterDefinitions = [", server.INDEX_HTML)
         self.assertIn("const playlistMetaFilterDefinitions = [", server.INDEX_HTML)
         self.assertIn("function metaFilterControlsHtml({", server.INDEX_HTML)
-        self.assertIn("function searchMetaFiltersHtml(metaCounts)", server.INDEX_HTML)
+        self.assertIn(
+            "function searchMetaFiltersHtml(metaCounts, reactionCounts)",
+            server.INDEX_HTML,
+        )
         self.assertIn("filterAttribute: 'search-meta-filter'", server.INDEX_HTML)
         self.assertIn("groupName: `search-${key}`", server.INDEX_HTML)
         self.assertIn('data-search-meta-progress="${key}"', server.INDEX_HTML)
@@ -3568,7 +3574,10 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML.index("const playlistSection = sectionFor('Playlists');"),
             server.INDEX_HTML.index("const channelSection = sectionFor('Channels');"),
         )
-        self.assertIn("['videos', 'playlists', 'channels']", server.INDEX_HTML)
+        self.assertIn(
+            "['videos', 'reactions', 'playlists', 'channels']",
+            server.INDEX_HTML,
+        )
         self.assertLess(
             server.INDEX_HTML.index('id="view-meta"'),
             server.INDEX_HTML.index('id="refresh"'),
