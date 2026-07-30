@@ -85,6 +85,8 @@
     .search-meta-row-title { color: var(--ink); font-weight: 650; text-align: right; display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 4px; }
     .search-meta-progress { display: inline-block; width: 1.4em; text-align: left; visibility: hidden; font-weight: 400; }
     .search-meta-progress.active { visibility: visible; }
+    .search-refresh-status { color: var(--muted); display: inline-flex; min-width: 8em; margin: -8px 0 14px; }
+    .search-refresh-status[hidden] { display: none; }
     .search-meta-controls { display: flex; flex-wrap: wrap; gap: 8px; }
     .search-meta-controls .meta-filter { margin-left: 0; }
     .playlist-search { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; min-width: min(360px, 38vw); }
@@ -284,6 +286,7 @@
             <button id="refresh" class="refresh" type="button">Refresh</button>
           </div>
         </div>
+        <div id="search-refresh-status" class="search-refresh-status" hidden aria-live="polite"></div>
         <section id="view-context" class="view-context" hidden></section>
       </div>
       <div class="results-scroll">
@@ -346,6 +349,7 @@
     let renderedOmniSearchQuery = '';
     let searchProgressTimer = null;
     let searchMetaProgressTimer = null;
+    let searchRefreshProgressTimer = null;
     let pendingSearchMetaGroup = '';
     let searchInputTimer = null;
     let playlistSearchTimer = null;
@@ -376,8 +380,9 @@
     const resultsScroll = document.querySelector('.results-scroll');
     const viewTop = document.getElementById('view-top');
     const viewContext = document.getElementById('view-context');
+    const searchRefreshStatus = document.getElementById('search-refresh-status');
 
-    async function loadData() {
+    async function loadData({ preserveSearchContent = false } = {}) {
       refresh.disabled = true;
       refresh.textContent = 'Refreshing';
       const response = await fetch('/api/bootstrap', { cache: 'no-store' });
@@ -386,7 +391,7 @@
       historyPageState = { key: '', loading: false, data: null };
       historyActivityState = { key: '', loading: false, data: null };
       omniSearchState = { key: '', data: null, promise: null };
-      renderedOmniSearchQuery = '';
+      if (!preserveSearchContent) renderedOmniSearchQuery = '';
       viewDataCache = new Map();
       videoMetaCountsCache = new Map();
       omniMetaCountsCache = new Map();
@@ -404,7 +409,7 @@
       }
       selected = selectionFromHash();
       renderGroups();
-      render();
+      await render();
       refresh.disabled = false;
       refresh.textContent = 'Refresh';
     }
@@ -1050,6 +1055,17 @@
       }, 280);
     }
 
+    function progressMessageAnimation(container, labelText) {
+      const label = document.createElement('span');
+      label.textContent = labelText;
+      const dots = document.createElement('span');
+      dots.className = 'searching-dots';
+      container.replaceChildren(label, dots);
+      return animateProgressDots(value => {
+        dots.textContent = value;
+      });
+    }
+
     function updateSearchMetaProgress(dotsText = '') {
       for (const dots of meta.querySelectorAll('[data-search-meta-progress]')) {
         const active = Boolean(pendingSearchMetaGroup)
@@ -1081,6 +1097,23 @@
       searchMetaProgressTimer = animateProgressDots(updateSearchMetaProgress);
     }
 
+    function stopSearchRefreshProgress() {
+      if (searchRefreshProgressTimer !== null) {
+        clearInterval(searchRefreshProgressTimer);
+        searchRefreshProgressTimer = null;
+      }
+      searchRefreshStatus.hidden = true;
+      searchRefreshStatus.removeAttribute('aria-busy');
+      searchRefreshStatus.replaceChildren();
+    }
+
+    function showSearchRefreshProgress() {
+      stopSearchRefreshProgress();
+      searchRefreshStatus.hidden = false;
+      searchRefreshStatus.setAttribute('aria-busy', 'true');
+      searchRefreshProgressTimer = progressMessageAnimation(searchRefreshStatus, 'Searching');
+    }
+
     function showSearchProgress({ preserveContent = false } = {}) {
       stopSearchProgress();
       grid.setAttribute('aria-busy', 'true');
@@ -1090,14 +1123,7 @@
       grid.replaceChildren();
       empty.hidden = false;
       empty.classList.add('searching-status');
-      const label = document.createElement('span');
-      label.textContent = 'Searching';
-      const dots = document.createElement('span');
-      dots.className = 'searching-dots';
-      empty.replaceChildren(label, dots);
-      searchProgressTimer = animateProgressDots(value => {
-        dots.textContent = value;
-      });
+      searchProgressTimer = progressMessageAnimation(empty, 'Searching');
     }
 
     function remotePageInfo(total, rowsLength, remoteLimit = 0) {
@@ -1873,7 +1899,10 @@
 
     async function render() {
       const generation = ++renderGeneration;
-      if (selected !== '__search__') stopSearchMetaProgress();
+      if (selected !== '__search__') {
+        stopSearchMetaProgress();
+        stopSearchRefreshProgress();
+      }
       if (!data) {
         title.textContent = '';
         meta.textContent = '';
@@ -2734,11 +2763,19 @@
       renderGroups();
       render();
     });
-    refresh.addEventListener('click', () => loadData().catch(error => {
-      meta.textContent = error.message;
-      refresh.disabled = false;
-      refresh.textContent = 'Refresh';
-    }));
+    refresh.addEventListener('click', () => {
+      const preserveSearchContent = (
+        selected === '__search__'
+        && title.textContent === 'Search results'
+        && renderedOmniSearchQuery === search.value.trim().toLowerCase()
+      );
+      if (preserveSearchContent) showSearchRefreshProgress();
+      loadData({ preserveSearchContent }).catch(error => {
+        meta.textContent = error.message;
+        refresh.disabled = false;
+        refresh.textContent = 'Refresh';
+      }).finally(stopSearchRefreshProgress);
+    });
     loadData().catch(error => {
       title.textContent = 'Unable to load data';
       meta.textContent = error.message;

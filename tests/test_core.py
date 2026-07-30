@@ -3532,12 +3532,24 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('data-search-meta-progress="${key}"', server.INDEX_HTML)
         self.assertIn("function animateProgressDots(update)", server.INDEX_HTML)
         self.assertIn("function showSearchMetaProgress(groupName)", server.INDEX_HTML)
+        self.assertIn('id="search-refresh-status"', server.INDEX_HTML)
+        self.assertIn("function progressMessageAnimation(container, labelText)", server.INDEX_HTML)
+        self.assertIn("function showSearchRefreshProgress()", server.INDEX_HTML)
+        self.assertIn("loadData({ preserveSearchContent })", server.INDEX_HTML)
+        self.assertIn("}).finally(stopSearchRefreshProgress);", server.INDEX_HTML)
+        self.assertIn("await render();", server.INDEX_HTML)
         self.assertIn(
             "showSearchMetaProgress(metaAllFilter.slice('search-'.length));",
             server.INDEX_HTML,
         )
         self.assertIn("showSearchMetaProgress(groupName);", server.INDEX_HTML)
-        self.assertIn("if (selected !== '__search__') stopSearchMetaProgress();", server.INDEX_HTML)
+        self.assertIn(
+            "if (selected !== '__search__') {\n"
+            "        stopSearchMetaProgress();\n"
+            "        stopSearchRefreshProgress();\n"
+            "      }",
+            server.INDEX_HTML,
+        )
         self.assertLess(
             server.INDEX_HTML.index('data-filter="playlists"'),
             server.INDEX_HTML.index('data-filter="channels"'),
