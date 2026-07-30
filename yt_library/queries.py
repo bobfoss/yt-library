@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, time, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .core import (
     archivarix_media_url,
@@ -800,13 +802,33 @@ def _omni_like_pattern(query: str) -> str:
     return f"%{escaped}%"
 
 
-def _omni_result(kind: str, score: int, item: dict[str, Any], *, matched_description: bool) -> dict[str, Any]:
+def _date_only_sort_at(value: str, timezone_name: str) -> str:
+    if len(value) != 10:
+        return value
+    try:
+        local_date = datetime.fromisoformat(value).date()
+        zone = ZoneInfo(timezone_name or "UTC")
+    except (ValueError, ZoneInfoNotFoundError):
+        return value
+    local_end = datetime.combine(local_date, time(23, 59, 59), tzinfo=zone)
+    return local_end.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _omni_result(
+    kind: str,
+    score: int,
+    item: dict[str, Any],
+    *,
+    matched_description: bool,
+    display_timezone: str = "UTC",
+) -> dict[str, Any]:
     sort_date_fallback = False
     if kind == "video":
         title = item.get("metadata_title") or item.get("title") or item.get("video_id") or "Unavailable video"
         latest_watch_at = item.get("latest_watch_at") or ""
+        latest_watch_sort_at = _date_only_sort_at(latest_watch_at, display_timezone)
         sort_date = (
-            latest_watch_at
+            latest_watch_sort_at
             or item.get("added_at")
             or item.get("metadata_upload_date")
             or item.get("updated_at")
@@ -1071,6 +1093,7 @@ def omni_search_data(
     sort: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    display_timezone: str = "UTC",
 ) -> dict[str, Any]:
     query = query.strip()
     active_filters = set(filters if filters is not None else OMNI_SEARCH_FILTERS) & OMNI_SEARCH_FILTERS
@@ -1280,7 +1303,15 @@ def omni_search_data(
                 item["source_quality"] = "takeout"
                 item["match_type"] = "ambiguous_hidden_candidate"
             item["collection_category"] = _video_collection_category(item)
-            results.append(_omni_result("video", 0 if title_hit else 3, item, matched_description=not title_hit))
+            results.append(
+                _omni_result(
+                    "video",
+                    0 if title_hit else 3,
+                    item,
+                    matched_description=not title_hit,
+                    display_timezone=display_timezone,
+                )
+            )
 
     if search_playlist_videos and allow_unavailable and (not query or search_titles):
         for row in conn.execute(

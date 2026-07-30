@@ -168,6 +168,55 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["watched123", "unwatched123"],
         )
 
+    def test_omni_search_newest_places_date_only_videos_before_same_day_channels(self) -> None:
+        self.add_video("dateonly123", "Date-only video")
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 1 WHERE video_id = 'dateonly123'"
+        )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watch_date, time_precision
+            )
+            VALUES ('date-only-watch', 'dateonly123', '2026-07-29', 'date_only')
+            """
+        )
+        core.upsert_channel(
+            self.conn,
+            "UCsame-day",
+            title="Same-day channel",
+            first_seen_at="2026-07-30T01:00:00Z",
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "",
+            filters={
+                "videos",
+                "history_videos",
+                "channels_subscribed",
+                "channels_unsubscribed",
+            },
+            sort="newest",
+            limit=20,
+            display_timezone="America/Los_Angeles",
+        )
+
+        self.assertEqual(
+            [
+                (
+                    result["kind"],
+                    result["item"].get("video_id") or result["item"].get("channel_id"),
+                )
+                for result in data["results"]
+            ],
+            [
+                ("video", "dateonly123"),
+                ("channel", "UCsame-day"),
+            ],
+        )
+
     def test_omni_search_uses_channel_first_seen_and_ranks_fallback_dates_last(self) -> None:
         self.add_video("datedvideo", "Dated video")
         self.conn.execute(

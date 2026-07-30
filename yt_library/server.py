@@ -397,6 +397,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     sort=sort,
                     limit=limit,
                     offset=offset,
+                    display_timezone=effective_display_timezone(self.config_data),
                 )
             finally:
                 conn.close()
