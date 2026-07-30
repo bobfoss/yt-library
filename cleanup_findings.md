@@ -87,6 +87,24 @@ Remove a vestigial candidate only when all are true:
 
 Foreign playlists can expose fewer rows than their reported count. Continue preserving the best nonzero scan and logging reported versus exposed counts. Investigate continuation behavior only with a concrete fixture and never synthesize unavailable rows from a count gap.
 
+### 2. Preset-Backed Library Views
+
+Consolidate eligible left-navigation list pages as named omni-search presets instead of maintaining separate fetch, filter, pagination, loading, and rendering branches. A preset should declaratively own its title, entity kinds, source constraints, meta filters, default sort, and any additional server-side scope.
+
+Good initial candidates are All playlists, Channels, Subscribed channels, and Terminated channels because the omni-search model already represents their entity and visibility constraints. Playlist videos, Liked videos, Playlists with unavailable, and playlist group pages need additional parity work:
+
+- Add an explicit liked-video or `reaction = L` source constraint.
+- Add playlist `has_unavailable_videos` and `group_key` constraints, including parent-plus-child group membership.
+- Preserve page-specific sort semantics such as recently added, playlist order, and most unavailable instead of mapping them silently to omni-search Newest.
+- Apply a complete preset state on navigation so filters from a previous search cannot leak into the selected view.
+- Keep preset URLs canonical and decide when modifying a preset should retain its sidebar identity versus become a custom search.
+- Push preset constraints into candidate selection before counting, sorting, and pagination so consolidation does not turn narrow pages into broad whole-library queries.
+- Verify result totals, meta counts, ordering, cards, and pagination against each existing endpoint before removing its dedicated path.
+
+History and channel history must remain specialized because they display watch occurrences rather than distinct videos and own the activity heatmap, year navigation, date jumps, and scroll positioning. Playlist, video, and channel detail pages also remain specialized because they carry entity chrome, tabs, playlist positions, membership state, and scoped actions that are not generic search-result behavior.
+
+Implement this as a shared saved-view/search specification with optional specialized chrome, not as hard-coded mutations of the current global search controls. This creates a path toward user-defined saved searches while retaining dedicated controllers where the data semantics require them.
+
 ## Deferred Decisions
 
 - PocketTube import is deferred and is not a current configuration concern. Revisit group ingestion as a new design rather than restoring the removed config directive.
@@ -97,3 +115,5 @@ Foreign playlists can expose fewer rows than their reported count. Continue pres
 ## Suggested Order
 
 1. Investigate foreign playlist continuation extraction when a reproducible fixture is available.
+2. Define the preset/search specification and migrate the parity-safe playlist and channel list views.
+3. Add the missing liked, unavailable-playlist, playlist-group, and page-specific sort semantics before migrating the remaining list views.
