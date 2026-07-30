@@ -3533,6 +3533,12 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("function animateProgressDots(update)", server.INDEX_HTML)
         self.assertIn("function showSearchMetaProgress(groupName)", server.INDEX_HTML)
         self.assertIn('id="search-refresh-status"', server.INDEX_HTML)
+        self.assertIn(
+            '<div class="toolbar-heading">\n'
+            '            <h2 id="view-title" class="title"></h2>\n'
+            '            <div id="search-refresh-status"',
+            server.INDEX_HTML,
+        )
         self.assertIn("function progressMessageAnimation(container, labelText)", server.INDEX_HTML)
         self.assertIn("function showSearchRefreshProgress()", server.INDEX_HTML)
         self.assertIn("loadData({ preserveSearchContent })", server.INDEX_HTML)

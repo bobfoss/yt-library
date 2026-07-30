@@ -85,7 +85,8 @@
     .search-meta-row-title { color: var(--ink); font-weight: 650; text-align: right; display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 4px; }
     .search-meta-progress { display: inline-block; width: 1.4em; text-align: left; visibility: hidden; font-weight: 400; }
     .search-meta-progress.active { visibility: visible; }
-    .search-refresh-status { color: var(--muted); display: inline-flex; min-width: 8em; margin: -8px 0 14px; }
+    .toolbar-heading { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+    .search-refresh-status { color: var(--muted); display: inline-flex; min-width: 8em; font-size: 14px; }
     .search-refresh-status[hidden] { display: none; }
     .search-meta-controls { display: flex; flex-wrap: wrap; gap: 8px; }
     .search-meta-controls .meta-filter { margin-left: 0; }
@@ -109,6 +110,7 @@
     .view-context[hidden] { display: none; }
     .view-top.history-top { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 760px) minmax(160px, 1fr); align-items: start; gap: 16px; margin-bottom: 14px; }
     .view-top.history-top .toolbar { display: contents; }
+    .view-top.history-top .toolbar-heading { display: contents; }
     .view-top.history-top .toolbar .title { grid-column: 1; grid-row: 1; }
     .view-top.history-top .toolbar > .details { grid-column: 3; grid-row: 1; justify-self: end; align-items: center; }
     .view-top.history-top .view-context { grid-column: 2; grid-row: 1; margin-bottom: 0; }
@@ -280,13 +282,15 @@
     <main>
       <div id="view-top" class="view-top">
         <div class="toolbar">
-          <h2 id="view-title" class="title"></h2>
+          <div class="toolbar-heading">
+            <h2 id="view-title" class="title"></h2>
+            <div id="search-refresh-status" class="search-refresh-status" hidden aria-live="polite"></div>
+          </div>
           <div class="details">
             <div id="view-meta" class="meta"></div>
             <button id="refresh" class="refresh" type="button">Refresh</button>
           </div>
         </div>
-        <div id="search-refresh-status" class="search-refresh-status" hidden aria-live="polite"></div>
         <section id="view-context" class="view-context" hidden></section>
       </div>
       <div class="results-scroll">
