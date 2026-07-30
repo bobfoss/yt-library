@@ -3648,6 +3648,23 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("allLabel: 'Completion'", server.INDEX_HTML)
         self.assertIn("allLabel: 'Playlist membership'", server.INDEX_HTML)
         self.assertIn("title: '',\n          key: 'reactions'", server.INDEX_HTML)
+        self.assertIn(
+            "const searchVideoFacetKeys = ['videos', 'reactions', 'completion', 'membership'];",
+            server.INDEX_HTML,
+        )
+        self.assertIn("function setSearchKindFilter(kind, checked)", server.INDEX_HTML)
+        self.assertIn("function syncSearchKindFilter(kind)", server.INDEX_HTML)
+        self.assertIn('data-search-kind-filter="${kind}"', server.INDEX_HTML)
+        self.assertIn('<span class="count">${Number(counts?.total || 0)}</span>', server.INDEX_HTML)
+        self.assertIn("showAll: false", server.INDEX_HTML)
+        self.assertIn(
+            "row.classList.toggle('dimmed', !everyFacetHasSelection);",
+            server.INDEX_HTML,
+        )
+        self.assertNotIn(
+            ".filter(({ counts }) => Number(counts?.total || 0) > 0)",
+            server.INDEX_HTML,
+        )
         self.assertIn('id="search-progress-status"', server.INDEX_HTML)
         self.assertIn(
             '<div class="toolbar-heading">\n'
@@ -3661,9 +3678,10 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("}).finally(stopSearchHeaderProgress);", server.INDEX_HTML)
         self.assertIn("await render();", server.INDEX_HTML)
         self.assertIn(
-            "showSearchMetaProgress(metaAllFilter.slice('search-'.length));",
+            "const searchKindFilter = target.dataset.searchKindFilter;",
             server.INDEX_HTML,
         )
+        self.assertIn("syncSearchKindFilter(searchKindForFacet(facetKey));", server.INDEX_HTML)
         self.assertIn("showSearchMetaProgress(groupName);", server.INDEX_HTML)
         self.assertIn(
             "if (selected !== '__search__') {\n"

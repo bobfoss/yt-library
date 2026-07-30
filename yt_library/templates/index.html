@@ -83,8 +83,11 @@
     .search-result-meta { display: grid; gap: 8px; justify-items: end; }
     .search-result-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
     .search-meta-groups { display: grid; gap: 5px; }
-    .search-meta-row { display: grid; grid-template-columns: 94px minmax(0, 1fr); align-items: baseline; gap: 10px; }
-    .search-meta-row-title { color: var(--ink); font-weight: 650; text-align: right; display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 4px; }
+    .search-meta-row { display: grid; grid-template-columns: 140px minmax(0, 1fr); align-items: baseline; gap: 10px; }
+    .search-meta-row.dimmed .search-meta-controls { opacity: .42; }
+    .search-meta-row-title { color: var(--ink); font-weight: 650; text-align: left; display: inline-flex; align-items: baseline; justify-content: flex-start; gap: 4px; }
+    .search-meta-row-title input { accent-color: var(--accent); margin: 0; }
+    .search-meta-row-title .count { color: var(--muted); font-weight: 400; }
     .search-meta-progress { display: inline-block; width: 1.4em; text-align: left; visibility: hidden; font-weight: 400; }
     .search-meta-progress.active { visibility: visible; }
     .toolbar-heading { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
@@ -779,6 +782,54 @@
         [...meta.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)],
         false,
       );
+    }
+
+    const searchVideoFacetKeys = ['videos', 'reactions', 'completion', 'membership'];
+
+    function searchKindFacetKeys(kind) {
+      return kind === 'videos' ? searchVideoFacetKeys : [kind];
+    }
+
+    function setSearchKindFilter(kind, checked) {
+      const facetKeys = searchKindFacetKeys(kind);
+      if (!facetKeys.every(key => searchMetaVisibility[key])) return false;
+      for (const facetKey of facetKeys) {
+        for (const key of Object.keys(searchMetaVisibility[facetKey])) {
+          searchMetaVisibility[facetKey][key] = checked;
+        }
+        for (const input of meta.querySelectorAll(`[data-search-meta-filter^="${facetKey}:"]`)) {
+          input.checked = checked;
+        }
+        syncMetaFilterGroup(`search-${facetKey}`);
+      }
+      syncSearchKindFilter(kind);
+      return true;
+    }
+
+    function syncSearchKindFilter(kind) {
+      const parent = meta.querySelector(`[data-search-kind-filter="${kind}"]`);
+      if (!(parent instanceof HTMLInputElement)) return;
+      if (kind === 'videos') {
+        const facetSelections = searchVideoFacetKeys.map(
+          key => Object.values(searchMetaVisibility[key])
+        );
+        const everyFacetHasSelection = facetSelections.every(values => values.some(Boolean));
+        const allChildrenSelected = facetSelections.every(values => values.every(Boolean));
+        parent.checked = everyFacetHasSelection;
+        parent.indeterminate = everyFacetHasSelection && !allChildrenSelected;
+        for (const row of meta.querySelectorAll('[data-search-video-facet]')) {
+          row.classList.toggle('dimmed', !everyFacetHasSelection);
+        }
+        return;
+      }
+      syncFilterGroup(
+        parent,
+        [...meta.querySelectorAll(`[data-meta-child-filter="search-${kind}"]`)],
+      );
+    }
+
+    function searchKindForFacet(facetKey) {
+      return searchVideoFacetKeys.includes(facetKey) ? 'videos' : facetKey;
     }
 
     function setFilterDimmed(inputs, dimmed) {
@@ -1481,12 +1532,13 @@
       definitions,
       filterValuePrefix = '',
       allLabel = 'All',
+      showAll = true,
     }) {
       const applicableDefinitions = definitions.filter(({ key }) =>
         Object.prototype.hasOwnProperty.call(visibility, key)
       );
       return `
-        <label class="meta-filter"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>${escapeHtml(allLabel)}</span></label>
+        ${showAll ? `<label class="meta-filter"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>${escapeHtml(allLabel)}</span></label>` : ''}
         ${applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '' }) => `
           <label class="meta-filter">
             <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
@@ -1522,6 +1574,7 @@
           definitions: videoMetaFilterDefinitions,
           counts: metaCounts?.videos,
           allLabel: 'Availability',
+          kind: 'videos',
         },
         {
           title: '',
@@ -1553,6 +1606,8 @@
           visibility: searchMetaVisibility.playlists,
           definitions: playlistMetaFilterDefinitions,
           counts: metaCounts?.playlists,
+          kind: 'playlists',
+          showAll: false,
         },
         {
           title: 'Channels',
@@ -1560,17 +1615,20 @@
           visibility: searchMetaVisibility.channels,
           definitions: channelMetaFilterDefinitions,
           counts: metaCounts?.channels,
+          kind: 'channels',
+          showAll: false,
         },
       ];
       return groups
-        .filter(({ counts }) => Number(counts?.total || 0) > 0)
-        .map(({ title, key, visibility, definitions, counts, allLabel = 'All' }) => `
-          <div class="search-meta-row">
+        .map(({ title, key, visibility, definitions, counts, allLabel = 'All', kind = '', showAll = true }) => `
+          <div class="search-meta-row"${searchVideoFacetKeys.includes(key) ? ` data-search-video-facet="${key}"` : ''}>
             ${title
-              ? `<span class="search-meta-row-title">
+              ? `<label class="search-meta-row-title">
                   <span class="search-meta-progress" data-search-meta-progress="${key}" aria-hidden="true"></span>
+                  <input type="checkbox" data-search-kind-filter="${kind}">
                   <span>${title}</span>
-                </span>`
+                  <span class="count">${Number(counts?.total || 0)}</span>
+                </label>`
               : '<span class="search-meta-row-title" aria-hidden="true"></span>'}
             <span class="search-meta-controls">
               ${metaFilterControlsHtml({
@@ -1581,6 +1639,7 @@
                 counts,
                 definitions,
                 allLabel,
+                showAll,
               })}
             </span>
           </div>
@@ -2190,17 +2249,10 @@
           </div>
         `;
         for (const key of ['videos', 'reactions', 'completion', 'membership', 'playlists', 'channels']) {
-          const facetCounts = {
-            reactions: payload.reactionCounts,
-            completion: payload.completionCounts,
-            membership: payload.playlistMembershipCounts,
-          }[key];
-          const total = facetCounts
-            ? Number(facetCounts.total || 0)
-            : Number(payload.metaCounts?.[key]?.total || 0);
-          if (total > 0) {
-            syncMetaFilterGroup(`search-${key}`);
-          }
+          syncMetaFilterGroup(`search-${key}`);
+        }
+        for (const kind of ['videos', 'playlists', 'channels']) {
+          syncSearchKindFilter(kind);
         }
         renderPager(remotePageInfo(total, rows.length, remoteLimit));
         grid.className = 'grid';
@@ -2728,11 +2780,21 @@
         return;
       }
       if (!(target instanceof HTMLInputElement)) return;
+      const searchKindFilter = target.dataset.searchKindFilter;
+      if (searchKindFilter && setSearchKindFilter(searchKindFilter, target.checked)) {
+        currentPage = 1;
+        showSearchMetaProgress(searchKindFilter);
+        syncSearchHashAndRender();
+        return;
+      }
       const metaAllFilter = target.dataset.metaAllFilter;
       if (metaAllFilter && setMetaFilterGroup(metaAllFilter, target.checked)) {
         currentPage = 1;
         if (metaAllFilter.startsWith('search-')) {
-          showSearchMetaProgress(metaAllFilter.slice('search-'.length));
+          const facetKey = metaAllFilter.slice('search-'.length);
+          syncMetaFilterGroup(metaAllFilter);
+          syncSearchKindFilter(searchKindForFacet(facetKey));
+          showSearchMetaProgress(facetKey);
           syncSearchHashAndRender();
         } else {
           render();
@@ -2746,6 +2808,8 @@
         if (!visibility || !Object.prototype.hasOwnProperty.call(visibility, filterName)) return;
         visibility[filterName] = target.checked;
         currentPage = 1;
+        syncMetaFilterGroup(`search-${groupName}`);
+        syncSearchKindFilter(searchKindForFacet(groupName));
         showSearchMetaProgress(groupName);
         syncSearchHashAndRender();
         return;
