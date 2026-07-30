@@ -1084,7 +1084,13 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     """,
                     (utc_now(), str(exc), run_id),
                 )
-                log_playlist_scan_event(conn, run_id, "error", f"Playlist scan crashed: {exc}")
+                log_playlist_scan_event(
+                    conn,
+                    run_id,
+                    "error",
+                    f"Playlist scan crashed: {exc}",
+                    current_playlist_id,
+                )
         finally:
             conn.close()
 

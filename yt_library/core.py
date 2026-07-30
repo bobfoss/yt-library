@@ -5294,6 +5294,26 @@ def rebuild_history_reconciliation(
     }
 
 
+def _ensure_playlist_parent(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    *,
+    title: str = "",
+    updated_at: str | None = None,
+) -> None:
+    playlist_id = playlist_id.strip()
+    if not playlist_id:
+        raise ValueError("Playlist ID is required")
+    conn.execute(
+        """
+        INSERT INTO playlists(playlist_id, title, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(playlist_id) DO NOTHING
+        """,
+        (playlist_id, title.strip() or playlist_id, updated_at or utc_now()),
+    )
+
+
 def save_playlist_scan(
     conn: sqlite3.Connection,
     playlist_id: str,
@@ -5318,6 +5338,12 @@ def save_playlist_scan(
     videos = deduped_videos
     unavailable_count = sum(1 for video in videos if not video["is_playable"])
     now = utc_now()
+    _ensure_playlist_parent(
+        conn,
+        playlist_id,
+        title=str((playlist_metadata or {}).get("title") or ""),
+        updated_at=now,
+    )
     retained = [
         dict(row)
         for row in conn.execute(
@@ -5545,6 +5571,7 @@ def save_playlist_scan_error(
     error: str,
 ) -> tuple[int, int]:
     now = utc_now()
+    _ensure_playlist_parent(conn, playlist_id, updated_at=now)
     previous = conn.execute(
         """
         SELECT video_count, unavailable_count
@@ -5606,6 +5633,7 @@ def save_playlist_missing_status(
     if status not in {"removed", "unavailable"}:
         raise ValueError(f"Unsupported playlist missing status: {status}")
     now = utc_now()
+    _ensure_playlist_parent(conn, playlist_id, updated_at=now)
     previous = conn.execute(
         """
         SELECT video_count, unavailable_count

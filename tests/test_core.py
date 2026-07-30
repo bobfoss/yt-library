@@ -2802,6 +2802,88 @@ class SchemaTests(unittest.TestCase):
             finally:
                 core.ROOT = original_root
 
+    def test_playlist_scan_persistence_creates_missing_parent_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.save_playlist_scan(
+                        conn,
+                        "PLnewscan",
+                        [
+                            {
+                                "playlist_id": "PLnewscan",
+                                "position": 1,
+                                "video_id": "newscanvid1",
+                                "title": "New scan video",
+                                "channel_id": "",
+                                "channel": "",
+                                "duration_text": "1:00",
+                                "is_playable": 1,
+                                "availability": "public",
+                                "url": "https://www.youtube.com/watch?v=newscanvid1",
+                            }
+                        ],
+                        "ok",
+                        "",
+                        playlist_metadata={
+                            "title": "New playlist",
+                            "video_count": 1,
+                        },
+                    )
+                    core.save_playlist_scan_error(
+                        conn,
+                        "PLnewerror",
+                        "playlist count unavailable",
+                    )
+                    core.save_playlist_missing_status(
+                        conn,
+                        "PLnewmissing",
+                        "unavailable",
+                        "authenticated YouTube 404",
+                    )
+
+                playlists = {
+                    row["playlist_id"]: dict(row)
+                    for row in conn.execute(
+                        """
+                        SELECT playlist_id, title, fetch_status
+                        FROM playlists
+                        WHERE playlist_id IN ('PLnewscan', 'PLnewerror', 'PLnewmissing')
+                        """
+                    )
+                }
+                scans = {
+                    row["playlist_id"]: dict(row)
+                    for row in conn.execute(
+                        """
+                        SELECT playlist_id, video_count, scan_status
+                        FROM playlist_scans
+                        WHERE playlist_id IN ('PLnewscan', 'PLnewerror', 'PLnewmissing')
+                        """
+                    )
+                }
+                item = conn.execute(
+                    """
+                    SELECT video_id
+                    FROM playlist_items
+                    WHERE playlist_id = 'PLnewscan'
+                    """
+                ).fetchone()
+                foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(playlists["PLnewscan"]["title"], "New playlist")
+        self.assertEqual(playlists["PLnewerror"]["title"], "PLnewerror")
+        self.assertEqual(playlists["PLnewmissing"]["fetch_status"], "unavailable")
+        self.assertEqual(scans["PLnewscan"]["video_count"], 1)
+        self.assertEqual(scans["PLnewscan"]["scan_status"], "ok")
+        self.assertEqual(scans["PLnewerror"]["scan_status"], "error")
+        self.assertEqual(scans["PLnewmissing"]["scan_status"], "unavailable")
+        self.assertEqual(item["video_id"], "newscanvid1")
+        self.assertEqual(foreign_key_errors, [])
+
     def test_liked_video_sync_replaces_likes_without_creating_playlist_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
@@ -4922,6 +5004,187 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(row["thumbnail_path"], "thumbs/PLexample.jpg")
             finally:
                 conn.close()
+
+    def test_playlist_worker_scans_new_manual_playlist(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_playlist_scan_item(
+                        conn,
+                        "PLnewmanual",
+                        title="PLnewmanual",
+                        manual=True,
+                    )
+            finally:
+                conn.close()
+
+            videos = [
+                {
+                    "playlist_id": "PLnewmanual",
+                    "position": 1,
+                    "video_id": "manualvid01",
+                    "title": "Manual video",
+                    "channel_id": "",
+                    "channel": "",
+                    "duration_text": "2:00",
+                    "is_playable": 1,
+                    "availability": "public",
+                    "url": "https://www.youtube.com/watch?v=manualvid01",
+                }
+            ]
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.request_text", return_value="header page"),
+                patch(
+                    "yt_library.workers.extract_playlist_metadata",
+                    return_value={
+                        "title": "New manual playlist",
+                        "video_count": 1,
+                        "has_video_count": True,
+                    },
+                ),
+                patch(
+                    "yt_library.workers.scan_playlist_ytdlp",
+                    return_value=(
+                        videos,
+                        {"title": "New manual playlist", "video_count": 1},
+                    ),
+                ),
+                patch(
+                    "yt_library.workers.enqueue_playlist_metadata_targets",
+                    return_value={"queued_count": 0},
+                ),
+                patch(
+                    "yt_library.workers.enqueue_placeholder_recovery_targets",
+                    return_value={"inserted": 0},
+                ),
+            ):
+                worker._run(
+                    "test-new-manual-playlist",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                playlist = conn.execute(
+                    """
+                    SELECT title, video_count, fetch_status
+                    FROM playlists
+                    WHERE playlist_id = 'PLnewmanual'
+                    """
+                ).fetchone()
+                scan = conn.execute(
+                    """
+                    SELECT video_count, scan_status
+                    FROM playlist_scans
+                    WHERE playlist_id = 'PLnewmanual'
+                    """
+                ).fetchone()
+                item = conn.execute(
+                    """
+                    SELECT video_id
+                    FROM playlist_items
+                    WHERE playlist_id = 'PLnewmanual'
+                    """
+                ).fetchone()
+                queued = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM worker_queue
+                    WHERE playlist_id = 'PLnewmanual'
+                    """
+                ).fetchone()[0]
+                log = conn.execute(
+                    """
+                    SELECT playlist_id, level, message
+                    FROM playlist_scan_worker_log
+                    WHERE run_id = 'test-new-manual-playlist'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            dict(playlist),
+            {
+                "title": "New manual playlist",
+                "video_count": 1,
+                "fetch_status": "ok",
+            },
+        )
+        self.assertEqual(dict(scan), {"video_count": 1, "scan_status": "ok"})
+        self.assertEqual(item["video_id"], "manualvid01")
+        self.assertEqual(queued, 0)
+        self.assertEqual(log["playlist_id"], "PLnewmanual")
+        self.assertEqual(log["level"], "info")
+        self.assertIn("1 videos", log["message"])
+
+    def test_playlist_worker_crash_log_preserves_playlist_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_playlist_scan_item(
+                        conn,
+                        "PLcrash",
+                        title="Crash target",
+                        manual=True,
+                    )
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.request_text",
+                    side_effect=RuntimeError("unexpected failure"),
+                ),
+            ):
+                worker._run(
+                    "test-playlist-crash-id",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                log = conn.execute(
+                    """
+                    SELECT playlist_id, level, message
+                    FROM playlist_scan_worker_log
+                    WHERE run_id = 'test-playlist-crash-id'
+                    """
+                ).fetchone()
+                queued = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM worker_queue
+                    WHERE playlist_id = 'PLcrash'
+                    """
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(log["playlist_id"], "PLcrash")
+        self.assertEqual(log["level"], "error")
+        self.assertIn("unexpected failure", log["message"])
+        self.assertEqual(queued, 1)
 
     def test_playlist_worker_uses_web_fallback_after_short_ytdlp_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
