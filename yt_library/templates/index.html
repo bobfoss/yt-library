@@ -98,6 +98,18 @@
     .playlist-search { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; min-width: min(360px, 38vw); }
     .view-sort { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
     .view-sort select { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
+    .view-top.video-collection-top .toolbar { align-items: flex-start; }
+    .view-top.video-collection-top .toolbar > .details { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; }
+    .view-top.video-collection-top #view-meta {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 10px;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .video-filter-groups { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; min-width: 0; }
+    .view-top.video-collection-top .view-sort { grid-column: 2; margin-left: 0; white-space: nowrap; }
     .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; color: var(--muted); font-size: 14px; margin: 0 0 14px; }
     .pager.bottom { margin: 18px 0 0; }
     .pager button, .pager select, .pager input { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
@@ -252,6 +264,9 @@
       .search-result-summary { justify-content: flex-start; }
       .search-meta-row { grid-template-columns: 1fr; gap: 3px; }
       .search-meta-row-title { text-align: left; justify-content: flex-start; }
+      .view-top.video-collection-top .toolbar > .details { flex-wrap: wrap; justify-content: flex-start; }
+      .view-top.video-collection-top #view-meta { display: flex; flex-wrap: wrap; gap: 8px; }
+      .view-top.video-collection-top .view-sort { margin-left: 0; }
       .view-top.history-top { display: block; margin-bottom: 0; }
       .view-top.history-top .toolbar { display: block; }
       .view-top.history-top .view-context { margin-bottom: 14px; }
@@ -320,6 +335,7 @@
 
     let selected = '';
     let playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
+    let playlistCompletionVisibility = { complete: true, partial: true, unknown: true, never_watched: true };
     let playlistListVisibility = { private: true, public: true, unlisted: true, others: true, unknown: true, removed: true };
     let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
     const defaultSearchMetaVisibility = {
@@ -369,6 +385,7 @@
     let omniSearchState = { key: '', data: null, promise: null };
     let viewDataCache = new Map();
     let videoMetaCountsCache = new Map();
+    let videoCompletionCountsCache = new Map();
     let omniMetaCountsCache = new Map();
     let omniReactionCountsCache = new Map();
     let omniCompletionCountsCache = new Map();
@@ -411,6 +428,7 @@
       if (!preserveSearchContent) renderedOmniSearchQuery = '';
       viewDataCache = new Map();
       videoMetaCountsCache = new Map();
+      videoCompletionCountsCache = new Map();
       omniMetaCountsCache = new Map();
       omniReactionCountsCache = new Map();
       omniCompletionCountsCache = new Map();
@@ -781,6 +799,7 @@
       if (playlistVisibilityPlaylistId === playlistId) return;
       playlistVisibilityPlaylistId = playlistId;
       playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
+      playlistCompletionVisibility = { complete: true, partial: true, unknown: true, never_watched: true };
       playlistPageSearch = '';
     }
 
@@ -809,6 +828,7 @@
     function setMetaFilterGroup(groupName, checked) {
       const groups = {
         'playlist-videos': playlistVisibility,
+        'playlist-completion': playlistCompletionVisibility,
         'liked-videos': likedVideosVisibility,
         channels: channelVisibility,
         'playlist-list': playlistListVisibility,
@@ -1655,6 +1675,28 @@
       });
     }
 
+    function playlistVideoFiltersHtml(counts, completionCounts, searchHtml = '') {
+      return `
+        <span class="video-filter-groups">
+          ${searchHtml}
+          ${videoStatusFiltersHtml({
+            groupName: 'playlist-videos',
+            filterAttribute: 'playlist-filter',
+            visibility: playlistVisibility,
+            counts,
+          })}
+          ${metaFilterControlsHtml({
+            groupName: 'playlist-completion',
+            filterAttribute: 'playlist-completion-filter',
+            visibility: playlistCompletionVisibility,
+            counts: completionCounts,
+            definitions: completionMetaFilterDefinitions,
+            allLabel: 'Completion',
+          })}
+        </span>
+      `;
+    }
+
     function searchMetaFiltersHtml(
       metaCounts,
       reactionCounts,
@@ -1971,13 +2013,21 @@
       return fetchViewData(path);
     }
 
-    async function fetchVideoCollection({ scope = 'playlist', playlistId = '', channelId = '', sort = 'newest_added', query = '', visibility = playlistVisibility } = {}) {
+    async function fetchVideoCollection({
+      scope = 'playlist',
+      playlistId = '',
+      channelId = '',
+      sort = 'newest_added',
+      query = '',
+      visibility = playlistVisibility,
+      completion = null,
+    } = {}) {
       const base = playlistId
         ? `/api/playlists/${encodeURIComponent(playlistId)}/videos`
         : '/api/videos';
       const metaCountsKey = JSON.stringify([scope, playlistId, channelId, query]);
       const metaCountsCache = videoMetaCountsCache;
-      const path = remoteListPath(base, {
+      const params = {
         scope,
         channel_id: channelId,
         q: query,
@@ -1988,12 +2038,21 @@
         unknown: visibility.unknown === false ? '0' : '1',
         removed: visibility.removed === false ? '0' : '1',
         sort,
-      });
+      };
+      if (completion) params.completion = metaFilterParamValue(completion);
+      const path = remoteListPath(base, params);
       const payload = await fetchViewData(path);
       if (!metaCountsCache.has(metaCountsKey)) {
         metaCountsCache.set(metaCountsKey, { ...(payload.counts || {}) });
       }
-      return { ...payload, counts: metaCountsCache.get(metaCountsKey) };
+      if (!videoCompletionCountsCache.has(metaCountsKey)) {
+        videoCompletionCountsCache.set(metaCountsKey, { ...(payload.completionCounts || {}) });
+      }
+      return {
+        ...payload,
+        counts: metaCountsCache.get(metaCountsKey),
+        completionCounts: videoCompletionCountsCache.get(metaCountsKey),
+      };
     }
 
     async function fetchChannelList(categories, subscribedOnly = false) {
@@ -2186,6 +2245,10 @@
       }
       const query = search.value.trim().toLowerCase();
       viewTop.classList.toggle('history-top', selected === '__history__');
+      viewTop.classList.toggle(
+        'video-collection-top',
+        selected === '__all_videos__' || selected.startsWith('__playlist__:'),
+      );
       stopSearchProgress();
       empty.textContent = 'No playlists match.';
       const preserveHistoryChrome = Boolean(viewContext.querySelector('.history-heatmap')) && (
@@ -2380,6 +2443,7 @@
               playlistId,
               sort: playlistViewSort,
               query: playlistPageSearch.trim(),
+              completion: playlistCompletionVisibility,
             }),
           ]);
         } catch (error) {
@@ -2409,16 +2473,15 @@
           </span>
         `;
         meta.innerHTML = `
-          <input class="playlist-search" type="search" data-playlist-page-search placeholder="Search this playlist" autocomplete="off" value="${escapeHtml(playlistPageSearch)}">
-          ${videoStatusFiltersHtml({
-            groupName: 'playlist-videos',
-            filterAttribute: 'playlist-filter',
-            visibility: playlistVisibility,
-            counts: payload.counts,
-          })}
+          ${playlistVideoFiltersHtml(
+            payload.counts,
+            payload.completionCounts,
+            `<input class="playlist-search" type="search" data-playlist-page-search placeholder="Search this playlist" autocomplete="off" value="${escapeHtml(playlistPageSearch)}">`,
+          )}
           ${videoSortHtml(playlistViewSort, 'playlist')}
         `;
         syncMetaFilterGroup('playlist-videos');
+        syncMetaFilterGroup('playlist-completion');
         renderPager(remotePayloadPageInfo(payload, rows.length));
         grid.className = 'grid';
         grid.replaceChildren(...rows.map(video => playlistVideoCardFor(video, { showPosition: true })));
@@ -2428,20 +2491,19 @@
       }
       if (selected === '__all_videos__') {
         resetPlaylistVisibilityFor('__all_videos__');
-        const payload = await fetchVideoCollection({ sort: allVideosSort });
+        const payload = await fetchVideoCollection({
+          sort: allVideosSort,
+          completion: playlistCompletionVisibility,
+        });
         if (generation !== renderGeneration) return;
         const rows = payload.results || [];
         title.textContent = 'Playlist videos';
         meta.innerHTML = `
-          ${videoStatusFiltersHtml({
-            groupName: 'playlist-videos',
-            filterAttribute: 'playlist-filter',
-            visibility: playlistVisibility,
-            counts: payload.counts,
-          })}
+          ${playlistVideoFiltersHtml(payload.counts, payload.completionCounts)}
           ${videoSortHtml(allVideosSort, 'all')}
         `;
         syncMetaFilterGroup('playlist-videos');
+        syncMetaFilterGroup('playlist-completion');
         renderPager(remotePayloadPageInfo(payload, rows.length));
         grid.className = 'grid';
         grid.replaceChildren(...rows.map(playlistVideoCardFor));
@@ -2939,6 +3001,13 @@
       const likedFilter = target.dataset.likedFilter;
       if (likedFilter) {
         likedVideosVisibility[likedFilter] = target.checked;
+        currentPage = 1;
+        render();
+        return;
+      }
+      const playlistCompletionFilter = target.dataset.playlistCompletionFilter;
+      if (playlistCompletionFilter) {
+        playlistCompletionVisibility[playlistCompletionFilter] = target.checked;
         currentPage = 1;
         render();
         return;

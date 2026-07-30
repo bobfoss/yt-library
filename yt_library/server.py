@@ -89,7 +89,7 @@ def query_bool_param(
     return values[0].strip().lower() not in {"0", "false", "no"}
 
 
-def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, bool]:
+def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, Any]:
     return {
         "include_public": query_bool_param(params, "public", legacy_name="videos"),
         "include_unlisted": query_bool_param(params, "unlisted"),
@@ -97,6 +97,7 @@ def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, bool
         "include_unavailable": query_bool_param(params, "unavailable"),
         "include_unknown": query_bool_param(params, "unknown"),
         "include_removed": query_bool_param(params, "removed"),
+        "completion_filters": query_set_param(params, "completion"),
     }
 
 

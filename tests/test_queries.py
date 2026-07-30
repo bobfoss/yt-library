@@ -929,6 +929,59 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["members1"],
         )
 
+    def test_playlist_video_collection_filters_by_completion_with_stable_counts(self) -> None:
+        for video_id, title in [
+            ("complete1", "Complete"),
+            ("partial1", "Partial"),
+            ("unknown1", "Unknown"),
+            ("never1", "Never watched"),
+        ]:
+            self.add_video(video_id, title)
+        self.conn.executemany(
+            "UPDATE videos SET is_playable = 1, watch_progress_percent = ? WHERE video_id = ?",
+            [(100, "complete1"), (40, "partial1"), (0, "unknown1"), (0, "never1")],
+        )
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLcompletion', 'Completion')"
+        )
+        self.conn.executemany(
+            "INSERT INTO playlist_items(playlist_id, position, video_id) VALUES ('PLcompletion', ?, ?)",
+            [
+                (1, "complete1"),
+                (2, "partial1"),
+                (3, "unknown1"),
+                (4, "never1"),
+            ],
+        )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES ('unknown-watch', 'unknown1', '2026-07-30', 'date_only')
+            """
+        )
+        self.conn.commit()
+
+        all_rows = video_collection_data(self.conn, playlist_id="PLcompletion")
+        expected_counts = {
+            "complete": 1,
+            "partial": 1,
+            "unknown": 1,
+            "never_watched": 1,
+        }
+        self.assertEqual(all_rows["completionCounts"], expected_counts)
+
+        filtered = video_collection_data(
+            self.conn,
+            playlist_id="PLcompletion",
+            completion_filters={"partial", "never_watched"},
+        )
+        self.assertEqual(
+            {row["video_id"] for row in filtered["results"]},
+            {"partial1", "never1"},
+        )
+        self.assertEqual(filtered["total"], 2)
+        self.assertEqual(filtered["completionCounts"], expected_counts)
+
     def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:
         self.add_video("old123", "Old Router Video")
         self.add_video("new123", "AT&T Fiber Without the Gateway")

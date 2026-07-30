@@ -4127,7 +4127,8 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML.index('id="view-meta"'),
             server.INDEX_HTML.index('id="refresh"'),
         )
-        self.assertEqual(server.INDEX_HTML.count("videoStatusFiltersHtml({"), 4)
+        self.assertEqual(server.INDEX_HTML.count("videoStatusFiltersHtml({"), 3)
+        self.assertEqual(server.INDEX_HTML.count("playlistVideoFiltersHtml("), 3)
         self.assertIn("{ key: 'public', label: 'public', visibilityIcon: true }", server.INDEX_HTML)
         self.assertIn("{ key: 'unlisted', label: 'unlisted', visibilityIcon: true }", server.INDEX_HTML)
         self.assertIn("{ key: 'unknown', label: 'unknown' }", server.INDEX_HTML)
@@ -4164,7 +4165,7 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn(
-            "return { ...payload, counts: metaCountsCache.get(metaCountsKey) };",
+            "completionCounts: videoCompletionCountsCache.get(metaCountsKey)",
             server.INDEX_HTML,
         )
         self.assertNotIn('data-filter="members_only_videos"', server.INDEX_HTML)
@@ -4197,6 +4198,20 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn("syncMetaFilterGroup('playlist-videos')", server.INDEX_HTML)
+        self.assertEqual(
+            server.INDEX_HTML.count("syncMetaFilterGroup('playlist-completion')"),
+            2,
+        )
+        self.assertEqual(
+            server.INDEX_HTML.count("completion: playlistCompletionVisibility"),
+            2,
+        )
+        self.assertIn("filterAttribute: 'playlist-completion-filter'", server.INDEX_HTML)
+        self.assertIn("'video-collection-top'", server.INDEX_HTML)
+        self.assertIn(
+            ".view-top.video-collection-top #view-meta",
+            server.INDEX_HTML,
+        )
         self.assertIn("syncMetaFilterGroup('liked-videos')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('channels')", server.INDEX_HTML)
         self.assertIn("syncMetaFilterGroup('playlist-list')", server.INDEX_HTML)

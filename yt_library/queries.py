@@ -485,7 +485,7 @@ def _video_candidate_rows(
                  v.updated_at, '' AS playlist_id, '' AS playlist_title, 0 AS position,
                  '' AS membership_state, '' AS unavailable_kind, '' AS source_quality,
                  '' AS match_type, '' AS match_confidence, '' AS added_at,
-                 v.is_playable, v.availability,
+                 v.is_playable, v.availability, v.watch_progress_percent,
                  COALESCE(hs.watch_count, 0) AS watch_count,
                  COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
                  100 AS completeness_score
@@ -511,7 +511,7 @@ def _video_candidate_rows(
                  pi.playlist_id, p.title AS playlist_title, pi.position,
                  pi.membership_state, pi.unavailable_kind, pi.source_quality,
                  pi.match_type, pi.match_confidence, COALESCE(pi.added_at, '') AS added_at,
-                  v.is_playable,
+                 v.is_playable, COALESCE(v.watch_progress_percent, 0) AS watch_progress_percent,
                  CASE WHEN pi.video_id IS NULL THEN pi.unavailable_kind ELSE v.availability END AS availability,
                  COALESCE(hs.watch_count, 0) AS watch_count,
                  COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
@@ -565,6 +565,7 @@ VIDEO_AVAILABILITY_CATEGORIES = (
     "unavailable",
     "unknown",
 )
+VIDEO_COMPLETION_CATEGORIES = ("complete", "partial", "unknown", "never_watched")
 
 
 def _video_availability_category(item: dict[str, Any]) -> str:
@@ -603,6 +604,19 @@ def _video_collection_category(item: dict[str, Any]) -> str:
     return _video_availability_category(item)
 
 
+def _video_completion_category(item: dict[str, Any]) -> str:
+    if not item.get("video_id"):
+        return "unknown"
+    progress = int(item.get("watch_progress_percent") or 0)
+    if progress >= 100:
+        return "complete"
+    if progress > 0:
+        return "partial"
+    if int(item.get("watch_count") or 0) > 0:
+        return "unknown"
+    return "never_watched"
+
+
 def video_collection_data(
     conn: sqlite3.Connection,
     *,
@@ -616,6 +630,7 @@ def video_collection_data(
     include_members_only: bool | None = None,
     include_unknown: bool = True,
     include_removed: bool = True,
+    completion_filters: set[str] | None = None,
     sort: str = "newest_added",
     limit: int = 100,
     offset: int = 0,
@@ -639,6 +654,11 @@ def video_collection_data(
         "unknown": include_unknown,
         "removed": include_removed,
     }
+    selected_completion_filters = (
+        set(VIDEO_COMPLETION_CATEGORIES)
+        if completion_filters is None
+        else set(completion_filters) & set(VIDEO_COMPLETION_CATEGORIES)
+    )
     count_keys = {
         "public": set(),
         "unlisted": set(),
@@ -647,20 +667,34 @@ def video_collection_data(
         "unknown": set(),
         "removed": set(),
     }
+    completion_count_keys = {
+        category: set()
+        for category in VIDEO_COMPLETION_CATEGORIES
+    }
     for index, item in enumerate(candidates):
         category = _video_collection_category(item)
         item["collection_category"] = category
+        completion_category = _video_completion_category(item)
+        item["completion_category"] = completion_category
         count_key = item.get("video_id") or (
             item.get("playlist_id"),
             item.get("position"),
             index,
         )
         count_keys[category].add(count_key)
+        completion_count_keys[completion_category].add(count_key)
     counts = {category: len(keys) for category, keys in count_keys.items()}
+    completion_counts = {
+        category: len(keys)
+        for category, keys in completion_count_keys.items()
+    }
     candidates = [
         item
         for item in candidates
-        if categories[item["collection_category"]]
+        if (
+            categories[item["collection_category"]]
+            and item["completion_category"] in selected_completion_filters
+        )
     ]
     if not playlist_id:
         candidates = _deduplicate_video_candidates(candidates)
@@ -727,6 +761,7 @@ def video_collection_data(
         "results": results,
         "total": total,
         "counts": counts,
+        "completionCounts": completion_counts,
         "limit": limit,
         "offset": offset,
     }
@@ -827,7 +862,7 @@ OMNI_SEARCH_META_FILTERS = {
     "playlist": ("private", "public", "unlisted", "others", "unknown", "removed"),
 }
 OMNI_SEARCH_REACTION_FILTERS = ("none", "liked", "disliked")
-OMNI_SEARCH_COMPLETION_FILTERS = ("complete", "partial", "unknown", "never_watched")
+OMNI_SEARCH_COMPLETION_FILTERS = VIDEO_COMPLETION_CATEGORIES
 OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS = ("member", "non_member")
 OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS = ("subscribed", "non_subscribed")
 OMNI_SEARCH_CHANNEL_STATUS_FILTERS = ("active", "terminated")
@@ -989,17 +1024,7 @@ def _omni_reaction_counts(results: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def _omni_video_completion_category(result: dict[str, Any]) -> str:
-    item = result["item"]
-    if not item.get("video_id"):
-        return "unknown"
-    progress = int(item.get("watch_progress_percent") or 0)
-    if progress >= 100:
-        return "complete"
-    if progress > 0:
-        return "partial"
-    if int(item.get("watch_count") or 0) > 0:
-        return "unknown"
-    return "never_watched"
+    return _video_completion_category(result["item"])
 
 
 def _omni_completion_counts(results: list[dict[str, Any]]) -> dict[str, int]:
