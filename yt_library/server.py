@@ -74,6 +74,32 @@ def query_set_param(
     return {item for item in value.split(",") if item} if value else None
 
 
+def query_bool_param(
+    params: dict[str, list[str]],
+    name: str,
+    *,
+    default: bool = True,
+    legacy_name: str = "",
+) -> bool:
+    values = params.get(name)
+    if values is None and legacy_name:
+        values = params.get(legacy_name)
+    if values is None:
+        return default
+    return values[0].strip().lower() not in {"0", "false", "no"}
+
+
+def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, bool]:
+    return {
+        "include_public": query_bool_param(params, "public", legacy_name="videos"),
+        "include_unlisted": query_bool_param(params, "unlisted"),
+        "include_members_only": query_bool_param(params, "members_only"),
+        "include_unavailable": query_bool_param(params, "unavailable"),
+        "include_unknown": query_bool_param(params, "unknown"),
+        "include_removed": query_bool_param(params, "removed"),
+    }
+
+
 def service_restart_command() -> list[str]:
     return [
         sys.executable,
@@ -261,10 +287,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         conn,
                         playlist_id=playlist_id,
                         query=(params.get("q") or [""])[0],
-                        include_videos=(params.get("videos") or ["1"])[0] != "0",
-                        include_unavailable=(params.get("unavailable") or ["1"])[0] != "0",
-                        include_members_only=(params.get("members_only") or ["1"])[0] != "0",
-                        include_removed=(params.get("removed") or ["1"])[0] != "0",
+                        **video_collection_filter_args(params),
                         sort=(params.get("sort") or ["playlist_order"])[0],
                         limit=limit,
                         offset=offset,
@@ -292,10 +315,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     scope=(params.get("scope") or ["playlist"])[0],
                     channel_id=(params.get("channel_id") or [""])[0],
                     query=(params.get("q") or [""])[0],
-                    include_videos=(params.get("videos") or ["1"])[0] != "0",
-                    include_unavailable=(params.get("unavailable") or ["1"])[0] != "0",
-                    include_members_only=(params.get("members_only") or ["1"])[0] != "0",
-                    include_removed=(params.get("removed") or ["1"])[0] != "0",
+                    **video_collection_filter_args(params),
                     sort=(params.get("sort") or ["newest_added"])[0],
                     limit=limit,
                     offset=offset,
@@ -356,8 +376,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     data = video_collection_data(
                         conn,
                         channel_id=channel_id,
-                        include_videos=True,
-                        include_unavailable=True,
                         sort=(params.get("sort") or ["title"])[0],
                         limit=limit,
                         offset=offset,

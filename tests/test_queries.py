@@ -346,7 +346,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             self.conn,
             "needle",
             search_fields={"titles"},
-            video_meta_filters={"videos"},
+            video_meta_filters={"public"},
             channel_meta_filters=set(),
             playlist_meta_filters=set(),
         )
@@ -397,11 +397,15 @@ class NormalizedReadModelTests(unittest.TestCase):
             ("available1", "Needle available"),
             ("unavailable1", "Needle unavailable"),
             ("members1", "Needle members"),
-            ("removed1", "Needle removed"),
+            ("unlisted1", "Needle unlisted video"),
+            ("unknown1", "Needle unknown video"),
         ):
             self.add_video(video_id, title)
         self.conn.execute(
-            "UPDATE videos SET is_playable = 1 WHERE video_id IN ('available1', 'removed1')"
+            "UPDATE videos SET is_playable = 1, availability = 'public' WHERE video_id = 'available1'"
+        )
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 1, availability = 'unlisted' WHERE video_id = 'unlisted1'"
         )
         self.conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'available1'")
         self.conn.execute("UPDATE videos SET reaction = 'D' WHERE video_id = 'unavailable1'")
@@ -426,11 +430,12 @@ class NormalizedReadModelTests(unittest.TestCase):
                 (3, "members1", "current", "youtube", ""),
                 (
                     4,
-                    "removed1",
+                    "unlisted1",
                     "retained_unavailable",
                     "takeout",
                     "ambiguous_hidden_candidate",
                 ),
+                (5, "unknown1", "current", "youtube", ""),
             ],
         )
         self.conn.executemany(
@@ -472,11 +477,12 @@ class NormalizedReadModelTests(unittest.TestCase):
             unfiltered["metaCounts"],
             {
                 "videos": {
-                    "total": 4,
-                    "videos": 1,
+                    "total": 5,
+                    "public": 1,
+                    "unlisted": 1,
                     "unavailable": 1,
                     "members_only": 1,
-                    "removed": 1,
+                    "unknown": 1,
                 },
                 "channels": {
                     "total": 3,
@@ -498,8 +504,8 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(
             unfiltered["reactionCounts"],
             {
-                "total": 4,
-                "none": 2,
+                "total": 5,
+                "none": 3,
                 "liked": 1,
                 "disliked": 1,
             },
@@ -555,6 +561,20 @@ class NormalizedReadModelTests(unittest.TestCase):
                 ("playlist", "removed"),
                 ("channel", "terminated"),
             ],
+        )
+        unlisted = omni_search_data(
+            self.conn,
+            "needle",
+            video_meta_filters={"unlisted"},
+            channel_meta_filters=set(),
+            playlist_meta_filters=set(),
+            sort="type",
+            limit=100,
+        )
+        self.assertEqual(unlisted["metaCounts"], unfiltered["metaCounts"])
+        self.assertEqual(
+            [result["item"]["video_id"] for result in unlisted["results"]],
+            ["unlisted1"],
         )
 
     def test_omni_search_completion_and_playlist_membership_facets(self) -> None:
@@ -743,7 +763,14 @@ class NormalizedReadModelTests(unittest.TestCase):
         liked = video_collection_data(self.conn, scope="liked", include_unavailable=False, limit=1)
         self.assertEqual(
             liked["counts"],
-            {"videos": 1, "unavailable": 1, "members_only": 1, "removed": 0},
+            {
+                "public": 1,
+                "unlisted": 0,
+                "unavailable": 1,
+                "members_only": 1,
+                "unknown": 0,
+                "removed": 0,
+            },
         )
         self.assertEqual([row["video_id"] for row in liked["results"]], ["available1"])
         self.assertIn("metadata_description", liked["results"][0])
@@ -803,7 +830,14 @@ class NormalizedReadModelTests(unittest.TestCase):
         all_rows = video_collection_data(self.conn)
         self.assertEqual(
             all_rows["counts"],
-            {"videos": 1, "unavailable": 1, "members_only": 1, "removed": 2},
+            {
+                "public": 1,
+                "unlisted": 0,
+                "unavailable": 1,
+                "members_only": 1,
+                "unknown": 0,
+                "removed": 2,
+            },
         )
         self.assertEqual(
             {row["video_id"] for row in all_rows["results"]},
@@ -812,8 +846,11 @@ class NormalizedReadModelTests(unittest.TestCase):
 
         removed = video_collection_data(
             self.conn,
-            include_videos=False,
+            include_public=False,
+            include_unlisted=False,
             include_unavailable=False,
+            include_members_only=False,
+            include_unknown=False,
             include_removed=True,
         )
         self.assertEqual(
@@ -826,9 +863,11 @@ class NormalizedReadModelTests(unittest.TestCase):
 
         unavailable = video_collection_data(
             self.conn,
-            include_videos=False,
+            include_public=False,
+            include_unlisted=False,
             include_unavailable=True,
             include_members_only=False,
+            include_unknown=False,
             include_removed=False,
         )
         self.assertEqual(
@@ -837,9 +876,11 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         members_only = video_collection_data(
             self.conn,
-            include_videos=False,
+            include_public=False,
+            include_unlisted=False,
             include_unavailable=False,
             include_members_only=True,
+            include_unknown=False,
             include_removed=False,
         )
         self.assertEqual(

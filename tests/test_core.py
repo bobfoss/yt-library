@@ -1524,6 +1524,7 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(metadata["channel"], "")
         self.assertEqual(metadata["channel_url"], "")
         self.assertEqual(metadata["channel_thumbnail_url"], "")
+        self.assertEqual(metadata["availability"], "unavailable")
 
     def test_watch_metadata_exposes_raw_playability_status(self) -> None:
         html = """
@@ -1532,7 +1533,7 @@ class CoreHelperTests(unittest.TestCase):
         var ytInitialPlayerResponse = {
           "playabilityStatus": {"status": "OK"},
           "videoDetails": {"title": "Members video", "author": "Creator"},
-          "microformat": {"playerMicroformatRenderer": {}}
+          "microformat": {"playerMicroformatRenderer": {"isUnlisted": false}}
         };
         var ytInitialData = {};
         </script>
@@ -1543,7 +1544,53 @@ class CoreHelperTests(unittest.TestCase):
 
         self.assertEqual(metadata["yt_status"], "OK")
         self.assertEqual(metadata["playability_status"], "OK")
+        self.assertEqual(metadata["availability"], "public")
         self.assertEqual(core.watch_playability_value(metadata), 1)
+
+    def test_watch_metadata_classifies_unlisted_visibility(self) -> None:
+        html = """
+        <html><body>
+        <script>
+        var ytInitialPlayerResponse = {
+          "playabilityStatus": {"status": "OK"},
+          "videoDetails": {"title": "Unlisted video", "author": "Creator"},
+          "microformat": {"playerMicroformatRenderer": {"isUnlisted": true}}
+        };
+        var ytInitialData = {};
+        </script>
+        </body></html>
+        """
+
+        metadata = core.extract_watch_metadata(html, "unlisted123")
+
+        self.assertEqual(metadata["availability"], "unlisted")
+        self.assertEqual(core.storable_watch_playability_value(metadata), 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.store_video_metadata(conn, metadata, "ok")
+                stored = conn.execute(
+                    """
+                    SELECT is_playable, availability
+                    FROM videos
+                    WHERE video_id = 'unlisted123'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    dict(stored),
+                    {"is_playable": 1, "availability": "unlisted"},
+                )
+            finally:
+                conn.close()
+
+    def test_watch_metadata_does_not_classify_bot_challenge_as_unavailable(self) -> None:
+        playability = {
+            "status": "LOGIN_REQUIRED",
+            "reason": "Sign in to confirm you're not a bot",
+        }
+
+        self.assertEqual(core.watch_playability_availability(playability), "")
 
     def test_watch_metadata_classifies_members_only_playability(self) -> None:
         html = """
@@ -3642,7 +3689,15 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML.index('id="refresh"'),
         )
         self.assertEqual(server.INDEX_HTML.count("videoStatusFiltersHtml({"), 4)
-        self.assertIn("{ key: 'videos', label: 'available' }", server.INDEX_HTML)
+        self.assertIn("{ key: 'public', label: 'public', visibilityIcon: true }", server.INDEX_HTML)
+        self.assertIn("{ key: 'unlisted', label: 'unlisted', visibilityIcon: true }", server.INDEX_HTML)
+        self.assertIn("{ key: 'unknown', label: 'unknown' }", server.INDEX_HTML)
+        self.assertIn(
+            "videos: { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true }",
+            server.INDEX_HTML,
+        )
+        self.assertIn("value === 'videos' ? 'public' : value", server.INDEX_HTML)
+        self.assertNotIn("include_videos=", Path(server.__file__).read_text(encoding="utf-8"))
         self.assertIn("let videoMetaCountsCache = new Map();", server.INDEX_HTML)
         self.assertIn("let omniMetaCountsCache = new Map();", server.INDEX_HTML)
         self.assertIn("let renderedOmniSearchQuery = '';", server.INDEX_HTML)

@@ -308,11 +308,11 @@
     let children = new Map();
 
     let selected = '';
-    let playlistVisibility = { videos: true, unavailable: true, members_only: true, removed: true };
+    let playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
     let playlistListVisibility = { private: true, public: true, unlisted: true, others: true, unknown: true, removed: true };
     let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
     let searchMetaVisibility = {
-      videos: { videos: true, unavailable: true, members_only: true, removed: true },
+      videos: { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true },
       reactions: { none: true, liked: true, disliked: true },
       completion: { complete: true, partial: true, unknown: true, never_watched: true },
       membership: { member: true, non_member: true },
@@ -323,7 +323,7 @@
     let searchSortExplicit = false;
     let playlistVisibilityPlaylistId = '';
     let allVideosSort = 'newest_added';
-    let likedVideosVisibility = { videos: true, unavailable: true, members_only: true };
+    let likedVideosVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true };
     let likedVideosSort = 'newest_added';
     let playlistViewSort = 'playlist_order';
     let allPlaylistsSort = 'title';
@@ -590,7 +590,11 @@
       } else {
         for (const input of searchFields) input.checked = true;
       }
-      applyMetaFilterParam(searchMetaVisibility.videos, params.get('vm'));
+      const videoMetaParam = params.get('vm');
+      const compatibleVideoMetaParam = videoMetaParam === null
+        ? null
+        : videoMetaParam.split(',').map(value => value === 'videos' ? 'public' : value).join(',');
+      applyMetaFilterParam(searchMetaVisibility.videos, compatibleVideoMetaParam);
       applyMetaFilterParam(searchMetaVisibility.reactions, params.get('vr'));
       applyMetaFilterParam(searchMetaVisibility.completion, params.get('vc'));
       applyMetaFilterParam(searchMetaVisibility.membership, params.get('vpm'));
@@ -718,7 +722,7 @@
     function resetPlaylistVisibilityFor(playlistId) {
       if (playlistVisibilityPlaylistId === playlistId) return;
       playlistVisibilityPlaylistId = playlistId;
-      playlistVisibility = { videos: true, unavailable: true, members_only: true, removed: true };
+      playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
       playlistPageSearch = '';
     }
 
@@ -1422,9 +1426,11 @@
     }
 
     const videoMetaFilterDefinitions = [
-      { key: 'videos', label: 'available' },
-      { key: 'unavailable', label: 'unavailable', className: 'badge' },
+      { key: 'public', label: 'public', visibilityIcon: true },
+      { key: 'unlisted', label: 'unlisted', visibilityIcon: true },
       { key: 'members_only', label: 'members only', className: 'members-only-filter' },
+      { key: 'unavailable', label: 'unavailable', className: 'badge' },
+      { key: 'unknown', label: 'unknown' },
       { key: 'removed', label: 'removed', className: 'badge' },
     ];
     const reactionMetaFilterDefinitions = [
@@ -1767,9 +1773,11 @@
         scope,
         channel_id: channelId,
         q: query,
-        videos: visibility.videos ? '1' : '0',
-        unavailable: visibility.unavailable ? '1' : '0',
+        public: visibility.public === false ? '0' : '1',
+        unlisted: visibility.unlisted === false ? '0' : '1',
         members_only: visibility.members_only === false ? '0' : '1',
+        unavailable: visibility.unavailable === false ? '0' : '1',
+        unknown: visibility.unknown === false ? '0' : '1',
         removed: visibility.removed === false ? '0' : '1',
         sort,
       });
@@ -2246,7 +2254,7 @@
       if (selected === '__hidden__') {
         title.textContent = 'Unavailable videos';
         const payload = await fetchVideoCollection({
-          visibility: { videos: false, unavailable: true, members_only: true, removed: false },
+          visibility: { public: false, unlisted: false, members_only: true, unavailable: true, unknown: false, removed: false },
         });
         if (generation !== renderGeneration) return;
         const rows = payload.results || [];
@@ -2477,6 +2485,7 @@
         localUrl: video.video_id ? localVideoHref(video.video_id) : '',
         externalUrl: watchUrl,
         badges: [
+          { label: String(video.availability || '').toLowerCase() === 'unlisted' ? 'Unlisted' : '' },
           { label: unavailableLabel(video) },
           { label: archivarixStatusLabel(video) },
           { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },

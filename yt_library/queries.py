@@ -485,7 +485,7 @@ def _video_candidate_rows(
                  v.updated_at, '' AS playlist_id, '' AS playlist_title, 0 AS position,
                  '' AS membership_state, '' AS unavailable_kind, '' AS source_quality,
                  '' AS match_type, '' AS match_confidence, '' AS added_at,
-                 COALESCE(v.is_playable, 0) AS is_playable, v.availability,
+                 v.is_playable, v.availability,
                  COALESCE(hs.watch_count, 0) AS watch_count,
                  COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
                  100 AS completeness_score
@@ -511,7 +511,7 @@ def _video_candidate_rows(
                  pi.playlist_id, p.title AS playlist_title, pi.position,
                  pi.membership_state, pi.unavailable_kind, pi.source_quality,
                  pi.match_type, pi.match_confidence, COALESCE(pi.added_at, '') AS added_at,
-                 COALESCE(v.is_playable, 0) AS is_playable,
+                  v.is_playable,
                  CASE WHEN pi.video_id IS NULL THEN pi.unavailable_kind ELSE v.availability END AS availability,
                  COALESCE(hs.watch_count, 0) AS watch_count,
                  COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
@@ -558,24 +558,49 @@ def _deduplicate_video_candidates(rows: list[dict[str, Any]]) -> list[dict[str, 
     return [*deduplicated.values(), *unresolved]
 
 
-def _video_is_unavailable(item: dict[str, Any]) -> bool:
-    if not item.get("video_id") or not int(item.get("is_playable") or 0):
-        return True
+VIDEO_AVAILABILITY_CATEGORIES = (
+    "public",
+    "unlisted",
+    "members_only",
+    "unavailable",
+    "unknown",
+)
+
+
+def _video_availability_category(item: dict[str, Any]) -> str:
+    if not item.get("video_id"):
+        return "unavailable"
+    availability = str(item.get("availability") or "").strip().lower()
+    if availability == "subscriber_only":
+        return "members_only"
     status = str(item.get("recovered_status") or "")
-    return status == "NOT_FOUND" or status.startswith("DELETED_")
+    if status == "NOT_FOUND" or status.startswith("DELETED_"):
+        return "unavailable"
+    if availability in {"public", "unlisted"}:
+        return availability
+    if availability in {
+        "private",
+        "deleted",
+        "removed",
+        "unavailable",
+        "needs_auth",
+        "premium_only",
+    }:
+        return "unavailable"
+    if item.get("is_playable") is True or item.get("is_playable") == 1:
+        return "public"
+    if item.get("is_playable") is False or item.get("is_playable") == 0:
+        return "unavailable"
+    return "unknown"
 
 
 def _video_collection_category(item: dict[str, Any]) -> str:
-    if str(item.get("availability") or "").strip().lower() == "subscriber_only":
-        return "members_only"
-    if _video_is_unavailable(item):
-        return "unavailable"
     if (
         item.get("source_quality") == "takeout"
         and item.get("match_type") == "ambiguous_hidden_candidate"
     ):
         return "removed"
-    return "videos"
+    return _video_availability_category(item)
 
 
 def video_collection_data(
@@ -585,9 +610,11 @@ def video_collection_data(
     playlist_id: str = "",
     channel_id: str = "",
     query: str = "",
-    include_videos: bool = True,
+    include_public: bool = True,
+    include_unlisted: bool = True,
     include_unavailable: bool = True,
     include_members_only: bool | None = None,
+    include_unknown: bool = True,
     include_removed: bool = True,
     sort: str = "newest_added",
     limit: int = 100,
@@ -601,19 +628,23 @@ def video_collection_data(
         query=query,
     )
     categories = {
-        "videos": include_videos,
+        "public": include_public,
+        "unlisted": include_unlisted,
         "unavailable": include_unavailable,
         "members_only": (
             include_unavailable
             if include_members_only is None
             else include_members_only
         ),
+        "unknown": include_unknown,
         "removed": include_removed,
     }
     count_keys = {
-        "videos": set(),
+        "public": set(),
+        "unlisted": set(),
         "unavailable": set(),
         "members_only": set(),
+        "unknown": set(),
         "removed": set(),
     }
     for index, item in enumerate(candidates):
@@ -780,7 +811,7 @@ OMNI_SEARCH_FIELDS = {"titles", "descriptions"}
 OMNI_SEARCH_SORTS = {"relevance", "title", "newest", "oldest", "most_watched", "type"}
 OMNI_SEARCH_KIND_ORDER = ("video", "playlist", "channel")
 OMNI_SEARCH_META_FILTERS = {
-    "video": ("videos", "unavailable", "members_only", "removed"),
+    "video": VIDEO_AVAILABILITY_CATEGORIES,
     "playlist": ("private", "public", "unlisted", "others", "unknown", "removed"),
     "channel": ("subscribed", "non_subscribed", "terminated"),
 }
@@ -885,7 +916,7 @@ def _assign_omni_meta_categories(
     for result in results:
         item = result["item"]
         if result["kind"] == "video":
-            category = str(item.get("collection_category") or _video_collection_category(item))
+            category = _video_availability_category(item)
         elif result["kind"] == "channel":
             category = _channel_list_category(item)
         else:
@@ -1253,25 +1284,9 @@ def omni_search_data(
             WITH candidate_videos AS MATERIALIZED (
               SELECT v.video_id,
                      CASE WHEN {video_title_hit} THEN 1 ELSE 0 END AS title_hit,
-                     COALESCE(v.is_playable, 0) AS is_playable,
+                     v.is_playable,
                      v.availability,
-                     COALESCE(vr.archivarix_status, '') AS recovered_status,
-                     CASE
-                       WHEN NOT EXISTS (
-                         SELECT 1
-                         FROM playlist_items current_pi
-                         WHERE current_pi.video_id = v.video_id
-                           AND current_pi.membership_state = 'current'
-                       )
-                        AND EXISTS (
-                         SELECT 1
-                         FROM playlist_items removed_pi
-                         WHERE removed_pi.video_id = v.video_id
-                           AND removed_pi.source_quality = 'takeout'
-                           AND removed_pi.match_type = 'ambiguous_hidden_candidate'
-                       )
-                       THEN 1 ELSE 0
-                     END AS removed_membership
+                     COALESCE(vr.archivarix_status, '') AS recovered_status
               FROM videos v
               LEFT JOIN channels ch ON ch.channel_id = v.channel_id
               LEFT JOIN video_recovery vr ON vr.video_id = v.video_id
@@ -1312,8 +1327,7 @@ def omni_search_data(
                    candidate.title_hit,
                    candidate.is_playable,
                    candidate.availability,
-                   candidate.recovered_status,
-                   candidate.removed_membership
+                   candidate.recovered_status
             FROM candidate_videos candidate
             JOIN videos v ON v.video_id = candidate.video_id
             LEFT JOIN playlist_stats ps ON ps.video_id = v.video_id
@@ -1323,10 +1337,7 @@ def omni_search_data(
         ):
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
-            if item.pop("removed_membership", 0):
-                item["source_quality"] = "takeout"
-                item["match_type"] = "ambiguous_hidden_candidate"
-            item["collection_category"] = _video_collection_category(item)
+            item["collection_category"] = _video_availability_category(item)
             results.append(
                 _omni_result(
                     "video",

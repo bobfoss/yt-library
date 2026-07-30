@@ -503,9 +503,13 @@ def storable_watch_playability_value(metadata: dict[str, Any]) -> int | None:
     return None
 
 
-def watch_playability_availability(playability: dict[str, Any]) -> str:
+def watch_playability_availability(
+    playability: dict[str, Any],
+    microformat: dict[str, Any] | None = None,
+) -> str:
     if not isinstance(playability, dict):
         return ""
+    microformat = microformat if isinstance(microformat, dict) else {}
     error_screen = playability.get("errorScreen")
     offer = (
         error_screen.get("playerLegacyDesktopYpcOfferRenderer", {})
@@ -532,6 +536,22 @@ def watch_playability_availability(playability: dict[str, Any]) -> str:
         )
     ):
         return "subscriber_only"
+    status = str(playability.get("status") or "").strip().upper()
+    if status == "OK":
+        return "unlisted" if microformat.get("isUnlisted") is True else "public"
+    if any(
+        marker in text
+        for marker in (
+            "confirm you're not a bot",
+            "confirm you’re not a bot",
+            "protect our community",
+            "unusual traffic",
+            "captcha",
+        )
+    ):
+        return ""
+    if status in {"ERROR", "UNPLAYABLE", "LOGIN_REQUIRED", "LIVE_STREAM_OFFLINE"} and text:
+        return "unavailable"
     return ""
 
 
@@ -544,7 +564,11 @@ def apply_watch_playability_to_playlist_rows(
     playability = watch_playability_value(metadata)
     if not video_id or playability is None:
         return 0
-    availability = "public" if playability else "unavailable"
+    availability = normalize_video_availability(
+        video_id,
+        str(metadata.get("availability") or ""),
+        playability,
+    )
     result = conn.execute(
         """
         UPDATE videos
@@ -3380,7 +3404,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     reaction = extract_reaction_from_initial_data(initial_data)
     status = str(playability.get("status") or "").strip()
     reason = text_from_runs(playability.get("reason")).strip()
-    availability = watch_playability_availability(playability)
+    availability = watch_playability_availability(playability, microformat)
     playability_status = status
     if reason and status and reason not in status:
         status = f"{status}: {reason}"
