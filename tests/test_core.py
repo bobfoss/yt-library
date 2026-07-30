@@ -4236,9 +4236,11 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn(
-            ".video-filter-groups.has-search .video-filter-completion",
+            ".video-filter-groups.has-search .video-filter-stack",
             server.INDEX_HTML,
         )
+        self.assertIn("gap: 0;", server.INDEX_HTML)
+        self.assertIn('<span class="video-filter-stack">', server.INDEX_HTML)
         self.assertIn(
             '<span class="video-filter-facet video-filter-availability">',
             server.INDEX_HTML,

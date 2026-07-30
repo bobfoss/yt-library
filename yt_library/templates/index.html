@@ -109,7 +109,7 @@
       min-width: 0;
     }
     .video-filter-groups { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; min-width: 0; }
-    .video-filter-search, .video-filter-facet { display: contents; }
+    .video-filter-search, .video-filter-stack, .video-filter-facet { display: contents; }
     .video-removed-filter { display: inline-flex; align-items: center; margin-left: auto; white-space: nowrap; }
     .video-filter-separator { color: var(--muted); margin-left: 8px; }
     .view-top.video-collection-top .view-sort { grid-column: 2; margin-left: 0; white-space: nowrap; }
@@ -124,19 +124,18 @@
         grid-column: 1;
         grid-row: 1;
       }
+      .video-filter-groups.has-search .video-filter-stack {
+        display: grid;
+        grid-column: 2;
+        grid-row: 1;
+        gap: 0;
+        min-width: 0;
+      }
       .video-filter-groups.has-search .video-filter-facet {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         min-width: 0;
-      }
-      .video-filter-groups.has-search .video-filter-availability {
-        grid-column: 2;
-        grid-row: 1;
-      }
-      .video-filter-groups.has-search .video-filter-completion {
-        grid-column: 2;
-        grid-row: 2;
       }
     }
     .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; color: var(--muted); font-size: 14px; margin: 0 0 14px; }
@@ -1726,35 +1725,37 @@
       return `
         <span class="video-filter-groups${searchHtml ? ' has-search' : ''}">
           ${searchHtml ? `<span class="video-filter-search">${searchHtml}</span>` : ''}
-          <span class="video-filter-facet video-filter-availability">
-            ${videoStatusFiltersHtml({
-              groupName: 'playlist-videos',
-              filterAttribute: 'playlist-filter',
-              visibility: playlistVisibility,
-              counts,
-              definitions: playlistVideoAvailabilityFilterDefinitions,
-            })}
-            <span class="video-removed-filter">
-              <span class="video-filter-separator" aria-hidden="true">|</span>
-              ${metaFilterControlsHtml({
-                groupName: 'playlist-removed',
+          <span class="video-filter-stack">
+            <span class="video-filter-facet video-filter-availability">
+              ${videoStatusFiltersHtml({
+                groupName: 'playlist-videos',
                 filterAttribute: 'playlist-filter',
                 visibility: playlistVisibility,
                 counts,
-                definitions: playlistVideoRemovedFilterDefinitions,
-                showAll: false,
+                definitions: playlistVideoAvailabilityFilterDefinitions,
+              })}
+              <span class="video-removed-filter">
+                <span class="video-filter-separator" aria-hidden="true">|</span>
+                ${metaFilterControlsHtml({
+                  groupName: 'playlist-removed',
+                  filterAttribute: 'playlist-filter',
+                  visibility: playlistVisibility,
+                  counts,
+                  definitions: playlistVideoRemovedFilterDefinitions,
+                  showAll: false,
+                })}
+              </span>
+            </span>
+            <span class="video-filter-facet video-filter-completion">
+              ${metaFilterControlsHtml({
+                groupName: 'playlist-completion',
+                filterAttribute: 'playlist-completion-filter',
+                visibility: playlistCompletionVisibility,
+                counts: completionCounts,
+                definitions: completionMetaFilterDefinitions,
+                allLabel: 'Completion',
               })}
             </span>
-          </span>
-          <span class="video-filter-facet video-filter-completion">
-            ${metaFilterControlsHtml({
-              groupName: 'playlist-completion',
-              filterAttribute: 'playlist-completion-filter',
-              visibility: playlistCompletionVisibility,
-              counts: completionCounts,
-              definitions: completionMetaFilterDefinitions,
-              allLabel: 'Completion',
-            })}
           </span>
         </span>
       `;
