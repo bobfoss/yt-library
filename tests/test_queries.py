@@ -106,7 +106,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         data = omni_search_data(
             self.conn,
             "",
-            channel_meta_filters=set(),
+            channel_subscription_filters=set(),
             playlist_meta_filters=set(),
             limit=20,
         )
@@ -159,7 +159,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         data = omni_search_data(
             self.conn,
             "",
-            channel_meta_filters=set(),
+            channel_subscription_filters=set(),
             playlist_meta_filters=set(),
             sort="newest",
             limit=20,
@@ -317,7 +317,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             self.conn,
             "needle",
             search_fields={"descriptions"},
-            channel_meta_filters=set(),
+            channel_subscription_filters=set(),
             playlist_meta_filters=set(),
         )
         self.assertEqual(
@@ -330,7 +330,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             "needle",
             search_fields={"titles"},
             video_meta_filters=set(),
-            channel_meta_filters={"subscribed"},
+            channel_subscription_filters={"subscribed"},
             playlist_meta_filters=set(),
         )
         self.assertEqual(
@@ -347,7 +347,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             "needle",
             search_fields={"titles"},
             video_meta_filters={"public"},
-            channel_meta_filters=set(),
+            channel_subscription_filters=set(),
             playlist_meta_filters=set(),
         )
         self.assertEqual(available_only["results"], [])
@@ -356,7 +356,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             "needle",
             search_fields={"titles"},
             video_meta_filters={"unavailable"},
-            channel_meta_filters=set(),
+            channel_subscription_filters=set(),
             playlist_meta_filters=set(),
         )
         self.assertEqual(with_unavailable["results"][0]["item"]["video_id"], "unavailable1")
@@ -366,7 +366,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             "needle",
             search_fields={"titles"},
             video_meta_filters={"members_only"},
-            channel_meta_filters=set(),
+            channel_subscription_filters=set(),
             playlist_meta_filters=set(),
         )
         self.assertEqual(
@@ -385,7 +385,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             self.conn,
             "needle",
             search_fields={"descriptions"},
-            channel_meta_filters=set(),
+            channel_subscription_filters=set(),
             playlist_meta_filters=set(),
         )
 
@@ -446,7 +446,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             [
                 ("UC_meta_subscribed", "Needle subscribed", 1, ""),
                 ("UC_meta_other", "Needle non-subscribed", 0, ""),
-                ("UC_meta_terminated", "Needle terminated", 0, "terminated"),
+                ("UC_meta_terminated", "Needle terminated", 1, "terminated"),
                 ("UC_library_owner", "Library owner", 0, ""),
                 ("UC_playlist_other", "Other owner", 0, ""),
             ],
@@ -486,8 +486,9 @@ class NormalizedReadModelTests(unittest.TestCase):
                 },
                 "channels": {
                     "total": 3,
-                    "subscribed": 1,
+                    "subscribed": 2,
                     "non_subscribed": 1,
+                    "active": 2,
                     "terminated": 1,
                 },
                 "playlists": {
@@ -545,7 +546,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             self.conn,
             "needle",
             video_meta_filters={"members_only"},
-            channel_meta_filters={"terminated"},
+            channel_status_filters={"terminated"},
             playlist_meta_filters={"removed"},
             sort="type",
             limit=100,
@@ -555,18 +556,58 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(filtered["counts"], {"videos": 1, "channels": 1, "playlists": 1})
         self.assertEqual(filtered["total"], 3)
         self.assertEqual(
-            [(result["kind"], result["metaCategory"]) for result in filtered["results"]],
             [
-                ("video", "members_only"),
-                ("playlist", "removed"),
-                ("channel", "terminated"),
+                (
+                    result["kind"],
+                    result.get("metaCategory"),
+                    result.get("channelSubscription"),
+                    result.get("channelStatus"),
+                )
+                for result in filtered["results"]
             ],
+            [
+                ("video", "members_only", None, None),
+                ("playlist", "removed", None, None),
+                ("channel", None, "subscribed", "terminated"),
+            ],
+        )
+        active_subscribed = omni_search_data(
+            self.conn,
+            "needle",
+            video_meta_filters=set(),
+            playlist_meta_filters=set(),
+            channel_subscription_filters={"subscribed"},
+            channel_status_filters={"active"},
+            sort="type",
+            limit=100,
+        )
+        self.assertEqual(
+            [result["item"]["channel_id"] for result in active_subscribed["results"]],
+            ["UC_meta_subscribed"],
+        )
+        terminated_subscribed = omni_search_data(
+            self.conn,
+            "needle",
+            video_meta_filters=set(),
+            playlist_meta_filters=set(),
+            channel_subscription_filters={"subscribed"},
+            channel_status_filters={"terminated"},
+            sort="type",
+            limit=100,
+        )
+        self.assertEqual(
+            [result["item"]["channel_id"] for result in terminated_subscribed["results"]],
+            ["UC_meta_terminated"],
+        )
+        self.assertEqual(
+            terminated_subscribed["metaCounts"],
+            unfiltered["metaCounts"],
         )
         unlisted = omni_search_data(
             self.conn,
             "needle",
             video_meta_filters={"unlisted"},
-            channel_meta_filters=set(),
+            channel_subscription_filters=set(),
             playlist_meta_filters=set(),
             sort="type",
             limit=100,
@@ -644,7 +685,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             "facet",
             video_completion_filters={"partial"},
             video_playlist_membership_filters={"member"},
-            channel_meta_filters=set(),
+            channel_subscription_filters=set(),
             playlist_meta_filters=set(),
             sort="type",
             limit=100,
@@ -666,7 +707,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             self.conn,
             "facet",
             video_playlist_membership_filters={"non_member"},
-            channel_meta_filters=set(),
+            channel_subscription_filters=set(),
             playlist_meta_filters=set(),
             sort="type",
             limit=100,

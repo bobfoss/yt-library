@@ -415,7 +415,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         params,
                         "video_playlist_membership",
                     ),
-                    channel_meta_filters=query_set_param(params, "channel_meta"),
+                    channel_subscription_filters=query_set_param(
+                        params,
+                        "channel_subscription",
+                    ),
+                    channel_status_filters=query_set_param(params, "channel_status"),
                     playlist_meta_filters=query_set_param(params, "playlist_meta"),
                     sort=sort,
                     limit=limit,

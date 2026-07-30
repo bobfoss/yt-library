@@ -733,9 +733,21 @@ def video_collection_data(
 
 
 def _channel_list_category(channel: dict[str, Any]) -> str:
-    if str(channel.get("status") or "").lower() in {"terminated", "deleted"}:
+    if _channel_status_category(channel) == "terminated":
         return "terminated"
+    return _channel_subscription_category(channel)
+
+
+def _channel_subscription_category(channel: dict[str, Any]) -> str:
     return "subscribed" if int(channel.get("subscribed") or 0) else "non_subscribed"
+
+
+def _channel_status_category(channel: dict[str, Any]) -> str:
+    return (
+        "terminated"
+        if str(channel.get("status") or "").lower() in {"terminated", "deleted"}
+        else "active"
+    )
 
 
 def channel_list_data(
@@ -813,11 +825,12 @@ OMNI_SEARCH_KIND_ORDER = ("video", "playlist", "channel")
 OMNI_SEARCH_META_FILTERS = {
     "video": VIDEO_AVAILABILITY_CATEGORIES,
     "playlist": ("private", "public", "unlisted", "others", "unknown", "removed"),
-    "channel": ("subscribed", "non_subscribed", "terminated"),
 }
 OMNI_SEARCH_REACTION_FILTERS = ("none", "liked", "disliked")
 OMNI_SEARCH_COMPLETION_FILTERS = ("complete", "partial", "unknown", "never_watched")
 OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS = ("member", "non_member")
+OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS = ("subscribed", "non_subscribed")
+OMNI_SEARCH_CHANNEL_STATUS_FILTERS = ("active", "terminated")
 
 
 def _omni_like_pattern(query: str) -> str:
@@ -918,7 +931,9 @@ def _assign_omni_meta_categories(
         if result["kind"] == "video":
             category = _video_availability_category(item)
         elif result["kind"] == "channel":
-            category = _channel_list_category(item)
+            result["channelSubscription"] = _channel_subscription_category(item)
+            result["channelStatus"] = _channel_status_category(item)
+            continue
         else:
             category = playlist_categories.get(
                 item.get("playlist_id") or "",
@@ -935,11 +950,19 @@ def _omni_meta_counts(results: list[dict[str, Any]]) -> dict[str, dict[str, int]
         }
         for kind, categories in OMNI_SEARCH_META_FILTERS.items()
     }
+    counts["channels"] = {
+        "total": 0,
+        **{category: 0 for category in OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS},
+        **{category: 0 for category in OMNI_SEARCH_CHANNEL_STATUS_FILTERS},
+    }
     for result in results:
         group = counts[f"{result['kind']}s"]
-        category = result["metaCategory"]
         group["total"] += 1
-        group[category] += 1
+        if result["kind"] == "channel":
+            group[result["channelSubscription"]] += 1
+            group[result["channelStatus"]] += 1
+        else:
+            group[result["metaCategory"]] += 1
     return counts
 
 
@@ -1160,7 +1183,8 @@ def omni_search_data(
     video_reaction_filters: set[str] | None = None,
     video_completion_filters: set[str] | None = None,
     video_playlist_membership_filters: set[str] | None = None,
-    channel_meta_filters: set[str] | None = None,
+    channel_subscription_filters: set[str] | None = None,
+    channel_status_filters: set[str] | None = None,
     playlist_meta_filters: set[str] | None = None,
     sort: str | None = None,
     limit: int = 100,
@@ -1411,7 +1435,6 @@ def omni_search_data(
     selected_meta_filters = {
         "video": _selected_omni_meta_filters(video_meta_filters, "video"),
         "playlist": _selected_omni_meta_filters(playlist_meta_filters, "playlist"),
-        "channel": _selected_omni_meta_filters(channel_meta_filters, "channel"),
     }
     selected_reaction_filters = (
         set(OMNI_SEARCH_REACTION_FILTERS)
@@ -1429,19 +1452,40 @@ def omni_search_data(
         else set(video_playlist_membership_filters)
         & set(OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS)
     )
+    selected_channel_subscription_filters = (
+        set(OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS)
+        if channel_subscription_filters is None
+        else set(channel_subscription_filters)
+        & set(OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS)
+    )
+    selected_channel_status_filters = (
+        set(OMNI_SEARCH_CHANNEL_STATUS_FILTERS)
+        if channel_status_filters is None
+        else set(channel_status_filters) & set(OMNI_SEARCH_CHANNEL_STATUS_FILTERS)
+    )
     results = [
         result
         for result in results
         if (
-            result["metaCategory"] in selected_meta_filters[result["kind"]]
-            and (
-                result["kind"] != "video"
-                or (
-                    _omni_video_reaction_category(result) in selected_reaction_filters
-                    and _omni_video_completion_category(result)
-                    in selected_completion_filters
-                    and _omni_video_playlist_membership_category(result)
-                    in selected_playlist_membership_filters
+            (
+                result["kind"] == "channel"
+                and result["channelSubscription"]
+                in selected_channel_subscription_filters
+                and result["channelStatus"] in selected_channel_status_filters
+            )
+            or (
+                result["kind"] != "channel"
+                and result["metaCategory"] in selected_meta_filters[result["kind"]]
+                and (
+                    result["kind"] != "video"
+                    or (
+                        _omni_video_reaction_category(result)
+                        in selected_reaction_filters
+                        and _omni_video_completion_category(result)
+                        in selected_completion_filters
+                        and _omni_video_playlist_membership_category(result)
+                        in selected_playlist_membership_filters
+                    )
                 )
             )
         )

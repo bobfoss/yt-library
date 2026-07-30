@@ -3592,6 +3592,14 @@ class AdminServerTests(unittest.TestCase):
             "membership: { member: true, non_member: true }",
             server.INDEX_HTML,
         )
+        self.assertIn(
+            "channelSubscription: { subscribed: true, non_subscribed: true }",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "channelStatus: { active: true, terminated: true }",
+            server.INDEX_HTML,
+        )
         self.assertNotIn("Search For", server.INDEX_HTML)
         self.assertNotIn("playlist_videos\" checked> Playlist videos", server.INDEX_HTML)
         self.assertIn("video_reaction: metaFilterParamValue(searchMetaVisibility.reactions)", server.INDEX_HTML)
@@ -3603,7 +3611,20 @@ class AdminServerTests(unittest.TestCase):
             "video_playlist_membership: metaFilterParamValue(searchMetaVisibility.membership)",
             server.INDEX_HTML,
         )
+        self.assertIn(
+            "channel_subscription: metaFilterParamValue(searchMetaVisibility.channelSubscription)",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "channel_status: metaFilterParamValue(searchMetaVisibility.channelStatus)",
+            server.INDEX_HTML,
+        )
         self.assertIn("const channelMetaFilterDefinitions = [", server.INDEX_HTML)
+        self.assertIn(
+            "const channelSubscriptionMetaFilterDefinitions = [",
+            server.INDEX_HTML,
+        )
+        self.assertIn("const channelStatusMetaFilterDefinitions = [", server.INDEX_HTML)
         self.assertIn("const playlistMetaFilterDefinitions = [", server.INDEX_HTML)
         self.assertIn("const completionMetaFilterDefinitions = [", server.INDEX_HTML)
         self.assertIn(
@@ -3617,12 +3638,12 @@ class AdminServerTests(unittest.TestCase):
         )
         self.assertIn("filterAttribute: 'search-meta-filter'", server.INDEX_HTML)
         self.assertIn("groupName: `search-${key}`", server.INDEX_HTML)
-        self.assertIn('data-search-meta-progress="${key}"', server.INDEX_HTML)
+        self.assertIn('data-search-meta-progress="${kind || key}"', server.INDEX_HTML)
         self.assertIn("flex: 0 0 1.4em", server.INDEX_HTML)
         self.assertIn("function animateProgressDots(update)", server.INDEX_HTML)
         self.assertIn("function showSearchMetaProgress(groupName)", server.INDEX_HTML)
         self.assertIn(
-            "const progressGroup = ['reactions', 'completion', 'membership'].includes(groupName)",
+            "const progressGroup = searchKindForFacet(groupName);",
             server.INDEX_HTML,
         )
         self.assertIn(
@@ -3648,18 +3669,28 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("allLabel: 'Reactions'", server.INDEX_HTML)
         self.assertIn("allLabel: 'Completion'", server.INDEX_HTML)
         self.assertIn("allLabel: 'Playlist membership'", server.INDEX_HTML)
+        self.assertIn("allLabel: 'Subscription'", server.INDEX_HTML)
+        self.assertIn("allLabel: 'Status'", server.INDEX_HTML)
         self.assertIn("title: '',\n          key: 'reactions'", server.INDEX_HTML)
         self.assertIn(
             "const searchVideoFacetKeys = ['videos', 'reactions', 'completion', 'membership'];",
             server.INDEX_HTML,
         )
+        self.assertIn(
+            "const searchChannelFacetKeys = ['channelSubscription', 'channelStatus'];",
+            server.INDEX_HTML,
+        )
         self.assertIn("function setSearchKindFilter(kind, checked)", server.INDEX_HTML)
+        self.assertIn(
+            "meta.querySelectorAll(`[data-meta-child-filter=\"${groupName}\"]`)",
+            server.INDEX_HTML,
+        )
         self.assertIn("function syncSearchKindFilter(kind)", server.INDEX_HTML)
         self.assertIn('data-search-kind-filter="${kind}"', server.INDEX_HTML)
         self.assertIn('<span class="count">${Number(counts?.total || 0)}</span>', server.INDEX_HTML)
         self.assertIn("showAll: false", server.INDEX_HTML)
         self.assertIn(
-            "row.classList.toggle('dimmed', !everyFacetHasSelection);",
+            "meta.querySelectorAll(`[data-search-kind-facet=\"${kind}\"]`)",
             server.INDEX_HTML,
         )
         self.assertNotIn(
@@ -3700,7 +3731,7 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML.index("const channelSection = sectionFor('Channels');"),
         )
         self.assertIn(
-            "['videos', 'reactions', 'completion', 'membership', 'playlists', 'channels']",
+            "['videos', 'reactions', 'completion', 'membership', 'playlists', 'channelSubscription', 'channelStatus']",
             server.INDEX_HTML,
         )
         self.assertLess(
