@@ -804,13 +804,15 @@ def _omni_result(kind: str, score: int, item: dict[str, Any], *, matched_descrip
     sort_date_fallback = False
     if kind == "video":
         title = item.get("metadata_title") or item.get("title") or item.get("video_id") or "Unavailable video"
+        latest_watch_at = item.get("latest_watch_at") or ""
         sort_date = (
-            item.get("latest_watch_at")
+            latest_watch_at
             or item.get("added_at")
             or item.get("metadata_upload_date")
             or item.get("updated_at")
             or ""
         )
+        sort_date_fallback = not bool(latest_watch_at)
         watch_count = int(item.get("watch_count") or 0)
     elif kind == "channel":
         title = item.get("title") or item.get("channel_id") or ""

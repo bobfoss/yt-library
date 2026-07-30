@@ -121,6 +121,53 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(all_data["counts"], {"videos": 2, "playlists": 0, "channels": 2})
         self.assertEqual(all_data["total"], 4)
 
+    def test_omni_search_newest_ranks_unwatched_videos_last(self) -> None:
+        self.add_video("watched123", "Watched video")
+        self.add_video("unwatched123", "Unwatched video")
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 1 WHERE video_id IN ('watched123', 'unwatched123')"
+        )
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLdates', 'Date sorting')"
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO playlist_items(
+              playlist_id, position, video_id, membership_state, added_at
+            )
+            VALUES ('PLdates', ?, ?, 'current', ?)
+            """,
+            [
+                (1, "watched123", "2026-01-01T00:00:00Z"),
+                (2, "unwatched123", "2026-07-29T00:00:00Z"),
+            ],
+        )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watched_at, watch_date, time_precision
+            )
+            VALUES (
+              'watched-event', 'watched123', '2026-06-01T00:00:00Z',
+              '2026-06-01', 'exact'
+            )
+            """
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "",
+            filters={"playlist_videos", "history_videos"},
+            sort="newest",
+            limit=20,
+        )
+
+        self.assertEqual(
+            [result["item"]["video_id"] for result in data["results"]],
+            ["watched123", "unwatched123"],
+        )
+
     def test_omni_search_uses_channel_first_seen_and_ranks_fallback_dates_last(self) -> None:
         self.add_video("datedvideo", "Dated video")
         self.conn.execute(
