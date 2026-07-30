@@ -1013,15 +1013,13 @@ class CoreHelperTests(unittest.TestCase):
             "PLexample",
         )
         self.assertEqual(metadata["owner"], "Gir Bot")
-        self.assertEqual(metadata["visibility"], "")
+        self.assertEqual(metadata["visibility"], "unlisted")
         visibility_only = core.playlist_metadata_from_ytdlp_info(
             {"title": "Example", "availability": "unlisted"},
             "PLexample",
         )
         self.assertEqual(visibility_only["owner"], "")
         self.assertEqual(visibility_only["visibility"], "unlisted")
-        with self.assertRaises(AssertionError):
-            core.assert_playlist_owner_visibility({"owner_channel_id": "UCmine", "visibility": "public"})
 
     def test_extract_playlist_metadata_reads_page_header_count_and_visibility(self) -> None:
         initial_data = {
@@ -1083,6 +1081,55 @@ class CoreHelperTests(unittest.TestCase):
         owner_metadata = core.extract_playlist_metadata(owner_html, "PLforeign")
         self.assertEqual(owner_metadata["owner"], "Other Channel")
         self.assertEqual(owner_metadata["owner_channel_id"], "UCabcdefghijklmnopqrstuv")
+
+        sidebar_data = {
+            "header": owner_data["header"],
+            "sidebar": {
+                "playlistSidebarRenderer": {
+                    "items": [
+                        {
+                            "playlistSidebarPrimaryInfoRenderer": {
+                                "badges": [
+                                    {
+                                        "metadataBadgeRenderer": {
+                                            "icon": {"iconType": "PRIVACY_UNLISTED"},
+                                            "label": "Unlisted",
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            },
+        }
+        sidebar_html = f"<script>var ytInitialData = {json.dumps(sidebar_data)};</script>"
+        sidebar_metadata = core.extract_playlist_metadata(sidebar_html, "PLforeign")
+        self.assertEqual(sidebar_metadata["owner"], "Other Channel")
+        self.assertEqual(
+            sidebar_metadata["owner_channel_id"],
+            "UCabcdefghijklmnopqrstuv",
+        )
+        self.assertEqual(sidebar_metadata["visibility"], "unlisted")
+
+        microformat_data = {
+            "header": owner_data["header"],
+            "microformat": {
+                "microformatDataRenderer": {
+                    "noindex": True,
+                    "unlisted": True,
+                }
+            },
+        }
+        microformat_html = (
+            f"<script>var ytInitialData = {json.dumps(microformat_data)};</script>"
+        )
+        microformat_metadata = core.extract_playlist_metadata(
+            microformat_html,
+            "PLforeign",
+        )
+        self.assertEqual(microformat_metadata["owner"], "Other Channel")
+        self.assertEqual(microformat_metadata["visibility"], "unlisted")
 
         attributed_data = {
             "header": {
@@ -2745,7 +2792,7 @@ class SchemaTests(unittest.TestCase):
                               thumbnail_url, thumbnail_path, fetch_status, fetch_error, updated_at
                             )
                             VALUES (
-                              'PLrename', 'Old name', 'Old description', 'unlisted', 1,
+                              'PLrename', 'Old name', 'Old description', 'public', 1,
                               'https://example.test/old.jpg', 'thumbs/PLrename.jpg',
                               'ok', '', '2026-07-01T00:00:00Z'
                             )
@@ -2775,7 +2822,7 @@ class SchemaTests(unittest.TestCase):
                                 "description": "New description",
                                 "owner": "New owner",
                                 "owner_channel_id": "UCnewownerchannel123456789",
-                                "visibility": "",
+                                "visibility": "unlisted",
                                 "video_count": 1,
                                 "thumbnail_url": "https://example.test/new.jpg",
                                 "url": "https://www.youtube.com/playlist?list=PLrename",
@@ -2787,7 +2834,7 @@ class SchemaTests(unittest.TestCase):
                     self.assertEqual(row["title"], "New name")
                     self.assertEqual(row["description"], "New description")
                     self.assertEqual(row["owner_channel_id"], "UCnewownerchannel123456789")
-                    self.assertEqual(row["visibility"], "")
+                    self.assertEqual(row["visibility"], "unlisted")
                     self.assertEqual(row["video_count"], 1)
                     self.assertEqual(row["thumbnail_url"], "https://example.test/new.jpg")
                     self.assertEqual(row["thumbnail_path"], "thumbs/PLrename.jpg")

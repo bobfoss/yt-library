@@ -390,14 +390,6 @@ def split_playlist_owner_visibility(value: str) -> tuple[str, str]:
     return ("", visibility) if visibility else ((value or "").strip(), "")
 
 
-def assert_playlist_owner_visibility(metadata: dict[str, Any]) -> None:
-    owner_channel_id = (metadata.get("owner_channel_id") or "").strip()
-    visibility = (metadata.get("visibility") or "").strip()
-    assert not (owner_channel_id and visibility), (
-        "Playlist metadata cannot contain both an owner channel and a visibility value."
-    )
-
-
 def playlist_match_type_note(match_type: str) -> str:
     return PLAYLIST_MATCH_TYPE_NOTES.get(match_type or "", "")
 
@@ -1903,6 +1895,40 @@ def parse_youtube_playlist_video_count(value: str) -> int:
     return int(found.group(1).replace(",", "")) if found else 0
 
 
+def playlist_visibility_from_initial_data(initial_data: Any) -> str:
+    for node in walk(initial_data):
+        renderer = node.get("playlistSidebarPrimaryInfoRenderer")
+        if not isinstance(renderer, dict):
+            continue
+        for badge in renderer.get("badges", []) or []:
+            if not isinstance(badge, dict):
+                continue
+            badge_renderer = badge.get("metadataBadgeRenderer")
+            if not isinstance(badge_renderer, dict):
+                continue
+            visibility = normalize_playlist_visibility(str(badge_renderer.get("label") or ""))
+            if visibility:
+                return visibility
+            icon_type = str(
+                badge_renderer.get("icon", {}).get("iconType") or ""
+            ).removeprefix("PRIVACY_")
+            visibility = normalize_playlist_visibility(icon_type)
+            if visibility:
+                return visibility
+
+    for node in walk(initial_data):
+        renderer = node.get("microformatDataRenderer")
+        if not isinstance(renderer, dict):
+            continue
+        for key in ("privacyStatus", "visibility"):
+            visibility = normalize_playlist_visibility(str(renderer.get(key) or ""))
+            if visibility:
+                return visibility
+        if renderer.get("unlisted") is True:
+            return "unlisted"
+    return ""
+
+
 def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, Any] | None:
     playlist_id = lockup.get("contentId")
     if not isinstance(playlist_id, str) or not playlist_id:
@@ -1964,6 +1990,7 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any
         "thumbnail_url": "",
         "url": f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}",
     }
+    metadata["visibility"] = playlist_visibility_from_initial_data(initial_data)
 
     for prop in ("og:title", "twitter:title"):
         found = re.search(
@@ -3827,10 +3854,6 @@ def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) ->
     visibility = normalize_playlist_visibility(
         str(info.get("visibility") or info.get("privacy") or info.get("availability") or "")
     ) or inferred_visibility
-    if owner:
-        visibility = ""
-    elif visibility:
-        owner = ""
     playlist_count = info.get("playlist_count") or info.get("n_entries")
     video_count = int(playlist_count or 0)
     thumbnail_url = str(info.get("thumbnail") or "").strip()
@@ -4226,14 +4249,8 @@ def import_playlists(args: argparse.Namespace) -> None:
                 ON CONFLICT(playlist_id) DO UPDATE SET
                   title=excluded.title,
                   description=excluded.description,
-                  owner_channel_id=CASE
-                    WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN NULL
-                    ELSE COALESCE(excluded.owner_channel_id, playlists.owner_channel_id)
-                  END,
-                  visibility=CASE
-                    WHEN excluded.owner_channel_id IS NOT NULL THEN ''
-                    ELSE COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility)
-                  END,
+                  owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
+                  visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
                   video_count=excluded.video_count,
                   thumbnail_url=excluded.thumbnail_url,
                   thumbnail_path=excluded.thumbnail_path,
@@ -4431,14 +4448,8 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
                   title=excluded.title,
                   description=excluded.description,
                   is_library_playlist=1,
-                  owner_channel_id=CASE
-                    WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN NULL
-                    ELSE COALESCE(excluded.owner_channel_id, playlists.owner_channel_id)
-                  END,
-                  visibility=CASE
-                    WHEN excluded.owner_channel_id IS NOT NULL THEN ''
-                    ELSE COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility)
-                  END,
+                  owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
+                  visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
                   video_count=excluded.video_count,
                   thumbnail_url=excluded.thumbnail_url,
                   thumbnail_path=excluded.thumbnail_path,
@@ -5464,7 +5475,6 @@ def save_playlist_scan(
                 updated_at=now,
             )
         metadata["video_count"] = max(0, int(playlist_metadata.get("video_count") or 0))
-        assert_playlist_owner_visibility(metadata)
         conn.execute(
             """
             INSERT INTO playlists(
@@ -5475,14 +5485,8 @@ def save_playlist_scan(
             ON CONFLICT(playlist_id) DO UPDATE SET
               title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
               description=COALESCE(NULLIF(excluded.description, ''), playlists.description),
-              owner_channel_id=CASE
-                WHEN NULLIF(excluded.visibility, '') IS NOT NULL THEN NULL
-                ELSE COALESCE(excluded.owner_channel_id, playlists.owner_channel_id)
-              END,
-              visibility=CASE
-                WHEN excluded.owner_channel_id IS NOT NULL THEN ''
-                ELSE COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility)
-              END,
+              owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
+              visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
               video_count=CASE
                 WHEN excluded.video_count > 0 THEN excluded.video_count
                 ELSE playlists.video_count
