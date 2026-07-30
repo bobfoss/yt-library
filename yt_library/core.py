@@ -918,8 +918,11 @@ def backfill_channel_first_seen(conn: sqlite3.Connection) -> dict[str, int]:
     }
 
 
-def useful_video_title(value: str) -> bool:
-    return (value or "").strip().lower().strip("[]() ") not in {
+def useful_video_title(value: str, video_id: str = "") -> bool:
+    title = (value or "").strip()
+    if title == (video_id or "").strip():
+        return False
+    return title.lower().strip("[]() ") not in {
         "",
         "youtube",
         "- youtube",
@@ -980,7 +983,13 @@ def upsert_video(
             return incoming
         return (existing[name] if existing else "") or incoming
 
-    canonical_title = current("title", title if useful_video_title(title) else "")
+    raw_title = (title or "").strip()
+    incoming_title = raw_title if useful_video_title(raw_title, video_id) else ""
+    existing_title = str(existing["title"] or "").strip() if existing else ""
+    if incoming_title and (authoritative or not useful_video_title(existing_title, video_id)):
+        canonical_title = incoming_title
+    else:
+        canonical_title = existing_title or (raw_title if raw_title == video_id else "")
     canonical_channel = channel_id if authoritative and channel_id else ((existing["channel_id"] if existing else None) or channel_id)
     incoming_playability = None if is_playable is None else int(bool(is_playable))
     canonical_playability = incoming_playability if incoming_playability is not None else (existing["is_playable"] if existing else None)

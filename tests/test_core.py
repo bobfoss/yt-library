@@ -2316,6 +2316,49 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_archivarix_title_replaces_higher_priority_video_id_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "rXJrevMFMFw",
+                        title="rXJrevMFMFw",
+                        description="Current YouTube description",
+                        source="metadata",
+                        fetch_status="no_metadata",
+                    )
+                    core.save_video_recovery(
+                        conn,
+                        "rXJrevMFMFw",
+                        {
+                            "title": "Astronomer Visualizes The True Scale Of The Universe",
+                            "description": "Archived description",
+                            "status": "DELETED_FULL_META",
+                        },
+                        "found",
+                        "",
+                    )
+
+                row = conn.execute(
+                    """
+                    SELECT title, description, metadata_source
+                    FROM videos
+                    WHERE video_id = 'rXJrevMFMFw'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    dict(row),
+                    {
+                        "title": "Astronomer Visualizes The True Scale Of The Universe",
+                        "description": "Current YouTube description",
+                        "metadata_source": "metadata",
+                    },
+                )
+            finally:
+                conn.close()
+
     def test_refresh_exact_history_dates_uses_iana_timezone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             conn = migrated_connection(Path(tmp) / "library.sqlite3")
