@@ -181,10 +181,10 @@
     body.className = 'body';
     body.innerHTML = `
       ${options.resultKind ? `<div class="result-kind">${escapeHtml(options.resultKind)}</div>` : ''}
+      ${options.channelHtml ? `<div class="details video-card-channel">${options.channelHtml}</div>` : ''}
       ${options.position ? `<div class="position">#${escapeHtml(options.position)}</div>` : ''}
       ${titleHtml(options)}
       ${badgeRowsHtml(options.badges)}
-      ${options.channelHtml ? `<div class="details">${options.channelHtml}</div>` : ''}
       ${detailRowHtml(options.details)}
       ${options.watchDateHtml || ''}
       ${options.availabilityHtml || ''}

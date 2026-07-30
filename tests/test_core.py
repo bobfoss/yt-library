@@ -4193,6 +4193,29 @@ class AdminServerTests(unittest.TestCase):
             "      ${options.watchedHtml || ''}",
             server.VIDEO_CARD_JS,
         )
+        video_card_channel = (
+            '${options.channelHtml ? `<div class="details video-card-channel">'
+            "${options.channelHtml}</div>` : ''}"
+        )
+        self.assertIn(video_card_channel, server.VIDEO_CARD_JS)
+        self.assertLess(
+            server.VIDEO_CARD_JS.index(video_card_channel),
+            server.VIDEO_CARD_JS.index("${titleHtml(options)}"),
+        )
+        self.assertIn(".video-card-channel .creator-link", server.INDEX_HTML)
+        self.assertIn(
+            "${channelName ? `<div class=\"details video-card-channel\">"
+            "${creatorHtml(video.metadata_channel_thumbnail_path, channelName, channelUrl)}"
+            "</div>` : ''}\n"
+            '            <div class="title-row">',
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "channelHtml: video.channel\n"
+            "          ? creatorHtml('', video.channel, video.channel_id ? "
+            "localChannelHref(video.channel_id) : '')",
+            server.INDEX_HTML,
+        )
         self.assertNotIn(
             "{ label: String(video.availability || '').toLowerCase() === 'unlisted'",
             server.INDEX_HTML,
