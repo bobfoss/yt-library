@@ -3618,6 +3618,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("filterAttribute: 'search-meta-filter'", server.INDEX_HTML)
         self.assertIn("groupName: `search-${key}`", server.INDEX_HTML)
         self.assertIn('data-search-meta-progress="${key}"', server.INDEX_HTML)
+        self.assertIn("flex: 0 0 1.4em", server.INDEX_HTML)
         self.assertIn("function animateProgressDots(update)", server.INDEX_HTML)
         self.assertIn("function showSearchMetaProgress(groupName)", server.INDEX_HTML)
         self.assertIn(
