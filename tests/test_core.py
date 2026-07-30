@@ -1203,6 +1203,102 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(attributed_metadata["video_count"], 361)
         self.assertFalse(core.playlist_scan_requires_exact_count(attributed_metadata))
 
+    def test_channel_subscription_state_uses_active_entity_not_button_templates(self) -> None:
+        initial_data = {
+            "header": {
+                "subscribeButtonViewModel": {
+                    "subscribeButtonContent": {
+                        "subscribeState": {"subscribed": False},
+                    },
+                    "unsubscribeButtonContent": {
+                        "subscribeState": {"subscribed": True},
+                    },
+                }
+            },
+            "frameworkUpdates": {
+                "entityBatchUpdate": {
+                    "mutations": [
+                        {
+                            "payload": {
+                                "subscriptionStateEntity": {
+                                    "subscribed": True,
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+        }
+
+        self.assertIs(core.extract_channel_subscription_state(initial_data), True)
+        self.assertIs(
+            core.extract_channel_subscription_state(
+                {
+                    "header": {
+                        "subscriptionButtonRenderer": {
+                            "subscribed": False,
+                        }
+                    }
+                }
+            ),
+            False,
+        )
+        self.assertIsNone(core.extract_channel_subscription_state({}))
+
+    def test_channel_metadata_ignores_logged_out_subscription_state(self) -> None:
+        channel_id = "UCchannel12345678901234"
+        initial_data = {
+            "metadata": {
+                "channelMetadataRenderer": {
+                    "title": "Example Channel",
+                    "externalId": channel_id,
+                    "avatar": {
+                        "thumbnails": [
+                            {"url": "https://example.test/channel.jpg", "width": 176}
+                        ]
+                    },
+                }
+            },
+            "frameworkUpdates": {
+                "entityBatchUpdate": {
+                    "mutations": [
+                        {
+                            "payload": {
+                                "subscriptionStateEntity": {
+                                    "subscribed": False,
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+        }
+        page = f"<script>var ytInitialData = {json.dumps(initial_data)};</script>"
+
+        with (
+            patch("yt_library.core.request_text", return_value=page),
+            patch("yt_library.core.youtube_page_is_authenticated", return_value=False),
+            patch("yt_library.core.cache_channel_thumbnail", return_value=""),
+        ):
+            logged_out = core.fetch_channel_metadata(
+                object(),
+                channel_id,
+                Path("thumbs"),
+            )
+        with (
+            patch("yt_library.core.request_text", return_value=page),
+            patch("yt_library.core.youtube_page_is_authenticated", return_value=True),
+            patch("yt_library.core.cache_channel_thumbnail", return_value=""),
+        ):
+            authenticated = core.fetch_channel_metadata(
+                object(),
+                channel_id,
+                Path("thumbs"),
+            )
+
+        self.assertEqual(logged_out["channel_subscribed"], "")
+        self.assertEqual(authenticated["channel_subscribed"], "0")
+
     def test_playlist_continuation_prefers_command_executor_token(self) -> None:
         data = {
             "continuationItemRenderer": {
@@ -6652,6 +6748,7 @@ class WorkerQueueTests(unittest.TestCase):
                 "archivarix_channel_id": "",
                 "channel_status": "",
                 "channel_status_reason": "",
+                "channel_subscribed": "1",
             }
             worker = MetadataWorker()
             with (
@@ -6682,6 +6779,11 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(log["level"], "channel")
                 self.assertEqual(log["video_id"], channel_id)
                 self.assertEqual(log["message"], "ok: Fetched Channel")
+                subscribed = conn.execute(
+                    "SELECT subscribed FROM channels WHERE channel_id = ?",
+                    (channel_id,),
+                ).fetchone()["subscribed"]
+                self.assertEqual(subscribed, 1)
                 display_log = core.worker_log_snapshot(conn)["metadataLogs"][0]
                 self.assertEqual(display_log["display_id"], channel_id)
                 self.assertEqual(display_log["subject_title"], "Fetched Channel")

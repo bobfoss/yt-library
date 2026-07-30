@@ -3189,6 +3189,26 @@ def extract_channel_id(initial_data: dict[str, Any], channel_url: str = "") -> s
     return ""
 
 
+def extract_channel_subscription_state(initial_data: dict[str, Any]) -> bool | None:
+    for node in walk(initial_data):
+        entity = node.get("subscriptionStateEntity")
+        if not isinstance(entity, dict):
+            continue
+        subscribed = entity.get("subscribed")
+        if isinstance(subscribed, bool):
+            return subscribed
+
+    for node in walk(initial_data):
+        for key in ("subscriptionButtonRenderer", "subscribeButtonViewModel"):
+            renderer = node.get(key)
+            if not isinstance(renderer, dict):
+                continue
+            subscribed = renderer.get("subscribed")
+            if isinstance(subscribed, bool):
+                return subscribed
+    return None
+
+
 def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, str]:
     initial_data = extract_json_assignment(html_text, "ytInitialData")
     title = ""
@@ -3234,6 +3254,7 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
         if found:
             title = html.unescape(re.sub(r"\s+", " ", found.group(1))).strip()
             title = re.sub(r"\s+-\s+YouTube$", "", title)
+    subscribed = extract_channel_subscription_state(initial_data)
     return {
         "channel_id": found_channel_id or channel_id,
         "channel": title,
@@ -3243,6 +3264,7 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
         "channel_thumbnail_url": absolute_url(thumbnail_url),
         "channel_status": status,
         "channel_status_reason": status_reason,
+        "channel_subscribed": "" if subscribed is None else str(int(subscribed)),
         "archivarix_channel_id": "",
     }
 
@@ -3268,6 +3290,7 @@ def channel_renderer_metadata(renderer: dict[str, Any]) -> dict[str, str]:
         "channel_thumbnail_url": absolute_url(thumbnail_url),
         "channel_status": "",
         "channel_status_reason": "",
+        "channel_subscribed": "",
         "archivarix_channel_id": "",
     }
 
@@ -3311,11 +3334,15 @@ def extract_channel_search_metadata(
         "channel_thumbnail_url": "",
         "channel_status": "",
         "channel_status_reason": "",
+        "channel_subscribed": "",
         "archivarix_channel_id": "",
     }
 
 
 def merge_channel_metadata(primary: dict[str, str], fallback: dict[str, str]) -> dict[str, str]:
+    subscribed = primary.get("channel_subscribed", "")
+    if subscribed not in {"0", "1"}:
+        subscribed = fallback.get("channel_subscribed", "")
     return {
         "channel_id": primary.get("channel_id", "") or fallback.get("channel_id", ""),
         "channel": primary.get("channel", "") or fallback.get("channel", ""),
@@ -3325,6 +3352,7 @@ def merge_channel_metadata(primary: dict[str, str], fallback: dict[str, str]) ->
         "channel_thumbnail_url": primary.get("channel_thumbnail_url", "") or fallback.get("channel_thumbnail_url", ""),
         "channel_status": primary.get("channel_status", "") or fallback.get("channel_status", ""),
         "channel_status_reason": primary.get("channel_status_reason", "") or fallback.get("channel_status_reason", ""),
+        "channel_subscribed": subscribed if subscribed in {"0", "1"} else "",
         "archivarix_channel_id": primary.get("archivarix_channel_id", "") or fallback.get("archivarix_channel_id", ""),
     }
 
@@ -3341,6 +3369,7 @@ def archivarix_channel_metadata(fields: dict[str, Any], channel_id: str) -> dict
         "channel_thumbnail_url": absolute_url(str(fields.get("channelThumbnailUrl") or "")),
         "channel_status": status,
         "channel_status_reason": status_reason,
+        "channel_subscribed": "",
         "archivarix_channel_id": str(fields.get("archivarixChannelId") or "").strip(),
     }
 
@@ -3355,9 +3384,12 @@ def fetch_channel_metadata(
 ) -> dict[str, str]:
     channel_url = youtube_channel_url(channel_id)
     page = request_text(opener, channel_url)
-    if require_authenticated and not youtube_page_is_authenticated(page):
+    authenticated = youtube_page_is_authenticated(page)
+    if require_authenticated and not authenticated:
         raise youtube_authentication_error(page, "channel page")
     metadata = extract_channel_page_metadata(page, channel_id)
+    if not authenticated:
+        metadata["channel_subscribed"] = ""
     if not (metadata.get("channel") and metadata.get("channel_thumbnail_url")):
         search_terms = [
             term.strip()
@@ -3678,7 +3710,7 @@ def store_channel_metadata(
     updated_at: str | None = None,
 ) -> str:
     now = updated_at or utc_now()
-    return upsert_channel(
+    channel_id = upsert_channel(
         conn,
         metadata.get("channel_id", ""),
         title=metadata.get("channel", ""),
@@ -3696,6 +3728,13 @@ def store_channel_metadata(
         source="metadata",
         updated_at=now,
     )
+    subscribed = str(metadata.get("channel_subscribed") or "").strip()
+    if channel_id and subscribed in {"0", "1"}:
+        conn.execute(
+            "UPDATE channels SET subscribed = ? WHERE channel_id = ?",
+            (int(subscribed), channel_id),
+        )
+    return channel_id
 
 
 def video_metadata_channel_id(metadata: dict[str, str]) -> str:
