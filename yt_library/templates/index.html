@@ -110,6 +110,8 @@
     }
     .video-filter-groups { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; min-width: 0; }
     .video-filter-search, .video-filter-facet { display: contents; }
+    .video-removed-filter { display: inline-flex; align-items: center; margin-left: auto; white-space: nowrap; }
+    .video-filter-separator { color: var(--muted); margin-left: 8px; }
     .view-top.video-collection-top .view-sort { grid-column: 2; margin-left: 0; white-space: nowrap; }
     @media (min-width: 761px) {
       .video-filter-groups.has-search {
@@ -872,7 +874,10 @@
       };
       const group = groups[groupName];
       if (!group) return false;
-      for (const key of Object.keys(group)) group[key] = checked;
+      const excludedKeys = groupName === 'playlist-videos' ? new Set(['removed']) : new Set();
+      for (const key of Object.keys(group)) {
+        if (!excludedKeys.has(key)) group[key] = checked;
+      }
       for (const input of meta.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)) {
         input.checked = checked;
       }
@@ -1628,6 +1633,12 @@
       { key: 'unknown', label: 'unknown' },
       { key: 'removed', label: 'removed', className: 'badge' },
     ];
+    const playlistVideoAvailabilityFilterDefinitions = videoMetaFilterDefinitions.filter(
+      ({ key }) => key !== 'removed'
+    );
+    const playlistVideoRemovedFilterDefinitions = videoMetaFilterDefinitions.filter(
+      ({ key }) => key === 'removed'
+    );
     const reactionMetaFilterDefinitions = [
       { key: 'none', label: 'no reaction' },
       { key: 'liked', label: 'liked', decoratorHtml: thumbIconHtml('like', false) },
@@ -1695,13 +1706,19 @@
       `;
     }
 
-    function videoStatusFiltersHtml({ groupName, filterAttribute, visibility, counts }) {
+    function videoStatusFiltersHtml({
+      groupName,
+      filterAttribute,
+      visibility,
+      counts,
+      definitions = videoMetaFilterDefinitions,
+    }) {
       return metaFilterControlsHtml({
         groupName,
         filterAttribute,
         visibility,
         counts,
-        definitions: videoMetaFilterDefinitions,
+        definitions,
       });
     }
 
@@ -1715,7 +1732,19 @@
               filterAttribute: 'playlist-filter',
               visibility: playlistVisibility,
               counts,
+              definitions: playlistVideoAvailabilityFilterDefinitions,
             })}
+            <span class="video-removed-filter">
+              <span class="video-filter-separator" aria-hidden="true">|</span>
+              ${metaFilterControlsHtml({
+                groupName: 'playlist-removed',
+                filterAttribute: 'playlist-filter',
+                visibility: playlistVisibility,
+                counts,
+                definitions: playlistVideoRemovedFilterDefinitions,
+                showAll: false,
+              })}
+            </span>
           </span>
           <span class="video-filter-facet video-filter-completion">
             ${metaFilterControlsHtml({

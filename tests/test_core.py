@@ -4244,6 +4244,22 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn(
+            '<span class="video-filter-separator" aria-hidden="true">|</span>',
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "definitions: playlistVideoAvailabilityFilterDefinitions",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "groupName: 'playlist-removed'",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "groupName === 'playlist-videos' ? new Set(['removed']) : new Set()",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
             '<span class="video-filter-facet video-filter-completion">',
             server.INDEX_HTML,
         )
