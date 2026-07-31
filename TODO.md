@@ -105,6 +105,14 @@ History and channel history must remain specialized because they display watch o
 
 Implement this as a shared saved-view/search specification with optional specialized chrome, not as hard-coded mutations of the current global search controls. This creates a path toward user-defined saved searches while retaining dedicated controllers where the data semantics require them.
 
+## Planned Features
+
+- Add configurable scheduled Fetch History runs, with clear last-run, next-run, and failure status.
+- Make parent-child relationships in hierarchical filters more visually obvious, including enabled, disabled, selected, and partially selected states.
+- Add a master Fetch All action that queues the appropriate fetch operations and requires an explicit warning/confirmation before starting.
+- Begin publishing versioned releases through GitHub with a defined versioning and release process.
+- Maintain a changelog for each released version that summarizes user-facing changes, fixes, schema impact, and operational notes.
+
 ## Deferred Decisions
 
 - PocketTube import is deferred and is not a current configuration concern. Revisit group ingestion as a new design rather than restoring the removed config directive.
