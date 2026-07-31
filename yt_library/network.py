@@ -194,7 +194,7 @@ def _load_socks_module() -> Any:
     try:
         return importlib.import_module("socks")
     except ImportError as exc:
-        raise RuntimeError(
+        raise ProxyUnavailableError(
             "SOCKS5 proxy support requires PySocks; run: python -m pip install -r requirements.txt"
         ) from exc
 

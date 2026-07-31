@@ -265,6 +265,16 @@ class CoreHelperTests(unittest.TestCase):
         self.assertNotIn("secret-user", message)
         self.assertNotIn("secret-pass", message)
 
+    def test_missing_pysocks_is_a_proxy_outage(self) -> None:
+        with patch(
+            "yt_library.network.importlib.import_module",
+            side_effect=ImportError("No module named 'socks'"),
+        ):
+            with self.assertRaises(network.ProxyUnavailableError) as raised:
+                network.socks5_proxy_handlers("socks5h://127.0.0.1:1081")
+
+        self.assertIn("requires PySocks", str(raised.exception))
+
     def test_metadata_worker_passes_proxy_to_poll_run(self) -> None:
         entered = threading.Event()
         release = threading.Event()
@@ -5432,6 +5442,74 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(run["status"], "blocked")
                 self.assertEqual(run["processed"], 0)
                 self.assertIn("Metadata worker paused", run["message"])
+                queue_log = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM metadata_worker_log
+                    WHERE level = 'queue error'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                self.assertEqual(queue_log["level"], "queue error")
+                self.assertIn("Worker queue paused", queue_log["message"])
+                self.assertIn("pending items were retained", queue_log["message"])
+            finally:
+                conn.close()
+
+    def test_missing_pysocks_stops_dispatch_and_retains_pending_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="missingSocks1",
+                        current_title="Missing SOCKS dependency",
+                        metadata_source="history",
+                        priority=0,
+                    )
+            finally:
+                conn.close()
+
+            dispatcher = WorkerQueueDispatcher()
+            with patch(
+                "yt_library.network.importlib.import_module",
+                side_effect=ImportError("No module named 'socks'"),
+            ):
+                dispatcher._run(
+                    db_path,
+                    Path(temp_dir) / "missing-youtube-cookies.txt",
+                    Path(temp_dir) / "video-thumbs",
+                    "UTC",
+                    Path(temp_dir) / "archivarix-cookies.txt",
+                    Path(temp_dir) / "archivarix-thumbs",
+                    15.0,
+                    30.0,
+                    3,
+                    0.0,
+                    "socks5h://127.0.0.1:1081",
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 1)
+                block = core.external_service_block(conn, "proxy")
+                self.assertTrue(block["blocked"])
+                self.assertEqual(block["reason_code"], "proxy_unavailable")
+                self.assertIn("requires PySocks", block["message"])
+                run = conn.execute(
+                    """
+                    SELECT status, processed, message
+                    FROM metadata_worker_runs
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                self.assertEqual(run["status"], "blocked")
+                self.assertEqual(run["processed"], 0)
+                self.assertIn("requires PySocks", run["message"])
                 queue_log = conn.execute(
                     """
                     SELECT level, message
