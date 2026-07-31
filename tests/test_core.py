@@ -4738,6 +4738,11 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("function animateProgressDots(update)", server.INDEX_HTML)
         self.assertIn("function showSearchMetaProgress(groupName)", server.INDEX_HTML)
         self.assertIn(
+            "pendingSearchMetaGroups.add(progressGroup);\n"
+            "      showSearchHeaderProgress();",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
             "const progressGroup = searchKindForFacet(groupName);",
             server.INDEX_HTML,
         )
@@ -4834,6 +4839,10 @@ class AdminServerTests(unittest.TestCase):
         )
         self.assertIn("function progressMessageAnimation(container, labelText)", server.INDEX_HTML)
         self.assertIn("function showSearchHeaderProgress()", server.INDEX_HTML)
+        self.assertIn(
+            "progressMessageAnimation(searchProgressStatus, 'Loading')",
+            server.INDEX_HTML,
+        )
         self.assertIn("loadData({ preserveSearchContent })", server.INDEX_HTML)
         self.assertIn("}).finally(stopSearchHeaderProgress);", server.INDEX_HTML)
         self.assertIn("await render();", server.INDEX_HTML)
@@ -4853,6 +4862,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("showSearchMetaProgress(groupName);", server.INDEX_HTML)
         self.assertIn(
             "if (selected !== '__search__') {\n"
+            "        searchResultsRendered = false;\n"
             "        stopSearchMetaProgress();\n"
             "        stopSearchHeaderProgress();\n"
             "      }",
@@ -4888,13 +4898,15 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("let videoMetaCountsCache = new Map();", server.INDEX_HTML)
         self.assertIn("let omniMetaCountsCache = new Map();", server.INDEX_HTML)
         self.assertIn("let renderedOmniSearchQuery = '';", server.INDEX_HTML)
+        self.assertIn("let searchResultsRendered = false;", server.INDEX_HTML)
         self.assertIn("let searchResultsSort = 'newest';", server.INDEX_HTML)
         self.assertIn("function defaultSearchResultsSort(query = search.value.trim())", server.INDEX_HTML)
         self.assertIn("searchSortExplicit = params.has('sort');", server.INDEX_HTML)
         self.assertIn("return '__search__';", server.INDEX_HTML)
         self.assertNotIn("Enter a search query.", server.INDEX_HTML)
+        self.assertNotIn("Search results", server.INDEX_HTML)
         self.assertIn(
-            "title.textContent = 'Search results';\n"
+            "title.textContent = '';\n"
             "          meta.textContent = '';\n"
             "          renderSearchMetaFilters();\n"
             "          showSearchHeaderProgress();\n"
@@ -4902,6 +4914,11 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn("showSearchProgress({ preserveContent: true });", server.INDEX_HTML)
+        self.assertIn(
+            "renderedOmniSearchQuery === query\n"
+            "          && searchResultsRendered",
+            server.INDEX_HTML,
+        )
         self.assertNotIn("progressMessageAnimation(empty, 'Searching')", server.INDEX_HTML)
         self.assertIn("grid.setAttribute('aria-busy', 'true');", server.INDEX_HTML)
         self.assertIn(

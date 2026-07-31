@@ -432,6 +432,7 @@
     let channelDetailTab = 'playlists';
     let renderGeneration = 0;
     let renderedOmniSearchQuery = '';
+    let searchResultsRendered = false;
     let searchMetaProgressTimer = null;
     let searchHeaderProgressTimer = null;
     let pendingSearchMetaGroups = new Set();
@@ -463,7 +464,10 @@
       historyPageState = { key: '', loading: false, data: null };
       historyActivityState = { key: '', loading: false, data: null };
       omniSearchState = { key: '', data: null, promise: null };
-      if (!preserveSearchContent) renderedOmniSearchQuery = '';
+      if (!preserveSearchContent) {
+        renderedOmniSearchQuery = '';
+        searchResultsRendered = false;
+      }
       viewDataCache = new Map();
       videoMetaCountsCache = new Map();
       videoCompletionCountsCache = new Map();
@@ -1324,6 +1328,7 @@
     function showSearchMetaProgress(groupName) {
       const progressGroup = searchKindForFacet(groupName);
       pendingSearchMetaGroups.add(progressGroup);
+      showSearchHeaderProgress();
       if (searchMetaProgressTimer === null) {
         searchMetaProgressTimer = animateProgressDots(updateSearchMetaProgress);
       } else {
@@ -1345,7 +1350,7 @@
       stopSearchHeaderProgress();
       searchProgressStatus.hidden = false;
       searchProgressStatus.setAttribute('aria-busy', 'true');
-      searchHeaderProgressTimer = progressMessageAnimation(searchProgressStatus, 'Searching');
+      searchHeaderProgressTimer = progressMessageAnimation(searchProgressStatus, 'Loading');
     }
 
     function showSearchProgress({ preserveContent = false } = {}) {
@@ -2340,6 +2345,7 @@
     async function render() {
       const generation = ++renderGeneration;
       if (selected !== '__search__') {
+        searchResultsRendered = false;
         stopSearchMetaProgress();
         stopSearchHeaderProgress();
       }
@@ -2473,12 +2479,12 @@
       if (selected === '__search__') {
         const preserveSearchContent = (
           renderedOmniSearchQuery === query
-          && title.textContent === 'Search results'
+          && searchResultsRendered
         );
         if (preserveSearchContent) {
           showSearchProgress({ preserveContent: true });
         } else {
-          title.textContent = 'Search results';
+          title.textContent = '';
           meta.textContent = '';
           renderSearchMetaFilters();
           showSearchHeaderProgress();
@@ -2494,6 +2500,7 @@
           stopSearchMetaProgress();
           stopSearchHeaderProgress();
           stopSearchProgress();
+          searchResultsRendered = false;
           title.textContent = 'Search unavailable';
           empty.hidden = false;
           empty.textContent = error.message;
@@ -2508,7 +2515,8 @@
         const remoteLimit = Number(payload.limit || pageSizeNumber() || 100);
         currentPage = Math.floor(Number(payload.offset || 0) / remoteLimit) + 1;
         renderedOmniSearchQuery = query;
-        title.textContent = 'Search results';
+        searchResultsRendered = true;
+        title.textContent = '';
         meta.innerHTML = `
           <div class="search-result-meta">
             <div class="search-result-summary">
@@ -3199,7 +3207,7 @@
     refresh.addEventListener('click', () => {
       const preserveSearchContent = (
         selected === '__search__'
-        && title.textContent === 'Search results'
+        && searchResultsRendered
         && renderedOmniSearchQuery === search.value.trim().toLowerCase()
       );
       if (preserveSearchContent) showSearchHeaderProgress();
