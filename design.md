@@ -44,7 +44,7 @@ Source parsers provide evidence for one best-known current state:
 - The newest Takeout export: current playlist membership, subscriptions, exact history timestamps, and recovery input.
 - YouTube's Liked videos system playlist: current per-video like state.
 - Archivarix: recovery evidence for deleted or memory-holed videos, including thumbnails, titles, descriptions, channel evidence, archive links, and not-found/deleted status.
-- YouTube watch/channel pages and exact-ID search result cards: enriched video/channel metadata, thumbnails, channel avatars, and watch progress.
+- YouTube watch and channel pages: enriched video/channel metadata, thumbnails, channel avatars, and watch progress when the direct page exposes it.
 
 Each source has different reliability. Takeout is best for exact watch timestamps, current YouTube scans are best for present playlist and metadata state, and Archivarix is best-effort recovery evidence. Source fields are consumed during import instead of being retained as parallel metadata histories.
 
@@ -72,7 +72,7 @@ Unknown playlist slots use `NULL` video IDs and structured unavailable state. St
 
 Long-running and rate-sensitive tasks run as in-process background workers with persistent queue rows, run records, and logs. The unified dispatcher selects the next eligible `worker_queue` row by priority before each launch:
 
-- Metadata tasks fetch channel pages directly when keyed by channel and watch pages/search cards when keyed by video. Each authenticated request verifies that YouTube still accepts the configured cookie; authentication failure stops further YouTube dispatch.
+- Metadata tasks fetch channel pages directly when keyed by channel and watch pages directly when keyed by video. They never use YouTube's search interface as a metadata fallback. Each authenticated request verifies that YouTube still accepts the configured cookie; authentication failure stops further YouTube dispatch.
 - Playlist tasks scan playlists with yt-dlp first and fall back to the web parser when needed. They record reported, exposed, and unavailable counts without replacing a fuller scan with a short result.
 - Placeholder tasks query Archivarix for deleted/private/unavailable video IDs, persist each recovery attempt and its run-linked logs, and preserve rate-limited tasks for a later retry.
 - History tasks support recent fetch and full verification modes, fetching YouTube history in batches and reconciling after each batch.
@@ -133,7 +133,7 @@ Known extraction shapes:
    - New lockup renderer: `thumbnailOverlayProgressBarViewModel.startPercent`
    - Resume candidates: `watchEndpoint.startTimeSeconds`
 
-The watch page may not expose the thumbnail progress overlay for the current video, so metadata fetch can fall back to an exact video-ID search result card. Playlist and history cards render progress as a thin red thumbnail bar plus a `Watched N%` line.
+The watch page may not expose the thumbnail progress overlay for the current video. Metadata refresh leaves progress unknown in that case rather than searching YouTube; playlist and history cards remain the account-specific progress sources and render progress as a thin red thumbnail bar plus a `Watched N%` line.
 
 Open question: `startTimeSeconds` may be useful, but it did not match the observed progress percentage in the first test case. Continue treating percentage as the authoritative UI signal until more examples clarify the resume semantics.
 

@@ -3454,78 +3454,6 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
     }
 
 
-def normalized_channel_match(value: str) -> str:
-    value = re.sub(r"\s+", " ", (value or "").strip()).lower()
-    return value.removeprefix("@")
-
-
-def channel_renderer_metadata(renderer: dict[str, Any]) -> dict[str, str]:
-    endpoint = renderer.get("navigationEndpoint")
-    channel_url = endpoint_channel_url(endpoint) if isinstance(endpoint, dict) else ""
-    thumbnail = renderer.get("thumbnail")
-    thumbnail_url = ""
-    if isinstance(thumbnail, dict):
-        thumbnail_url = pick_thumbnail(thumbnail.get("thumbnails", []))
-    return {
-        "channel_id": str(renderer.get("channelId") or "").strip(),
-        "channel": text_from_runs(renderer.get("title")).strip(),
-        "channel_url": channel_url,
-        "channel_description": text_from_runs(renderer.get("description")).strip(),
-        "channel_aliases": extract_channel_handle_aliases(renderer),
-        "channel_thumbnail_url": absolute_url(thumbnail_url),
-        "channel_status": "",
-        "channel_status_reason": "",
-        "channel_subscribed": "",
-        "channel_notification_level": "",
-        "archivarix_channel_id": "",
-    }
-
-
-def extract_channel_search_metadata(
-    html_text: str,
-    channel_id: str,
-    fallback_query: str = "",
-) -> dict[str, str]:
-    initial_data = extract_json_assignment(html_text, "ytInitialData")
-    fallback_key = normalized_channel_match(fallback_query)
-    title_matches: list[dict[str, str]] = []
-    handle_matches: list[dict[str, str]] = []
-    for node in walk(initial_data):
-        if not isinstance(node, dict):
-            continue
-        renderer = node.get("channelRenderer")
-        if not isinstance(renderer, dict):
-            continue
-        metadata = channel_renderer_metadata(renderer)
-        found_channel_id = metadata.get("channel_id", "")
-        if channel_id and found_channel_id == channel_id:
-            return metadata
-        if fallback_key:
-            title_key = normalized_channel_match(metadata.get("channel", ""))
-            url_key = normalized_channel_match(metadata.get("channel_url", "").rstrip("/").rsplit("/", 1)[-1])
-            if title_key == fallback_key:
-                title_matches.append(metadata)
-            if url_key == fallback_key:
-                handle_matches.append(metadata)
-    if len(handle_matches) == 1:
-        return handle_matches[0]
-    if len(title_matches) == 1:
-        return title_matches[0]
-    return {
-        "channel_id": channel_id,
-        "channel": "",
-        "channel_url": youtube_channel_url(channel_id),
-        "channel_description": "",
-        "channel_aliases": "",
-        "channel_thumbnail_url": "",
-        "channel_status": "",
-        "channel_status_reason": "",
-        "channel_subscribed": "",
-        "channel_notification_level": "",
-        "archivarix_channel_id": "",
-    }
-
-
 def merge_channel_metadata(primary: dict[str, str], fallback: dict[str, str]) -> dict[str, str]:
     subscribed = primary.get("channel_subscribed", "")
     if subscribed not in {"0", "1"}:
@@ -3574,7 +3502,6 @@ def fetch_channel_metadata(
     opener: urllib.request.OpenerDirector,
     channel_id: str,
     thumb_dir: Path,
-    fallback_query: str = "",
     require_authenticated: bool = False,
     proxy_url: str = "",
 ) -> dict[str, str]:
@@ -3587,26 +3514,6 @@ def fetch_channel_metadata(
     if not authenticated:
         metadata["channel_subscribed"] = ""
         metadata["channel_notification_level"] = ""
-    if not (metadata.get("channel") and metadata.get("channel_thumbnail_url")):
-        search_terms = [
-            term.strip()
-            for term in (fallback_query, channel_id)
-            if term and term.strip()
-        ]
-        seen_terms: set[str] = set()
-        for term in search_terms:
-            term_key = term.lower()
-            if term_key in seen_terms:
-                continue
-            seen_terms.add(term_key)
-            search_url = "https://www.youtube.com/results?" + urllib.parse.urlencode({"search_query": term})
-            search_page = request_text(opener, search_url)
-            if require_authenticated and not youtube_page_is_authenticated(search_page):
-                raise youtube_authentication_error(search_page, "channel search")
-            search_metadata = extract_channel_search_metadata(search_page, channel_id, fallback_query or term)
-            metadata = merge_channel_metadata(metadata, search_metadata)
-            if metadata.get("channel") and metadata.get("channel_thumbnail_url"):
-                break
     if (
         metadata.get("channel_status") == "terminated"
         or not (metadata.get("channel") and metadata.get("channel_thumbnail_url"))
@@ -3996,7 +3903,6 @@ def fetch_new_channel_metadata_if_needed(
             opener,
             channel_id,
             thumb_dir,
-            fallback_query=video_metadata.get("channel", ""),
             require_authenticated=require_authenticated,
             proxy_url=proxy_url,
         )
@@ -4038,7 +3944,6 @@ def fetch_provided_metadata(
             opener,
             subject_id,
             thumb_dir,
-            fallback_query=target,
             proxy_url=proxy_url,
         )
         status = "ok" if (

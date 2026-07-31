@@ -372,7 +372,6 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                             opener,
                             queued_channel_id,
                             thumb_dir,
-                            fallback_query=queued_channel_title,
                             require_authenticated=cookie_file.exists(),
                             proxy_url=proxy_url,
                         )

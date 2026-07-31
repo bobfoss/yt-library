@@ -1339,6 +1339,25 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(authenticated["channel_subscribed"], "1")
         self.assertEqual(authenticated["channel_notification_level"], "all")
 
+    def test_channel_metadata_fetch_uses_only_the_direct_channel_page(self) -> None:
+        opener = Mock()
+        channel_id = "UCchannel12345678901234"
+        page = "<script>var ytInitialData = {};</script>"
+        with (
+            patch.object(core, "request_text", return_value=page) as request_text,
+            patch.object(core, "youtube_page_is_authenticated", return_value=True),
+            patch.object(core, "load_cookie_opener", return_value=Mock()),
+            patch.object(core, "archivarix_lookup_channel", return_value={}),
+            patch.object(core, "cache_channel_thumbnail", return_value=""),
+        ):
+            metadata = core.fetch_channel_metadata(opener, channel_id, Path("thumbs"))
+
+        request_text.assert_called_once_with(
+            opener,
+            f"https://www.youtube.com/channel/{channel_id}",
+        )
+        self.assertEqual(metadata["channel_id"], channel_id)
+
     def test_channel_notification_level_preserves_unknown_and_clears_unsubscribed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
