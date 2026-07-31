@@ -298,6 +298,7 @@ def library_bootstrap_data(conn: sqlite3.Connection) -> dict[str, Any]:
         conn.execute(
             """
             SELECT
+              (SELECT COUNT(*) FROM videos) AS videos,
               (SELECT COUNT(*) FROM playlists) AS playlists,
               (SELECT COUNT(*) FROM playlists p
                  JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
@@ -1216,6 +1217,10 @@ def omni_search_data(
     query: str,
     *,
     search_fields: set[str] | None = None,
+    result_kinds: set[str] | None = None,
+    playlist_group_key: str = "",
+    video_source: str = "",
+    channel_source: str = "",
     video_meta_filters: set[str] | None = None,
     video_reaction_filters: set[str] | None = None,
     video_completion_filters: set[str] | None = None,
@@ -1229,6 +1234,14 @@ def omni_search_data(
     display_timezone: str = "UTC",
 ) -> dict[str, Any]:
     query = query.strip()
+    active_result_kinds = (
+        set(OMNI_SEARCH_KIND_ORDER)
+        if result_kinds is None
+        else set(result_kinds) & set(OMNI_SEARCH_KIND_ORDER)
+    )
+    playlist_group_key = playlist_group_key.strip()
+    video_source = video_source if video_source in {"playlist_member", "liked"} else ""
+    channel_source = channel_source if channel_source in {"subscribed", "terminated"} else ""
     active_search_fields = set(
         search_fields if search_fields is not None else OMNI_SEARCH_FIELDS
     ) & OMNI_SEARCH_FIELDS
@@ -1237,12 +1250,17 @@ def omni_search_data(
     limit = max(1, min(int(limit), 5000))
     offset = max(0, int(offset))
     pattern = _omni_like_pattern(query) if query else "%"
-    params = {"pattern": pattern}
+    params = {
+        "pattern": pattern,
+        "playlist_group_key": playlist_group_key,
+        "video_source": video_source,
+        "channel_source": channel_source,
+    }
     search_titles = "titles" in active_search_fields
     search_descriptions = "descriptions" in active_search_fields
     results: list[dict[str, Any]] = []
 
-    if not query or search_titles or search_descriptions:
+    if "playlist" in active_result_kinds and (not query or search_titles or search_descriptions):
         playlist_title_match = """
             lower(
               p.title || ' ' || COALESCE(owner.title, '') || ' ' ||
@@ -1281,7 +1299,23 @@ def omni_search_data(
               JOIN videos v ON v.video_id = pi.video_id
               GROUP BY pi.playlist_id
             ) playlist_dates ON playlist_dates.playlist_id = p.playlist_id
-            WHERE {' OR '.join(f'({match})' for match in playlist_matches)}
+            WHERE ({' OR '.join(f'({match})' for match in playlist_matches)})
+              AND (
+                :playlist_group_key = ''
+                OR EXISTS (
+                  SELECT 1
+                  FROM group_playlists gp
+                  WHERE gp.playlist_id = p.playlist_id
+                    AND (
+                      gp.group_key = :playlist_group_key
+                      OR gp.group_key IN (
+                        SELECT group_key
+                        FROM groups
+                        WHERE parent_key = :playlist_group_key
+                      )
+                    )
+                )
+              )
             """,
             params,
         ):
@@ -1291,7 +1325,7 @@ def omni_search_data(
             item["owner_channel_url"] = youtube_channel_url(item.get("owner_channel_id") or "")
             results.append(_omni_result("playlist", 2 if title_hit else 5, item, matched_description=not title_hit))
 
-    if not query or search_titles or search_descriptions:
+    if "channel" in active_result_kinds and (not query or search_titles or search_descriptions):
         channel_title_match = """
             lower(
               ch.title || ' ' || ch.channel_id || ' ' || ch.aliases || ' ' ||
@@ -1313,7 +1347,15 @@ def omni_search_data(
             SELECT ch.*,
                    CASE WHEN {channel_title_hit} THEN 1 ELSE 0 END AS title_hit
             FROM channels ch
-            WHERE {' OR '.join(f'({match})' for match in channel_matches)}
+            WHERE ({' OR '.join(f'({match})' for match in channel_matches)})
+              AND (
+                :channel_source = ''
+                OR (:channel_source = 'subscribed' AND ch.subscribed = 1)
+                OR (
+                  :channel_source = 'terminated'
+                  AND lower(COALESCE(ch.status, '')) IN ('terminated', 'deleted')
+                )
+              )
             """,
             params,
         ):
@@ -1322,7 +1364,7 @@ def omni_search_data(
             item["url"] = youtube_channel_url(item.get("channel_id") or "")
             results.append(_omni_result("channel", 1 if title_hit else 4, item, matched_description=not title_hit))
 
-    if not query or search_titles or search_descriptions:
+    if "video" in active_result_kinds and (not query or search_titles or search_descriptions):
         video_title_match = """
             (
               lower(
@@ -1359,7 +1401,19 @@ def omni_search_data(
               FROM videos v
               LEFT JOIN channels ch ON ch.channel_id = v.channel_id
               LEFT JOIN video_recovery vr ON vr.video_id = v.video_id
-              WHERE {' OR '.join(f'({match})' for match in video_matches)}
+              WHERE ({' OR '.join(f'({match})' for match in video_matches)})
+                AND (
+                  :video_source = ''
+                  OR (:video_source = 'liked' AND upper(COALESCE(v.reaction, '')) = 'L')
+                  OR (
+                    :video_source = 'playlist_member'
+                    AND EXISTS (
+                      SELECT 1
+                      FROM playlist_items source_pi
+                      WHERE source_pi.video_id = v.video_id
+                    )
+                  )
+                )
             ),
             playlist_stats AS (
               SELECT pi.video_id,
@@ -1428,7 +1482,11 @@ def omni_search_data(
                 )
             )
 
-    if not query or search_titles:
+    if (
+        "video" in active_result_kinds
+        and video_source != "liked"
+        and (not query or search_titles)
+    ):
         for row in conn.execute(
             """
             SELECT pi.playlist_id,
@@ -1567,6 +1625,10 @@ def omni_search_data(
     return {
         "query": query,
         "searchFields": sorted(active_search_fields),
+        "resultKinds": sorted(active_result_kinds),
+        "playlistGroupKey": playlist_group_key,
+        "videoSource": video_source,
+        "channelSource": channel_source,
         "sort": sort,
         "limit": limit,
         "offset": offset,

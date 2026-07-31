@@ -82,6 +82,12 @@
     .meta-filter-decorated .reaction-icon { width: 14px; height: 14px; flex: 0 0 14px; }
     .search-result-meta { display: grid; gap: 8px; justify-items: end; }
     .search-result-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+    .result-view-controls { display: inline-flex; align-items: center; gap: 8px; }
+    .card-layout-control { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+    .card-layout-button { width: 32px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-right: 1px solid var(--line); padding: 0; background: var(--panel); color: var(--muted); cursor: pointer; }
+    .card-layout-button:last-child { border-right: 0; }
+    .card-layout-button:hover, .card-layout-button.active { background: var(--accent-soft); color: var(--ink); }
+    .card-layout-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; }
     .search-for-title { margin-top: 5px; }
     .search-meta-groups { display: grid; gap: 10px; }
     .search-meta-kind { display: grid; gap: 5px; }
@@ -167,6 +173,34 @@
     .view-top.history-top .view-context { grid-column: 2; grid-row: 1; margin-bottom: 0; }
     .results-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+    .search-grid.layout-detailed,
+    .search-grid.layout-compact { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    .search-grid.layout-detailed .card,
+    .search-grid.layout-compact .card { display: grid; align-items: stretch; }
+    .search-grid.layout-detailed .card { grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); }
+    .search-grid.layout-compact .card { grid-template-columns: 120px minmax(0, 1fr); }
+    .search-grid.layout-detailed .card > .thumb-wrap,
+    .search-grid.layout-detailed .card > .thumb-link,
+    .search-grid.layout-detailed .card > .thumb,
+    .search-grid.layout-compact .card > .thumb-wrap,
+    .search-grid.layout-compact .card > .thumb-link,
+    .search-grid.layout-compact .card > .thumb { grid-column: 1; grid-row: 1; height: 100%; min-height: 0; }
+    .search-grid.layout-detailed .card > .thumb-link .thumb,
+    .search-grid.layout-compact .card > .thumb-link .thumb,
+    .search-grid.layout-detailed .card > .thumb-wrap .thumb,
+    .search-grid.layout-compact .card > .thumb-wrap .thumb,
+    .search-grid.layout-detailed .card > .thumb,
+    .search-grid.layout-compact .card > .thumb { height: 100%; aspect-ratio: auto; object-fit: cover; }
+    .search-grid.layout-detailed .card > .body,
+    .search-grid.layout-compact .card > .body { grid-column: 2; grid-row: 1; }
+    .search-grid.layout-detailed .card > .body:first-child,
+    .search-grid.layout-compact .card > .body:first-child { grid-column: 1 / -1; }
+    .search-grid.layout-compact .body { padding: 8px 10px; }
+    .search-grid.layout-compact .description,
+    .search-grid.layout-compact .watch-sparkline,
+    .search-grid.layout-compact .reaction-line,
+    .search-grid.layout-compact .playlist-sources { display: none; }
+    .search-grid.layout-compact .details { margin-top: 4px; }
     .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; min-width: 0; }
     .thumb-link { display: block; }
     .thumb-wrap { position: relative; display: block; background: linear-gradient(135deg, #24424a, #d98948); }
@@ -299,6 +333,7 @@
       .toolbar { display: block; }
       .search-result-meta { justify-items: start; }
       .search-result-summary { justify-content: flex-start; }
+      .result-view-controls { flex-wrap: wrap; }
       .view-top.video-collection-top .toolbar > .details { flex-wrap: wrap; justify-content: flex-start; }
       .view-top.video-collection-top #view-meta { display: flex; flex-wrap: wrap; gap: 8px; }
       .view-top.video-collection-top .view-sort { margin-left: 0; }
@@ -308,6 +343,8 @@
       .title { font-size: 24px; margin-bottom: 6px; }
       .video-detail .detail-layout { grid-template-columns: 1fr; }
       .channel-detail .detail-layout { grid-template-columns: 1fr; }
+      .search-grid.layout-detailed .card { grid-template-columns: 132px minmax(0, 1fr); }
+      .search-grid.layout-compact .card { grid-template-columns: 96px minmax(0, 1fr); }
     }
   </style>
 </head>
@@ -373,8 +410,6 @@
     let selected = '';
     let playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
     let playlistCompletionVisibility = { complete: true, partial: true, unknown: true, never_watched: true };
-    let playlistListVisibility = { private: true, public: true, unlisted: true, others: true, unknown: true, removed: true };
-    let channelVisibility = { subscribed: true, non_subscribed: true, terminated: true };
     const defaultSearchMetaVisibility = {
       videos: { public: true, unlisted: true, members_only: true, unavailable: false, unknown: true },
       reactions: { none: true, liked: true, disliked: true },
@@ -406,13 +441,22 @@
     ];
     let searchResultsSort = 'newest';
     let searchSortExplicit = false;
+    let activeSearchPreset = '';
+    let searchPlaylistGroupKey = '';
+    let searchCardLayout = 'grid';
+    const searchCardLayouts = new Set(['grid', 'detailed', 'compact']);
+    const searchPresetDefinitions = {
+      videos: { kind: 'videos', sort: 'newest' },
+      'playlist-videos': { kind: 'videos', sort: 'newest' },
+      'liked-videos': { kind: 'videos', sort: 'newest' },
+      'all-playlists': { kind: 'playlists', sort: 'title' },
+      channels: { kind: 'channels', sort: 'title' },
+      'subscribed-channels': { kind: 'channels', sort: 'title' },
+      'terminated-channels': { kind: 'channels', sort: 'title' },
+      'playlist-group': { kind: 'playlists', sort: 'title' },
+    };
     let playlistVisibilityPlaylistId = '';
-    let allVideosSort = 'newest_added';
-    let likedVideosVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true };
-    let likedVideosSort = 'newest_added';
     let playlistViewSort = 'playlist_order';
-    let allPlaylistsSort = 'title';
-    let channelViewSort = 'title';
     let playlistPageSearch = '';
     let currentPage = 1;
     let pageSize = '100';
@@ -585,24 +629,14 @@
 
     const viewHashBySelection = new Map([
       ['__search__', 'search'],
-      ['', 'all-playlists'],
-      ['__all_videos__', 'playlist-videos'],
       ['__history__', 'history'],
-      ['__liked__', 'liked-videos'],
-      ['__unavailable_playlists__', 'playlists-with-unavailable'],
-      ['__channels__', 'channels'],
-      ['__subscribed_channels__', 'subscribed-channels'],
-      ['__terminated_channels__', 'terminated-channels'],
     ]);
     const selectionByViewHash = new Map([...viewHashBySelection].map(([selection, hash]) => [hash, selection]));
-    selectionByViewHash.set('all-videos', '__all_videos__');
 
     function localViewHref(value, includePagination = false) {
       if (value === '__search__') return searchHash();
       const viewHash = viewHashBySelection.get(value);
-      const base = viewHash
-        ? `#view=${viewHash}`
-        : (value ? `#group=${encodeURIComponent(value)}` : '#view=all-playlists');
+      const base = viewHash ? `#view=${viewHash}` : '#search';
       return includePagination ? appendHashParams(base, paginationParams()) : base;
     }
 
@@ -637,8 +671,114 @@
       }
     }
 
-    function defaultSearchResultsSort(query = search.value.trim()) {
-      return query ? 'relevance' : 'newest';
+    function clearSearchMetaVisibility() {
+      for (const visibility of Object.values(searchMetaVisibility)) {
+        for (const key of Object.keys(visibility)) visibility[key] = false;
+      }
+    }
+
+    function enableDefaultSearchKind(kind) {
+      for (const facetKey of searchKindFacetKeys(kind)) {
+        Object.assign(searchMetaVisibility[facetKey], defaultSearchMetaVisibility[facetKey]);
+      }
+    }
+
+    function setSearchFacetSelection(groupName, selectedKeys) {
+      const selected = new Set(selectedKeys);
+      for (const key of Object.keys(searchMetaVisibility[groupName])) {
+        searchMetaVisibility[groupName][key] = selected.has(key);
+      }
+    }
+
+    function applySearchPresetState(preset, groupKey = '') {
+      const definition = searchPresetDefinitions[preset];
+      if (!definition || (preset === 'playlist-group' && !groupKey)) {
+        activeSearchPreset = '';
+        searchPlaylistGroupKey = '';
+        resetSearchMetaVisibility();
+        return;
+      }
+      activeSearchPreset = preset;
+      searchPlaylistGroupKey = preset === 'playlist-group' ? groupKey : '';
+      clearSearchMetaVisibility();
+      enableDefaultSearchKind(definition.kind);
+      if (preset === 'playlist-videos') {
+        setSearchFacetSelection('membership', ['member']);
+      } else if (preset === 'liked-videos') {
+        setSearchFacetSelection('reactions', ['liked']);
+      } else if (preset === 'subscribed-channels') {
+        setSearchFacetSelection('channelSubscription', ['subscribed']);
+      } else if (preset === 'terminated-channels') {
+        setSearchFacetSelection('channelStatus', ['terminated']);
+      }
+    }
+
+    function defaultSearchResultsSort(
+      query = search.value.trim(),
+      preset = activeSearchPreset,
+    ) {
+      if (query) return 'relevance';
+      return searchPresetDefinitions[preset]?.sort || 'newest';
+    }
+
+    function searchKindEnabled(kind) {
+      return searchKindFacetKeys(kind).every(
+        key => Object.values(searchMetaVisibility[key]).some(Boolean)
+      );
+    }
+
+    function selectedSearchKinds() {
+      return ['videos', 'playlists', 'channels'].filter(searchKindEnabled);
+    }
+
+    function selectedSearchResultKinds() {
+      const resultKindByFilterKind = {
+        videos: 'video',
+        playlists: 'playlist',
+        channels: 'channel',
+      };
+      return selectedSearchKinds().map(kind => resultKindByFilterKind[kind]);
+    }
+
+    function activeSearchSourceScopes() {
+      return {
+        video: activeSearchPreset === 'playlist-videos'
+          ? 'playlist_member'
+          : (activeSearchPreset === 'liked-videos' ? 'liked' : ''),
+        channel: activeSearchPreset === 'subscribed-channels'
+          ? 'subscribed'
+          : (activeSearchPreset === 'terminated-channels' ? 'terminated' : ''),
+      };
+    }
+
+    function presetDefiningFiltersMatch() {
+      if (activeSearchPreset === 'playlist-videos') {
+        return searchMetaVisibility.membership.member && !searchMetaVisibility.membership.non_member;
+      }
+      if (activeSearchPreset === 'liked-videos') {
+        return searchMetaVisibility.reactions.liked
+          && !searchMetaVisibility.reactions.none
+          && !searchMetaVisibility.reactions.disliked;
+      }
+      if (activeSearchPreset === 'subscribed-channels') {
+        return searchMetaVisibility.channelSubscription.subscribed
+          && !searchMetaVisibility.channelSubscription.non_subscribed;
+      }
+      if (activeSearchPreset === 'terminated-channels') {
+        return searchMetaVisibility.channelStatus.terminated
+          && !searchMetaVisibility.channelStatus.active;
+      }
+      if (activeSearchPreset === 'playlist-group') return Boolean(searchPlaylistGroupKey);
+      return true;
+    }
+
+    function reconcileSearchPreset() {
+      const definition = searchPresetDefinitions[activeSearchPreset];
+      if (!definition) return;
+      const kinds = selectedSearchKinds();
+      if (kinds.length === 1 && kinds[0] === definition.kind && presetDefiningFiltersMatch()) return;
+      activeSearchPreset = '';
+      searchPlaylistGroupKey = '';
     }
 
     function applyMetaFilterParam(visibility, value, excludedKeys = []) {
@@ -655,6 +795,8 @@
       const params = new URLSearchParams();
       const query = search.value.trim();
       if (query) params.set('q', query);
+      if (activeSearchPreset) params.set('preset', activeSearchPreset);
+      if (searchPlaylistGroupKey) params.set('group', searchPlaylistGroupKey);
       if (activeSearchFields().size !== searchFields.length) {
         params.set('in', searchFieldParamValue() || '__none__');
       }
@@ -671,6 +813,7 @@
       if (searchSortExplicit || searchResultsSort !== defaultSearchResultsSort(query)) {
         params.set('sort', searchResultsSort);
       }
+      if (searchCardLayout !== 'grid') params.set('layout', searchCardLayout);
       if (currentPage > 1) params.set('page', String(currentPage));
       if (pageSize !== '100') params.set('size', pageSize);
       return `#search${params.toString() ? `?${params.toString()}` : ''}`;
@@ -691,7 +834,7 @@
       } else {
         for (const input of searchFields) input.checked = true;
       }
-      resetSearchMetaVisibility();
+      applySearchPresetState(params.get('preset') || '', params.get('group') || '');
       const videoMetaParam = params.get(searchMetaParamNames.videos);
       const compatibleVideoMetaParam = videoMetaParam === null
         ? null
@@ -723,6 +866,8 @@
       }
       searchSortExplicit = params.has('sort');
       searchResultsSort = params.get('sort') || defaultSearchResultsSort(search.value.trim());
+      const requestedLayout = params.get('layout') || 'grid';
+      searchCardLayout = searchCardLayouts.has(requestedLayout) ? requestedLayout : 'grid';
       pageSize = params.get('size') || '100';
       const page = Number(params.get('page') || 1);
       currentPage = Number.isFinite(page) && page > 0 ? page : 1;
@@ -796,11 +941,43 @@
         const view = decodeURIComponent(base.slice('#view='.length));
         if (selectionByViewHash.has(view)) return selectionByViewHash.get(view);
       }
-      if (base.startsWith('#group=')) {
-        const groupKey = decodeURIComponent(base.slice('#group='.length));
-        if (groupKey) return groupKey;
-      }
       return '__search__';
+    }
+
+    function activateSearchPreset(preset, groupKey = '') {
+      const definition = searchPresetDefinitions[preset];
+      if (!definition) return;
+      selected = '__search__';
+      search.value = '';
+      for (const input of searchFields) input.checked = true;
+      applySearchPresetState(preset, groupKey);
+      searchResultsSort = definition.sort;
+      searchSortExplicit = false;
+      currentPage = 1;
+      const href = searchHash();
+      if (window.location.hash !== href) {
+        window.location.hash = href;
+        return;
+      }
+      renderGroups();
+      render();
+    }
+
+    function activateUnscopedSearch() {
+      selected = '__search__';
+      activeSearchPreset = '';
+      searchPlaylistGroupKey = '';
+      resetSearchMetaVisibility();
+      searchResultsSort = defaultSearchResultsSort(search.value.trim(), '');
+      searchSortExplicit = false;
+      currentPage = 1;
+      const href = searchHash();
+      if (window.location.hash !== href) {
+        window.location.hash = href;
+        return;
+      }
+      renderGroups();
+      render();
     }
 
     function setSelected(value) {
@@ -871,9 +1048,6 @@
       const groups = {
         'playlist-videos': playlistVisibility,
         'playlist-completion': playlistCompletionVisibility,
-        'liked-videos': likedVideosVisibility,
-        channels: channelVisibility,
-        'playlist-list': playlistListVisibility,
         'search-videos': searchMetaVisibility.videos,
         'search-reactions': searchMetaVisibility.reactions,
         'search-completion': searchMetaVisibility.completion,
@@ -1014,11 +1188,6 @@
 
     function isTerminatedChannel(channel) {
       return ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase());
-    }
-
-    function channelVisibilityCategory(channel) {
-      if (isTerminatedChannel(channel)) return 'terminated';
-      return isSubscribedChannel(channel) ? 'subscribed' : 'non_subscribed';
     }
 
     function playlistVisibilityCategory(playlist) {
@@ -1644,7 +1813,7 @@
       const rows = payload.watch || [];
       const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
       const pageInfo = remotePageInfo(total, rows.length);
-      meta.textContent = `${total} watches`;
+      meta.innerHTML = rightPanelListMetaHtml(`${total} watches`);
       viewContext.hidden = false;
       viewContext.replaceChildren(historyHeatmapFor(activity));
       renderPager(pageInfo);
@@ -1915,38 +2084,51 @@
       `;
     }
 
-    function channelSortHtml() {
+    function cardLayoutIconSvg(layout) {
+      if (layout === 'detailed') {
+        return '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="4" width="16" height="12" rx="1"></rect><path d="M8 4v12M10.5 7h5M10.5 10h5M10.5 13h3.5"></path></svg>';
+      }
+      if (layout === 'compact') {
+        return '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="4" rx="1"></rect><rect x="2" y="8" width="16" height="4" rx="1"></rect><rect x="2" y="13" width="16" height="4" rx="1"></rect></svg>';
+      }
+      return '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="2" width="7" height="7" rx="1"></rect><rect x="11" y="2" width="7" height="7" rx="1"></rect><rect x="2" y="11" width="7" height="7" rx="1"></rect><rect x="11" y="11" width="7" height="7" rx="1"></rect></svg>';
+    }
+
+    function searchCardLayoutHtml() {
       const options = [
-        ['title', 'Name A-Z'],
-        ['title_desc', 'Name Z-A'],
-        ['newest_updated', 'Recently updated'],
-        ['oldest_updated', 'Oldest updated'],
+        ['grid', 'Grid'],
+        ['detailed', 'Detailed list'],
+        ['compact', 'Compact list'],
       ];
       return `
-        <label class="view-sort">Sort
-          <select data-channel-sort>
-            ${options.map(([optionValue, label]) => `<option value="${optionValue}" ${channelViewSort === optionValue ? 'selected' : ''}>${label}</option>`).join('')}
-          </select>
-        </label>
+        <div class="card-layout-control" role="group" aria-label="Card layout">
+          ${options.map(([value, label]) => `
+            <button class="card-layout-button${searchCardLayout === value ? ' active' : ''}" type="button" data-card-layout="${value}" title="${label}" aria-label="${label}" aria-pressed="${searchCardLayout === value}">
+              ${cardLayoutIconSvg(value)}
+            </button>
+          `).join('')}
+        </div>
       `;
     }
 
-    function playlistSortHtml() {
-      const options = [
-        ['title', 'Name A-Z'],
-        ['title_desc', 'Name Z-A'],
-        ['newest_updated', 'Recently updated'],
-        ['oldest_updated', 'Oldest updated'],
-        ['most_videos', 'Most videos'],
-        ['most_unavailable', 'Most unavailable'],
-      ];
+    function rightPanelListMetaHtml(summary, { showLayout = false, sortHtml = '' } = {}) {
       return `
-        <label class="view-sort">Sort
-          <select data-playlist-sort>
-            ${options.map(([optionValue, label]) => `<option value="${optionValue}" ${allPlaylistsSort === optionValue ? 'selected' : ''}>${label}</option>`).join('')}
-          </select>
-        </label>
+        <div class="search-result-meta">
+          <div class="search-result-summary">
+            <span>${escapeHtml(summary)}</span>
+            ${(showLayout || sortHtml) ? `
+              <span class="result-view-controls">
+                ${showLayout ? searchCardLayoutHtml() : ''}
+                ${sortHtml}
+              </span>
+            ` : ''}
+          </div>
+        </div>
       `;
+    }
+
+    function applySearchCardLayout() {
+      grid.className = `grid search-grid layout-${searchCardLayout}`;
     }
 
     function playlistSourceLinksHtml(video) {
@@ -2049,7 +2231,16 @@
       const limit = Number.isFinite(size) ? size : 5000;
       const offset = (currentPage - 1) * limit;
       const searchFieldsValue = searchFieldParamValue() || '__none__';
-      const metaCountsKey = JSON.stringify([query, searchFieldsValue]);
+      const kindsValue = selectedSearchResultKinds().join(',') || '__none__';
+      const sourceScopes = activeSearchSourceScopes();
+      const metaCountsKey = JSON.stringify([
+        query,
+        searchFieldsValue,
+        kindsValue,
+        searchPlaylistGroupKey,
+        sourceScopes.video,
+        sourceScopes.channel,
+      ]);
       const metaCountsCache = omniMetaCountsCache;
       const reactionCountsCache = omniReactionCountsCache;
       const completionCountsCache = omniCompletionCountsCache;
@@ -2057,6 +2248,10 @@
       const params = new URLSearchParams({
         q: query,
         search_fields: searchFieldsValue,
+        kinds: kindsValue,
+        playlist_group_key: searchPlaylistGroupKey,
+        video_source: sourceScopes.video,
+        channel_source: sourceScopes.channel,
         video_meta: metaFilterParamValue(searchMetaVisibility.videos),
         video_reaction: metaFilterParamValue(searchMetaVisibility.reactions),
         video_completion: metaFilterParamValue(searchMetaVisibility.completion),
@@ -2108,21 +2303,6 @@
       return promise;
     }
 
-    async function fetchPlaylistList({ unavailableOnly = false, groupKey = '' } = {}) {
-      const visibility = Object.entries(playlistListVisibility)
-        .filter(([key, enabled]) => key !== 'removed' && enabled)
-        .map(([key]) => key)
-        .join(',');
-      const path = remoteListPath('/api/playlists', {
-        visibility: visibility || '__none__',
-        removed: playlistListVisibility.removed ? '1' : '0',
-        sort: unavailableOnly ? 'most_unavailable' : allPlaylistsSort,
-        unavailable_only: unavailableOnly ? '1' : '0',
-        group_key: groupKey,
-      });
-      return fetchViewData(path);
-    }
-
     async function fetchVideoCollection({
       scope = 'playlist',
       playlistId = '',
@@ -2165,21 +2345,13 @@
       };
     }
 
-    async function fetchChannelList(categories, subscribedOnly = false) {
-      const path = remoteListPath('/api/channels', {
-        categories: categories.join(','),
-        subscribed_only: subscribedOnly ? '1' : '0',
-        sort: channelViewSort,
-      });
-      return fetchViewData(path);
-    }
-
     function buttonFor(group, child=false) {
       const button = document.createElement('button');
       button.className = `group ${child ? 'child' : ''}`;
-      button.dataset.key = group.group_key;
+      button.dataset.preset = 'playlist-group';
+      button.dataset.groupKey = group.group_key;
       button.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="count">${groupCount(group.group_key)}</span>`;
-      button.addEventListener('click', () => setSelected(group.group_key));
+      button.addEventListener('click', () => activateSearchPreset('playlist-group', group.group_key));
       return button;
     }
 
@@ -2203,18 +2375,49 @@
       return button;
     }
 
+    function presetButton(preset, label, count) {
+      const button = document.createElement('button');
+      button.className = 'group';
+      button.dataset.preset = preset;
+      button.innerHTML = `<span>${escapeHtml(label)}</span><span class="count">${count}</span>`;
+      button.addEventListener('click', () => activateSearchPreset(preset));
+      return button;
+    }
+
+    function syncSidebarSelection() {
+      for (const button of groupsEl.querySelectorAll('.group')) {
+        const activeGroupPreset = (
+          selected === '__search__'
+          && activeSearchPreset === 'playlist-group'
+          && button.dataset.preset === 'playlist-group'
+          && button.dataset.groupKey === searchPlaylistGroupKey
+        );
+        const activeNamedPreset = (
+          selected === '__search__'
+          && button.dataset.preset
+          && button.dataset.preset !== 'playlist-group'
+          && button.dataset.preset === activeSearchPreset
+        );
+        button.classList.toggle(
+          'active',
+          button.dataset.key === selected || activeGroupPreset || activeNamedPreset,
+        );
+      }
+      searchNav?.classList.toggle('active', selected === '__search__' && !activeSearchPreset);
+    }
+
     function renderGroups() {
       if (!data) return;
       groupsEl.replaceChildren();
       const counts = data.counts || {};
       const videoSection = sectionFor('Videos');
-      videoSection.appendChild(navButton('__all_videos__', 'Playlist videos', counts.playlist_videos || 0));
-      videoSection.appendChild(navButton('__liked__', 'Liked videos', counts.liked_videos || 0));
+      videoSection.appendChild(presetButton('videos', 'Videos', counts.videos || 0));
+      videoSection.appendChild(presetButton('playlist-videos', 'Playlist videos', counts.playlist_videos || 0));
+      videoSection.appendChild(presetButton('liked-videos', 'Liked videos', counts.liked_videos || 0));
       videoSection.appendChild(navButton('__history__', 'History', counts.history || 0));
 
       const playlistSection = sectionFor('Playlists');
-      playlistSection.appendChild(navButton('', 'All playlists', counts.playlists || 0));
-      playlistSection.appendChild(navButton('__unavailable_playlists__', 'Playlists with unavailable', counts.unavailable_playlists || 0));
+      playlistSection.appendChild(presetButton('all-playlists', 'All playlists', counts.playlists || 0));
       for (const group of children.get('') || []) {
         playlistSection.appendChild(buttonFor(group));
         for (const child of children.get(group.group_key) || []) {
@@ -2223,9 +2426,10 @@
       }
 
       const channelSection = sectionFor('Channels');
-      channelSection.appendChild(navButton('__channels__', 'Channels', counts.channels || 0));
-      channelSection.appendChild(navButton('__subscribed_channels__', 'Subscribed channels', counts.subscribed_channels || 0));
-      channelSection.appendChild(navButton('__terminated_channels__', 'Terminated channels', counts.terminated_channels || 0));
+      channelSection.appendChild(presetButton('channels', 'Channels', counts.channels || 0));
+      channelSection.appendChild(presetButton('subscribed-channels', 'Subscribed channels', counts.subscribed_channels || 0));
+      channelSection.appendChild(presetButton('terminated-channels', 'Terminated channels', counts.terminated_channels || 0));
+      syncSidebarSelection();
     }
 
     function videoDetailCardFor(video) {
@@ -2358,7 +2562,7 @@
       viewTop.classList.toggle('history-top', selected === '__history__');
       viewTop.classList.toggle(
         'video-collection-top',
-        selected === '__all_videos__' || selected.startsWith('__playlist__:'),
+        selected.startsWith('__playlist__:'),
       );
       stopSearchProgress();
       empty.textContent = 'No playlists match.';
@@ -2377,10 +2581,7 @@
         viewContext.replaceChildren();
         viewContext.hidden = true;
       }
-      for (const button of groupsEl.querySelectorAll('.group')) {
-        button.classList.toggle('active', button.dataset.key === selected);
-      }
-      searchNav?.classList.toggle('active', selected === '__search__');
+      syncSidebarSelection();
       if (selected.startsWith('__video__:')) {
         const videoId = selected.slice('__video__:'.length);
         title.textContent = 'Video';
@@ -2517,17 +2718,13 @@
         renderedOmniSearchQuery = query;
         searchResultsRendered = true;
         title.textContent = '';
-        meta.innerHTML = `
-          <div class="search-result-meta">
-            <div class="search-result-summary">
-              <span>${total} results</span>
-              ${searchResultsSortHtml()}
-            </div>
-          </div>
-        `;
+        meta.innerHTML = rightPanelListMetaHtml(`${total} results`, {
+          showLayout: true,
+          sortHtml: searchResultsSortHtml(),
+        });
         renderSearchMetaFilters(payload);
         renderPager(remotePageInfo(total, rows.length, remoteLimit));
-        grid.className = 'grid';
+        applySearchCardLayout();
         grid.replaceChildren(...rows.map(searchResultCardFor));
         empty.hidden = rows.length !== 0;
         empty.textContent = 'No results match.';
@@ -2591,170 +2788,10 @@
         empty.textContent = playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.';
         return;
       }
-      if (selected === '__all_videos__') {
-        resetPlaylistVisibilityFor('__all_videos__');
-        const payload = await fetchVideoCollection({
-          sort: allVideosSort,
-          completion: playlistCompletionVisibility,
-        });
-        if (generation !== renderGeneration) return;
-        const rows = payload.results || [];
-        title.textContent = 'Playlist videos';
-        meta.innerHTML = `
-          ${playlistVideoFiltersHtml(payload.counts, payload.completionCounts)}
-          ${videoSortHtml(allVideosSort, 'all')}
-        `;
-        syncMetaFilterGroup('playlist-videos');
-        syncMetaFilterGroup('playlist-completion');
-        renderPager(remotePayloadPageInfo(payload, rows.length));
-        grid.className = 'grid';
-        grid.replaceChildren(...rows.map(playlistVideoCardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = 'No playlist videos match.';
-        return;
-      }
       if (selected === '__history__') {
         await renderHistoryView();
         return;
       }
-      if (selected === '__hidden__') {
-        title.textContent = 'Unavailable videos';
-        const payload = await fetchVideoCollection({
-          visibility: { public: false, unlisted: false, members_only: true, unavailable: true, unknown: false, removed: false },
-        });
-        if (generation !== renderGeneration) return;
-        const rows = payload.results || [];
-        meta.textContent = `${payload.total || 0} shown`;
-        renderPager(remotePayloadPageInfo(payload, rows.length));
-        grid.replaceChildren(...rows.map(hiddenVideoCardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = 'No unavailable videos match.';
-        return;
-      }
-      if (selected === '__liked__') {
-        title.textContent = 'Liked videos';
-        const payload = await fetchVideoCollection({ scope: 'liked', sort: likedVideosSort, visibility: likedVideosVisibility });
-        if (generation !== renderGeneration) return;
-        const rows = payload.results || [];
-        meta.innerHTML = `
-          ${videoStatusFiltersHtml({
-            groupName: 'liked-videos',
-            filterAttribute: 'liked-filter',
-            visibility: likedVideosVisibility,
-            counts: payload.counts,
-          })}
-          ${videoSortHtml(likedVideosSort, 'liked')}
-        `;
-        syncMetaFilterGroup('liked-videos');
-        renderPager(remotePayloadPageInfo(payload, rows.length));
-        grid.className = 'grid';
-        grid.replaceChildren(...rows.map(playlistVideoCardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = 'No liked videos match the selected filters.';
-        return;
-      }
-      if (selected === '__channels__') {
-        title.textContent = 'Channels';
-        const categories = Object.entries(channelVisibility).filter(([, enabled]) => enabled).map(([key]) => key);
-        const payload = await fetchChannelList(categories);
-        if (generation !== renderGeneration) return;
-        const rows = payload.results || [];
-        meta.innerHTML = `
-          ${metaFilterControlsHtml({
-            groupName: 'channels',
-            filterAttribute: 'channel-filter',
-            visibility: channelVisibility,
-            counts: payload.counts,
-            definitions: channelMetaFilterDefinitions,
-          })}
-          ${channelSortHtml()}
-        `;
-        syncMetaFilterGroup('channels');
-        renderPager(remotePayloadPageInfo(payload, rows.length));
-        grid.className = 'grid';
-        grid.replaceChildren(...rows.map(channelCardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = 'No channels match.';
-        return;
-      }
-      if (selected === '__subscribed_channels__') {
-        title.textContent = 'Subscribed channels';
-        const categories = ['subscribed', ...(channelVisibility.terminated ? ['terminated'] : [])];
-        const payload = await fetchChannelList(categories, true);
-        if (generation !== renderGeneration) return;
-        const rows = payload.results || [];
-        const terminatedCount = Number(payload.counts?.terminated || 0);
-        meta.innerHTML = `
-          <label class="meta-filter"><input type="checkbox" data-channel-filter="terminated" ${channelVisibility.terminated ? 'checked' : ''}> <span class="badge">${terminatedCount} terminated</span></label>
-          ${channelSortHtml()}
-        `;
-        renderPager(remotePayloadPageInfo(payload, rows.length));
-        grid.className = 'grid';
-        grid.replaceChildren(...rows.map(channelCardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = 'No subscribed channels match.';
-        return;
-      }
-      if (selected === '__terminated_channels__') {
-        title.textContent = 'Terminated channels';
-        const payload = await fetchChannelList(['terminated']);
-        if (generation !== renderGeneration) return;
-        const rows = payload.results || [];
-        meta.innerHTML = `<span>${payload.total || 0} channels</span>${channelSortHtml()}`;
-        renderPager(remotePayloadPageInfo(payload, rows.length));
-        grid.className = 'grid';
-        grid.replaceChildren(...rows.map(channelCardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = 'No terminated channels match.';
-        return;
-      }
-      if (selected === '__unavailable_playlists__') {
-        title.textContent = 'Playlists with unavailable videos';
-        const payload = await fetchPlaylistList({ unavailableOnly: true });
-        if (generation !== renderGeneration) return;
-        const rows = payload.results || [];
-        meta.textContent = `${payload.total || 0} playlists`;
-        renderPager(remotePayloadPageInfo(payload, rows.length));
-        grid.className = 'grid';
-        grid.replaceChildren(...rows.map(cardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = 'No playlists with unavailable videos match.';
-        return;
-      }
-      if (selected === '') {
-        title.textContent = 'All playlists';
-        const payload = await fetchPlaylistList();
-        if (generation !== renderGeneration) return;
-        const rows = payload.results || [];
-        meta.innerHTML = `
-          ${metaFilterControlsHtml({
-            groupName: 'playlist-list',
-            filterAttribute: 'playlist-visibility-filter',
-            visibility: playlistListVisibility,
-            counts: payload.counts,
-            definitions: playlistMetaFilterDefinitions,
-          })}
-          ${playlistSortHtml()}
-        `;
-        syncMetaFilterGroup('playlist-list');
-        renderPager(remotePayloadPageInfo(payload, rows.length));
-        grid.className = 'grid';
-        grid.replaceChildren(...rows.map(cardFor));
-        empty.hidden = rows.length !== 0;
-        empty.textContent = 'No playlists match the selected visibility filters.';
-        return;
-      }
-      const group = data.groups.find(g => g.group_key === selected);
-      title.textContent = group ? group.name : 'All playlists';
-      const payload = await fetchPlaylistList({ groupKey: selected });
-      if (generation !== renderGeneration) return;
-      const rows = payload.results || [];
-      meta.textContent = `${payload.total || 0} shown`;
-      renderPager(remotePayloadPageInfo(payload, rows.length));
-      grid.className = 'grid';
-      grid.replaceChildren(...rows.map(cardFor));
-      empty.hidden = rows.length !== 0;
-      empty.textContent = 'No playlists match.';
     }
 
     function cardFor(playlist, options = {}) {
@@ -2905,13 +2942,6 @@
       if (result.kind === 'channel') {
         return channelCardFor(result.item, { resultKind: 'Channel' });
       }
-      if (result.kind === 'history') {
-        return playlistVideoCardFor(result.item, {
-          resultKind: 'Video',
-          playlistSourcesHtml: playlistSourceLinksHtml(result.item),
-          latestWatchDateHtml: latestWatchDateHtml(result.item),
-        });
-      }
       const video = result.item;
       return playlistVideoCardFor(video, {
         resultKind: 'Video',
@@ -2959,29 +2989,6 @@
       return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"></path><path d="M8 7h9v9"></path><path d="M7 7H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"></path></svg>';
     }
 
-    function hiddenVideoCardFor(video) {
-      const watchUrl = youtubeWatchUrl(video);
-      return videoCardFor({
-        title: video.title,
-        localUrl: video.video_id ? localVideoHref(video.video_id) : '',
-        externalUrl: watchUrl,
-        channelHtml: video.channel
-          ? creatorHtml('', video.channel, video.channel_id ? localChannelHref(video.channel_id) : '')
-          : '',
-        details: [
-          video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
-          archivarixLinkHtml(video),
-        ],
-        recoveryHtml: archivarixStatusHtml(video),
-        availabilityHtml: videoAvailabilityHtml(video),
-        reactionHtml: reactionIconsHtml(video),
-        sparklineHtml: watchSparklineHtml(video),
-        sources: [
-          `<a class="playlist-link" href="${video.playlist_url}" target="_blank" rel="noreferrer">${escapeHtml(video.playlist_title)}</a>`,
-        ],
-      });
-    }
-
     search.addEventListener('input', () => {
       if (searchInputTimer !== null) {
         clearTimeout(searchInputTimer);
@@ -2990,6 +2997,12 @@
       currentPage = 1;
       if (!searchSortExplicit) searchResultsSort = defaultSearchResultsSort();
       const wasSearchHash = window.location.hash === '#search' || window.location.hash.startsWith('#search?');
+      if (!wasSearchHash) {
+        activeSearchPreset = '';
+        searchPlaylistGroupKey = '';
+        resetSearchMetaVisibility();
+        if (!searchSortExplicit) searchResultsSort = defaultSearchResultsSort();
+      }
       selected = '__search__';
       renderGroups();
       const changed = updateSearchHash(wasSearchHash);
@@ -2999,7 +3012,7 @@
         render();
       }, 250);
     });
-    searchNav?.addEventListener('click', () => setSelected('__search__'));
+    searchNav?.addEventListener('click', activateUnscopedSearch);
     viewContext.addEventListener('click', event => {
       const yearShift = event.target.closest('[data-history-year-shift]');
       if (yearShift instanceof HTMLButtonElement && !yearShift.disabled) {
@@ -3026,25 +3039,7 @@
       if (target instanceof HTMLSelectElement && target.dataset.videoSort !== undefined) {
         if (target.dataset.videoSort === 'playlist') {
           playlistViewSort = target.value || 'playlist_order';
-        } else if (target.dataset.videoSort === 'liked') {
-          likedVideosSort = target.value || 'newest_added';
-        } else {
-          allVideosSort = target.value || 'newest_added';
         }
-        currentPage = 1;
-        scrollResultsToTop();
-        render();
-        return;
-      }
-      if (target instanceof HTMLSelectElement && target.dataset.channelSort !== undefined) {
-        channelViewSort = target.value || 'title';
-        currentPage = 1;
-        scrollResultsToTop();
-        render();
-        return;
-      }
-      if (target instanceof HTMLSelectElement && target.dataset.playlistSort !== undefined) {
-        allPlaylistsSort = target.value || 'title';
         currentPage = 1;
         scrollResultsToTop();
         render();
@@ -3062,6 +3057,7 @@
       const searchKindFilter = target.dataset.searchKindFilter;
       if (searchKindFilter && setSearchKindFilter(searchKindFilter, target.checked)) {
         currentPage = 1;
+        reconcileSearchPreset();
         showSearchMetaProgress(searchKindFilter);
         syncSearchHashAndRender();
         return;
@@ -3074,6 +3070,7 @@
           syncMetaFilterGroup(metaAllFilter);
           if (target.checked) restoreEmptySearchKindFacets(facetKey);
           syncSearchKindFilter(searchKindForFacet(facetKey));
+          reconcileSearchPreset();
           showSearchMetaProgress(facetKey);
           syncSearchHashAndRender();
         } else {
@@ -3091,29 +3088,9 @@
         syncMetaFilterGroup(`search-${groupName}`);
         if (target.checked) restoreEmptySearchKindFacets(groupName);
         syncSearchKindFilter(searchKindForFacet(groupName));
+        reconcileSearchPreset();
         showSearchMetaProgress(groupName);
         syncSearchHashAndRender();
-        return;
-      }
-      const channelFilter = target.dataset.channelFilter;
-      if (channelFilter) {
-        channelVisibility[channelFilter] = target.checked;
-        currentPage = 1;
-        render();
-        return;
-      }
-      const playlistVisibilityFilter = target.dataset.playlistVisibilityFilter;
-      if (playlistVisibilityFilter) {
-        playlistListVisibility[playlistVisibilityFilter] = target.checked;
-        currentPage = 1;
-        render();
-        return;
-      }
-      const likedFilter = target.dataset.likedFilter;
-      if (likedFilter) {
-        likedVideosVisibility[likedFilter] = target.checked;
-        currentPage = 1;
-        render();
         return;
       }
       const playlistCompletionFilter = target.dataset.playlistCompletionFilter;
@@ -3131,6 +3108,20 @@
     }
     meta.addEventListener('change', handleMetaChange);
     searchForFilters.addEventListener('change', handleMetaChange);
+    meta.addEventListener('click', event => {
+      const button = event.target.closest('[data-card-layout]');
+      if (!(button instanceof HTMLButtonElement)) return;
+      const layout = button.dataset.cardLayout || '';
+      if (!searchCardLayouts.has(layout) || layout === searchCardLayout) return;
+      searchCardLayout = layout;
+      applySearchCardLayout();
+      for (const option of meta.querySelectorAll('[data-card-layout]')) {
+        const active = option.dataset.cardLayout === layout;
+        option.classList.toggle('active', active);
+        option.setAttribute('aria-pressed', String(active));
+      }
+      updateSearchHash(true);
+    });
     meta.addEventListener('input', event => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement) || target.dataset.playlistPageSearch === undefined) return;

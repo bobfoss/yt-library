@@ -85,6 +85,128 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(page["offset"], 2)
         self.assertEqual([result["kind"] for result in page["results"]], ["playlist", "channel"])
 
+    def test_omni_search_can_limit_result_kinds(self) -> None:
+        self.add_video("scoped123", "Scoped video", "UC_scoped")
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLscoped', 'Scoped playlist')"
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "scoped",
+            result_kinds={"playlist"},
+            limit=20,
+        )
+
+        self.assertEqual(data["resultKinds"], ["playlist"])
+        self.assertEqual(data["counts"], {"videos": 0, "playlists": 1, "channels": 0})
+        self.assertEqual([result["kind"] for result in data["results"]], ["playlist"])
+
+    def test_omni_search_playlist_group_includes_child_groups(self) -> None:
+        self.conn.executemany(
+            "INSERT INTO playlists(playlist_id, title) VALUES (?, ?)",
+            [
+                ("PLparent", "Parent playlist"),
+                ("PLchild", "Child playlist"),
+                ("PLother", "Other playlist"),
+            ],
+        )
+        self.conn.executemany(
+            "INSERT INTO groups(group_key, name, parent_key, position) VALUES (?, ?, ?, ?)",
+            [
+                ("parent", "Parent", None, 1),
+                ("child", "Child", "parent", 1),
+                ("other", "Other", None, 2),
+            ],
+        )
+        self.conn.executemany(
+            "INSERT INTO group_playlists(group_key, playlist_id, position) VALUES (?, ?, ?)",
+            [
+                ("parent", "PLparent", 1),
+                ("child", "PLchild", 1),
+                ("other", "PLother", 1),
+            ],
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"playlist"},
+            playlist_group_key="parent",
+            sort="title",
+            limit=20,
+        )
+
+        self.assertEqual(data["playlistGroupKey"], "parent")
+        self.assertEqual(data["metaCounts"]["playlists"]["total"], 2)
+        self.assertEqual(
+            [result["item"]["playlist_id"] for result in data["results"]],
+            ["PLchild", "PLparent"],
+        )
+
+    def test_omni_search_preset_sources_scope_candidates_and_counts(self) -> None:
+        self.add_video("likedsource", "Liked source", "UC_subscribed_source")
+        self.add_video("membersource", "Playlist member source", "UC_regular_source")
+        self.add_video("othersource", "Other source", "UC_terminated_source")
+        self.conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'likedsource'")
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLsource', 'Source playlist')"
+        )
+        self.conn.execute(
+            """
+            INSERT INTO playlist_items(playlist_id, position, video_id, membership_state)
+            VALUES ('PLsource', 1, 'membersource', 'current')
+            """
+        )
+        self.conn.execute(
+            "UPDATE channels SET subscribed = 1 WHERE channel_id = 'UC_subscribed_source'"
+        )
+        self.conn.execute(
+            "UPDATE channels SET status = 'terminated' WHERE channel_id = 'UC_terminated_source'"
+        )
+        self.conn.commit()
+
+        liked = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"video"},
+            video_source="liked",
+            limit=20,
+        )
+        members = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"video"},
+            video_source="playlist_member",
+            limit=20,
+        )
+        subscribed = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"channel"},
+            channel_source="subscribed",
+            limit=20,
+        )
+        terminated = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"channel"},
+            channel_source="terminated",
+            channel_status_filters={"terminated"},
+            limit=20,
+        )
+
+        self.assertEqual(liked["metaCounts"]["videos"]["total"], 1)
+        self.assertEqual(liked["results"][0]["item"]["video_id"], "likedsource")
+        self.assertEqual(members["metaCounts"]["videos"]["total"], 1)
+        self.assertEqual(members["results"][0]["item"]["video_id"], "membersource")
+        self.assertEqual(subscribed["metaCounts"]["channels"]["total"], 1)
+        self.assertEqual(subscribed["results"][0]["item"]["channel_id"], "UC_subscribed_source")
+        self.assertEqual(terminated["metaCounts"]["channels"]["total"], 1)
+        self.assertEqual(terminated["results"][0]["item"]["channel_id"], "UC_terminated_source")
+
     def test_omni_search_empty_query_returns_all_results_newest_first(self) -> None:
         self.add_video("older123", "Older video", "UC_older")
         self.add_video("newer123", "Newer video", "UC_newer")
@@ -891,6 +1013,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         data = library_bootstrap_data(self.conn)
 
         self.assertEqual(set(data), {"groups", "memberships", "counts"})
+        self.assertEqual(data["counts"]["videos"], 1)
         self.assertEqual(data["counts"]["playlists"], 1)
         self.assertEqual(data["counts"]["playlist_videos"], 1)
         self.assertEqual(data["counts"]["liked_videos"], 1)

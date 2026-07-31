@@ -4884,8 +4884,17 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML.index('id="view-meta"'),
             server.INDEX_HTML.index('id="refresh"'),
         )
-        self.assertEqual(server.INDEX_HTML.count("videoStatusFiltersHtml({"), 3)
-        self.assertEqual(server.INDEX_HTML.count("playlistVideoFiltersHtml("), 3)
+        self.assertIn("const searchPresetDefinitions = {", server.INDEX_HTML)
+        self.assertIn("videos: { kind: 'videos', sort: 'newest' }", server.INDEX_HTML)
+        self.assertIn("function activateSearchPreset(preset, groupKey = '')", server.INDEX_HTML)
+        self.assertIn("function reconcileSearchPreset()", server.INDEX_HTML)
+        self.assertIn("function syncSidebarSelection()", server.INDEX_HTML)
+        self.assertIn(
+            "presetButton('videos', 'Videos', counts.videos || 0)",
+            server.INDEX_HTML,
+        )
+        self.assertIn("button.dataset.preset = 'playlist-group';", server.INDEX_HTML)
+        self.assertNotIn("Playlists with unavailable", server.INDEX_HTML)
         self.assertIn("{ key: 'public', label: 'public', visibilityIcon: true }", server.INDEX_HTML)
         self.assertIn("{ key: 'unlisted', label: 'unlisted', visibilityIcon: true }", server.INDEX_HTML)
         self.assertIn("{ key: 'unknown', label: 'unknown' }", server.INDEX_HTML)
@@ -4900,7 +4909,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("let renderedOmniSearchQuery = '';", server.INDEX_HTML)
         self.assertIn("let searchResultsRendered = false;", server.INDEX_HTML)
         self.assertIn("let searchResultsSort = 'newest';", server.INDEX_HTML)
-        self.assertIn("function defaultSearchResultsSort(query = search.value.trim())", server.INDEX_HTML)
+        self.assertIn("function defaultSearchResultsSort(", server.INDEX_HTML)
         self.assertIn("searchSortExplicit = params.has('sort');", server.INDEX_HTML)
         self.assertIn("return '__search__';", server.INDEX_HTML)
         self.assertNotIn("Enter a search query.", server.INDEX_HTML)
@@ -4925,10 +4934,11 @@ class AdminServerTests(unittest.TestCase):
             "const metaCountsKey = JSON.stringify([scope, playlistId, channelId, query]);",
             server.INDEX_HTML,
         )
-        self.assertIn(
-            "const metaCountsKey = JSON.stringify([query, searchFieldsValue]);",
-            server.INDEX_HTML,
-        )
+        self.assertIn("const kindsValue = selectedSearchResultKinds().join(',') || '__none__';", server.INDEX_HTML)
+        self.assertIn("playlist_group_key: searchPlaylistGroupKey,", server.INDEX_HTML)
+        self.assertIn("if (searchCardLayout !== 'grid') params.set('layout', searchCardLayout);", server.INDEX_HTML)
+        self.assertIn("function rightPanelListMetaHtml(", server.INDEX_HTML)
+        self.assertIn("data-card-layout=", server.INDEX_HTML)
         self.assertIn(
             "completionCounts: videoCompletionCountsCache.get(metaCountsKey)",
             server.INDEX_HTML,
@@ -4970,7 +4980,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("function latestWatchDateHtml(video)", server.INDEX_HTML)
         self.assertEqual(
             server.INDEX_HTML.count("latestWatchDateHtml: latestWatchDateHtml("),
-            2,
+            1,
         )
         self.assertIn(
             "latestWatchDateHtml: options.latestWatchDateHtml || '',",
@@ -4997,10 +5007,10 @@ class AdminServerTests(unittest.TestCase):
             "if (status === 'NOT_FOUND') return 'Archivarix: No results found';",
             server.INDEX_HTML,
         )
-        self.assertEqual(server.INDEX_HTML.count("return videoCardFor({"), 2)
+        self.assertEqual(server.INDEX_HTML.count("return videoCardFor({"), 1)
         self.assertEqual(
             server.INDEX_HTML.count("recoveryHtml: archivarixStatusHtml(video)"),
-            2,
+            1,
         )
         self.assertNotIn("{ label: archivarixStatusLabel(video) },", server.INDEX_HTML)
         detail_card_start = server.INDEX_HTML.index("function videoDetailCardFor(video)")
@@ -5052,12 +5062,6 @@ class AdminServerTests(unittest.TestCase):
             "row.current_title : '';",
             server.ADMIN_HTML,
         )
-        self.assertIn(
-            "channelHtml: video.channel\n"
-            "          ? creatorHtml('', video.channel, video.channel_id ? "
-            "localChannelHref(video.channel_id) : '')",
-            server.INDEX_HTML,
-        )
         self.assertNotIn(
             "{ label: String(video.availability || '').toLowerCase() === 'unlisted'",
             server.INDEX_HTML,
@@ -5065,11 +5069,11 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("syncMetaFilterGroup('playlist-videos')", server.INDEX_HTML)
         self.assertEqual(
             server.INDEX_HTML.count("syncMetaFilterGroup('playlist-completion')"),
-            2,
+            1,
         )
         self.assertEqual(
             server.INDEX_HTML.count("completion: playlistCompletionVisibility"),
-            2,
+            1,
         )
         self.assertIn("filterAttribute: 'playlist-completion-filter'", server.INDEX_HTML)
         self.assertIn("'video-collection-top'", server.INDEX_HTML)
@@ -5107,9 +5111,7 @@ class AdminServerTests(unittest.TestCase):
             '<span class="video-filter-facet video-filter-completion">',
             server.INDEX_HTML,
         )
-        self.assertIn("syncMetaFilterGroup('liked-videos')", server.INDEX_HTML)
-        self.assertIn("syncMetaFilterGroup('channels')", server.INDEX_HTML)
-        self.assertIn("syncMetaFilterGroup('playlist-list')", server.INDEX_HTML)
+        self.assertIn("syncMetaFilterGroup(`search-${key}`)", server.INDEX_HTML)
         self.assertIn(
             "function syncFilterGroup(parent, childFilters, dimChildrenWhenUnchecked = true)",
             server.INDEX_HTML,
