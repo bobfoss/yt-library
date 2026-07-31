@@ -364,8 +364,6 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                     "channel_thumbnail_url": "",
                     "channel_thumbnail_path": "",
                     "reaction": "",
-                    "watch_progress_percent": "0",
-                    "watch_resume_seconds": "0",
                     "yt_status": "",
                 }
                 try:
@@ -521,24 +519,6 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                                 if status == "no_metadata" and placeholder_queue_message
                                 else f"{status}: {title}"
                             )
-                            if status == "ok" and metadata_source in {"history", "provided"}:
-                                reported_progress = bounded_int(metadata.get("watch_progress_percent"))
-                                stored_video = conn.execute(
-                                    """
-                                    SELECT watch_progress_percent
-                                    FROM videos
-                                    WHERE video_id = ?
-                                    """,
-                                    (video_id,),
-                                ).fetchone()
-                                stored_progress = bounded_int(
-                                    stored_video["watch_progress_percent"]
-                                    if stored_video
-                                    else metadata.get("watch_progress_percent")
-                                )
-                                message += f"\nwatch percentage: {reported_progress}%"
-                                if stored_progress != reported_progress:
-                                    message += f" reported by YT; {stored_progress}% retained"
                             log_worker_event(conn, run_id, metadata_source, message, video_id)
                             if channel_status:
                                 discovered_channel_label = (
@@ -1226,6 +1206,17 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                         occurrence_snapshot,
                         seen_occurrences,
                     )
+                    for guard in save_stats["progress_guards"]:
+                        log_live_history_event(
+                            conn,
+                            run_id,
+                            "info",
+                            (
+                                f"watch percentage: {guard['reported']}% reported by YouTube; "
+                                f"{guard['retained']}% retained"
+                            ),
+                            guard["video_id"],
+                        )
                     processed += seen
                     inserted_total += save_stats["new"]
                     skipped_total += save_stats["existing"]

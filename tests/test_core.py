@@ -1928,8 +1928,6 @@ class CoreHelperTests(unittest.TestCase):
             "title": "Direct video",
             "thumbnail_url": "",
             "channel_thumbnail_url": "",
-            "watch_progress_percent": "0",
-            "watch_resume_seconds": "0",
         }
         with (
             patch.object(core, "request_text", return_value="watch page") as request_text,
@@ -1943,8 +1941,8 @@ class CoreHelperTests(unittest.TestCase):
             opener,
             "https://www.youtube.com/watch?v=-AbC123_def",
         )
-        self.assertEqual(result["watch_progress_percent"], "0")
-        self.assertEqual(result["watch_resume_seconds"], "0")
+        self.assertNotIn("watch_progress_percent", result)
+        self.assertNotIn("watch_resume_seconds", result)
 
     def test_watch_playability_updates_canonical_video(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2084,7 +2082,7 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_metadata_zero_progress_does_not_replace_positive_progress(self) -> None:
+    def test_manual_metadata_does_not_store_watch_completion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             conn = migrated_connection(Path(tmp) / "library.sqlite3")
             try:
@@ -2093,47 +2091,50 @@ class CoreHelperTests(unittest.TestCase):
                         conn,
                         "vweQrjtAg0U",
                         title="Progress video",
-                        watch_progress_percent=64,
                         source="metadata",
                     )
-                    core.store_video_metadata(
-                        conn,
-                        {
-                            "video_id": "vweQrjtAg0U",
-                            "title": "Progress video",
-                            "watch_progress_percent": "0",
-                        },
-                        "ok",
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watch_date, time_precision,
+                          watch_progress_percent, watch_resume_seconds
+                        )
+                        VALUES (
+                          'history-progress', 'vweQrjtAg0U', '2026-07-30',
+                          'date_only', 64, 217
+                        )
+                        """
                     )
-
-                progress = conn.execute(
-                    """
-                    SELECT watch_progress_percent
-                    FROM videos
-                    WHERE video_id = 'vweQrjtAg0U'
-                    """
-                ).fetchone()["watch_progress_percent"]
-                self.assertEqual(progress, 64)
-
-                with conn:
                     core.store_video_metadata(
                         conn,
                         {
                             "video_id": "vweQrjtAg0U",
                             "title": "Progress video",
                             "watch_progress_percent": "37",
+                            "watch_resume_seconds": "125",
                         },
                         "ok",
                     )
 
-                progress = conn.execute(
+                event = conn.execute(
                     """
-                    SELECT watch_progress_percent
-                    FROM videos
-                    WHERE video_id = 'vweQrjtAg0U'
+                    SELECT watch_progress_percent, watch_resume_seconds
+                    FROM history_events
+                    WHERE event_id = 'history-progress'
                     """
-                ).fetchone()["watch_progress_percent"]
-                self.assertEqual(progress, 37)
+                ).fetchone()
+                video_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+                }
+                self.assertEqual(
+                    dict(event),
+                    {
+                        "watch_progress_percent": 64,
+                        "watch_resume_seconds": 217,
+                    },
+                )
+                self.assertNotIn("watch_progress_percent", video_columns)
+                self.assertNotIn("watch_resume_seconds", video_columns)
             finally:
                 conn.close()
 
@@ -2266,6 +2267,71 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(rows[0]["event_id"], "legacy-position-id")
         self.assertNotEqual(rows[1]["event_id"], "youtube:2")
         self.assertEqual([row["youtube_ordinal"] for row in rows], [1, 2])
+
+    def test_youtube_history_refetch_retains_progress_for_same_event_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    first = core.save_youtube_history_events(
+                        conn,
+                        [
+                            {
+                                "video_id": "repeat123",
+                                "watch_date": "2026-07-30",
+                                "watch_progress_percent": 64,
+                                "watch_resume_seconds": 217,
+                            }
+                        ],
+                        1,
+                        {},
+                        Counter(),
+                    )
+                snapshot = core.youtube_history_occurrence_snapshot(conn)
+                with conn:
+                    second = core.save_youtube_history_events(
+                        conn,
+                        [
+                            {
+                                "video_id": "repeat123",
+                                "watch_date": "2026-07-30",
+                                "watch_progress_percent": 0,
+                                "watch_resume_seconds": 0,
+                            },
+                            {
+                                "video_id": "repeat123",
+                                "watch_date": "2026-07-30",
+                                "watch_progress_percent": 0,
+                                "watch_resume_seconds": 0,
+                            },
+                        ],
+                        1,
+                        snapshot,
+                        Counter(),
+                    )
+                events = conn.execute(
+                    """
+                    SELECT watch_progress_percent, watch_resume_seconds
+                    FROM history_events
+                    WHERE video_id = 'repeat123'
+                    ORDER BY youtube_ordinal
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(first["progress_guards"], [])
+        self.assertEqual(
+            second["progress_guards"],
+            [{"video_id": "repeat123", "reported": 0, "retained": 64}],
+        )
+        self.assertEqual(
+            [dict(row) for row in events],
+            [
+                {"watch_progress_percent": 64, "watch_resume_seconds": 217},
+                {"watch_progress_percent": 0, "watch_resume_seconds": 0},
+            ],
+        )
 
     def test_youtube_takeout_match_count_is_scoped_to_the_fetched_batch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2864,6 +2930,81 @@ class SchemaTests(unittest.TestCase):
 
         self.assertEqual(title, "")
         self.assertEqual(current_title, "")
+        self.assertEqual(schema_version, core.SCHEMA_VERSION)
+
+    def test_migrate_removes_video_watch_completion_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            legacy_schema = core.SCHEMA.replace(
+                "  reaction TEXT NOT NULL DEFAULT '',\n",
+                (
+                    "  reaction TEXT NOT NULL DEFAULT '',\n"
+                    "  watch_progress_percent INTEGER NOT NULL DEFAULT 0,\n"
+                    "  watch_resume_seconds INTEGER NOT NULL DEFAULT 0,\n"
+                ),
+            )
+            raw = sqlite3.connect(db_path)
+            try:
+                raw.executescript(legacy_schema)
+                raw.execute("DELETE FROM schema_migrations")
+                raw.execute(
+                    """
+                    INSERT INTO schema_migrations(version, applied_at)
+                    VALUES (10, '2026-07-30T00:00:00Z')
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO videos(
+                      video_id, title, watch_progress_percent, watch_resume_seconds
+                    )
+                    VALUES ('legacyvideo', 'Legacy video', 64, 217)
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO history_events(
+                      event_id, video_id, watch_date, time_precision,
+                      watch_progress_percent, watch_resume_seconds
+                    )
+                    VALUES (
+                      'legacy-event', 'legacyvideo', '2026-07-30',
+                      'date_only', 51, 180
+                    )
+                    """
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                video_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+                }
+                event = conn.execute(
+                    """
+                    SELECT watch_progress_percent, watch_resume_seconds
+                    FROM history_events
+                    WHERE event_id = 'legacy-event'
+                    """
+                ).fetchone()
+                schema_version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertNotIn("watch_progress_percent", video_columns)
+        self.assertNotIn("watch_resume_seconds", video_columns)
+        self.assertEqual(
+            dict(event),
+            {
+                "watch_progress_percent": 51,
+                "watch_resume_seconds": 180,
+            },
+        )
         self.assertEqual(schema_version, core.SCHEMA_VERSION)
 
     def test_channel_first_seen_backfill_uses_earliest_library_evidence(self) -> None:
@@ -7032,7 +7173,7 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_metadata_worker_logs_watch_percentage_for_history_and_manual_videos(self) -> None:
+    def test_metadata_worker_does_not_log_or_store_watch_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
             conn = migrated_connection(db_path)
@@ -7042,8 +7183,19 @@ class WorkerQueueTests(unittest.TestCase):
                         conn,
                         "abc12345678",
                         title="History video",
-                        watch_progress_percent=64,
                         source="metadata",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watch_date, time_precision,
+                          watch_progress_percent
+                        )
+                        VALUES (
+                          'history-progress', 'abc12345678', '2026-07-30',
+                          'date_only', 64
+                        )
+                        """
                     )
                     core.enqueue_metadata_item(
                         conn,
@@ -7107,17 +7259,22 @@ class WorkerQueueTests(unittest.TestCase):
                     [
                         {
                             "level": "history",
-                            "message": (
-                                "ok: History video\n"
-                                "watch percentage: 0% reported by YT; 64% retained"
-                            ),
+                            "message": "ok: History video",
                         },
                         {
                             "level": "provided",
-                            "message": "ok: Manual video\nwatch percentage: 87%",
+                            "message": "ok: Manual video",
                         },
                     ],
                 )
+                progress = conn.execute(
+                    """
+                    SELECT watch_progress_percent
+                    FROM history_events
+                    WHERE event_id = 'history-progress'
+                    """
+                ).fetchone()["watch_progress_percent"]
+                self.assertEqual(progress, 64)
             finally:
                 conn.close()
 

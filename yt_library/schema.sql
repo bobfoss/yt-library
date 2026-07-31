@@ -67,8 +67,6 @@ CREATE TABLE IF NOT EXISTS videos (
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
   reaction TEXT NOT NULL DEFAULT '',
-  watch_progress_percent INTEGER NOT NULL DEFAULT 0,
-  watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
   is_playable INTEGER CHECK (is_playable IN (0, 1)),
   availability TEXT NOT NULL DEFAULT 'unknown',
   metadata_source TEXT NOT NULL DEFAULT '',

@@ -653,8 +653,8 @@ class NormalizedReadModelTests(unittest.TestCase):
         ):
             self.add_video(video_id, title)
         self.conn.executemany(
-            "UPDATE videos SET is_playable = 1, watch_progress_percent = ? WHERE video_id = ?",
-            [(100, "complete1"), (45, "partial1"), (0, "unknown1"), (0, "never1")],
+            "UPDATE videos SET is_playable = 1 WHERE video_id = ?",
+            [("complete1",), ("partial1",), ("unknown1",), ("never1",)],
         )
         self.conn.execute(
             "INSERT INTO playlists(playlist_id, title) VALUES ('PLfacet', 'Facet playlist')"
@@ -965,8 +965,8 @@ class NormalizedReadModelTests(unittest.TestCase):
         ]:
             self.add_video(video_id, title)
         self.conn.executemany(
-            "UPDATE videos SET is_playable = 1, watch_progress_percent = ? WHERE video_id = ?",
-            [(100, "complete1"), (40, "partial1"), (0, "unknown1"), (0, "never1")],
+            "UPDATE videos SET is_playable = 1 WHERE video_id = ?",
+            [("complete1",), ("partial1",), ("unknown1",), ("never1",)],
         )
         self.conn.execute(
             "INSERT INTO playlists(playlist_id, title) VALUES ('PLcompletion', 'Completion')"
@@ -989,6 +989,8 @@ class NormalizedReadModelTests(unittest.TestCase):
             VALUES (?, ?, '2026-07-30', 'date_only', ?)
             """,
             [
+                ("complete-watch", "complete1", 100),
+                ("partial-watch", "partial1", 40),
                 ("history-complete-watch", "history-complete1", 100),
                 ("unknown-watch", "unknown1", 0),
             ],

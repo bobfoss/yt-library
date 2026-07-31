@@ -202,7 +202,7 @@ LIKED_VIDEOS_PLAYLIST_ID = "LL"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 @dataclass(frozen=True)
@@ -398,6 +398,19 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (10, utc_now()),
+        )
+    if current_version < 11:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(videos)")
+        }
+        if "watch_progress_percent" in columns:
+            conn.execute("ALTER TABLE videos DROP COLUMN watch_progress_percent")
+        if "watch_resume_seconds" in columns:
+            conn.execute("ALTER TABLE videos DROP COLUMN watch_resume_seconds")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (11, utc_now()),
         )
 
 
@@ -972,8 +985,6 @@ def upsert_video(
     thumbnail_url: str = "",
     thumbnail_path: str = "",
     reaction: str = "",
-    watch_progress_percent: int | str | None = None,
-    watch_resume_seconds: int | str | None = None,
     is_playable: bool | int | None = None,
     availability: str = "",
     source: str = "",
@@ -1026,11 +1037,6 @@ def upsert_video(
     )
     if not availability and existing and incoming_playability is None:
         canonical_availability = existing["availability"]
-    existing_progress = bounded_int(existing["watch_progress_percent"]) if existing else 0
-    progress = bounded_int(watch_progress_percent) if watch_progress_percent is not None else existing_progress
-    if progress == 0 and existing_progress > 0:
-        progress = existing_progress
-    resume = max(0, int(watch_resume_seconds or 0)) if watch_resume_seconds is not None else (existing["watch_resume_seconds"] if existing else 0)
     last_seen = now if incoming_playability == 1 else (existing["last_seen_available_at"] if existing else None)
     metadata_source = source if authoritative and source else (existing["metadata_source"] if existing else source)
     values = (
@@ -1043,8 +1049,6 @@ def upsert_video(
         current("thumbnail_url", thumbnail_url),
         current("thumbnail_path", thumbnail_path),
         current("reaction", reaction),
-        progress,
-        resume,
         canonical_playability,
         canonical_availability,
         metadata_source,
@@ -1060,8 +1064,8 @@ def upsert_video(
             """
             UPDATE videos SET
               title=?, description=?, channel_id=?, duration_text=?, view_count=?, upload_date=?,
-              thumbnail_url=?, thumbnail_path=?, reaction=?, watch_progress_percent=?,
-              watch_resume_seconds=?, is_playable=?, availability=?, metadata_source=?,
+              thumbnail_url=?, thumbnail_path=?, reaction=?, is_playable=?,
+              availability=?, metadata_source=?,
               fetch_status=?, fetch_error=?, fetched_at=?, last_seen_available_at=?,
               last_checked_at=?, updated_at=?
             WHERE video_id=?
@@ -1073,11 +1077,10 @@ def upsert_video(
             """
             INSERT INTO videos(
               video_id, title, description, channel_id, duration_text, view_count, upload_date,
-              thumbnail_url, thumbnail_path, reaction, watch_progress_percent,
-              watch_resume_seconds, is_playable, availability, metadata_source,
+              thumbnail_url, thumbnail_path, reaction, is_playable, availability, metadata_source,
               fetch_status, fetch_error, fetched_at, last_seen_available_at,
               last_checked_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (video_id, *values),
         )
@@ -3546,7 +3549,6 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     channel_thumbnail_url = extract_channel_thumbnail_url(initial_data)
     channel_url = youtube_path_url(str(microformat.get("ownerProfileUrl") or "")) or extract_channel_url(initial_data)
     channel_id = extract_channel_id(initial_data, channel_url)
-    watch_progress_percent, watch_resume_seconds = find_video_card_watch_status(initial_data, video_id)
     reaction = extract_reaction_from_initial_data(initial_data)
     status = str(playability.get("status") or "").strip()
     reason = text_from_runs(playability.get("reason")).strip()
@@ -3574,8 +3576,6 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         "channel_thumbnail_url": channel_thumbnail_url,
         "reaction": reaction,
         "availability": availability,
-        "watch_progress_percent": str(watch_progress_percent),
-        "watch_resume_seconds": str(watch_resume_seconds),
         "playability_status": playability_status,
         "yt_status": status or ("OK" if title else ""),
     }
@@ -3699,8 +3699,6 @@ def store_video_metadata(
         thumbnail_url=metadata.get("thumbnail_url", ""),
         thumbnail_path=metadata.get("thumbnail_path", ""),
         reaction=metadata.get("reaction", ""),
-        watch_progress_percent=metadata.get("watch_progress_percent"),
-        watch_resume_seconds=metadata.get("watch_resume_seconds"),
         is_playable=playability,
         availability=availability,
         source="metadata",
@@ -3752,8 +3750,6 @@ def metadata_from_archivarix_video(video_id: str, video: dict[str, Any], thumbna
         "thumbnail_url": thumbnail_url or str(video.get("thumbnailArchiveUrl") or video.get("thumbnailUrl") or ""),
         "thumbnail_path": thumbnail_path,
         "reaction": "",
-        "watch_progress_percent": "0",
-        "watch_resume_seconds": "0",
         "yt_status": str(video.get("status") or ""),
     }
 
@@ -5148,6 +5144,7 @@ def save_youtube_history_events(
     existing = 0
     last_video_id = ""
     assignments: list[dict[str, Any]] = []
+    progress_guards: list[dict[str, Any]] = []
     for index, row in enumerate(rows, start=start):
         video_id = row.get("video_id") or ""
         if not video_id:
@@ -5180,13 +5177,39 @@ def save_youtube_history_events(
             channel_id=channel_id,
             channel_title=row.get("channel") or "",
             channel_url=channel_url,
-            watch_progress_percent=row.get("watch_progress_percent"),
-            watch_resume_seconds=row.get("watch_resume_seconds"),
             source="youtube_history",
             updated_at=now,
         )
-        progress = bounded_int(row.get("watch_progress_percent"))
-        resume = max(0, int(row.get("watch_resume_seconds") or 0))
+        reported_progress = bounded_int(row.get("watch_progress_percent"))
+        reported_resume = max(0, int(row.get("watch_resume_seconds") or 0))
+        stored_event = conn.execute(
+            """
+            SELECT watch_progress_percent, watch_resume_seconds
+            FROM history_events
+            WHERE event_id = ?
+            """,
+            (event_id,),
+        ).fetchone()
+        stored_progress = bounded_int(stored_event["watch_progress_percent"]) if stored_event else 0
+        stored_resume = max(0, int(stored_event["watch_resume_seconds"] or 0)) if stored_event else 0
+        progress = (
+            stored_progress
+            if reported_progress == 0 and stored_progress > 0
+            else reported_progress
+        )
+        resume = (
+            stored_resume
+            if reported_resume == 0 and stored_resume > 0
+            else reported_resume
+        )
+        if progress != reported_progress:
+            progress_guards.append(
+                {
+                    "video_id": video_id,
+                    "reported": reported_progress,
+                    "retained": progress,
+                }
+            )
         if old_ordinal is not None:
             conn.execute(
                 """
@@ -5261,6 +5284,7 @@ def save_youtube_history_events(
         "existing": existing,
         "last_video_id": last_video_id,
         "assignments": assignments,
+        "progress_guards": progress_guards,
     }
 
 
