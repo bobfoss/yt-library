@@ -31,6 +31,7 @@
     body.className = 'body';
     body.innerHTML = `
       ${options.resultKind ? `<div class="result-kind">${escapeHtml(options.resultKind)}</div>` : ''}
+      ${options.headerHtml || ''}
       <div class="title-row">
         ${options.titleHtml || ''}
         ${options.actionsHtml || ''}

@@ -2734,6 +2734,7 @@
         thumbnailPath: playlist.thumbnail_path,
         thumbnailHref: localHref,
         placeholderThumbnail: true,
+        headerHtml: owner ? `<div class="details video-card-channel">${owner}</div>` : '',
         titleHtml: `<a class="playlist-title" href="${localHref}">${escapeHtml(playlist.title)}</a>`,
         actionsHtml: `<a class="external-link" href="${escapeHtml(playlist.url)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(playlist.title)} on YouTube">${externalLinkSvg()}</a>`,
         bodyHtml: `
@@ -2743,7 +2744,6 @@
           ${playlistVisibilityLabelHtml(playlist)}
           ${playlistStatusLabelHtml(playlist)}
         </div>
-        ${owner ? `<div class="details">${owner}</div>` : ''}
         <div class="details">
           ${playlist.playlist_id ? `<span>${escapeHtml(playlist.playlist_id)}</span>` : ''}
         </div>

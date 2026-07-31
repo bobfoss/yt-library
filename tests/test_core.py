@@ -4639,6 +4639,18 @@ class AdminServerTests(unittest.TestCase):
             server.VIDEO_CARD_JS.index(video_card_channel),
             server.VIDEO_CARD_JS.index("${titleHtml(options)}"),
         )
+        playlist_card_start = server.INDEX_HTML.index("function cardFor(playlist, options = {})")
+        playlist_card_end = server.INDEX_HTML.index("function playlistStatusLabelHtml(playlist)")
+        playlist_card_html = server.INDEX_HTML[playlist_card_start:playlist_card_end]
+        self.assertIn(
+            'headerHtml: owner ? `<div class="details video-card-channel">${owner}</div>` : \'\',',
+            playlist_card_html,
+        )
+        self.assertNotIn('${owner ? `<div class="details">${owner}</div>` : \'\'}', playlist_card_html)
+        self.assertLess(
+            server.COLLECTION_CARD_JS.index("${options.headerHtml || ''}"),
+            server.COLLECTION_CARD_JS.index('<div class="title-row">'),
+        )
         self.assertIn(".video-card-channel .creator-link", server.INDEX_HTML)
         self.assertIn(
             "return usefulMetadataTitle(video) || video.title || '';",
