@@ -287,13 +287,15 @@
     .filter.child { margin-left: 18px; font-size: 13px; }
     .filter.grandchild { margin-left: 36px; font-size: 13px; }
     .history-list { display: grid; gap: 8px; }
+    .history-list.layout-grid { gap: 14px; }
     .history-row { display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: stretch; }
     .history-row .thumb-wrap,
     .history-row .thumb { height: 84px; min-height: 84px; }
     .history-row .body { padding: 10px 12px; }
     .history-row .description { -webkit-line-clamp: 2; }
     .history-row .details.playlist-sources { margin-top: 5px; }
-    .history-row.history-jump-target { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .history-list.layout-detailed .history-row .description { -webkit-line-clamp: 6; }
+    .history-card.history-jump-target { outline: 2px solid var(--accent); outline-offset: 2px; }
     .history-heatmap { width: min(100%, 760px); min-width: 0; margin: 0 auto; }
     .history-heatmap-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
     .history-heatmap-title { color: var(--muted); font-size: 12px; }
@@ -444,7 +446,8 @@
     let activeSearchPreset = '';
     let searchPlaylistGroupKey = '';
     let searchCardLayout = 'grid';
-    const searchCardLayouts = new Set(['grid', 'detailed', 'compact']);
+    let historyCardLayout = 'detailed';
+    const cardLayouts = new Set(['grid', 'detailed', 'compact']);
     const searchPresetDefinitions = {
       videos: { kind: 'videos', sort: 'newest' },
       'playlist-videos': { kind: 'videos', sort: 'newest' },
@@ -637,6 +640,11 @@
       if (value === '__search__') return searchHash();
       const viewHash = viewHashBySelection.get(value);
       const base = viewHash ? `#view=${viewHash}` : '#search';
+      if (value === '__history__') {
+        const params = includePagination ? paginationParams() : new URLSearchParams();
+        if (historyCardLayout !== 'detailed') params.set('layout', historyCardLayout);
+        return appendHashParams(base, params);
+      }
       return includePagination ? appendHashParams(base, paginationParams()) : base;
     }
 
@@ -867,7 +875,7 @@
       searchSortExplicit = params.has('sort');
       searchResultsSort = params.get('sort') || defaultSearchResultsSort(search.value.trim());
       const requestedLayout = params.get('layout') || 'grid';
-      searchCardLayout = searchCardLayouts.has(requestedLayout) ? requestedLayout : 'grid';
+      searchCardLayout = cardLayouts.has(requestedLayout) ? requestedLayout : 'grid';
       pageSize = params.get('size') || '100';
       const page = Number(params.get('page') || 1);
       currentPage = Number.isFinite(page) && page > 0 ? page : 1;
@@ -939,6 +947,10 @@
       }
       if (base.startsWith('#view=')) {
         const view = decodeURIComponent(base.slice('#view='.length));
+        if (view === 'history') {
+          const requestedLayout = params.get('layout') || 'detailed';
+          historyCardLayout = cardLayouts.has(requestedLayout) ? requestedLayout : 'detailed';
+        }
         if (selectionByViewHash.has(view)) return selectionByViewHash.get(view);
       }
       return '__search__';
@@ -1807,17 +1819,21 @@
     async function renderHistoryView() {
       title.textContent = 'History';
       meta.textContent = 'Loading history...';
-      grid.className = 'history-list';
+      applyHistoryCardLayout();
       empty.hidden = true;
       const [payload, activity] = await Promise.all([fetchHistoryPage(), fetchHistoryActivity()]);
       const rows = payload.watch || [];
       const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
       const pageInfo = remotePageInfo(total, rows.length);
-      meta.innerHTML = rightPanelListMetaHtml(`${total} watches`);
+      meta.innerHTML = rightPanelListMetaHtml(`${total} watches`, {
+        showLayout: true,
+        layout: historyCardLayout,
+        layoutContext: 'history',
+      });
       viewContext.hidden = false;
       viewContext.replaceChildren(historyHeatmapFor(activity));
       renderPager(pageInfo);
-      grid.replaceChildren(...rows.map(historyRowCardFor));
+      grid.replaceChildren(...rows.map(row => historyRowCardFor(row, { layout: historyCardLayout })));
       empty.hidden = rows.length !== 0;
       empty.textContent = 'No history rows match.';
       scrollToPendingHistoryDate();
@@ -2094,7 +2110,7 @@
       return '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="2" width="7" height="7" rx="1"></rect><rect x="11" y="2" width="7" height="7" rx="1"></rect><rect x="2" y="11" width="7" height="7" rx="1"></rect><rect x="11" y="11" width="7" height="7" rx="1"></rect></svg>';
     }
 
-    function searchCardLayoutHtml() {
+    function cardLayoutHtml(activeLayout, context) {
       const options = [
         ['grid', 'Grid'],
         ['detailed', 'Detailed list'],
@@ -2103,7 +2119,7 @@
       return `
         <div class="card-layout-control" role="group" aria-label="Card layout">
           ${options.map(([value, label]) => `
-            <button class="card-layout-button${searchCardLayout === value ? ' active' : ''}" type="button" data-card-layout="${value}" title="${label}" aria-label="${label}" aria-pressed="${searchCardLayout === value}">
+            <button class="card-layout-button${activeLayout === value ? ' active' : ''}" type="button" data-card-layout="${value}" data-card-layout-context="${context}" title="${label}" aria-label="${label}" aria-pressed="${activeLayout === value}">
               ${cardLayoutIconSvg(value)}
             </button>
           `).join('')}
@@ -2111,14 +2127,17 @@
       `;
     }
 
-    function rightPanelListMetaHtml(summary, { showLayout = false, sortHtml = '' } = {}) {
+    function rightPanelListMetaHtml(
+      summary,
+      { showLayout = false, layout = searchCardLayout, layoutContext = 'search', sortHtml = '' } = {},
+    ) {
       return `
         <div class="search-result-meta">
           <div class="search-result-summary">
             <span>${escapeHtml(summary)}</span>
             ${(showLayout || sortHtml) ? `
               <span class="result-view-controls">
-                ${showLayout ? searchCardLayoutHtml() : ''}
+                ${showLayout ? cardLayoutHtml(layout, layoutContext) : ''}
                 ${sortHtml}
               </span>
             ` : ''}
@@ -2129,6 +2148,13 @@
 
     function applySearchCardLayout() {
       grid.className = `grid search-grid layout-${searchCardLayout}`;
+    }
+
+    function applyHistoryCardLayout() {
+      grid.className = `grid search-grid history-list layout-${historyCardLayout}`;
+      for (const card of grid.querySelectorAll('.history-card')) {
+        card.classList.toggle('history-row', historyCardLayout !== 'grid');
+      }
     }
 
     function playlistSourceLinksHtml(video) {
@@ -2917,7 +2943,7 @@
       return video.watch_date || '';
     }
 
-    function historyRowCardFor(video) {
+    function historyRowCardFor(video, { layout = 'detailed' } = {}) {
       const watched = historyWatchedAtLabel(video);
       const article = playlistVideoCardFor(video, {
         playlistSourcesHtml: playlistSourceLinksHtml(video),
@@ -2925,7 +2951,8 @@
           ? `<div class="details"><span>Watched ${escapeHtml(watched)}</span></div>`
           : '',
       });
-      article.classList.add('history-row');
+      article.classList.add('history-card');
+      article.classList.toggle('history-row', layout !== 'grid');
       if (video.watch_date) article.dataset.watchDate = video.watch_date;
       if (!article.querySelector('.thumb-wrap')) {
         const placeholder = document.createElement('div');
@@ -3112,15 +3139,23 @@
       const button = event.target.closest('[data-card-layout]');
       if (!(button instanceof HTMLButtonElement)) return;
       const layout = button.dataset.cardLayout || '';
-      if (!searchCardLayouts.has(layout) || layout === searchCardLayout) return;
-      searchCardLayout = layout;
-      applySearchCardLayout();
-      for (const option of meta.querySelectorAll('[data-card-layout]')) {
+      const context = button.dataset.cardLayoutContext || 'search';
+      const activeLayout = context === 'history' ? historyCardLayout : searchCardLayout;
+      if (!cardLayouts.has(layout) || layout === activeLayout) return;
+      if (context === 'history') {
+        historyCardLayout = layout;
+        applyHistoryCardLayout();
+        updateCurrentHash(true);
+      } else {
+        searchCardLayout = layout;
+        applySearchCardLayout();
+        updateSearchHash(true);
+      }
+      for (const option of meta.querySelectorAll(`[data-card-layout-context="${context}"]`)) {
         const active = option.dataset.cardLayout === layout;
         option.classList.toggle('active', active);
         option.setAttribute('aria-pressed', String(active));
       }
-      updateSearchHash(true);
     });
     meta.addEventListener('input', event => {
       const target = event.target;

@@ -4937,8 +4937,12 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("const kindsValue = selectedSearchResultKinds().join(',') || '__none__';", server.INDEX_HTML)
         self.assertIn("playlist_group_key: searchPlaylistGroupKey,", server.INDEX_HTML)
         self.assertIn("if (searchCardLayout !== 'grid') params.set('layout', searchCardLayout);", server.INDEX_HTML)
+        self.assertIn("let historyCardLayout = 'detailed';", server.INDEX_HTML)
+        self.assertIn("if (historyCardLayout !== 'detailed') params.set('layout', historyCardLayout);", server.INDEX_HTML)
+        self.assertIn("layoutContext: 'history',", server.INDEX_HTML)
         self.assertIn("function rightPanelListMetaHtml(", server.INDEX_HTML)
         self.assertIn("data-card-layout=", server.INDEX_HTML)
+        self.assertIn("data-card-layout-context=", server.INDEX_HTML)
         self.assertIn(
             "completionCounts: videoCompletionCountsCache.get(metaCountsKey)",
             server.INDEX_HTML,
