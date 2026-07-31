@@ -919,35 +919,47 @@ def identify_channel_first_seen(conn: sqlite3.Connection, channel_id: str) -> st
 
 
 def backfill_channel_first_seen(conn: sqlite3.Connection) -> dict[str, int]:
-    missing_ids = {
-        row["channel_id"]
+    current_values = {
+        row["channel_id"]: row["first_seen_at"] or ""
         for row in conn.execute(
             """
-            SELECT channel_id
+            SELECT channel_id, first_seen_at
             FROM channels
-            WHERE COALESCE(first_seen_at, '') = ''
             """
         )
+    }
+    missing_ids = {
+        channel_id
+        for channel_id, first_seen_at in current_values.items()
+        if not first_seen_at
     }
     evidence = channel_first_seen_evidence(conn)
     updates = [
         (first_seen_at, channel_id)
         for channel_id, first_seen_at in evidence.items()
-        if channel_id in missing_ids
+        if channel_id in current_values
+        and (
+            not current_values[channel_id]
+            or first_seen_at < current_values[channel_id]
+        )
     ]
     conn.executemany(
         """
         UPDATE channels
         SET first_seen_at = ?
         WHERE channel_id = ?
-          AND COALESCE(first_seen_at, '') = ''
         """,
         updates,
+    )
+    resolved_missing = sum(
+        1
+        for _first_seen_at, channel_id in updates
+        if channel_id in missing_ids
     )
     return {
         "missing": len(missing_ids),
         "updated": len(updates),
-        "unresolved": len(missing_ids) - len(updates),
+        "unresolved": len(missing_ids) - resolved_missing,
     }
 
 
@@ -1028,6 +1040,9 @@ def upsert_video(
     else:
         canonical_title = ""
     canonical_channel = channel_id if authoritative and channel_id else ((existing["channel_id"] if existing else None) or channel_id)
+    channel_association_changed = bool(canonical_channel) and (
+        not existing or (existing["channel_id"] or "") != canonical_channel
+    )
     incoming_playability = None if is_playable is None else int(bool(is_playable))
     canonical_playability = incoming_playability if incoming_playability is not None else (existing["is_playable"] if existing else None)
     canonical_availability = normalize_video_availability(
@@ -1084,6 +1099,8 @@ def upsert_video(
             """,
             (video_id, *values),
         )
+    if channel_association_changed:
+        identify_channel_first_seen(conn, canonical_channel)
     return video_id
 
 
@@ -5167,6 +5184,7 @@ def save_youtube_history_events(
             row.get("channel_id") or youtube_channel_id_from_url(channel_url),
             title=row.get("channel") or "",
             url=channel_url,
+            first_seen_at=row.get("watched_at") or row.get("watch_date") or None,
             source="youtube_history",
             updated_at=now,
         )
@@ -7835,6 +7853,7 @@ def import_history(args: argparse.Namespace) -> dict[str, Any]:
                     row.get("channel_id") or youtube_channel_id_from_url(row["channel_url"]),
                     title=row["channel"],
                     url=row["channel_url"],
+                    first_seen_at=watched_at_iso or None,
                     source="takeout_history",
                     updated_at=imported_at,
                 )

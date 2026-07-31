@@ -2333,6 +2333,37 @@ class CoreHelperTests(unittest.TestCase):
             ],
         )
 
+    def test_youtube_history_sets_channel_first_seen_from_watch_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.save_youtube_history_events(
+                        conn,
+                        [
+                            {
+                                "video_id": "historyvid",
+                                "watch_date": "2021-07-06",
+                                "channel_id": "UChistory",
+                                "channel": "History channel",
+                            }
+                        ],
+                        1,
+                        {},
+                        Counter(),
+                    )
+                first_seen_at = conn.execute(
+                    """
+                    SELECT first_seen_at
+                    FROM channels
+                    WHERE channel_id = 'UChistory'
+                    """
+                ).fetchone()["first_seen_at"]
+            finally:
+                conn.close()
+
+        self.assertEqual(first_seen_at, "2021-07-06")
+
     def test_youtube_takeout_match_count_is_scoped_to_the_fetched_batch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             conn = migrated_connection(Path(tmp) / "library.sqlite3")
@@ -3024,6 +3055,12 @@ class SchemaTests(unittest.TestCase):
                         title="Unresolved channel",
                         updated_at="2026-07-29T12:00:00Z",
                     )
+                    core.upsert_channel(
+                        conn,
+                        "UClate",
+                        title="Late-linked channel",
+                        updated_at="2026-07-29T12:00:00Z",
+                    )
                     core.upsert_video(
                         conn,
                         "seenvideo",
@@ -3055,7 +3092,30 @@ class SchemaTests(unittest.TestCase):
                         VALUES ('PLseen', 1, 'seenvideo', '2026-05-01T12:00:00Z')
                         """
                     )
-                    conn.execute("UPDATE channels SET first_seen_at = NULL")
+                    core.upsert_video(
+                        conn,
+                        "latevideo",
+                        title="Late-linked video",
+                        channel_id="UClate",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watched_at, watch_date, time_precision
+                        )
+                        VALUES (
+                          'late-history', 'latevideo', '2021-07-06T13:28:35Z',
+                          '2021-07-06', 'exact'
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        UPDATE channels
+                        SET first_seen_at = NULL
+                        WHERE channel_id IN ('UCseen', 'UCunresolved')
+                        """
+                    )
 
                 before = conn.execute(
                     "SELECT first_seen_at FROM channels WHERE channel_id = 'UCseen'"
@@ -3074,10 +3134,52 @@ class SchemaTests(unittest.TestCase):
         self.assertIsNone(before)
         self.assertEqual(
             stats,
-            {"missing": 2, "updated": 1, "unresolved": 1},
+            {"missing": 2, "updated": 2, "unresolved": 1},
         )
         self.assertEqual(rows["UCseen"], "2026-05-01T12:00:00Z")
         self.assertIsNone(rows["UCunresolved"])
+        self.assertEqual(rows["UClate"], "2021-07-06T13:28:35Z")
+
+    def test_late_video_channel_link_reconciles_first_seen(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "latevideo",
+                        title="Late-linked video",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watched_at, watch_date, time_precision
+                        )
+                        VALUES (
+                          'late-history', 'latevideo', '2021-07-06T13:28:35Z',
+                          '2021-07-06', 'exact'
+                        )
+                        """
+                    )
+                    core.upsert_video(
+                        conn,
+                        "latevideo",
+                        channel_id="UClate",
+                        channel_title="Late-linked channel",
+                        source="archivarix",
+                        updated_at="2026-07-30T23:12:23Z",
+                    )
+                first_seen_at = conn.execute(
+                    """
+                    SELECT first_seen_at
+                    FROM channels
+                    WHERE channel_id = 'UClate'
+                    """
+                ).fetchone()["first_seen_at"]
+            finally:
+                conn.close()
+
+        self.assertEqual(first_seen_at, "2021-07-06T13:28:35Z")
 
     def test_manual_channel_enqueue_identifies_first_seen_without_automatic_backfill(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -4645,7 +4747,7 @@ class AdminServerTests(unittest.TestCase):
             server.ADMIN_HTML.index("<h2>History</h2>"),
         )
 
-    def test_channel_first_seen_endpoint_updates_only_missing_values(self) -> None:
+    def test_channel_first_seen_endpoint_corrects_late_values(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
             conn = migrated_connection(db_path)
@@ -4666,13 +4768,6 @@ class AdminServerTests(unittest.TestCase):
                         VALUES (
                           'endpoint-history', 'endpointvid', '2026-03-02', 'date_only'
                         )
-                        """
-                    )
-                    conn.execute(
-                        """
-                        UPDATE channels
-                        SET first_seen_at = NULL
-                        WHERE channel_id = 'UCendpoint'
                         """
                     )
             finally:
@@ -4700,7 +4795,7 @@ class AdminServerTests(unittest.TestCase):
 
         self.assertEqual(
             response,
-            {"ok": True, "missing": 1, "updated": 1, "unresolved": 0},
+            {"ok": True, "missing": 0, "updated": 1, "unresolved": 0},
         )
         self.assertEqual(first_seen_at, "2026-03-02")
 
