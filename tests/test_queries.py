@@ -1277,6 +1277,10 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.add_video("old123", "Old Router Video")
         self.add_video("new123", "AT&T Fiber Without the Gateway")
         self.conn.executemany(
+            "UPDATE videos SET is_playable = 1, availability = ? WHERE video_id = ?",
+            [("unlisted", "old123"), ("public", "new123")],
+        )
+        self.conn.executemany(
             """
             INSERT INTO history_events(
               event_id, video_id, watched_at, watch_date, time_precision, source_type, match_type
@@ -1291,6 +1295,13 @@ class NormalizedReadModelTests(unittest.TestCase):
 
         data = history_search_data(self.conn, "")
         self.assertEqual([row["video_id"] for row in data["watch"]], ["new123", "old123"])
+        self.assertEqual(
+            [
+                (row["video_id"], row["is_playable"], row["availability"])
+                for row in data["watch"]
+            ],
+            [("new123", 1, "public"), ("old123", 1, "unlisted")],
+        )
         filtered = history_search_data(self.conn, "fiber")
         self.assertEqual([row["video_id"] for row in filtered["watch"]], ["new123"])
 

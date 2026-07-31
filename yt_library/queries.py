@@ -1702,6 +1702,8 @@ def history_search_data(
                    v.thumbnail_path AS metadata_thumbnail_path,
                    COALESCE(ch.thumbnail_path, '') AS metadata_channel_thumbnail_path,
                    v.reaction,
+                   v.is_playable,
+                   v.availability,
                    COALESCE(he.watch_progress_percent, 0) AS watch_progress_percent,
                    COALESCE(he.watch_resume_seconds, 0) AS watch_resume_seconds,
                    counts.watch_count,
