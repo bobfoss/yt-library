@@ -293,6 +293,85 @@ class NormalizedReadModelTests(unittest.TestCase):
             ],
         )
 
+    def test_omni_search_newest_uses_youtube_ordinal_within_a_day(self) -> None:
+        self.add_video("ordinalnew1", "Zulu newest")
+        self.add_video("ordinalold1", "Alphabetically first")
+        self.conn.execute(
+            """
+            UPDATE videos
+            SET is_playable = 1
+            WHERE video_id IN ('ordinalnew1', 'ordinalold1')
+            """
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watch_date, time_precision, youtube_ordinal
+            )
+            VALUES (?, ?, '2026-07-30', 'date_only', ?)
+            """,
+            [
+                ("newest-ordinal-watch", "ordinalnew1", 1),
+                ("older-ordinal-watch", "ordinalold1", 2),
+            ],
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "",
+            channel_subscription_filters=set(),
+            playlist_meta_filters=set(),
+            sort="newest",
+            limit=20,
+            display_timezone="America/Los_Angeles",
+        )
+
+        self.assertEqual(
+            [result["item"]["video_id"] for result in data["results"]],
+            ["ordinalnew1", "ordinalold1"],
+        )
+
+    def test_omni_search_newest_uses_ordinal_from_latest_watch_date(self) -> None:
+        self.add_video("repeatvideo", "Repeat video")
+        self.add_video("othervideo1", "Other video")
+        self.conn.execute(
+            """
+            UPDATE videos
+            SET is_playable = 1
+            WHERE video_id IN ('repeatvideo', 'othervideo1')
+            """
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watch_date, time_precision, youtube_ordinal
+            )
+            VALUES (?, ?, ?, 'date_only', ?)
+            """,
+            [
+                ("repeat-old-watch", "repeatvideo", "2026-07-29", 1),
+                ("repeat-new-watch", "repeatvideo", "2026-07-30", 2),
+                ("other-new-watch", "othervideo1", "2026-07-30", 1),
+            ],
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "",
+            channel_subscription_filters=set(),
+            playlist_meta_filters=set(),
+            sort="newest",
+            limit=20,
+            display_timezone="America/Los_Angeles",
+        )
+
+        self.assertEqual(
+            [result["item"]["video_id"] for result in data["results"]],
+            ["othervideo1", "repeatvideo"],
+        )
+
     def test_omni_search_uses_channel_first_seen_and_ranks_fallback_dates_last(self) -> None:
         self.add_video("datedvideo", "Dated video")
         self.conn.execute(

@@ -931,6 +931,7 @@ def _omni_result(
         "_sort_date": str(sort_date),
         "_sort_date_fallback": sort_date_fallback,
         "_watch_count": watch_count,
+        "_history_ordinal": int(item.get("latest_youtube_ordinal") or 0),
     }
 
 
@@ -940,6 +941,12 @@ def _sort_omni_results(results: list[dict[str, Any]], sort: str) -> None:
     if sort == "relevance":
         results.sort(key=lambda result: (result["score"], kind_rank.get(result["kind"], 99)))
     elif sort == "newest":
+        results.sort(
+            key=lambda result: (
+                not bool(result["_history_ordinal"]),
+                result["_history_ordinal"] or 0,
+            )
+        )
         results.sort(key=lambda result: result["_sort_date"], reverse=True)
         results.sort(key=lambda result: result["_sort_date_fallback"])
     elif sort == "oldest":
@@ -1370,6 +1377,18 @@ def omni_search_data(
               FROM history_events he
               JOIN candidate_videos candidate ON candidate.video_id = he.video_id
               GROUP BY he.video_id
+            ),
+            latest_history_position AS (
+              SELECT he.video_id,
+                     he.youtube_ordinal,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY he.video_id
+                       ORDER BY COALESCE(he.watched_at, he.watch_date) DESC,
+                                he.youtube_ordinal ASC
+                     ) AS position_rank
+              FROM history_events he
+              JOIN candidate_videos candidate ON candidate.video_id = he.video_id
+              WHERE he.youtube_ordinal IS NOT NULL
             )
             SELECT v.video_id,
                    v.title,
@@ -1381,6 +1400,7 @@ def omni_search_data(
                    COALESCE(ps.playlist_count, 0) AS playlist_count,
                    COALESCE(hs.watch_count, 0) AS watch_count,
                    COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
+                   COALESCE(lhp.youtube_ordinal, 0) AS latest_youtube_ordinal,
                    COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent,
                    candidate.title_hit,
                    candidate.is_playable,
@@ -1390,6 +1410,8 @@ def omni_search_data(
             JOIN videos v ON v.video_id = candidate.video_id
             LEFT JOIN playlist_stats ps ON ps.video_id = v.video_id
             LEFT JOIN history_stats hs ON hs.video_id = v.video_id
+            LEFT JOIN latest_history_position lhp
+              ON lhp.video_id = v.video_id AND lhp.position_rank = 1
             """,
             params,
         ):
@@ -1541,6 +1563,7 @@ def omni_search_data(
         result.pop("_sort_date", None)
         result.pop("_sort_date_fallback", None)
         result.pop("_watch_count", None)
+        result.pop("_history_ordinal", None)
     return {
         "query": query,
         "searchFields": sorted(active_search_fields),
