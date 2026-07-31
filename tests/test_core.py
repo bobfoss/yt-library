@@ -4758,7 +4758,7 @@ class AdminServerTests(unittest.TestCase):
             "function showSearchMetaProgress(groupName)"
         )
         show_progress_end = server.INDEX_HTML.index(
-            "function stopSearchHeaderProgress()"
+            "function stopSearchHeaderProgress(progressToken = null)"
         )
         self.assertNotIn(
             "stopSearchMetaProgress();",
@@ -4796,14 +4796,17 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn('data-search-kind-filter="${kind}"', server.INDEX_HTML)
-        self.assertIn('<span class="count">${filterCountText(count)}</span>', server.INDEX_HTML)
+        self.assertIn(
+            '<span class="count">${kindEnabled ? filterCountText(count) : \'\'}</span>',
+            server.INDEX_HTML,
+        )
         self.assertIn("kind: 'playlists', showAll: false", server.INDEX_HTML)
         self.assertIn(
             "searchForFilters.querySelectorAll(`[data-search-kind-facet=\"${kind}\"]`)",
             server.INDEX_HTML,
         )
         count_position = server.INDEX_HTML.index(
-            '<span class="count">${filterCountText(count)}</span>'
+            '<span class="count">${kindEnabled ? filterCountText(count) : \'\'}</span>'
         )
         progress_position = server.INDEX_HTML.index(
             '<span class="search-meta-progress" data-search-meta-progress="${kind}"',
@@ -4864,7 +4867,6 @@ class AdminServerTests(unittest.TestCase):
             "if (selected !== '__search__') {\n"
             "        searchResultsRendered = false;\n"
             "        stopSearchMetaProgress();\n"
-            "        stopSearchHeaderProgress();\n"
             "      }",
             server.INDEX_HTML,
         )
@@ -4963,6 +4965,10 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("decoratorHtml: thumbIconHtml('dislike', false)", server.INDEX_HTML)
         self.assertIn("meta-filter-decorated", server.INDEX_HTML)
         self.assertIn(".search-meta-facet .meta-filter-count { font-size: 12px; font-weight: 400; }", server.INDEX_HTML)
+        self.assertIn(".search-meta-kind.kind-disabled > .search-meta-row-title { opacity: .42; }", server.INDEX_HTML)
+        self.assertIn("counts: searchKindEnabled(kind) ? counts : null", server.INDEX_HTML)
+        self.assertIn("beginSidebarNavigationProgress()", server.INDEX_HTML)
+        self.assertIn("finishSidebarNavigationProgress(progressToken)", server.INDEX_HTML)
         self.assertIn('class="meta-filter-count">${countText}</span>', server.INDEX_HTML)
         self.assertIn(
             '${escapeHtml(value)} <span class="meta-filter-count">${countText}</span>',

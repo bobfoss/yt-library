@@ -91,6 +91,9 @@
     .search-for-title { margin-top: 5px; }
     .search-meta-groups { display: grid; gap: 10px; }
     .search-meta-kind { display: grid; gap: 5px; }
+    .search-meta-kind.kind-disabled > .search-meta-row-title { opacity: .42; }
+    .search-meta-kind.kind-disabled > .search-meta-row-title .count,
+    .search-meta-kind.kind-disabled .meta-filter-count { display: none; }
     .search-meta-kind-children { display: grid; gap: 5px; padding-left: 18px; }
     .search-meta-facet { display: grid; gap: 5px; }
     .search-meta-facet.dimmed { opacity: .42; }
@@ -498,6 +501,8 @@
     let searchResultsRendered = false;
     let searchMetaProgressTimer = null;
     let searchHeaderProgressTimer = null;
+    let searchHeaderProgressToken = 0;
+    let pendingSidebarProgressToken = null;
     let pendingSearchMetaGroups = new Set();
     let searchMetaProgressDots = '';
     let searchInputTimer = null;
@@ -975,6 +980,7 @@
     function activateSearchPreset(preset, groupKey = '') {
       const definition = searchPresetDefinitions[preset];
       if (!definition) return;
+      const progressToken = beginSidebarNavigationProgress();
       selected = '__search__';
       search.value = '';
       for (const input of searchFields) input.checked = true;
@@ -988,10 +994,11 @@
         return;
       }
       renderGroups();
-      render();
+      void render().finally(() => finishSidebarNavigationProgress(progressToken));
     }
 
     function activateUnscopedSearch() {
+      const progressToken = beginSidebarNavigationProgress();
       selected = '__search__';
       activeSearchPreset = '';
       searchPlaylistGroupKey = '';
@@ -1005,10 +1012,11 @@
         return;
       }
       renderGroups();
-      render();
+      void render().finally(() => finishSidebarNavigationProgress(progressToken));
     }
 
     function setSelected(value) {
+      const progressToken = beginSidebarNavigationProgress();
       selected = value;
       if (value !== '__search__') search.value = '';
       currentPage = 1;
@@ -1039,7 +1047,7 @@
         }
       }
       renderGroups();
-      render();
+      void render().finally(() => finishSidebarNavigationProgress(progressToken));
     }
 
     function resetPlaylistVisibilityFor(playlistId) {
@@ -1146,12 +1154,14 @@
         for (const row of searchForFilters.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
           row.classList.toggle('dimmed', !everyFacetHasSelection);
         }
+        parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !everyFacetHasSelection);
         return;
       }
       syncFilterGroup(
         parent,
         [...searchForFilters.querySelectorAll(`[data-meta-child-filter="search-${kind}"]`)],
       );
+      parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !parent.checked);
     }
 
     function searchKindForFacet(facetKey) {
@@ -1533,7 +1543,8 @@
       }
     }
 
-    function stopSearchHeaderProgress() {
+    function stopSearchHeaderProgress(progressToken = null) {
+      if (progressToken !== null && progressToken !== searchHeaderProgressToken) return;
       if (searchHeaderProgressTimer !== null) {
         clearInterval(searchHeaderProgressTimer);
         searchHeaderProgressTimer = null;
@@ -1545,9 +1556,21 @@
 
     function showSearchHeaderProgress() {
       stopSearchHeaderProgress();
+      const progressToken = ++searchHeaderProgressToken;
       searchProgressStatus.hidden = false;
       searchProgressStatus.setAttribute('aria-busy', 'true');
       searchHeaderProgressTimer = progressMessageAnimation(searchProgressStatus, 'Loading');
+      return progressToken;
+    }
+
+    function beginSidebarNavigationProgress() {
+      pendingSidebarProgressToken = showSearchHeaderProgress();
+      return pendingSidebarProgressToken;
+    }
+
+    function finishSidebarNavigationProgress(progressToken) {
+      if (pendingSidebarProgressToken === progressToken) pendingSidebarProgressToken = null;
+      stopSearchHeaderProgress(progressToken);
     }
 
     function showSearchProgress({ preserveContent = false } = {}) {
@@ -2043,7 +2066,7 @@
               filterAttribute: 'search-meta-filter',
               filterValuePrefix: `${key}:`,
               visibility,
-              counts,
+              counts: searchKindEnabled(kind) ? counts : null,
               definitions,
               allLabel,
               showAll,
@@ -2051,17 +2074,20 @@
           </div>
         </div>
       `;
-      const kindHtml = (titleText, kind, count, facetsHtml) => `
-        <div class="search-meta-kind">
+      const kindHtml = (titleText, kind, count, facetsHtml) => {
+        const kindEnabled = searchKindEnabled(kind);
+        return `
+        <div class="search-meta-kind${kindEnabled ? '' : ' kind-disabled'}">
           <label class="search-meta-row-title">
             <input type="checkbox" data-search-kind-filter="${kind}">
             <span>${titleText}</span>
-            <span class="count">${filterCountText(count)}</span>
+            <span class="count">${kindEnabled ? filterCountText(count) : ''}</span>
             <span class="search-meta-progress" data-search-meta-progress="${kind}" aria-hidden="true"></span>
           </label>
           <div class="search-meta-kind-children">${facetsHtml}</div>
         </div>
       `;
+      };
       return [
         kindHtml('Videos', 'videos', metaCounts?.videos?.total, [
           facetHtml({ key: 'videos', visibility: searchMetaVisibility.videos, definitions: videoMetaFilterDefinitions, counts: metaCounts?.videos, allLabel: 'Availability', kind: 'videos' }),
@@ -2595,7 +2621,6 @@
       if (selected !== '__search__') {
         searchResultsRendered = false;
         stopSearchMetaProgress();
-        stopSearchHeaderProgress();
       }
       if (!data) {
         title.textContent = '';
@@ -3238,6 +3263,8 @@
       });
     }
     window.addEventListener('hashchange', () => {
+      const progressToken = pendingSidebarProgressToken;
+      pendingSidebarProgressToken = null;
       const previousSelection = selected;
       selected = selectionFromHash();
       if (selected !== previousSelection || !selected.startsWith('__channel__:')) {
@@ -3246,7 +3273,13 @@
       if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
       if (selected !== '__search__') search.value = '';
       renderGroups();
-      render();
+      void render().finally(() => {
+        if (progressToken !== null) {
+          finishSidebarNavigationProgress(progressToken);
+        } else if (selected !== '__search__') {
+          stopSearchHeaderProgress();
+        }
+      });
     });
     refresh.addEventListener('click', () => {
       const preserveSearchContent = (
