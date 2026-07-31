@@ -25,6 +25,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "host": "127.0.0.1",
     "port": 8765,
     "display_timezone": "",
+    "search_card_layout": "grid",
+    "history_card_layout": "compact",
     "use_proxy": False,
     "proxy": "",
     "dispatch_mode": "delay",
@@ -41,6 +43,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 _LEGACY_YOUTUBE_REQUEST_INTERVAL_SECONDS = 5.0
 _LEGACY_ARCHIVARIX_REQUEST_INTERVAL_SECONDS = 3.0
+CARD_LAYOUTS = frozenset({"grid", "detailed", "compact"})
 
 
 def configured_display_timezone(config: dict[str, Any]) -> str:
@@ -56,6 +59,23 @@ def configured_display_timezone(config: dict[str, Any]) -> str:
 
 def effective_display_timezone(config: dict[str, Any]) -> str:
     return configured_display_timezone(config) or "UTC"
+
+
+def configured_card_layout(
+    config: dict[str, Any],
+    key: str,
+    default: str,
+) -> str:
+    value = str(config.get(key) or "").strip().lower()
+    return value if value in CARD_LAYOUTS else default
+
+
+def configured_search_card_layout(config: dict[str, Any]) -> str:
+    return configured_card_layout(config, "search_card_layout", "grid")
+
+
+def configured_history_card_layout(config: dict[str, Any]) -> str:
+    return configured_card_layout(config, "history_card_layout", "compact")
 
 
 def configured_dispatch_mode(config: dict[str, Any]) -> str:
@@ -277,6 +297,8 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
     config["request_delay_max_seconds"] = request_delay_max
     config["youtube_max_in_flight"] = configured_youtube_max_in_flight(config)
     config["archivarix_max_in_flight"] = configured_archivarix_max_in_flight(config)
+    config["search_card_layout"] = configured_search_card_layout(config)
+    config["history_card_layout"] = configured_history_card_layout(config)
     configured_proxy_address(config)
     config["_config_path"] = str(path)
     return config

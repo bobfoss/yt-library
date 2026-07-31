@@ -18,12 +18,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import (
+    CARD_LAYOUTS,
     configured_archivarix_max_in_flight,
     configured_dispatch_mode,
     configured_display_timezone,
+    configured_history_card_layout,
     configured_job_dispatch_delay,
     configured_proxy_address,
     configured_request_delay_range,
+    configured_search_card_layout,
     configured_use_proxy,
     configured_youtube_max_in_flight,
     effective_display_timezone,
@@ -229,7 +232,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/settings":
             conn = connect(self.db_path)
             try:
-                self.send_json({"displayTimezone": self.display_timezone_name(conn)})
+                self.send_json(
+                    {
+                        "displayTimezone": self.display_timezone_name(conn),
+                        **self.layout_settings(),
+                    }
+                )
             finally:
                 conn.close()
             return
@@ -538,6 +546,20 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if parsed.path == "/api/settings/layout":
+            context = (params.get("context") or [""])[0].strip().lower()
+            layout = (params.get("value") or [""])[0].strip().lower()
+            config_key = {
+                "search": "search_card_layout",
+                "history": "history_card_layout",
+            }.get(context)
+            if config_key is None or layout not in CARD_LAYOUTS:
+                self.send_json({"error": "Invalid card layout preference"}, status=400)
+                return
+            self.config_data[config_key] = layout
+            save_config(self.config_data)
+            self.send_json({"ok": True, "context": context, "layout": layout})
+            return
         if parsed.path == "/api/admin/settings":
             timezone_name = (params.get("display_timezone") or [""])[0].strip()
             use_proxy = (params.get("use_proxy") or ["0"])[0].strip().lower() in {
@@ -1135,7 +1157,13 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             timezone_name = self.display_timezone_name(conn)
         finally:
             conn.close()
-        config = json.dumps({"displayTimezone": timezone_name}, ensure_ascii=False)
+        config = json.dumps(
+            {
+                "displayTimezone": timezone_name,
+                **self.layout_settings(),
+            },
+            ensure_ascii=False,
+        )
         scripts = (
             f"<script>window.YT_LIBRARY_CONFIG={config};</script>"
             '<script src="/timezone.js"></script>'
@@ -1146,6 +1174,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
 
     def display_timezone_name(self, conn: sqlite3.Connection) -> str:
         return configured_display_timezone(self.config_data)
+
+    def layout_settings(self) -> dict[str, str]:
+        return {
+            "searchCardLayout": configured_search_card_layout(self.config_data),
+            "historyCardLayout": configured_history_card_layout(self.config_data),
+        }
 
     def dispatch_settings(self) -> dict[str, Any]:
         request_delay_min, request_delay_max = configured_request_delay_range(

@@ -29,9 +29,11 @@ from yt_library.config import (
     configured_archivarix_stream_timeout,
     configured_dispatch_mode,
     configured_display_timezone,
+    configured_history_card_layout,
     configured_job_dispatch_delay,
     configured_proxy_address,
     configured_request_delay_range,
+    configured_search_card_layout,
     configured_use_proxy,
     configured_youtube_max_in_flight,
     configured_proxy,
@@ -4212,6 +4214,16 @@ class ConfigTests(unittest.TestCase):
             "UTC",
         )
         self.assertEqual(effective_display_timezone({"display_timezone": ""}), "UTC")
+        self.assertEqual(configured_search_card_layout({}), "grid")
+        self.assertEqual(configured_history_card_layout({}), "compact")
+        self.assertEqual(
+            configured_search_card_layout({"search_card_layout": "detailed"}),
+            "detailed",
+        )
+        self.assertEqual(
+            configured_history_card_layout({"history_card_layout": "invalid"}),
+            "compact",
+        )
         self.assertEqual(
             configured_job_dispatch_delay({"job_dispatch_delay_seconds": -1}),
             0.0,
@@ -4320,6 +4332,8 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue((Path(temp_dir) / "takeout").is_dir())
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["display_timezone"], "")
+            self.assertEqual(payload["search_card_layout"], "grid")
+            self.assertEqual(payload["history_card_layout"], "compact")
             self.assertEqual(payload["host"], "127.0.0.1")
             self.assertEqual(payload["youtube_cookies"], "yt_cookies.txt")
             self.assertEqual(payload["archivarix_cookies"], "archivarix_cookies.txt")
@@ -4375,6 +4389,37 @@ class ConfigTests(unittest.TestCase):
 
 
 class AdminServerTests(unittest.TestCase):
+    def test_layout_preference_saves_without_restarting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/settings/layout?context=history&value=detailed"
+            handler.config_data = config
+            handler.send_json = Mock()
+
+            handler.do_POST()
+
+            self.assertEqual(config["history_card_layout"], "detailed")
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["history_card_layout"], "detailed")
+            self.assertEqual(payload["search_card_layout"], "grid")
+            handler.send_json.assert_called_once_with(
+                {"ok": True, "context": "history", "layout": "detailed"}
+            )
+
+    def test_layout_preference_rejects_unknown_values(self) -> None:
+        config = load_config(Path("missing-test-config.json"))
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = "/api/settings/layout?context=search&value=wide"
+        handler.config_data = config
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        self.assertEqual(config["search_card_layout"], "grid")
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
     def test_dispatch_settings_save_config_and_reconfigure_live_behavior(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"
@@ -4938,9 +4983,11 @@ class AdminServerTests(unittest.TestCase):
         )
         self.assertIn("const kindsValue = selectedSearchResultKinds().join(',') || '__none__';", server.INDEX_HTML)
         self.assertIn("playlist_group_key: searchPlaylistGroupKey,", server.INDEX_HTML)
-        self.assertIn("if (searchCardLayout !== 'grid') params.set('layout', searchCardLayout);", server.INDEX_HTML)
-        self.assertIn("let historyCardLayout = 'detailed';", server.INDEX_HTML)
-        self.assertIn("if (historyCardLayout !== 'detailed') params.set('layout', historyCardLayout);", server.INDEX_HTML)
+        self.assertIn("pageConfig.searchCardLayout", server.INDEX_HTML)
+        self.assertIn("pageConfig.historyCardLayout", server.INDEX_HTML)
+        self.assertIn(": 'compact';", server.INDEX_HTML)
+        self.assertNotIn("params.set('layout'", server.INDEX_HTML)
+        self.assertIn("persistCardLayoutPreference(context, layout)", server.INDEX_HTML)
         self.assertIn("layoutContext: 'history',", server.INDEX_HTML)
         self.assertIn("function rightPanelListMetaHtml(", server.INDEX_HTML)
         self.assertIn("data-card-layout=", server.INDEX_HTML)

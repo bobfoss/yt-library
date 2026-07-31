@@ -464,9 +464,19 @@
     let searchSortExplicit = false;
     let activeSearchPreset = '';
     let searchPlaylistGroupKey = '';
-    let searchCardLayout = 'grid';
-    let historyCardLayout = 'detailed';
     const cardLayouts = new Set(['grid', 'detailed', 'compact']);
+    const pageConfig = window.YT_LIBRARY_CONFIG || {};
+    let searchCardLayout = cardLayouts.has(pageConfig.searchCardLayout)
+      ? pageConfig.searchCardLayout
+      : 'grid';
+    let historyCardLayout = cardLayouts.has(pageConfig.historyCardLayout)
+      ? pageConfig.historyCardLayout
+      : 'compact';
+    const cardLayoutSaveChains = {
+      search: Promise.resolve(),
+      history: Promise.resolve(),
+    };
+    const cardLayoutSaveVersions = { search: 0, history: 0 };
     const searchPresetDefinitions = {
       videos: { kind: 'videos', sort: 'newest' },
       'playlist-videos': { kind: 'videos', sort: 'newest' },
@@ -661,11 +671,6 @@
       if (value === '__search__') return searchHash();
       const viewHash = viewHashBySelection.get(value);
       const base = viewHash ? `#view=${viewHash}` : '#search';
-      if (value === '__history__') {
-        const params = includePagination ? paginationParams() : new URLSearchParams();
-        if (historyCardLayout !== 'detailed') params.set('layout', historyCardLayout);
-        return appendHashParams(base, params);
-      }
       return includePagination ? appendHashParams(base, paginationParams()) : base;
     }
 
@@ -842,7 +847,6 @@
       if (searchSortExplicit || searchResultsSort !== defaultSearchResultsSort(query)) {
         params.set('sort', searchResultsSort);
       }
-      if (searchCardLayout !== 'grid') params.set('layout', searchCardLayout);
       if (currentPage > 1) params.set('page', String(currentPage));
       if (pageSize !== '100') params.set('size', pageSize);
       return `#search${params.toString() ? `?${params.toString()}` : ''}`;
@@ -895,8 +899,6 @@
       }
       searchSortExplicit = params.has('sort');
       searchResultsSort = params.get('sort') || defaultSearchResultsSort(search.value.trim());
-      const requestedLayout = params.get('layout') || 'grid';
-      searchCardLayout = cardLayouts.has(requestedLayout) ? requestedLayout : 'grid';
       pageSize = params.get('size') || '100';
       const page = Number(params.get('page') || 1);
       currentPage = Number.isFinite(page) && page > 0 ? page : 1;
@@ -968,10 +970,6 @@
       }
       if (base.startsWith('#view=')) {
         const view = decodeURIComponent(base.slice('#view='.length));
-        if (view === 'history') {
-          const requestedLayout = params.get('layout') || 'detailed';
-          historyCardLayout = cardLayouts.has(requestedLayout) ? requestedLayout : 'detailed';
-        }
         if (selectionByViewHash.has(view)) return selectionByViewHash.get(view);
       }
       return '__search__';
@@ -3178,26 +3176,51 @@
     }
     meta.addEventListener('change', handleMetaChange);
     searchForFilters.addEventListener('change', handleMetaChange);
-    meta.addEventListener('click', event => {
+    function applyCardLayoutPreference(context, layout) {
+      if (context === 'history') {
+        historyCardLayout = layout;
+        applyHistoryCardLayout();
+      } else {
+        searchCardLayout = layout;
+        applySearchCardLayout();
+      }
+      for (const option of meta.querySelectorAll(`[data-card-layout-context="${context}"]`)) {
+        const active = option.dataset.cardLayout === layout;
+        option.classList.toggle('active', active);
+        option.setAttribute('aria-pressed', String(active));
+      }
+    }
+
+    function persistCardLayoutPreference(context, layout) {
+      const save = async () => {
+        const params = new URLSearchParams({ context, value: layout });
+        const response = await fetch(`/api/settings/layout?${params.toString()}`, { method: 'POST' });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) {
+          throw new Error(result.error || `Layout save failed (${response.status})`);
+        }
+      };
+      const request = cardLayoutSaveChains[context].catch(() => {}).then(save);
+      cardLayoutSaveChains[context] = request;
+      return request;
+    }
+
+    meta.addEventListener('click', async event => {
       const button = event.target.closest('[data-card-layout]');
       if (!(button instanceof HTMLButtonElement)) return;
       const layout = button.dataset.cardLayout || '';
       const context = button.dataset.cardLayoutContext || 'search';
       const activeLayout = context === 'history' ? historyCardLayout : searchCardLayout;
       if (!cardLayouts.has(layout) || layout === activeLayout) return;
-      if (context === 'history') {
-        historyCardLayout = layout;
-        applyHistoryCardLayout();
-        updateCurrentHash(true);
-      } else {
-        searchCardLayout = layout;
-        applySearchCardLayout();
-        updateSearchHash(true);
-      }
-      for (const option of meta.querySelectorAll(`[data-card-layout-context="${context}"]`)) {
-        const active = option.dataset.cardLayout === layout;
-        option.classList.toggle('active', active);
-        option.setAttribute('aria-pressed', String(active));
+      const version = ++cardLayoutSaveVersions[context];
+      applyCardLayoutPreference(context, layout);
+      try {
+        await persistCardLayoutPreference(context, layout);
+      } catch (error) {
+        if (cardLayoutSaveVersions[context] === version) {
+          applyCardLayoutPreference(context, activeLayout);
+          window.alert(error instanceof Error ? error.message : String(error));
+        }
       }
     });
     meta.addEventListener('input', event => {
