@@ -189,6 +189,7 @@
       ${options.recoveryHtml || ''}
       ${options.watchDateHtml || ''}
       ${options.availabilityHtml || ''}
+      ${options.latestWatchDateHtml || ''}
       ${options.watchedHtml || ''}
       ${options.sparklineHtml || ''}
       ${options.reactionHtml || ''}

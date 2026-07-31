@@ -4873,9 +4873,24 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('class="video-availability"', server.INDEX_HTML)
         self.assertIn("availabilityHtml: videoAvailabilityHtml(video)", server.INDEX_HTML)
         self.assertIn("watchDateHtml: watched", server.INDEX_HTML)
+        self.assertIn("function latestWatchedAtLabel(video)", server.INDEX_HTML)
+        self.assertIn("function latestWatchDateHtml(video)", server.INDEX_HTML)
+        self.assertEqual(
+            server.INDEX_HTML.count("latestWatchDateHtml: latestWatchDateHtml("),
+            2,
+        )
+        self.assertIn(
+            "latestWatchDateHtml: options.latestWatchDateHtml || '',",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "Last watched ${escapeHtml(watchedAt)}",
+            server.INDEX_HTML,
+        )
         self.assertIn(
             "${options.watchDateHtml || ''}\n"
             "      ${options.availabilityHtml || ''}\n"
+            "      ${options.latestWatchDateHtml || ''}\n"
             "      ${options.watchedHtml || ''}",
             server.VIDEO_CARD_JS,
         )

@@ -1070,6 +1070,27 @@
       return `${date} ${time}`;
     }
 
+    function latestWatchedAtLabel(video) {
+      const value = String(video.latest_watch_at || '').trim();
+      if (!value) return '';
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return window.YTLibraryTime.formatDate(value);
+      }
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return value;
+      const timeZone = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
+      const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone }).format(parsed);
+      const time = new Intl.DateTimeFormat(undefined, { timeStyle: 'short', timeZone }).format(parsed);
+      return `${date} ${time}`;
+    }
+
+    function latestWatchDateHtml(video) {
+      const watchedAt = latestWatchedAtLabel(video);
+      return watchedAt
+        ? `<div class="details"><span>Last watched ${escapeHtml(watchedAt)}</span></div>`
+        : '';
+    }
+
     function youtubeWatchUrl(video) {
       if (!video.video_id) return '';
       const list = video.playlist_id ? `&list=${encodeURIComponent(video.playlist_id)}` : '';
@@ -2832,6 +2853,7 @@
         sources: options.sources || [],
         playlistSourcesHtml: options.playlistSourcesHtml === undefined ? playlistSourceLinksHtml(video) : options.playlistSourcesHtml,
         watchDateHtml: options.watchDateHtml || '',
+        latestWatchDateHtml: options.latestWatchDateHtml || '',
         availabilityHtml: videoAvailabilityHtml(video),
         watchedHtml: watchedLineHtml(video),
         sparklineHtml: watchSparklineHtml(video),
@@ -2876,11 +2898,13 @@
         return playlistVideoCardFor(result.item, {
           resultKind: 'Video',
           playlistSourcesHtml: playlistSourceLinksHtml(result.item),
+          latestWatchDateHtml: latestWatchDateHtml(result.item),
         });
       }
       const video = result.item;
       return playlistVideoCardFor(video, {
         resultKind: 'Video',
+        latestWatchDateHtml: latestWatchDateHtml(video),
       });
     }
 
