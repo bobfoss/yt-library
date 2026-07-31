@@ -5187,6 +5187,19 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("const searchPresetDefinitions = {", server.INDEX_HTML)
         self.assertIn("videos: { kind: 'videos', sort: 'newest' }", server.INDEX_HTML)
         self.assertIn("function activateSearchPreset(preset, groupKey = '')", server.INDEX_HTML)
+        self.assertIn("function activateSearchFromHistory({ resetMetaVisibility = false } = {})", server.INDEX_HTML)
+        self.assertIn("function syncSearchFiltersForSelection()", server.INDEX_HTML)
+        self.assertIn('id="search-filters" class="filters"', server.INDEX_HTML)
+        self.assertIn(".filters.view-inactive { opacity: .42; }", server.INDEX_HTML)
+        self.assertIn(
+            "const activatedFromHistory = searchFilterInteraction",
+            server.INDEX_HTML,
+        )
+        self.assertIn("syncSearchHashAndRender(!activatedFromHistory);", server.INDEX_HTML)
+        self.assertIn(
+            "activateSearchFromHistory({ resetMetaVisibility: true });",
+            server.INDEX_HTML,
+        )
         self.assertIn("function reconcileSearchPreset()", server.INDEX_HTML)
         self.assertIn("function syncSidebarSelection()", server.INDEX_HTML)
         self.assertIn(

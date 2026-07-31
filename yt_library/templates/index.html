@@ -50,7 +50,8 @@
     .admin-link { color: var(--accent); font-size: 13px; text-decoration: none; }
     .admin-link:hover { text-decoration: underline; }
     .search { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 10px 12px; font: inherit; margin-bottom: 14px; }
-    .filters { border-bottom: 1px solid var(--line); padding: 0 0 10px; margin-bottom: 14px; display: grid; gap: 7px; }
+    .filters { border-bottom: 1px solid var(--line); padding: 0 0 10px; margin-bottom: 14px; display: grid; gap: 7px; transition: opacity 120ms ease; }
+    .filters.view-inactive { opacity: .42; }
     .filter-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
     .filter { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
     .filter input { accent-color: var(--accent); }
@@ -383,7 +384,7 @@
       <div class="primary-nav-divider" aria-hidden="true"></div>
       <button id="search-nav" class="group search-nav" type="button" data-key="__search__"><span>Search</span><span class="count"></span></button>
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
-      <div class="filters" aria-label="Search filters">
+      <div id="search-filters" class="filters" aria-label="Search filters">
         <div class="filter-title">Search In</div>
         <label class="filter"><input class="search-field" type="checkbox" data-search-field="titles" checked> Titles</label>
         <label class="filter"><input class="search-field" type="checkbox" data-search-field="descriptions" checked> Descriptions</label>
@@ -528,6 +529,7 @@
     const search = document.getElementById('search');
     const searchNav = document.getElementById('search-nav');
     const historyNav = document.getElementById('history-nav');
+    const searchFilters = document.getElementById('search-filters');
     const searchForFilters = document.getElementById('search-for-filters');
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
@@ -945,10 +947,11 @@
       return true;
     }
 
-    function syncSearchHashAndRender() {
+    function syncSearchHashAndRender(replaceHash = true) {
       if (selected === '__search__') {
-        updateSearchHash(true);
+        const hashChanged = updateSearchHash(replaceHash);
         renderGroups();
+        if (hashChanged && !replaceHash) return;
       }
       render();
     }
@@ -998,6 +1001,23 @@
       }
       renderGroups();
       void render().finally(() => finishSidebarNavigationProgress(progressToken));
+    }
+
+    function activateSearchFromHistory({ resetMetaVisibility = false } = {}) {
+      if (selected !== '__history__') return false;
+      selected = '__search__';
+      activeSearchPreset = '';
+      searchPlaylistGroupKey = '';
+      searchSortExplicit = false;
+      currentPage = 1;
+      searchFilters.classList.remove('view-inactive');
+      if (resetMetaVisibility) {
+        resetSearchMetaVisibility();
+        renderSearchMetaFilters();
+      }
+      searchResultsSort = defaultSearchResultsSort(search.value.trim(), '');
+      renderGroups();
+      return true;
     }
 
     function activateUnscopedSearch() {
@@ -2253,6 +2273,15 @@
       updateSearchMetaProgress();
     }
 
+    function syncSearchFiltersForSelection() {
+      const historySelected = selected === '__history__';
+      const alreadyInactive = searchFilters.classList.contains('view-inactive');
+      searchFilters.classList.toggle('view-inactive', historySelected);
+      if (!historySelected || alreadyInactive) return;
+      clearSearchMetaVisibility();
+      renderSearchMetaFilters();
+    }
+
     function searchResultsSortHtml() {
       const options = [
         ['relevance', 'Relevance'],
@@ -2747,6 +2776,7 @@
         meta.textContent = '';
         return;
       }
+      syncSearchFiltersForSelection();
       const query = search.value.trim().toLowerCase();
       viewTop.classList.toggle('history-top', selected === '__history__');
       viewTop.classList.toggle(
@@ -3255,12 +3285,20 @@
         return;
       }
       if (!(target instanceof HTMLInputElement)) return;
+      const searchFilterInteraction = (
+        target.dataset.searchKindFilter
+        || target.dataset.searchMetaFilter
+        || String(target.dataset.metaAllFilter || '').startsWith('search-')
+      );
+      const activatedFromHistory = searchFilterInteraction
+        ? activateSearchFromHistory()
+        : false;
       const searchKindFilter = target.dataset.searchKindFilter;
       if (searchKindFilter && setSearchKindFilter(searchKindFilter, target.checked)) {
         currentPage = 1;
         reconcileSearchPreset();
         showSearchMetaProgress(searchKindFilter);
-        syncSearchHashAndRender();
+        syncSearchHashAndRender(!activatedFromHistory);
         return;
       }
       const metaAllFilter = target.dataset.metaAllFilter;
@@ -3273,7 +3311,7 @@
           syncSearchKindFilter(searchKindForFacet(facetKey));
           reconcileSearchPreset();
           showSearchMetaProgress(facetKey);
-          syncSearchHashAndRender();
+          syncSearchHashAndRender(!activatedFromHistory);
         } else {
           render();
         }
@@ -3291,7 +3329,7 @@
         syncSearchKindFilter(searchKindForFacet(groupName));
         reconcileSearchPreset();
         showSearchMetaProgress(groupName);
-        syncSearchHashAndRender();
+        syncSearchHashAndRender(!activatedFromHistory);
         return;
       }
       const playlistCompletionFilter = target.dataset.playlistCompletionFilter;
@@ -3441,8 +3479,9 @@
     bottomPager.addEventListener('submit', handlePagerSubmit);
     for (const input of searchFields) {
       input.addEventListener('change', () => {
+        const activatedFromHistory = activateSearchFromHistory({ resetMetaVisibility: true });
         currentPage = 1;
-        syncSearchHashAndRender();
+        syncSearchHashAndRender(!activatedFromHistory);
       });
     }
     window.addEventListener('hashchange', () => {
