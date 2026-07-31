@@ -1038,9 +1038,9 @@
     function visibilityFilterLabelHtml(value, count) {
       const countText = filterCountText(count);
       if (!['private', 'public', 'unlisted'].includes(value)) {
-        return `<span><span class="meta-filter-count">${countText}</span> ${escapeHtml(value)}</span>`;
+        return `<span>${escapeHtml(value)} <span class="meta-filter-count">${countText}</span></span>`;
       }
-      return `<span class="visibility-label">${visibilityIconSvg(value)}<span><span class="meta-filter-count">${countText}</span> ${escapeHtml(value)}</span></span>`;
+      return `<span class="visibility-label">${visibilityIconSvg(value)}<span>${escapeHtml(value)} <span class="meta-filter-count">${countText}</span></span></span>`;
     }
 
     function visibilityLabelHtml(value, label) {
@@ -1750,7 +1750,7 @@
             <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
             ${visibilityIcon
               ? visibilityFilterLabelHtml(key, metaFilterCount(counts, key))
-              : `<span${className || decoratorHtml ? ` class="${[className, decoratorHtml ? 'meta-filter-decorated' : ''].filter(Boolean).join(' ')}"` : ''}>${decoratorHtml}<span><span class="meta-filter-count">${filterCountText(metaFilterCount(counts, key))}</span> ${escapeHtml(label)}</span></span>`}
+              : `<span${className || decoratorHtml ? ` class="${[className, decoratorHtml ? 'meta-filter-decorated' : ''].filter(Boolean).join(' ')}"` : ''}>${decoratorHtml}<span>${escapeHtml(label)} <span class="meta-filter-count">${filterCountText(metaFilterCount(counts, key))}</span></span></span>`}
           </label>
         `).join('')}
       `;

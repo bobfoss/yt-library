@@ -4930,6 +4930,14 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(".search-meta-facet .meta-filter-count { font-size: 12px; font-weight: 400; }", server.INDEX_HTML)
         self.assertIn('class="meta-filter-count">${countText}</span>', server.INDEX_HTML)
         self.assertIn(
+            '${escapeHtml(value)} <span class="meta-filter-count">${countText}</span>',
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            '${escapeHtml(label)} <span class="meta-filter-count">${filterCountText(metaFilterCount(counts, key))}</span>',
+            server.INDEX_HTML,
+        )
+        self.assertIn(
             "filterCountText(metaFilterCount(counts, key))",
             server.INDEX_HTML,
         )
