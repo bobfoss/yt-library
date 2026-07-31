@@ -1639,10 +1639,12 @@
       today.setHours(0, 0, 0, 0);
       const targetYear = today.getFullYear() - historyActivityYearOffset;
       const lastDayOfTargetMonth = new Date(targetYear, today.getMonth() + 1, 0).getDate();
-      const end = new Date(targetYear, today.getMonth(), Math.min(today.getDate(), lastDayOfTargetMonth));
-      const start = new Date(end);
+      const displayEnd = new Date(targetYear, today.getMonth(), Math.min(today.getDate(), lastDayOfTargetMonth));
+      const start = new Date(displayEnd);
       start.setDate(start.getDate() - start.getDay() - (52 * 7));
-      return { start, end, startKey: localDateKey(start), endKey: localDateKey(end) };
+      const end = new Date(start);
+      end.setDate(end.getDate() + (53 * 7) - 1);
+      return { start, end, displayEnd, startKey: localDateKey(start), endKey: localDateKey(end) };
     }
 
     async function fetchHistoryActivity(channelId = '') {
@@ -1709,7 +1711,7 @@
       const rangeLabel = document.createElement('span');
       rangeLabel.className = 'history-heatmap-range';
       const rangeDateLabel = date => date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
-      rangeLabel.textContent = `${rangeDateLabel(range.start)} - ${rangeDateLabel(range.end)}`;
+      rangeLabel.textContent = `${rangeDateLabel(range.start)} - ${rangeDateLabel(range.displayEnd)}`;
       const next = document.createElement('button');
       next.type = 'button';
       next.dataset.historyYearShift = '-1';

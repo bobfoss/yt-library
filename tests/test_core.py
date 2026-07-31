@@ -4945,6 +4945,8 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("data-card-layout-context=", server.INDEX_HTML)
         self.assertIn(".search-grid.layout-compact .card { grid-template-columns: 200px minmax(0, 1fr); }", server.INDEX_HTML)
         self.assertIn("aspect-ratio: 16 / 9;", server.INDEX_HTML)
+        self.assertIn("end.setDate(end.getDate() + (53 * 7) - 1);", server.INDEX_HTML)
+        self.assertIn("rangeDateLabel(range.displayEnd)", server.INDEX_HTML)
         self.assertIn(
             "completionCounts: videoCompletionCountsCache.get(metaCountsKey)",
             server.INDEX_HTML,
