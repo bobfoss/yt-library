@@ -12,6 +12,7 @@ This repository is a Python web app for browsing, enriching, and reconciling a p
 - `yt_library/schema.sql` is the SQLite schema, loaded by `yt_library/schema.py`.
 - `yt_library/templates/` contains the main browser and admin HTML.
 - `tests/` contains the standard-library `unittest` suite for helpers, schema bootstrap, and read models.
+- `TODO.md` is the canonical project TODO and deferred-decisions list. Treat references to the TODO, TODO list, cleanup findings, or future work as references to this file.
 - `requirements.txt` lists Python dependencies, including `yt-dlp`.
 - `yt_library.sqlite3`, cookie files, thumbnail folders, and Takeout zip exports are local runtime data and should not be committed.
 - Common generated asset folders include `thumbs/`, `video_thumbs/`, and `archivarix_thumbs/`.

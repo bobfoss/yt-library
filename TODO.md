@@ -1,4 +1,4 @@
-# Cleanup Findings
+# Project TODO
 
 This review uses the current code as truth and ranks remaining cleanup by duplication risk. The project supports only a fresh current schema; historical database upgrade code is intentionally excluded.
 
