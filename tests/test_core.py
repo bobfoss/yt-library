@@ -4893,6 +4893,8 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("decoratorHtml: thumbIconHtml('like', false)", server.INDEX_HTML)
         self.assertIn("decoratorHtml: thumbIconHtml('dislike', false)", server.INDEX_HTML)
         self.assertIn("meta-filter-decorated", server.INDEX_HTML)
+        self.assertIn(".search-meta-facet .meta-filter-count { font-size: 12px; font-weight: 400; }", server.INDEX_HTML)
+        self.assertIn('class="meta-filter-count">${count}</span>', server.INDEX_HTML)
         self.assertIn(
             "M9 18c.226 0 .448-.012.667-.037A8.001 8.001 0 018.07 16H7",
             server.INDEX_HTML,

@@ -98,6 +98,7 @@
     .search-progress-status[hidden] { display: none; }
     .search-meta-controls { display: grid; gap: 5px; }
     .search-meta-controls .meta-filter { margin-left: 0; }
+    .search-meta-facet .meta-filter-count { font-size: 12px; font-weight: 400; }
     .search-meta-facet .meta-filter-child { margin-left: 18px; }
     .search-meta-facet.flat .meta-filter-child { margin-left: 0; }
     .playlist-search { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; min-width: min(360px, 38vw); }
@@ -1035,7 +1036,10 @@
     }
 
     function visibilityFilterLabelHtml(value, count) {
-      return visibilityLabelHtml(value, `${count} ${value}`);
+      if (!['private', 'public', 'unlisted'].includes(value)) {
+        return `<span><span class="meta-filter-count">${count}</span> ${escapeHtml(value)}</span>`;
+      }
+      return `<span class="visibility-label">${visibilityIconSvg(value)}<span><span class="meta-filter-count">${count}</span> ${escapeHtml(value)}</span></span>`;
     }
 
     function visibilityLabelHtml(value, label) {
@@ -1745,7 +1749,7 @@
             <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
             ${visibilityIcon
               ? visibilityFilterLabelHtml(key, Number(counts?.[key] || 0))
-              : `<span${className || decoratorHtml ? ` class="${[className, decoratorHtml ? 'meta-filter-decorated' : ''].filter(Boolean).join(' ')}"` : ''}>${decoratorHtml}${Number(counts?.[key] || 0)} ${label}</span>`}
+              : `<span${className || decoratorHtml ? ` class="${[className, decoratorHtml ? 'meta-filter-decorated' : ''].filter(Boolean).join(' ')}"` : ''}>${decoratorHtml}<span><span class="meta-filter-count">${Number(counts?.[key] || 0)}</span> ${escapeHtml(label)}</span></span>`}
           </label>
         `).join('')}
       `;
