@@ -803,8 +803,6 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         playlist_metadata[key] = header_metadata[key]
                 if header_metadata.get("visibility"):
                     playlist_metadata["visibility"] = header_metadata["visibility"]
-                    playlist_metadata["owner_channel_id"] = ""
-                    playlist_metadata["owner_thumbnail_url"] = ""
                 owner_channel_id = str(playlist_metadata.get("owner_channel_id") or "").strip()
                 owner_thumbnail_url = str(playlist_metadata.get("owner_thumbnail_url") or "").strip()
                 if owner_channel_id and owner_thumbnail_url:

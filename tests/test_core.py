@@ -6342,7 +6342,13 @@ class WorkerQueueTests(unittest.TestCase):
                 conn.close()
 
             worker = PlaylistScanWorker()
-            header = {"video_count": 1, "has_video_count": True, "visibility": "private"}
+            header = {
+                "video_count": 1,
+                "has_video_count": True,
+                "visibility": "private",
+                "owner": "Playlist Owner",
+                "owner_channel_id": "UCplaylistowner123456789",
+            }
             videos = [{"video_id": "first"}]
             with (
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
@@ -6350,7 +6356,7 @@ class WorkerQueueTests(unittest.TestCase):
                 patch("yt_library.workers.extract_playlist_metadata", return_value=header),
                 patch("yt_library.workers.scan_playlist_ytdlp", return_value=(videos, {})) as scan_ytdlp,
                 patch("yt_library.workers.scan_playlist_videos") as scan_web,
-                patch("yt_library.workers.save_playlist_scan", return_value=(1, 0)),
+                patch("yt_library.workers.save_playlist_scan", return_value=(1, 0)) as save_scan,
                 patch("yt_library.workers.enqueue_placeholder_recovery_targets", return_value={"inserted": 0}),
             ):
                 worker._run(
@@ -6366,6 +6372,10 @@ class WorkerQueueTests(unittest.TestCase):
 
             scan_ytdlp.assert_called_once()
             scan_web.assert_not_called()
+            saved_metadata = save_scan.call_args.kwargs["playlist_metadata"]
+            self.assertEqual(saved_metadata["visibility"], "private")
+            self.assertEqual(saved_metadata["owner"], "Playlist Owner")
+            self.assertEqual(saved_metadata["owner_channel_id"], "UCplaylistowner123456789")
             conn = core.connect(db_path)
             try:
                 log = conn.execute(
