@@ -4761,6 +4761,15 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn("function syncSearchKindFilter(kind)", server.INDEX_HTML)
+        self.assertIn("function restoreEmptySearchKindFacets(facetKey)", server.INDEX_HTML)
+        self.assertIn(
+            "Object.assign(searchMetaVisibility[siblingKey], defaults);",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "input.checked = Boolean(defaults[filterName]);",
+            server.INDEX_HTML,
+        )
         self.assertIn('data-search-kind-filter="${kind}"', server.INDEX_HTML)
         self.assertIn('<span class="count">${Number(counts?.total || 0)}</span>', server.INDEX_HTML)
         self.assertIn("showAll: false", server.INDEX_HTML)
@@ -4789,6 +4798,14 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn("syncSearchKindFilter(searchKindForFacet(facetKey));", server.INDEX_HTML)
+        self.assertIn(
+            "if (target.checked) restoreEmptySearchKindFacets(facetKey);",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "if (target.checked) restoreEmptySearchKindFacets(groupName);",
+            server.INDEX_HTML,
+        )
         self.assertIn("showSearchMetaProgress(groupName);", server.INDEX_HTML)
         self.assertIn(
             "if (selected !== '__search__') {\n"

@@ -945,6 +945,23 @@
       return facetKey;
     }
 
+    function restoreEmptySearchKindFacets(facetKey) {
+      const kind = searchKindForFacet(facetKey);
+      const facetKeys = searchKindFacetKeys(kind);
+      if (facetKeys.length < 2) return;
+      for (const siblingKey of facetKeys) {
+        if (siblingKey === facetKey) continue;
+        if (Object.values(searchMetaVisibility[siblingKey]).some(Boolean)) continue;
+        const defaults = defaultSearchMetaVisibility[siblingKey];
+        Object.assign(searchMetaVisibility[siblingKey], defaults);
+        for (const input of meta.querySelectorAll(`[data-search-meta-filter^="${siblingKey}:"]`)) {
+          const filterName = input.dataset.searchMetaFilter.split(':')[1];
+          input.checked = Boolean(defaults[filterName]);
+        }
+        syncMetaFilterGroup(`search-${siblingKey}`);
+      }
+    }
+
     function setFilterDimmed(inputs, dimmed) {
       for (const input of inputs) {
         const label = input?.closest?.('.filter, .meta-filter');
@@ -3061,6 +3078,7 @@
         if (metaAllFilter.startsWith('search-')) {
           const facetKey = metaAllFilter.slice('search-'.length);
           syncMetaFilterGroup(metaAllFilter);
+          if (target.checked) restoreEmptySearchKindFacets(facetKey);
           syncSearchKindFilter(searchKindForFacet(facetKey));
           showSearchMetaProgress(facetKey);
           syncSearchHashAndRender();
@@ -3077,6 +3095,7 @@
         visibility[filterName] = target.checked;
         currentPage = 1;
         syncMetaFilterGroup(`search-${groupName}`);
+        if (target.checked) restoreEmptySearchKindFacets(groupName);
         syncSearchKindFilter(searchKindForFacet(groupName));
         showSearchMetaProgress(groupName);
         syncSearchHashAndRender();
