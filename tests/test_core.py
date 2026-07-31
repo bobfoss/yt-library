@@ -4772,21 +4772,35 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn('data-search-kind-filter="${kind}"', server.INDEX_HTML)
-        self.assertIn('<span class="count">${Number(count || 0)}</span>', server.INDEX_HTML)
+        self.assertIn('<span class="count">${filterCountText(count)}</span>', server.INDEX_HTML)
         self.assertIn("kind: 'playlists', showAll: false", server.INDEX_HTML)
         self.assertIn(
             "searchForFilters.querySelectorAll(`[data-search-kind-facet=\"${kind}\"]`)",
             server.INDEX_HTML,
         )
         count_position = server.INDEX_HTML.index(
-            '<span class="count">${Number(count || 0)}</span>'
+            '<span class="count">${filterCountText(count)}</span>'
         )
         progress_position = server.INDEX_HTML.index(
             '<span class="search-meta-progress" data-search-meta-progress="${kind}"',
             count_position,
         )
         self.assertLess(count_position, progress_position)
-        self.assertIn("searchForFilters.innerHTML = searchMetaHtml;", server.INDEX_HTML)
+        self.assertIn("function renderSearchMetaFilters({", server.INDEX_HTML)
+        self.assertIn(
+            "searchForFilters.innerHTML = searchMetaFiltersHtml(",
+            server.INDEX_HTML,
+        )
+        self.assertIn("renderSearchMetaFilters(payload);", server.INDEX_HTML)
+        self.assertIn(
+            "return count === null || count === undefined ? '...'",
+            server.INDEX_HTML,
+        )
+        initial_filter_position = server.INDEX_HTML.rindex("renderSearchMetaFilters();")
+        initial_load_position = server.INDEX_HTML.index(
+            "loadData().catch(error => {", initial_filter_position
+        )
+        self.assertLess(initial_filter_position, initial_load_position)
         self.assertIn("searchForFilters.addEventListener('change', handleMetaChange);", server.INDEX_HTML)
         self.assertNotIn(
             ".filter(({ counts }) => Number(counts?.total || 0) > 0)",
@@ -4863,6 +4877,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(
             "title.textContent = 'Search results';\n"
             "          meta.textContent = '';\n"
+            "          renderSearchMetaFilters();\n"
             "          showSearchHeaderProgress();\n"
             "          showSearchProgress();",
             server.INDEX_HTML,
@@ -4894,7 +4909,11 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("decoratorHtml: thumbIconHtml('dislike', false)", server.INDEX_HTML)
         self.assertIn("meta-filter-decorated", server.INDEX_HTML)
         self.assertIn(".search-meta-facet .meta-filter-count { font-size: 12px; font-weight: 400; }", server.INDEX_HTML)
-        self.assertIn('class="meta-filter-count">${count}</span>', server.INDEX_HTML)
+        self.assertIn('class="meta-filter-count">${countText}</span>', server.INDEX_HTML)
+        self.assertIn(
+            "filterCountText(metaFilterCount(counts, key))",
+            server.INDEX_HTML,
+        )
         self.assertIn(
             "M9 18c.226 0 .448-.012.667-.037A8.001 8.001 0 018.07 16H7",
             server.INDEX_HTML,

@@ -1036,10 +1036,11 @@
     }
 
     function visibilityFilterLabelHtml(value, count) {
+      const countText = filterCountText(count);
       if (!['private', 'public', 'unlisted'].includes(value)) {
-        return `<span><span class="meta-filter-count">${count}</span> ${escapeHtml(value)}</span>`;
+        return `<span><span class="meta-filter-count">${countText}</span> ${escapeHtml(value)}</span>`;
       }
-      return `<span class="visibility-label">${visibilityIconSvg(value)}<span><span class="meta-filter-count">${count}</span> ${escapeHtml(value)}</span></span>`;
+      return `<span class="visibility-label">${visibilityIconSvg(value)}<span><span class="meta-filter-count">${countText}</span> ${escapeHtml(value)}</span></span>`;
     }
 
     function visibilityLabelHtml(value, label) {
@@ -1748,11 +1749,20 @@
           <label class="meta-filter meta-filter-child">
             <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
             ${visibilityIcon
-              ? visibilityFilterLabelHtml(key, Number(counts?.[key] || 0))
-              : `<span${className || decoratorHtml ? ` class="${[className, decoratorHtml ? 'meta-filter-decorated' : ''].filter(Boolean).join(' ')}"` : ''}>${decoratorHtml}<span><span class="meta-filter-count">${Number(counts?.[key] || 0)}</span> ${escapeHtml(label)}</span></span>`}
+              ? visibilityFilterLabelHtml(key, metaFilterCount(counts, key))
+              : `<span${className || decoratorHtml ? ` class="${[className, decoratorHtml ? 'meta-filter-decorated' : ''].filter(Boolean).join(' ')}"` : ''}>${decoratorHtml}<span><span class="meta-filter-count">${filterCountText(metaFilterCount(counts, key))}</span> ${escapeHtml(label)}</span></span>`}
           </label>
         `).join('')}
       `;
+    }
+
+    function metaFilterCount(counts, key) {
+      if (!counts || !Object.prototype.hasOwnProperty.call(counts, key)) return null;
+      return Number(counts[key] || 0);
+    }
+
+    function filterCountText(count) {
+      return count === null || count === undefined ? '...' : String(Number(count || 0));
     }
 
     function videoStatusFiltersHtml({
@@ -1838,7 +1848,7 @@
           <label class="search-meta-row-title">
             <input type="checkbox" data-search-kind-filter="${kind}">
             <span>${titleText}</span>
-            <span class="count">${Number(count || 0)}</span>
+            <span class="count">${filterCountText(count)}</span>
             <span class="search-meta-progress" data-search-meta-progress="${kind}" aria-hidden="true"></span>
           </label>
           <div class="search-meta-kind-children">${facetsHtml}</div>
@@ -1859,6 +1869,27 @@
           facetHtml({ key: 'channelStatus', visibility: searchMetaVisibility.channelStatus, definitions: channelStatusMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Status', kind: 'channels' }),
         ].join('')),
       ].join('');
+    }
+
+    function renderSearchMetaFilters({
+      metaCounts = null,
+      reactionCounts = null,
+      completionCounts = null,
+      playlistMembershipCounts = null,
+    } = {}) {
+      searchForFilters.innerHTML = searchMetaFiltersHtml(
+        metaCounts,
+        reactionCounts,
+        completionCounts,
+        playlistMembershipCounts,
+      );
+      for (const key of ['videos', 'reactions', 'completion', 'membership', 'playlists', 'channelSubscription', 'channelStatus']) {
+        syncMetaFilterGroup(`search-${key}`);
+      }
+      for (const kind of ['videos', 'playlists', 'channels']) {
+        syncSearchKindFilter(kind);
+      }
+      updateSearchMetaProgress();
     }
 
     function searchResultsSortHtml() {
@@ -2449,6 +2480,7 @@
         } else {
           title.textContent = 'Search results';
           meta.textContent = '';
+          renderSearchMetaFilters();
           showSearchHeaderProgress();
           showSearchProgress();
           await new Promise(resolve => requestAnimationFrame(resolve));
@@ -2477,12 +2509,6 @@
         currentPage = Math.floor(Number(payload.offset || 0) / remoteLimit) + 1;
         renderedOmniSearchQuery = query;
         title.textContent = 'Search results';
-        const searchMetaHtml = searchMetaFiltersHtml(
-          payload.metaCounts,
-          payload.reactionCounts,
-          payload.completionCounts,
-          payload.playlistMembershipCounts,
-        );
         meta.innerHTML = `
           <div class="search-result-meta">
             <div class="search-result-summary">
@@ -2491,13 +2517,7 @@
             </div>
           </div>
         `;
-        searchForFilters.innerHTML = searchMetaHtml;
-        for (const key of ['videos', 'reactions', 'completion', 'membership', 'playlists', 'channelSubscription', 'channelStatus']) {
-          syncMetaFilterGroup(`search-${key}`);
-        }
-        for (const kind of ['videos', 'playlists', 'channels']) {
-          syncSearchKindFilter(kind);
-        }
+        renderSearchMetaFilters(payload);
         renderPager(remotePageInfo(total, rows.length, remoteLimit));
         grid.className = 'grid';
         grid.replaceChildren(...rows.map(searchResultCardFor));
@@ -3189,6 +3209,7 @@
         refresh.textContent = 'Refresh';
       }).finally(stopSearchHeaderProgress);
     });
+    renderSearchMetaFilters();
     loadData().catch(error => {
       title.textContent = 'Unable to load data';
       meta.textContent = error.message;
