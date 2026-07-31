@@ -478,6 +478,8 @@
       history: Promise.resolve(),
     };
     const cardLayoutSaveVersions = { search: 0, history: 0 };
+    let pageSizeSaveChain = Promise.resolve();
+    let pageSizeSaveVersion = 0;
     const searchPresetDefinitions = {
       videos: { kind: 'videos', sort: 'newest' },
       'playlist-videos': { kind: 'videos', sort: 'newest' },
@@ -492,7 +494,7 @@
     let playlistViewSort = 'playlist_order';
     let playlistPageSearch = '';
     let currentPage = 1;
-    let pageSize = '100';
+    let pageSize = String(pageConfig.pageSize || 100);
     let historyPageState = { key: '', loading: false, data: null };
     let historyActivityState = { key: '', loading: false, data: null };
     let historyActivityYearOffset = 0;
@@ -619,7 +621,6 @@
     function paginationParams() {
       const params = new URLSearchParams();
       if (currentPage > 1) params.set('page', String(currentPage));
-      if (pageSize !== '100') params.set('size', pageSize);
       return params;
     }
 
@@ -637,7 +638,6 @@
     }
 
     function applyPaginationParams(params) {
-      pageSize = params.get('size') || '100';
       const page = Number(params.get('page') || 1);
       currentPage = Number.isFinite(page) && page > 0 ? page : 1;
     }
@@ -849,7 +849,6 @@
         params.set('sort', searchResultsSort);
       }
       if (currentPage > 1) params.set('page', String(currentPage));
-      if (pageSize !== '100') params.set('size', pageSize);
       return `#search${params.toString() ? `?${params.toString()}` : ''}`;
     }
 
@@ -900,7 +899,6 @@
       }
       searchSortExplicit = params.has('sort');
       searchResultsSort = params.get('sort') || defaultSearchResultsSort(search.value.trim());
-      pageSize = params.get('size') || '100';
       const page = Number(params.get('page') || 1);
       currentPage = Number.isFinite(page) && page > 0 ? page : 1;
     }
@@ -3284,6 +3282,20 @@
       return request;
     }
 
+    function persistPageSizePreference(value) {
+      const save = async () => {
+        const params = new URLSearchParams({ value });
+        const response = await fetch(`/api/settings/page-size?${params.toString()}`, { method: 'POST' });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) {
+          throw new Error(result.error || `Page size save failed (${response.status})`);
+        }
+      };
+      const request = pageSizeSaveChain.catch(() => {}).then(save);
+      pageSizeSaveChain = request;
+      return request;
+    }
+
     meta.addEventListener('click', async event => {
       const button = event.target.closest('[data-card-layout]');
       if (!(button instanceof HTMLButtonElement)) return;
@@ -3331,15 +3343,28 @@
       if (updateCurrentHash(false)) return;
       render();
     }
-    function handlePagerChange(event) {
+    async function handlePagerChange(event) {
       const target = event.target;
       if (!(target instanceof HTMLSelectElement)) return;
       if (target.dataset.pageSize === undefined) return;
-      pageSize = target.value || '100';
+      const previousPageSize = pageSize;
+      const nextPageSize = target.value || '100';
+      if (nextPageSize === previousPageSize) return;
+      const version = ++pageSizeSaveVersion;
+      pageSize = nextPageSize;
       currentPage = 1;
       scrollResultsToTop();
-      if (updateCurrentHash(false)) return;
-      render();
+      if (!updateCurrentHash(false)) void render();
+      try {
+        await persistPageSizePreference(nextPageSize);
+      } catch (error) {
+        if (pageSizeSaveVersion === version) {
+          pageSize = previousPageSize;
+          currentPage = 1;
+          if (!updateCurrentHash(false)) void render();
+          window.alert(error instanceof Error ? error.message : String(error));
+        }
+      }
     }
     function handlePagerSubmit(event) {
       const target = event.target;

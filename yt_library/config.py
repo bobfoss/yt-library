@@ -27,6 +27,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "display_timezone": "",
     "search_card_layout": "grid",
     "history_card_layout": "compact",
+    "page_size": 100,
     "use_proxy": False,
     "proxy": "",
     "dispatch_mode": "delay",
@@ -44,6 +45,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 _LEGACY_YOUTUBE_REQUEST_INTERVAL_SECONDS = 5.0
 _LEGACY_ARCHIVARIX_REQUEST_INTERVAL_SECONDS = 3.0
 CARD_LAYOUTS = frozenset({"grid", "detailed", "compact"})
+PAGE_SIZES = frozenset({50, 100, 250, 500})
 
 
 def configured_display_timezone(config: dict[str, Any]) -> str:
@@ -76,6 +78,14 @@ def configured_search_card_layout(config: dict[str, Any]) -> str:
 
 def configured_history_card_layout(config: dict[str, Any]) -> str:
     return configured_card_layout(config, "history_card_layout", "compact")
+
+
+def configured_page_size(config: dict[str, Any]) -> int:
+    try:
+        value = int(config.get("page_size", DEFAULT_CONFIG["page_size"]))
+    except (TypeError, ValueError):
+        return int(DEFAULT_CONFIG["page_size"])
+    return value if value in PAGE_SIZES else int(DEFAULT_CONFIG["page_size"])
 
 
 def configured_dispatch_mode(config: dict[str, Any]) -> str:
@@ -299,6 +309,7 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
     config["archivarix_max_in_flight"] = configured_archivarix_max_in_flight(config)
     config["search_card_layout"] = configured_search_card_layout(config)
     config["history_card_layout"] = configured_history_card_layout(config)
+    config["page_size"] = configured_page_size(config)
     configured_proxy_address(config)
     config["_config_path"] = str(path)
     return config

@@ -19,11 +19,13 @@ from typing import Any, Callable
 
 from .config import (
     CARD_LAYOUTS,
+    PAGE_SIZES,
     configured_archivarix_max_in_flight,
     configured_dispatch_mode,
     configured_display_timezone,
     configured_history_card_layout,
     configured_job_dispatch_delay,
+    configured_page_size,
     configured_proxy_address,
     configured_request_delay_range,
     configured_search_card_layout,
@@ -559,6 +561,18 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.config_data[config_key] = layout
             save_config(self.config_data)
             self.send_json({"ok": True, "context": context, "layout": layout})
+            return
+        if parsed.path == "/api/settings/page-size":
+            try:
+                page_size = int((params.get("value") or [""])[0])
+            except ValueError:
+                page_size = 0
+            if page_size not in PAGE_SIZES:
+                self.send_json({"error": "Invalid page size preference"}, status=400)
+                return
+            self.config_data["page_size"] = page_size
+            save_config(self.config_data)
+            self.send_json({"ok": True, "pageSize": page_size})
             return
         if parsed.path == "/api/admin/settings":
             timezone_name = (params.get("display_timezone") or [""])[0].strip()
@@ -1175,10 +1189,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def display_timezone_name(self, conn: sqlite3.Connection) -> str:
         return configured_display_timezone(self.config_data)
 
-    def layout_settings(self) -> dict[str, str]:
+    def layout_settings(self) -> dict[str, Any]:
         return {
             "searchCardLayout": configured_search_card_layout(self.config_data),
             "historyCardLayout": configured_history_card_layout(self.config_data),
+            "pageSize": configured_page_size(self.config_data),
         }
 
     def dispatch_settings(self) -> dict[str, Any]:
