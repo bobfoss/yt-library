@@ -57,8 +57,8 @@
     .filter.dimmed { opacity: .42; }
     .group { width: 100%; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin: 2px 0; border-radius: 6px; cursor: pointer; text-align: left; font: inherit; }
     .group:hover, .group.active { background: var(--accent-soft); }
-    .search-nav { border-top: 1px solid var(--line); border-radius: 0; margin: 0 0 4px; padding-top: 12px; }
-    .search-nav:hover, .search-nav.active { border-radius: 6px; }
+    .primary-nav-divider { border-top: 1px solid var(--line); margin: 8px 0 6px; }
+    .search-nav { margin: 0 0 4px; }
     .group.child { padding-left: 28px; color: var(--muted); }
     .group-section { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; }
     .group-section:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
@@ -379,6 +379,8 @@
         <h1><a class="home-title" href="/"><img class="library-mark" src="/favicon.svg?v=ytl" alt="">YT Library</a></h1>
         <a class="admin-link" href="/admin">Admin</a>
       </div>
+      <button id="history-nav" class="group" type="button" data-key="__history__"><span>History</span><span class="count"></span></button>
+      <div class="primary-nav-divider" aria-hidden="true"></div>
       <button id="search-nav" class="group search-nav" type="button" data-key="__search__"><span>Search</span><span class="count"></span></button>
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
       <div class="filters" aria-label="Search filters">
@@ -525,6 +527,7 @@
     let playlistSearchTimer = null;
     const search = document.getElementById('search');
     const searchNav = document.getElementById('search-nav');
+    const historyNav = document.getElementById('history-nav');
     const searchForFilters = document.getElementById('search-for-filters');
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
@@ -2560,15 +2563,6 @@
       return section;
     }
 
-    function navButton(key, label, count) {
-      const button = document.createElement('button');
-      button.className = 'group';
-      button.dataset.key = key;
-      button.innerHTML = `<span>${escapeHtml(label)}</span><span class="count">${count}</span>`;
-      button.addEventListener('click', () => setSelected(key));
-      return button;
-    }
-
     function presetButton(preset, label, count) {
       const button = document.createElement('button');
       button.className = 'group';
@@ -2598,17 +2592,19 @@
         );
       }
       searchNav?.classList.toggle('active', selected === '__search__' && !activeSearchPreset);
+      historyNav?.classList.toggle('active', selected === '__history__');
     }
 
     function renderGroups() {
       if (!data) return;
       groupsEl.replaceChildren();
       const counts = data.counts || {};
+      const historyCount = historyNav?.querySelector('.count');
+      if (historyCount) historyCount.textContent = counts.history || 0;
       const videoSection = sectionFor('Videos');
       videoSection.appendChild(presetButton('videos', 'Videos', counts.videos || 0));
       videoSection.appendChild(presetButton('playlist-videos', 'Playlist videos', counts.playlist_videos || 0));
       videoSection.appendChild(presetButton('liked-videos', 'Liked videos', counts.liked_videos || 0));
-      videoSection.appendChild(navButton('__history__', 'History', counts.history || 0));
 
       const playlistSection = sectionFor('Playlists');
       playlistSection.appendChild(presetButton('all-playlists', 'All playlists', counts.playlists || 0));
@@ -3210,6 +3206,7 @@
         render();
       }, 250);
     });
+    historyNav?.addEventListener('click', () => setSelected('__history__'));
     searchNav?.addEventListener('click', activateUnscopedSearch);
     viewContext.addEventListener('change', event => {
       const syncToggle = event.target.closest('[data-history-sync]');

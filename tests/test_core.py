@@ -5043,6 +5043,9 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("if (!historyActivitySyncEnabled)", server.INDEX_HTML)
         self.assertIn("async function setHistoryActivitySync(enabled)", server.INDEX_HTML)
         self.assertIn("const activity = historyActivitySyncEnabled", server.INDEX_HTML)
+        self.assertLess(server.INDEX_HTML.index('id="history-nav"'), server.INDEX_HTML.index('id="search-nav"'))
+        self.assertIn('class="primary-nav-divider"', server.INDEX_HTML)
+        self.assertNotIn("navButton('__history__', 'History'", server.INDEX_HTML)
         self.assertIn(
             "completionCounts: videoCompletionCountsCache.get(metaCountsKey)",
             server.INDEX_HTML,
