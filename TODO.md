@@ -99,7 +99,6 @@ The left-navigation library lists are named omni-search presets. Search returns 
 
 - Add configurable scheduled Fetch History runs, with clear last-run, next-run, and failure status.
 - Make parent-child relationships in hierarchical filters more visually obvious, including enabled, disabled, selected, and partially selected states.
-- Add a master Fetch All action that queues the appropriate fetch operations and requires an explicit warning/confirmation before starting.
 - Begin publishing versioned releases through GitHub with a defined versioning and release process.
 - Maintain a changelog for each released version that summarizes user-facing changes, fixes, schema impact, and operational notes.
 - Beginning with the 1.0 release, preserve or redirect existing browser URLs when route or parameter formatting changes. Pre-1.0 URLs do not require compatibility handling.

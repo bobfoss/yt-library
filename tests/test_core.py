@@ -3590,6 +3590,58 @@ class SchemaTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_initialize_queues_full_scan_without_clearing_existing_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                self.assertFalse(core.library_has_data(conn))
+                self.assertFalse(core.admin_status(db_path)["hasLibraryData"])
+                with conn:
+                    core.upsert_channel(conn, "UCinitialize", title="Initialize channel")
+                    core.upsert_video(
+                        conn,
+                        "initvideo01",
+                        title="Initialize video",
+                        channel_id="UCinitialize",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(playlist_id, title)
+                        VALUES ('PLinitialize', 'Initialize playlist')
+                        """
+                    )
+                    existing = core.enqueue_worker_queue_target(conn, "queuedvid01")
+                    stats = core.enqueue_initialization_tasks(conn)
+                    repeated_stats = core.enqueue_initialization_tasks(conn)
+
+                subjects = {
+                    row["subject_key"]
+                    for row in conn.execute("SELECT subject_key FROM worker_queue")
+                }
+                self.assertTrue(core.library_has_data(conn))
+                self.assertTrue(core.admin_status(db_path)["hasLibraryData"])
+            finally:
+                conn.close()
+
+        self.assertTrue(stats["had_data"])
+        self.assertEqual(stats["metadata"], 2)
+        self.assertEqual(stats["playlists"], 2)
+        self.assertEqual(stats["history"], 1)
+        self.assertEqual(stats["selected"], 5)
+        self.assertEqual(stats["inserted"], 5)
+        self.assertEqual(stats["already_queued"], 0)
+        self.assertEqual(stats["queued"], 6)
+        self.assertEqual(repeated_stats["inserted"], 0)
+        self.assertEqual(repeated_stats["already_queued"], 5)
+        self.assertEqual(repeated_stats["queued"], 6)
+        self.assertIn(existing["subject_key"], subjects)
+        self.assertIn("metadata:channel:UCinitialize", subjects)
+        self.assertIn("metadata:video:initvideo01", subjects)
+        self.assertIn("playlist:scan:LL", subjects)
+        self.assertIn("playlist:scan:PLinitialize", subjects)
+        self.assertIn("history:verify", subjects)
+
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -4595,6 +4647,16 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
 
     def test_admin_template_exposes_service_and_proxy_controls(self) -> None:
+        self.assertIn('id="initializeLibrary"', server.ADMIN_HTML)
+        self.assertIn('id="initializeStatus"', server.ADMIN_HTML)
+        self.assertIn("'/api/admin/initialize'", server.ADMIN_HTML)
+        self.assertIn("usually take a significant amount of time", server.ADMIN_HTML)
+        self.assertIn("initialize-needed", server.ADMIN_HTML)
+        self.assertIn("initialize-complete", server.ADMIN_HTML)
+        self.assertLess(
+            server.ADMIN_HTML.index('id="initializeLibrary"'),
+            server.ADMIN_HTML.index("<h2>Videos</h2>"),
+        )
         self.assertIn('id="themeToggle"', server.ADMIN_HTML)
         self.assertIn('aria-label="Use dark theme"', server.ADMIN_HTML)
         self.assertIn('<span>Light</span>', server.ADMIN_HTML)
@@ -5377,6 +5439,48 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(response["queue"]["inserted"], 1)
         self.assertEqual(queued, "backfillvid")
         start_dispatcher.assert_called_once()
+
+    def test_initialize_endpoint_queues_initial_work_and_starts_dispatcher(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/admin/initialize"
+            handler.db_path = db_path
+            handler.cookie_file = Path(temp_dir) / "cookies.txt"
+            handler.video_thumbs = Path(temp_dir) / "video_thumbs"
+            handler.config_data = {}
+            handler.send_json = Mock()
+
+            with patch.object(
+                server.WORKER_QUEUE_DISPATCHER,
+                "start",
+                return_value={"started": True},
+            ) as start_dispatcher:
+                handler.do_POST()
+
+            response = handler.send_json.call_args.args[0]
+            conn = core.connect(db_path)
+            try:
+                subjects = {
+                    row["subject_key"]
+                    for row in conn.execute("SELECT subject_key FROM worker_queue")
+                }
+            finally:
+                conn.close()
+
+        self.assertTrue(response["ok"])
+        self.assertFalse(response["queue"]["had_data"])
+        self.assertEqual(response["queue"]["inserted"], 2)
+        self.assertEqual(subjects, {"history:verify", "playlist:scan:LL"})
+        start_dispatcher.assert_called_once_with(
+            db_path,
+            handler.cookie_file,
+            handler.video_thumbs,
+            handler.config_data,
+        )
 
     def test_service_replacement_uses_dedicated_log_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -84,6 +84,10 @@
     input:disabled { cursor: not-allowed; opacity: 0.55; }
     button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 9px 12px; font: inherit; cursor: pointer; }
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.initialize-needed { background: #2563eb; border-color: #60a5fa; color: #fff; font-weight: 700; }
+    button.initialize-needed:hover { background: #1d4ed8; color: #fff; }
+    button.initialize-complete { background: #27272a; border-color: #52525b; color: #fff; font-weight: 700; }
+    button.initialize-complete:hover { background: #3f3f46; color: #fff; }
     button.danger { background: #b91c1c; border-color: #dc2626; color: #fff; }
     button.danger:hover { background: #dc2626; color: #fff; }
     button:hover { background: var(--accent-soft); color: var(--ink); }
@@ -199,6 +203,11 @@
         </div>
       </div>
     </header>
+
+    <div class="controls initialize-controls">
+      <button id="initializeLibrary" type="button">Initialize</button>
+      <span id="initializeStatus" class="metric" aria-live="polite"></span>
+    </div>
 
     <section class="workstreams">
       <section class="workstream">
@@ -403,6 +412,8 @@
   </main>
   <script>
     const fields = {
+      initializeLibrary: document.getElementById('initializeLibrary'),
+      initializeStatus: document.getElementById('initializeStatus'),
       playlistRows: document.getElementById('playlistRows'),
       distinctVideos: document.getElementById('distinctVideos'),
       playlistBackfillCount: document.getElementById('playlistBackfillCount'),
@@ -805,6 +816,13 @@
       ].filter(Boolean).join(' | ');
       fields.restartService.disabled = serviceState === 'restarting';
 
+      const hasLibraryData = Boolean(data.hasLibraryData);
+      fields.initializeLibrary.classList.toggle('initialize-needed', !hasLibraryData);
+      fields.initializeLibrary.classList.toggle('initialize-complete', hasLibraryData);
+      fields.initializeLibrary.title = hasLibraryData
+        ? 'Run a complete library scan'
+        : 'No library data detected; run the initial scan';
+
       const settings = data.settings || {};
       if (!settingsSaving && !settingsDirty) {
         fields.displayTimezone.value = settings.displayTimezone || window.YTLibraryTime.detected();
@@ -1189,6 +1207,22 @@
       saveDispatchSettings();
     }
 
+    fields.initializeLibrary.addEventListener('click', async () => {
+      const warning = 'Initialize the library? This queues a full YouTube history verification, scans Liked videos and every known playlist, and fetches missing or stale video and channel metadata. This will usually take a significant amount of time.';
+      if (!confirm(warning)) return;
+      fields.initializeLibrary.disabled = true;
+      fields.initializeStatus.textContent = 'Queueing';
+      try {
+        const result = await post('/api/admin/initialize');
+        const queue = result.queue || {};
+        fields.initializeStatus.textContent =
+          `Queued ${Number(queue.inserted || 0).toLocaleString()}; ${Number(queue.already_queued || 0).toLocaleString()} already queued`;
+      } catch (error) {
+        fields.initializeStatus.textContent = error.message;
+      } finally {
+        fields.initializeLibrary.disabled = false;
+      }
+    });
     document.getElementById('scanPlaylists').addEventListener('click', () => post('/api/admin/playlists/start').catch(error => alert(error.message)));
     document.getElementById('fetchVideoMetadata').addEventListener('click', () => post('/api/admin/metadata/start', {
       kind: 'video',

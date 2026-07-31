@@ -7037,6 +7037,89 @@ def rebuild_metadata_queue(
     return {"cleared": cleared, "inserted": inserted}
 
 
+def library_has_data(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        """
+        SELECT
+          EXISTS(SELECT 1 FROM videos)
+          OR EXISTS(SELECT 1 FROM playlists)
+          OR EXISTS(SELECT 1 FROM channels WHERE channel_id <> '')
+          OR EXISTS(SELECT 1 FROM history_events)
+        """
+    ).fetchone()
+    return bool(row[0])
+
+
+def enqueue_initialization_tasks(conn: sqlite3.Connection) -> dict[str, int | bool]:
+    had_data = library_has_data(conn)
+    queued_before = worker_queue_count(conn)
+
+    metadata_rows = metadata_queue_candidate_rows(
+        conn,
+        force=False,
+        stale_days=30,
+        metadata_kind="all",
+    )
+    for index, row in enumerate(metadata_rows, start=1):
+        source = row["metadata_source"] or "history"
+        priority = int(row["priority"] or 0) * 1_000_000 + index
+        enqueue_metadata_item(
+            conn,
+            video_id=row["video_id"] or "",
+            channel_id=row["channel_id"] or "",
+            channel_title=row["channel_title"] or "",
+            current_title=row["current_title"] or "",
+            metadata_source=source,
+            source_key="initialize",
+            playlist_count=int(row["playlist_count"] or 0),
+            priority=priority,
+            manual=False,
+        )
+
+    playlist_rows = playlist_scan_candidate_rows(
+        conn,
+        force=True,
+        stale_days=0,
+    )
+    enqueue_playlist_scan_item(
+        conn,
+        LIKED_VIDEOS_PLAYLIST_ID,
+        title="Liked videos",
+        source_key="initialize",
+        priority=0,
+        manual=False,
+    )
+    playlist_count = 1
+    for index, row in enumerate(playlist_rows, start=1):
+        if row["playlist_id"] == LIKED_VIDEOS_PLAYLIST_ID:
+            continue
+        enqueue_playlist_scan_item(
+            conn,
+            row["playlist_id"] or "",
+            title=row["title"] or "",
+            source_key="initialize",
+            priority=index,
+            manual=False,
+        )
+        playlist_count += 1
+
+    enqueue_history_task(conn, "verify", priority=0, manual=True)
+
+    queued_after = worker_queue_count(conn)
+    selected = len(metadata_rows) + playlist_count + 1
+    inserted = max(0, queued_after - queued_before)
+    return {
+        "had_data": had_data,
+        "metadata": len(metadata_rows),
+        "playlists": playlist_count,
+        "history": 1,
+        "selected": selected,
+        "inserted": inserted,
+        "already_queued": max(0, selected - inserted),
+        "queued": queued_after,
+    }
+
+
 def enqueue_playlist_metadata_targets(conn: sqlite3.Connection, playlist_id: str) -> dict[str, str]:
     playlist_id = (playlist_id or "").strip()
     if not playlist_id:
@@ -7323,6 +7406,7 @@ def admin_status(
             ).fetchone()
         )
         backfill_counts = feature_backfill_counts(conn)
+        has_library_data = library_has_data(conn)
         worker_queue_count_value = worker_queue_count(conn)
         worker_queue_limit = max(0, min(10000, int(worker_queue_limit if worker_queue_limit is not None else 500)))
         worker_queue_preview_rows = (
@@ -7419,6 +7503,7 @@ def admin_status(
         "playlistCounts": playlist_counts,
         "metadataCounts": metadata_counts,
         "channelCounts": channel_counts,
+        "hasLibraryData": has_library_data,
         "featureBackfillCounts": backfill_counts,
         "workerQueueCount": worker_queue_count_value,
         "workerQueue": worker_queue_preview_rows,

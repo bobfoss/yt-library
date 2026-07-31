@@ -746,6 +746,21 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 }
             )
             return
+        if parsed.path == "/api/admin/initialize":
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    queue_stats = enqueue_initialization_tasks(conn)
+            finally:
+                conn.close()
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+            )
+            self.send_json({"ok": True, "queue": queue_stats, "dispatcher": dispatcher})
+            return
         if parsed.path == "/api/admin/metadata/start":
             stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
             force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
