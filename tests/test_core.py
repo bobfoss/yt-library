@@ -5038,7 +5038,11 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("const currentRange = historyActivityRange(historyActivityYearOffset)", server.INDEX_HTML)
         self.assertIn("function shiftedHistoryDateKey(dateKey, yearDelta)", server.INDEX_HTML)
         self.assertIn("setHistoryPageFromOffset(targetDay.watch_date", server.INDEX_HTML)
-        self.assertIn("const activity = syncHistoryActivityYearWithRows(rows, pendingHistoryDate)", server.INDEX_HTML)
+        self.assertIn("let historyActivitySyncEnabled = true;", server.INDEX_HTML)
+        self.assertIn("syncToggle.dataset.historySync = '';", server.INDEX_HTML)
+        self.assertIn("if (!historyActivitySyncEnabled)", server.INDEX_HTML)
+        self.assertIn("async function setHistoryActivitySync(enabled)", server.INDEX_HTML)
+        self.assertIn("const activity = historyActivitySyncEnabled", server.INDEX_HTML)
         self.assertIn(
             "completionCounts: videoCompletionCountsCache.get(metaCountsKey)",
             server.INDEX_HTML,
