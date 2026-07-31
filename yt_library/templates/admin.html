@@ -187,6 +187,9 @@
       </div>
       <div class="header-settings">
         <div class="service-controls">
+          <span class="metric advanced-only">Service</span>
+          <strong id="serviceStatus" class="advanced-only">Checking</strong>
+          <button id="restartService" class="advanced-only" type="button">Restart</button>
           <div class="theme-control">
             <span>Advanced</span>
             <label class="theme-switch">
@@ -202,9 +205,6 @@
             </label>
             <span>Dark</span>
           </div>
-          <span class="metric advanced-only">Service</span>
-          <strong id="serviceStatus" class="advanced-only">Checking</strong>
-          <button id="restartService" class="advanced-only" type="button">Restart</button>
         </div>
         <div class="header-settings-row advanced-only">
           <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>

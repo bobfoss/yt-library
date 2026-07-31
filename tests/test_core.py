@@ -4712,6 +4712,14 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('id="serviceStatus"', server.ADMIN_HTML)
         self.assertIn("`Running${service.pid ? ` (${service.pid})` : ''}`", server.ADMIN_HTML)
         self.assertIn('id="restartService"', server.ADMIN_HTML)
+        self.assertLess(
+            server.ADMIN_HTML.index('id="serviceStatus"'),
+            server.ADMIN_HTML.index('id="advancedToggle"'),
+        )
+        self.assertLess(
+            server.ADMIN_HTML.index('id="restartService"'),
+            server.ADMIN_HTML.index('id="advancedToggle"'),
+        )
         self.assertIn('id="useProxy"', server.ADMIN_HTML)
         self.assertIn('id="proxyUrl"', server.ADMIN_HTML)
         self.assertIn('id="retryProxy"', server.ADMIN_HTML)
