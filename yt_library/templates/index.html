@@ -1656,10 +1656,10 @@
       return `${year}-${month}-${day}`;
     }
 
-    function historyActivityRange() {
+    function historyActivityRange(yearOffset = historyActivityYearOffset) {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      const targetYear = today.getFullYear() - historyActivityYearOffset;
+      const targetYear = today.getFullYear() - yearOffset;
       const lastDayOfTargetMonth = new Date(targetYear, today.getMonth() + 1, 0).getDate();
       const displayEnd = new Date(targetYear, today.getMonth(), Math.min(today.getDate(), lastDayOfTargetMonth));
       const start = new Date(displayEnd);
@@ -1667,6 +1667,60 @@
       const end = new Date(start);
       end.setDate(end.getDate() + (53 * 7) - 1);
       return { start, end, displayEnd, startKey: localDateKey(start), endKey: localDateKey(end) };
+    }
+
+    function historyRowDateKey(row) {
+      for (const value of [row?.watch_date, row?.watched_at]) {
+        const dateKey = String(value || '').slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return dateKey;
+      }
+      return '';
+    }
+
+    function historyActivityYearOffsetForDate(dateKey) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return historyActivityYearOffset;
+      const currentRange = historyActivityRange(historyActivityYearOffset);
+      if (dateKey >= currentRange.startKey && dateKey <= currentRange.endKey) {
+        return historyActivityYearOffset;
+      }
+      const today = new Date();
+      const maximumOffset = Math.max(0, today.getFullYear() - Number(dateKey.slice(0, 4)) + 2);
+      for (let offset = 0; offset <= maximumOffset; offset += 1) {
+        const range = historyActivityRange(offset);
+        if (dateKey >= range.startKey && dateKey <= range.endKey) return offset;
+      }
+      return maximumOffset;
+    }
+
+    function syncHistoryActivityYearWithRows(rows, preferredDate = '') {
+      const dateKey = preferredDate || (rows || []).map(historyRowDateKey).find(Boolean) || '';
+      if (!dateKey) return false;
+      const nextOffset = historyActivityYearOffsetForDate(dateKey);
+      if (nextOffset === historyActivityYearOffset) return false;
+      historyActivityYearOffset = nextOffset;
+      return true;
+    }
+
+    function displayedHistoryAnchorDate() {
+      const row = grid.querySelector('[data-watch-date]');
+      return row instanceof HTMLElement ? row.dataset.watchDate || '' : '';
+    }
+
+    function shiftedHistoryDateKey(dateKey, yearDelta) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return '';
+      const year = Number(dateKey.slice(0, 4)) - yearDelta;
+      const monthIndex = Number(dateKey.slice(5, 7)) - 1;
+      const day = Number(dateKey.slice(8, 10));
+      const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+      return localDateKey(new Date(year, monthIndex, Math.min(day, lastDay)));
+    }
+
+    function historyActivityDayNear(payload, dateKey) {
+      const days = (payload.activity || []).filter(day => /^\d{4}-\d{2}-\d{2}$/.test(day.watch_date || ''));
+      return days.find(day => day.watch_date === dateKey)
+        || days.find(day => day.watch_date < dateKey)
+        || days.at(-1)
+        || null;
     }
 
     async function fetchHistoryActivity(channelId = '') {
@@ -1808,7 +1862,10 @@
         return;
       }
       const previousOffset = historyActivityYearOffset;
+      const previousPage = currentPage;
+      const previousPendingDate = pendingHistoryDate;
       const channelId = heatmap.dataset.historyChannelId || '';
+      const currentAnchorDate = displayedHistoryAnchorDate();
       historyActivityYearOffset = nextOffset;
       heatmap.setAttribute('aria-busy', 'true');
       for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
@@ -1822,10 +1879,21 @@
           && channelDetailTab === 'history'
         );
         if ((selected === '__history__' || channelHeatmapActive) && heatmap.isConnected) {
-          heatmap.replaceWith(historyHeatmapFor(activity));
+          const targetDate = shiftedHistoryDateKey(currentAnchorDate, delta)
+            || localDateKey(historyActivityRange().displayEnd);
+          const targetDay = historyActivityDayNear(activity, targetDate);
+          if (targetDay) {
+            setHistoryPageFromOffset(targetDay.watch_date, Number(targetDay.offset || 0));
+            if (updateCurrentHash(false)) return;
+            await render();
+          } else {
+            heatmap.replaceWith(historyHeatmapFor(activity));
+          }
         }
       } catch (error) {
         historyActivityYearOffset = previousOffset;
+        currentPage = previousPage;
+        pendingHistoryDate = previousPendingDate;
         heatmap.removeAttribute('aria-busy');
         for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
           button.disabled = button.dataset.historyYearShift === '-1' && historyActivityYearOffset === 0;
@@ -1847,11 +1915,15 @@
       });
     }
 
-    async function jumpToHistoryDate(date, offset) {
+    function setHistoryPageFromOffset(date, offset) {
       const size = pageSizeNumber();
       const effectiveSize = Number.isFinite(size) ? size : 1000;
       currentPage = Math.floor(Math.max(0, offset) / effectiveSize) + 1;
       pendingHistoryDate = date;
+    }
+
+    async function jumpToHistoryDate(date, offset) {
+      setHistoryPageFromOffset(date, offset);
       if (updateCurrentHash(false)) return;
       await render();
     }
@@ -1861,8 +1933,11 @@
       meta.textContent = 'Loading history...';
       applyHistoryCardLayout();
       empty.hidden = true;
-      const [payload, activity] = await Promise.all([fetchHistoryPage(), fetchHistoryActivity()]);
+      const [payload, initialActivity] = await Promise.all([fetchHistoryPage(), fetchHistoryActivity()]);
       const rows = payload.watch || [];
+      const activity = syncHistoryActivityYearWithRows(rows, pendingHistoryDate)
+        ? await fetchHistoryActivity()
+        : initialActivity;
       const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
       const pageInfo = remotePageInfo(total, rows.length);
       meta.innerHTML = rightPanelListMetaHtml(`${total} watches`, {
@@ -2708,11 +2783,14 @@
           meta.textContent = 'Loading channel history...';
           grid.replaceChildren();
           empty.hidden = true;
-          const [payload, activity] = await Promise.all([
+          const [payload, initialActivity] = await Promise.all([
             fetchHistoryPage(channelId),
             fetchHistoryActivity(channelId),
           ]);
           const rows = payload.watch || [];
+          const activity = syncHistoryActivityYearWithRows(rows, pendingHistoryDate)
+            ? await fetchHistoryActivity(channelId)
+            : initialActivity;
           const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
           if (generation !== renderGeneration) return;
           viewContext.replaceChildren(

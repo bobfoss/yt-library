@@ -4997,6 +4997,11 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("aspect-ratio: 16 / 9;", server.INDEX_HTML)
         self.assertIn("end.setDate(end.getDate() + (53 * 7) - 1);", server.INDEX_HTML)
         self.assertIn("rangeDateLabel(range.displayEnd)", server.INDEX_HTML)
+        self.assertIn("function syncHistoryActivityYearWithRows(rows, preferredDate = '')", server.INDEX_HTML)
+        self.assertIn("const currentRange = historyActivityRange(historyActivityYearOffset)", server.INDEX_HTML)
+        self.assertIn("function shiftedHistoryDateKey(dateKey, yearDelta)", server.INDEX_HTML)
+        self.assertIn("setHistoryPageFromOffset(targetDay.watch_date", server.INDEX_HTML)
+        self.assertIn("const activity = syncHistoryActivityYearWithRows(rows, pendingHistoryDate)", server.INDEX_HTML)
         self.assertIn(
             "completionCounts: videoCompletionCountsCache.get(metaCountsKey)",
             server.INDEX_HTML,
