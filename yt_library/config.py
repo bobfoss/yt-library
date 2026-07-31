@@ -29,6 +29,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "display_timezone": "",
     "search_card_layout": "grid",
     "history_card_layout": "compact",
+    "sort_preferences": {},
     "page_size": 100,
     "history_fetch_daily": False,
     "history_fetch_time": "03:00",
@@ -51,6 +52,29 @@ _LEGACY_YOUTUBE_REQUEST_INTERVAL_SECONDS = 5.0
 _LEGACY_ARCHIVARIX_REQUEST_INTERVAL_SECONDS = 3.0
 CARD_LAYOUTS = frozenset({"grid", "detailed", "compact"})
 PAGE_SIZES = frozenset({50, 100, 250, 500})
+SEARCH_SORTS = frozenset(
+    {"relevance", "title", "newest", "oldest", "most_watched", "type"}
+)
+PLAYLIST_VIDEO_SORTS = frozenset(
+    {"newest_added", "title", "oldest_added", "most_watched", "playlist_order"}
+)
+SEARCH_SORT_CONTEXTS = frozenset(
+    {
+        "search",
+        "videos",
+        "playlist-videos",
+        "liked-videos",
+        "all-playlists",
+        "channels",
+        "subscribed-channels",
+        "terminated-channels",
+        "playlist-group",
+    }
+)
+SORT_PREFERENCE_VALUES = {
+    **{context: SEARCH_SORTS for context in SEARCH_SORT_CONTEXTS},
+    "playlist": PLAYLIST_VIDEO_SORTS,
+}
 DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -92,6 +116,19 @@ def configured_page_size(config: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         return int(DEFAULT_CONFIG["page_size"])
     return value if value in PAGE_SIZES else int(DEFAULT_CONFIG["page_size"])
+
+
+def configured_sort_preferences(config: dict[str, Any]) -> dict[str, str]:
+    raw_preferences = config.get("sort_preferences")
+    if not isinstance(raw_preferences, dict):
+        return {}
+    preferences: dict[str, str] = {}
+    for raw_context, raw_value in raw_preferences.items():
+        context = str(raw_context).strip().lower()
+        value = str(raw_value or "").strip().lower()
+        if value in SORT_PREFERENCE_VALUES.get(context, frozenset()):
+            preferences[context] = value
+    return preferences
 
 
 def configured_history_fetch_daily(config: dict[str, Any]) -> bool:
@@ -356,6 +393,7 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
     config["archivarix_max_in_flight"] = configured_archivarix_max_in_flight(config)
     config["search_card_layout"] = configured_search_card_layout(config)
     config["history_card_layout"] = configured_history_card_layout(config)
+    config["sort_preferences"] = configured_sort_preferences(config)
     config["page_size"] = configured_page_size(config)
     config["history_fetch_daily"] = configured_history_fetch_daily(config)
     config["history_fetch_time"] = configured_history_fetch_time(config)

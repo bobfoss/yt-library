@@ -65,6 +65,7 @@ in the generated config file:
   "display_timezone": "",
   "search_card_layout": "grid",
   "history_card_layout": "compact",
+  "sort_preferences": {},
   "use_proxy": false,
   "proxy": "",
   "dispatch_mode": "delay",
@@ -90,6 +91,8 @@ If `display_timezone` is empty, the browser detects an IANA timezone on first
 load and saves it to the config file.
 The search and history card selectors save `search_card_layout` and
 `history_card_layout` immediately, without changing the current URL.
+Sort selectors save independent preferences for unscoped search, each sidebar
+preset, and playlist-detail video lists in `sort_preferences`.
 Set `use_proxy` to `true` and `proxy` to a URL such as
 `socks5h://127.0.0.1:1080` to route every outbound YouTube and Archivarix page,
 API, stream, thumbnail, and yt-dlp request through a SOCKS5 proxy. Use `socks5h`

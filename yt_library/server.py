@@ -21,6 +21,7 @@ from typing import Any, Callable
 from .config import (
     CARD_LAYOUTS,
     PAGE_SIZES,
+    SORT_PREFERENCE_VALUES,
     configured_archivarix_max_in_flight,
     configured_admin_advanced,
     configured_dispatch_mode,
@@ -33,6 +34,7 @@ from .config import (
     configured_proxy_address,
     configured_request_delay_range,
     configured_search_card_layout,
+    configured_sort_preferences,
     configured_use_proxy,
     configured_youtube_max_in_flight,
     effective_display_timezone,
@@ -714,6 +716,18 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             save_config(self.config_data)
             self.send_json({"ok": True, "context": context, "layout": layout})
             return
+        if parsed.path == "/api/settings/sort":
+            context = (params.get("context") or [""])[0].strip().lower()
+            sort = (params.get("value") or [""])[0].strip().lower()
+            if sort not in SORT_PREFERENCE_VALUES.get(context, frozenset()):
+                self.send_json({"error": "Invalid sort preference"}, status=400)
+                return
+            preferences = configured_sort_preferences(self.config_data)
+            preferences[context] = sort
+            self.config_data["sort_preferences"] = preferences
+            save_config(self.config_data)
+            self.send_json({"ok": True, "context": context, "sort": sort})
+            return
         if parsed.path == "/api/settings/page-size":
             try:
                 page_size = int((params.get("value") or [""])[0])
@@ -1391,6 +1405,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         return {
             "searchCardLayout": configured_search_card_layout(self.config_data),
             "historyCardLayout": configured_history_card_layout(self.config_data),
+            "sortPreferences": configured_sort_preferences(self.config_data),
             "pageSize": configured_page_size(self.config_data),
         }
 

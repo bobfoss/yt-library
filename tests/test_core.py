@@ -38,6 +38,7 @@ from yt_library.config import (
     configured_proxy_address,
     configured_request_delay_range,
     configured_search_card_layout,
+    configured_sort_preferences,
     configured_use_proxy,
     configured_youtube_max_in_flight,
     configured_proxy,
@@ -4277,6 +4278,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(configured_page_size({}), 100)
         self.assertEqual(configured_page_size({"page_size": 250}), 250)
         self.assertEqual(configured_page_size({"page_size": 42}), 100)
+        self.assertEqual(configured_sort_preferences({}), {})
+        self.assertEqual(
+            configured_sort_preferences(
+                {
+                    "sort_preferences": {
+                        "search": "most_watched",
+                        "liked-videos": "oldest",
+                        "playlist": "playlist_order",
+                        "playlist-group": "invalid",
+                        "unknown-context": "title",
+                    }
+                }
+            ),
+            {
+                "search": "most_watched",
+                "liked-videos": "oldest",
+                "playlist": "playlist_order",
+            },
+        )
         self.assertEqual(
             configured_search_card_layout({"search_card_layout": "detailed"}),
             "detailed",
@@ -4422,6 +4442,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["display_timezone"], "")
             self.assertEqual(payload["search_card_layout"], "grid")
             self.assertEqual(payload["history_card_layout"], "compact")
+            self.assertEqual(payload["sort_preferences"], {})
             self.assertEqual(payload["page_size"], 100)
             self.assertFalse(payload["history_fetch_daily"])
             self.assertEqual(payload["history_fetch_time"], "03:00")
@@ -4481,6 +4502,41 @@ class ConfigTests(unittest.TestCase):
 
 
 class AdminServerTests(unittest.TestCase):
+    def test_sort_preference_saves_without_restarting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/settings/sort?context=liked-videos&value=most_watched"
+            handler.config_data = config
+            handler.send_json = Mock()
+
+            handler.do_POST()
+
+            expected = {"liked-videos": "most_watched"}
+            self.assertEqual(config["sort_preferences"], expected)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["sort_preferences"], expected)
+            handler.send_json.assert_called_once_with(
+                {
+                    "ok": True,
+                    "context": "liked-videos",
+                    "sort": "most_watched",
+                }
+            )
+
+    def test_sort_preference_rejects_mismatched_regime(self) -> None:
+        config = load_config(Path("missing-test-config.json"))
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = "/api/settings/sort?context=playlist&value=newest"
+        handler.config_data = config
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        self.assertEqual(config["sort_preferences"], {})
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
     def test_page_size_preference_saves_without_restarting(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"
@@ -5231,7 +5287,10 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("let searchResultsRendered = false;", server.INDEX_HTML)
         self.assertIn("let searchResultsSort = 'newest';", server.INDEX_HTML)
         self.assertIn("function defaultSearchResultsSort(", server.INDEX_HTML)
-        self.assertIn("searchSortExplicit = params.has('sort');", server.INDEX_HTML)
+        self.assertIn(
+            "searchSortExplicit = searchSortOptions.has(requestedSort);",
+            server.INDEX_HTML,
+        )
         self.assertIn("return '__search__';", server.INDEX_HTML)
         self.assertNotIn("Enter a search query.", server.INDEX_HTML)
         self.assertNotIn("Search results", server.INDEX_HTML)
@@ -5259,12 +5318,16 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("playlist_group_key: searchPlaylistGroupKey,", server.INDEX_HTML)
         self.assertIn("pageConfig.searchCardLayout", server.INDEX_HTML)
         self.assertIn("pageConfig.historyCardLayout", server.INDEX_HTML)
+        self.assertIn("pageConfig.sortPreferences", server.INDEX_HTML)
         self.assertIn("pageConfig.pageSize", server.INDEX_HTML)
         self.assertIn(": 'compact';", server.INDEX_HTML)
         self.assertNotIn("params.set('layout'", server.INDEX_HTML)
         self.assertNotIn("params.set('size'", server.INDEX_HTML)
         self.assertNotIn("params.get('size'", server.INDEX_HTML)
         self.assertIn("persistCardLayoutPreference(context, layout)", server.INDEX_HTML)
+        self.assertIn("persistSortPreference(context, value)", server.INDEX_HTML)
+        self.assertIn("function searchSortPreferenceContext(", server.INDEX_HTML)
+        self.assertIn("preferredSearchResultsSort('', preset)", server.INDEX_HTML)
         self.assertIn("persistPageSizePreference(nextPageSize)", server.INDEX_HTML)
         self.assertIn("layoutContext: 'history',", server.INDEX_HTML)
         self.assertIn("function rightPanelListMetaHtml(", server.INDEX_HTML)

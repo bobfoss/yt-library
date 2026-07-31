@@ -466,12 +466,19 @@
       { groupName: 'playlists', key: 'removed', paramName: 'removed' },
       { groupName: 'channelStatus', key: 'terminated', paramName: 'terminated' },
     ];
+    const pageConfig = window.YT_LIBRARY_CONFIG || {};
+    const searchSortOptions = new Set([
+      'relevance', 'title', 'newest', 'oldest', 'most_watched', 'type',
+    ]);
+    const playlistVideoSortOptions = new Set([
+      'newest_added', 'title', 'oldest_added', 'most_watched', 'playlist_order',
+    ]);
+    const sortPreferences = { ...(pageConfig.sortPreferences || {}) };
     let searchResultsSort = 'newest';
     let searchSortExplicit = false;
     let activeSearchPreset = '';
     let searchPlaylistGroupKey = '';
     const cardLayouts = new Set(['grid', 'detailed', 'compact']);
-    const pageConfig = window.YT_LIBRARY_CONFIG || {};
     let searchCardLayout = cardLayouts.has(pageConfig.searchCardLayout)
       ? pageConfig.searchCardLayout
       : 'grid';
@@ -483,6 +490,8 @@
       history: Promise.resolve(),
     };
     const cardLayoutSaveVersions = { search: 0, history: 0 };
+    let sortPreferenceSaveChain = Promise.resolve();
+    const sortPreferenceSaveVersions = new Map();
     let pageSizeSaveChain = Promise.resolve();
     let pageSizeSaveVersion = 0;
     const searchPresetDefinitions = {
@@ -496,7 +505,9 @@
       'playlist-group': { kind: 'playlists', sort: 'title' },
     };
     let playlistVisibilityPlaylistId = '';
-    let playlistViewSort = 'playlist_order';
+    let playlistViewSort = playlistVideoSortOptions.has(sortPreferences.playlist)
+      ? sortPreferences.playlist
+      : 'playlist_order';
     let playlistPageSearch = '';
     let currentPage = 1;
     let pageSize = String(pageConfig.pageSize || 100);
@@ -764,6 +775,20 @@
       return searchPresetDefinitions[preset]?.sort || 'newest';
     }
 
+    function searchSortPreferenceContext(preset = activeSearchPreset) {
+      return preset || 'search';
+    }
+
+    function preferredSearchResultsSort(
+      query = search.value.trim(),
+      preset = activeSearchPreset,
+    ) {
+      const preference = sortPreferences[searchSortPreferenceContext(preset)];
+      return searchSortOptions.has(preference)
+        ? preference
+        : defaultSearchResultsSort(query, preset);
+    }
+
     function searchKindEnabled(kind) {
       return searchKindFacetKeys(kind).every(
         key => Object.values(searchMetaVisibility[key]).some(Boolean)
@@ -853,7 +878,7 @@
       for (const { groupName, key, paramName } of searchOptInMetaFilters) {
         if (searchMetaVisibility[groupName][key]) params.set(paramName, '1');
       }
-      if (searchSortExplicit || searchResultsSort !== defaultSearchResultsSort(query)) {
+      if (searchSortExplicit || searchResultsSort !== preferredSearchResultsSort(query)) {
         params.set('sort', searchResultsSort);
       }
       if (currentPage > 1) params.set('page', String(currentPage));
@@ -905,8 +930,11 @@
         );
         searchMetaVisibility[groupName][key] = params.get(paramName) === '1' || legacySelected;
       }
-      searchSortExplicit = params.has('sort');
-      searchResultsSort = params.get('sort') || defaultSearchResultsSort(search.value.trim());
+      const requestedSort = params.get('sort') || '';
+      searchSortExplicit = searchSortOptions.has(requestedSort);
+      searchResultsSort = searchSortExplicit
+        ? requestedSort
+        : preferredSearchResultsSort(search.value.trim());
       const page = Number(params.get('page') || 1);
       currentPage = Number.isFinite(page) && page > 0 ? page : 1;
     }
@@ -991,7 +1019,7 @@
       search.value = '';
       for (const input of searchFields) input.checked = true;
       applySearchPresetState(preset, groupKey);
-      searchResultsSort = definition.sort;
+      searchResultsSort = preferredSearchResultsSort('', preset);
       searchSortExplicit = false;
       currentPage = 1;
       const href = searchHash();
@@ -1015,7 +1043,7 @@
         resetSearchMetaVisibility();
         renderSearchMetaFilters();
       }
-      searchResultsSort = defaultSearchResultsSort(search.value.trim(), '');
+      searchResultsSort = preferredSearchResultsSort(search.value.trim(), '');
       renderGroups();
       return true;
     }
@@ -1026,7 +1054,7 @@
       activeSearchPreset = '';
       searchPlaylistGroupKey = '';
       resetSearchMetaVisibility();
-      searchResultsSort = defaultSearchResultsSort(search.value.trim(), '');
+      searchResultsSort = preferredSearchResultsSort(search.value.trim(), '');
       searchSortExplicit = false;
       currentPage = 1;
       const href = searchHash();
@@ -3219,13 +3247,13 @@
         searchInputTimer = null;
       }
       currentPage = 1;
-      if (!searchSortExplicit) searchResultsSort = defaultSearchResultsSort();
+      if (!searchSortExplicit) searchResultsSort = preferredSearchResultsSort();
       const wasSearchHash = window.location.hash === '#search' || window.location.hash.startsWith('#search?');
       if (!wasSearchHash) {
         activeSearchPreset = '';
         searchPlaylistGroupKey = '';
         resetSearchMetaVisibility();
-        if (!searchSortExplicit) searchResultsSort = defaultSearchResultsSort();
+        if (!searchSortExplicit) searchResultsSort = preferredSearchResultsSort();
       }
       selected = '__search__';
       renderGroups();
@@ -3269,7 +3297,16 @@
       const target = event.target;
       if (target instanceof HTMLSelectElement && target.dataset.videoSort !== undefined) {
         if (target.dataset.videoSort === 'playlist') {
-          playlistViewSort = target.value || 'playlist_order';
+          const nextSort = target.value || 'playlist_order';
+          const previousSort = playlistViewSort;
+          const previousPreference = sortPreferences.playlist;
+          playlistViewSort = nextSort;
+          saveSortPreference('playlist', nextSort, previousPreference, () => {
+            if (!selected.startsWith('__playlist__:') || playlistViewSort !== nextSort) return;
+            playlistViewSort = previousSort;
+            currentPage = 1;
+            void render();
+          });
         }
         currentPage = 1;
         scrollResultsToTop();
@@ -3277,8 +3314,20 @@
         return;
       }
       if (target instanceof HTMLSelectElement && target.dataset.searchSort !== undefined) {
-        searchResultsSort = target.value || 'relevance';
+        const context = searchSortPreferenceContext();
+        const nextSort = target.value || 'relevance';
+        const previousSort = searchResultsSort;
+        const previousExplicit = searchSortExplicit;
+        const previousPreference = sortPreferences[context];
+        searchResultsSort = nextSort;
         searchSortExplicit = true;
+        saveSortPreference(context, nextSort, previousPreference, () => {
+          if (searchSortPreferenceContext() !== context || searchResultsSort !== nextSort) return;
+          searchResultsSort = previousSort;
+          searchSortExplicit = previousExplicit;
+          currentPage = 1;
+          syncSearchHashAndRender();
+        });
         currentPage = 1;
         scrollResultsToTop();
         syncSearchHashAndRender();
@@ -3374,6 +3423,36 @@
       const request = cardLayoutSaveChains[context].catch(() => {}).then(save);
       cardLayoutSaveChains[context] = request;
       return request;
+    }
+
+    function persistSortPreference(context, value) {
+      const save = async () => {
+        const params = new URLSearchParams({ context, value });
+        const response = await fetch(`/api/settings/sort?${params.toString()}`, { method: 'POST' });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) {
+          throw new Error(result.error || `Sort preference save failed (${response.status})`);
+        }
+      };
+      const request = sortPreferenceSaveChain.catch(() => {}).then(save);
+      sortPreferenceSaveChain = request;
+      return request;
+    }
+
+    function saveSortPreference(context, value, previousPreference, onFailure) {
+      const version = (sortPreferenceSaveVersions.get(context) || 0) + 1;
+      sortPreferenceSaveVersions.set(context, version);
+      sortPreferences[context] = value;
+      void persistSortPreference(context, value).catch(error => {
+        if (sortPreferenceSaveVersions.get(context) !== version) return;
+        if (previousPreference === undefined) {
+          delete sortPreferences[context];
+        } else {
+          sortPreferences[context] = previousPreference;
+        }
+        onFailure();
+        window.alert(error instanceof Error ? error.message : String(error));
+      });
     }
 
     function persistPageSizePreference(value) {
