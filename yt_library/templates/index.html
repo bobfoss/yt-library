@@ -2935,7 +2935,9 @@
           : '',
         details: [
           video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
+          archivarixLinkHtml(video),
         ],
+        recoveryHtml: archivarixStatusHtml(video),
         availabilityHtml: videoAvailabilityHtml(video),
         reactionHtml: reactionIconsHtml(video),
         sparklineHtml: watchSparklineHtml(video),

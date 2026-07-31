@@ -4617,7 +4617,11 @@ class AdminServerTests(unittest.TestCase):
             "if (status === 'NOT_FOUND') return 'Archivarix: No results found';",
             server.INDEX_HTML,
         )
-        self.assertIn("recoveryHtml: archivarixStatusHtml(video)", server.INDEX_HTML)
+        self.assertEqual(server.INDEX_HTML.count("return videoCardFor({"), 2)
+        self.assertEqual(
+            server.INDEX_HTML.count("recoveryHtml: archivarixStatusHtml(video)"),
+            2,
+        )
         self.assertNotIn("{ label: archivarixStatusLabel(video) },", server.INDEX_HTML)
         detail_card_start = server.INDEX_HTML.index("function videoDetailCardFor(video)")
         detail_card_end = server.INDEX_HTML.index("function channelDetailCardFor(channel)")
