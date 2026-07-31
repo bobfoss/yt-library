@@ -49,6 +49,12 @@
     .metric { color: var(--muted); font-size: 13px; }
     .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
     .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0 18px; }
+    .history-controls { align-items: flex-start; }
+    .history-fetch-stack { display: grid; justify-items: start; gap: 7px; }
+    .history-schedule-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+    .history-schedule-controls label.checkbox { padding: 0; }
+    label.history-time-label { display: flex; align-items: center; gap: 6px; }
+    .history-time-input { width: 110px; }
     .header-settings { display: grid; justify-items: end; gap: 8px; }
     .header-settings-row { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: end; gap: 8px; }
     .header-settings label { text-align: left; }
@@ -267,8 +273,15 @@
           <div class="panel"><div class="metric">History video IDs</div><div id="historyVideos" class="value">0</div></div>
           <div class="panel"><div class="metric">Fetched history rows</div><div id="liveHistoryRows" class="value">0</div></div>
         </div>
-        <div class="controls">
-          <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
+        <div class="controls history-controls">
+          <div class="history-fetch-stack">
+            <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
+            <div class="history-schedule-controls">
+              <label class="checkbox"><input id="historyFetchDaily" type="checkbox">Fetch daily</label>
+              <label class="history-time-label">At<input id="historyFetchTime" class="history-time-input" type="time" value="03:00" disabled></label>
+            </div>
+            <span id="historyScheduleStatus" class="metric" aria-live="polite"></span>
+          </div>
           <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
           <button id="importTakeoutHistory" type="button">Import Takeout directory</button>
           <button id="reconcileHistory" type="button">Reconcile history</button>
@@ -421,6 +434,9 @@
       historyRows: document.getElementById('historyRows'),
       historyVideos: document.getElementById('historyVideos'),
       liveHistoryRows: document.getElementById('liveHistoryRows'),
+      historyFetchDaily: document.getElementById('historyFetchDaily'),
+      historyFetchTime: document.getElementById('historyFetchTime'),
+      historyScheduleStatus: document.getElementById('historyScheduleStatus'),
       videoMetadataCounts: document.getElementById('videoMetadataCounts'),
       channelCounts: document.getElementById('channelCounts'),
       backfillVideoVisibility: document.getElementById('backfillVideoVisibility'),
@@ -491,6 +507,10 @@
     let dispatchSettingsSaveTimer = null;
     let settingsSaving = false;
     let settingsDirty = false;
+    let historyScheduleSaving = false;
+    let historyScheduleDirty = false;
+    let historyScheduleRevision = 0;
+    let historyScheduleSaveTimer = null;
     let currentServicePid = 0;
     let currentFeatureBackfillCounts = {};
     const logState = {
@@ -828,6 +848,18 @@
         fields.displayTimezone.value = settings.displayTimezone || window.YTLibraryTime.detected();
         fields.useProxy.checked = Boolean(settings.useProxy);
         fields.proxyUrl.value = settings.proxy || '';
+      }
+      if (!historyScheduleSaving && !historyScheduleDirty) {
+        fields.historyFetchDaily.checked = Boolean(settings.historyFetchDaily);
+        fields.historyFetchTime.value = settings.historyFetchTime || '03:00';
+        fields.historyFetchTime.disabled = !fields.historyFetchDaily.checked;
+        const historySchedule = settings.historyFetchSchedule || {};
+        fields.historyScheduleStatus.textContent = historySchedule.lastError
+          ? `Error: ${historySchedule.lastError}`
+          : (historySchedule.enabled && historySchedule.nextRunAt
+            ? `Next ${fmtTime(historySchedule.nextRunAt)}`
+            : '');
+        fields.historyScheduleStatus.className = `metric ${historySchedule.lastError ? 'warn' : ''}`;
       }
 
       fields.playlistRows.textContent = data.playlistCounts.total_playlists || 0;
@@ -1207,6 +1239,52 @@
       saveDispatchSettings();
     }
 
+    async function saveHistorySchedule() {
+      if (historyScheduleSaving || !historyScheduleDirty) return;
+      const saveRevision = historyScheduleRevision;
+      const enabled = fields.historyFetchDaily.checked;
+      const at = fields.historyFetchTime.value;
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(at)) {
+        fields.historyScheduleStatus.textContent = 'Choose a time';
+        fields.historyScheduleStatus.className = 'metric warn';
+        return;
+      }
+      historyScheduleSaving = true;
+      fields.historyScheduleStatus.textContent = 'Saving';
+      fields.historyScheduleStatus.className = 'metric';
+      try {
+        await requestJson('/api/admin/history-schedule', {
+          enabled: enabled ? '1' : '0',
+          at,
+        });
+        if (historyScheduleRevision === saveRevision) {
+          historyScheduleDirty = false;
+        }
+        historyScheduleSaving = false;
+        await loadStatus({ force: true });
+      } catch (error) {
+        fields.historyScheduleStatus.textContent = error.message;
+        fields.historyScheduleStatus.className = 'metric warn';
+      } finally {
+        historyScheduleSaving = false;
+        if (historyScheduleDirty && historyScheduleRevision !== saveRevision) {
+          scheduleHistoryScheduleSave();
+        }
+      }
+    }
+
+    function scheduleHistoryScheduleSave() {
+      historyScheduleDirty = true;
+      historyScheduleRevision += 1;
+      if (historyScheduleSaveTimer !== null) {
+        window.clearTimeout(historyScheduleSaveTimer);
+      }
+      historyScheduleSaveTimer = window.setTimeout(() => {
+        historyScheduleSaveTimer = null;
+        saveHistorySchedule();
+      }, 250);
+    }
+
     fields.initializeLibrary.addEventListener('click', async () => {
       const warning = 'Initialize the library? This queues a full YouTube history verification, scans Liked videos and every known playlist, and fetches missing or stale video and channel metadata. This will usually take a significant amount of time.';
       if (!confirm(warning)) return;
@@ -1304,6 +1382,11 @@
       post('/api/admin/queue/remove', { queue_id: queueId }).catch(error => alert(error.message));
     });
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start').catch(error => alert(error.message)));
+    fields.historyFetchDaily.addEventListener('change', () => {
+      fields.historyFetchTime.disabled = !fields.historyFetchDaily.checked;
+      scheduleHistoryScheduleSave();
+    });
+    fields.historyFetchTime.addEventListener('change', scheduleHistoryScheduleSave);
     document.getElementById('verifyLiveHistory').addEventListener('click', () => {
       if (!confirm('Verify the full YouTube history? This may run for a long time, but existing fetched history will be kept.')) return;
       post('/api/admin/live-history/verify').catch(error => alert(error.message));

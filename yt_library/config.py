@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import re
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -28,6 +30,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "search_card_layout": "grid",
     "history_card_layout": "compact",
     "page_size": 100,
+    "history_fetch_daily": False,
+    "history_fetch_time": "03:00",
     "use_proxy": False,
     "proxy": "",
     "dispatch_mode": "delay",
@@ -46,6 +50,7 @@ _LEGACY_YOUTUBE_REQUEST_INTERVAL_SECONDS = 5.0
 _LEGACY_ARCHIVARIX_REQUEST_INTERVAL_SECONDS = 3.0
 CARD_LAYOUTS = frozenset({"grid", "detailed", "compact"})
 PAGE_SIZES = frozenset({50, 100, 250, 500})
+DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 def configured_display_timezone(config: dict[str, Any]) -> str:
@@ -86,6 +91,40 @@ def configured_page_size(config: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         return int(DEFAULT_CONFIG["page_size"])
     return value if value in PAGE_SIZES else int(DEFAULT_CONFIG["page_size"])
+
+
+def configured_history_fetch_daily(config: dict[str, Any]) -> bool:
+    value = config.get("history_fetch_daily", DEFAULT_CONFIG["history_fetch_daily"])
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def valid_history_fetch_time(value: str) -> bool:
+    return bool(DAILY_TIME_PATTERN.fullmatch((value or "").strip()))
+
+
+def configured_history_fetch_time(config: dict[str, Any]) -> str:
+    value = str(config.get("history_fetch_time") or "").strip()
+    return value if valid_history_fetch_time(value) else str(DEFAULT_CONFIG["history_fetch_time"])
+
+
+def next_history_fetch_at(
+    config: dict[str, Any],
+    now: datetime | None = None,
+) -> datetime:
+    current_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    zone = ZoneInfo(effective_display_timezone(config))
+    local_now = current_utc.astimezone(zone)
+    hour, minute = (int(part) for part in configured_history_fetch_time(config).split(":"))
+    candidate = datetime.combine(
+        local_now.date(),
+        time(hour=hour, minute=minute),
+        tzinfo=zone,
+    )
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(timezone.utc)
 
 
 def configured_dispatch_mode(config: dict[str, Any]) -> str:
@@ -310,6 +349,8 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
     config["search_card_layout"] = configured_search_card_layout(config)
     config["history_card_layout"] = configured_history_card_layout(config)
     config["page_size"] = configured_page_size(config)
+    config["history_fetch_daily"] = configured_history_fetch_daily(config)
+    config["history_fetch_time"] = configured_history_fetch_time(config)
     configured_proxy_address(config)
     config["_config_path"] = str(path)
     return config

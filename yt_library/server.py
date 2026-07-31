@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import http.server
 import json
 import math
@@ -24,6 +25,8 @@ from .config import (
     configured_dispatch_mode,
     configured_display_timezone,
     configured_history_card_layout,
+    configured_history_fetch_daily,
+    configured_history_fetch_time,
     configured_job_dispatch_delay,
     configured_page_size,
     configured_proxy_address,
@@ -34,7 +37,9 @@ from .config import (
     effective_display_timezone,
     ensure_config_file,
     ensure_directory,
+    next_history_fetch_at,
     save_config,
+    valid_history_fetch_time,
 )
 from .core import *
 from .network import validated_socks5_proxy_url
@@ -131,6 +136,152 @@ def launch_service_replacement() -> None:
             stdout=stdout,
             stderr=stderr,
         )
+
+
+def utc_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def enqueue_scheduled_history_fetch(
+    db_path: Path,
+    cookie_file: Path,
+    video_thumbs: Path,
+    config_data: dict[str, Any],
+) -> dict[str, Any]:
+    conn = connect(db_path)
+    try:
+        with conn:
+            enqueue_history_task(conn, "recent", priority=0, manual=False)
+            log_worker_queue_event(conn, "info", "Scheduled history fetch queued.")
+    finally:
+        conn.close()
+    return WORKER_QUEUE_DISPATCHER.start(
+        db_path,
+        cookie_file,
+        video_thumbs,
+        config_data,
+    )
+
+
+class DailyHistoryFetchScheduler:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._db_path: Path | None = None
+        self._cookie_file: Path | None = None
+        self._video_thumbs: Path | None = None
+        self._config_data: dict[str, Any] | None = None
+        self._next_run_at: datetime | None = None
+        self._last_queued_at = ""
+        self._last_error = ""
+
+    def start(
+        self,
+        db_path: Path,
+        cookie_file: Path,
+        video_thumbs: Path,
+        config_data: dict[str, Any],
+    ) -> None:
+        with self._lock:
+            self._db_path = db_path
+            self._cookie_file = cookie_file
+            self._video_thumbs = video_thumbs
+            self._config_data = config_data
+            self._next_run_at = self._calculate_next_run(config_data)
+            if self._thread and self._thread.is_alive():
+                self._wake.set()
+                return
+            self._stop = threading.Event()
+            self._wake = threading.Event()
+            self._thread = threading.Thread(
+                target=self._run,
+                name="history-fetch-scheduler",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        thread = self._thread
+        if thread and thread.is_alive():
+            thread.join(timeout=5)
+
+    def schedule_changed(self, config_data: dict[str, Any]) -> None:
+        with self._lock:
+            self._config_data = config_data
+            self._next_run_at = self._calculate_next_run(config_data)
+            self._last_error = ""
+        self._wake.set()
+
+    def status(self, config_data: dict[str, Any]) -> dict[str, Any]:
+        enabled = configured_history_fetch_daily(config_data)
+        with self._lock:
+            next_run_at = self._next_run_at
+            if enabled and next_run_at is None:
+                next_run_at = next_history_fetch_at(config_data)
+            return {
+                "enabled": enabled,
+                "time": configured_history_fetch_time(config_data),
+                "nextRunAt": utc_timestamp(next_run_at) if enabled and next_run_at else "",
+                "lastQueuedAt": self._last_queued_at,
+                "lastError": self._last_error,
+            }
+
+    @staticmethod
+    def _calculate_next_run(config_data: dict[str, Any]) -> datetime | None:
+        if not configured_history_fetch_daily(config_data):
+            return None
+        return next_history_fetch_at(config_data)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            with self._lock:
+                config_data = self._config_data
+                next_run_at = self._next_run_at
+                db_path = self._db_path
+                cookie_file = self._cookie_file
+                video_thumbs = self._video_thumbs
+            if (
+                not config_data
+                or not configured_history_fetch_daily(config_data)
+                or not next_run_at
+                or not db_path
+                or not cookie_file
+                or not video_thumbs
+            ):
+                self._wake.wait(60)
+                self._wake.clear()
+                continue
+
+            wait_seconds = (next_run_at - datetime.now(timezone.utc)).total_seconds()
+            if wait_seconds > 0:
+                self._wake.wait(min(60, wait_seconds))
+                self._wake.clear()
+                continue
+
+            queued_at = utc_now()
+            error = ""
+            try:
+                dispatcher = enqueue_scheduled_history_fetch(
+                    db_path,
+                    cookie_file,
+                    video_thumbs,
+                    config_data,
+                )
+                if dispatcher.get("blocked"):
+                    error = str(dispatcher.get("message") or "Worker queue could not start")
+            except Exception as exc:
+                error = str(exc)
+            with self._lock:
+                self._last_queued_at = queued_at
+                self._last_error = error
+                self._next_run_at = self._calculate_next_run(config_data)
+
+
+HISTORY_FETCH_SCHEDULER = DailyHistoryFetchScheduler()
 
 
 class LibraryHandler(http.server.SimpleHTTPRequestHandler):
@@ -574,6 +725,23 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             save_config(self.config_data)
             self.send_json({"ok": True, "pageSize": page_size})
             return
+        if parsed.path == "/api/admin/history-schedule":
+            enabled = (params.get("enabled") or ["0"])[0].strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            fetch_time = (params.get("at") or [""])[0].strip()
+            if not valid_history_fetch_time(fetch_time):
+                self.send_json({"error": "History fetch time must use HH:MM"}, status=400)
+                return
+            self.config_data["history_fetch_daily"] = enabled
+            self.config_data["history_fetch_time"] = fetch_time
+            save_config(self.config_data)
+            HISTORY_FETCH_SCHEDULER.schedule_changed(self.config_data)
+            self.send_json({"ok": True, "settings": self.admin_settings()})
+            return
         if parsed.path == "/api/admin/settings":
             timezone_name = (params.get("display_timezone") or [""])[0].strip()
             use_proxy = (params.get("use_proxy") or ["0"])[0].strip().lower() in {
@@ -612,6 +780,8 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.config_data["use_proxy"] = use_proxy
             self.config_data["proxy"] = proxy_url
             save_config(self.config_data)
+            if previous_timezone != timezone_name:
+                HISTORY_FETCH_SCHEDULER.schedule_changed(self.config_data)
             if previous_timezone != timezone_name:
                 conn = connect(self.db_path)
                 try:
@@ -656,6 +826,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 with conn:
                     self.config_data["display_timezone"] = value
                     save_config(self.config_data)
+                    HISTORY_FETCH_SCHEDULER.schedule_changed(self.config_data)
                     refresh_exact_history_dates(conn, value)
             finally:
                 conn.close()
@@ -1238,6 +1409,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "displayTimezone": configured_display_timezone(self.config_data),
             "useProxy": configured_use_proxy(self.config_data),
             "proxy": configured_proxy_address(self.config_data),
+            "historyFetchDaily": configured_history_fetch_daily(self.config_data),
+            "historyFetchTime": configured_history_fetch_time(self.config_data),
+            "historyFetchSchedule": HISTORY_FETCH_SCHEDULER.status(self.config_data),
         }
 
     def service_status(self) -> dict[str, Any]:
@@ -1449,12 +1623,19 @@ def serve(args: argparse.Namespace) -> None:
         )
 
     server = http.server.ThreadingHTTPServer((args.host, args.port), handler)
+    HISTORY_FETCH_SCHEDULER.start(
+        db_path,
+        Path(args.cookies),
+        Path(args.video_thumbs),
+        args.config_data,
+    )
     print(f"Serving http://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped")
     finally:
+        HISTORY_FETCH_SCHEDULER.stop()
         server.server_close()
     if restart_requested.is_set():
         print("Restarting service")

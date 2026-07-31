@@ -12,7 +12,7 @@ import urllib.request
 import unittest
 import zipfile
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -30,6 +30,8 @@ from yt_library.config import (
     configured_dispatch_mode,
     configured_display_timezone,
     configured_history_card_layout,
+    configured_history_fetch_daily,
+    configured_history_fetch_time,
     configured_job_dispatch_delay,
     configured_page_size,
     configured_proxy_address,
@@ -42,7 +44,9 @@ from yt_library.config import (
     ensure_config_file,
     ensure_directory,
     load_config,
+    next_history_fetch_at,
     save_config,
+    valid_history_fetch_time,
 )
 from yt_library.workers import (
     LiveHistoryWorker,
@@ -4326,6 +4330,31 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(configured_archivarix_retry_attempts({"archivarix_retry_attempts": 500}), 10)
         self.assertEqual(configured_archivarix_retry_backoff({"archivarix_retry_backoff_seconds": -1}), 0.0)
 
+    def test_daily_history_fetch_schedule_uses_display_timezone(self) -> None:
+        config = {
+            "display_timezone": "America/Los_Angeles",
+            "history_fetch_daily": True,
+            "history_fetch_time": "09:30",
+        }
+        now = datetime(2026, 7, 31, 15, 0, tzinfo=timezone.utc)
+
+        self.assertTrue(configured_history_fetch_daily(config))
+        self.assertEqual(configured_history_fetch_time(config), "09:30")
+        self.assertTrue(valid_history_fetch_time("23:59"))
+        self.assertFalse(valid_history_fetch_time("24:00"))
+        self.assertEqual(
+            next_history_fetch_at(config, now),
+            datetime(2026, 7, 31, 16, 30, tzinfo=timezone.utc),
+        )
+        config["history_fetch_time"] = "07:30"
+        self.assertEqual(
+            next_history_fetch_at(config, now),
+            datetime(2026, 8, 1, 14, 30, tzinfo=timezone.utc),
+        )
+        self.assertFalse(configured_history_fetch_daily({}))
+        self.assertEqual(configured_history_fetch_time({}), "03:00")
+        self.assertEqual(configured_history_fetch_time({"history_fetch_time": "later"}), "03:00")
+
     def test_load_config_rejects_invalid_proxy(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"
@@ -4391,6 +4420,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["search_card_layout"], "grid")
             self.assertEqual(payload["history_card_layout"], "compact")
             self.assertEqual(payload["page_size"], 100)
+            self.assertFalse(payload["history_fetch_daily"])
+            self.assertEqual(payload["history_fetch_time"], "03:00")
             self.assertEqual(payload["host"], "127.0.0.1")
             self.assertEqual(payload["youtube_cookies"], "yt_cookies.txt")
             self.assertEqual(payload["archivarix_cookies"], "archivarix_cookies.txt")
@@ -4685,6 +4716,98 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(server.ADMIN_HTML.count("<th>ID</th>"), 2)
         self.assertNotIn("<th>Video ID</th>", server.ADMIN_HTML)
         self.assertIn("return row.channel_id || row.video_id || '';", server.ADMIN_HTML)
+        self.assertIn('id="historyFetchDaily"', server.ADMIN_HTML)
+        self.assertIn('id="historyFetchTime"', server.ADMIN_HTML)
+        self.assertIn('id="historyScheduleStatus"', server.ADMIN_HTML)
+        self.assertIn("'/api/admin/history-schedule'", server.ADMIN_HTML)
+        self.assertIn('type="time" value="03:00" disabled', server.ADMIN_HTML)
+
+    def test_history_schedule_endpoint_saves_and_updates_live_scheduler(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/admin/history-schedule?enabled=1&at=04%3A30"
+            handler.config_data = config
+            handler.send_json = Mock()
+
+            with patch.object(
+                server.HISTORY_FETCH_SCHEDULER,
+                "schedule_changed",
+            ) as schedule_changed:
+                handler.do_POST()
+
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            response = handler.send_json.call_args.args[0]
+
+        self.assertTrue(payload["history_fetch_daily"])
+        self.assertEqual(payload["history_fetch_time"], "04:30")
+        self.assertTrue(response["settings"]["historyFetchDaily"])
+        self.assertEqual(response["settings"]["historyFetchTime"], "04:30")
+        schedule_changed.assert_called_once_with(config)
+
+    def test_history_schedule_endpoint_rejects_invalid_time(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = "/api/admin/history-schedule?enabled=1&at=25%3A00"
+        handler.config_data = load_config(Path("missing-test-config.json"))
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        response = handler.send_json.call_args.args[0]
+        self.assertIn("HH:MM", response["error"])
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
+    def test_scheduled_history_fetch_queues_recent_history_and_starts_dispatcher(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            cookie_file = Path(temp_dir) / "cookies.txt"
+            video_thumbs = Path(temp_dir) / "video_thumbs"
+            config = load_config(Path(temp_dir) / "config.json")
+
+            with patch.object(
+                server.WORKER_QUEUE_DISPATCHER,
+                "start",
+                return_value={"started": True},
+            ) as start_dispatcher:
+                result = server.enqueue_scheduled_history_fetch(
+                    db_path,
+                    cookie_file,
+                    video_thumbs,
+                    config,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                queue_row = conn.execute(
+                    """
+                    SELECT subject_key, task_type, manual
+                    FROM worker_queue
+                    WHERE worker_type = 'history'
+                    """
+                ).fetchone()
+                log = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM metadata_worker_log
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(result, {"started": True})
+        self.assertEqual(tuple(queue_row), ("history:recent", "recent", 0))
+        self.assertEqual(tuple(log), ("queue info", "Scheduled history fetch queued."))
+        start_dispatcher.assert_called_once_with(
+            db_path,
+            cookie_file,
+            video_thumbs,
+            config,
+        )
 
     def test_proxy_retry_clears_hold_and_starts_dispatcher(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
