@@ -82,19 +82,24 @@
     .meta-filter-decorated .reaction-icon { width: 14px; height: 14px; flex: 0 0 14px; }
     .search-result-meta { display: grid; gap: 8px; justify-items: end; }
     .search-result-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
-    .search-meta-groups { display: grid; gap: 5px; }
-    .search-meta-row { display: grid; grid-template-columns: 140px minmax(0, 1fr); align-items: baseline; gap: 10px; }
-    .search-meta-row.dimmed .search-meta-controls { opacity: .42; }
-    .search-meta-row-title { color: var(--ink); font-weight: 650; text-align: left; display: inline-flex; align-items: baseline; justify-content: flex-start; gap: 4px; }
+    .search-for-title { margin-top: 5px; }
+    .search-meta-groups { display: grid; gap: 10px; }
+    .search-meta-kind { display: grid; gap: 5px; }
+    .search-meta-kind-children { display: grid; gap: 5px; padding-left: 18px; }
+    .search-meta-facet { display: grid; gap: 5px; }
+    .search-meta-facet.dimmed { opacity: .42; }
+    .search-meta-row-title { color: var(--ink); font-size: 13px; font-weight: 650; text-align: left; display: inline-flex; align-items: center; justify-content: flex-start; gap: 4px; }
     .search-meta-row-title input { accent-color: var(--accent); margin: 0; }
-    .search-meta-row-title .count { color: var(--muted); font-weight: 400; }
+    .search-meta-row-title .count { color: var(--muted); font-weight: 400; margin-left: 4px; }
     .search-meta-progress { display: inline-block; width: 1.4em; flex: 0 0 1.4em; text-align: left; visibility: hidden; font-weight: 400; }
     .search-meta-progress.active { visibility: visible; }
     .toolbar-heading { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
     .search-progress-status { color: var(--muted); display: inline-flex; min-width: 8em; font-size: 14px; }
     .search-progress-status[hidden] { display: none; }
-    .search-meta-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+    .search-meta-controls { display: grid; gap: 5px; }
     .search-meta-controls .meta-filter { margin-left: 0; }
+    .search-meta-facet .meta-filter-child { margin-left: 18px; }
+    .search-meta-facet.flat .meta-filter-child { margin-left: 0; }
     .playlist-search { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; min-width: min(360px, 38vw); }
     .view-sort { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
     .view-sort select { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 8px; font: inherit; }
@@ -293,8 +298,6 @@
       .toolbar { display: block; }
       .search-result-meta { justify-items: start; }
       .search-result-summary { justify-content: flex-start; }
-      .search-meta-row { grid-template-columns: 1fr; gap: 3px; }
-      .search-meta-row-title { text-align: left; justify-content: flex-start; }
       .view-top.video-collection-top .toolbar > .details { flex-wrap: wrap; justify-content: flex-start; }
       .view-top.video-collection-top #view-meta { display: flex; flex-wrap: wrap; gap: 8px; }
       .view-top.video-collection-top .view-sort { margin-left: 0; }
@@ -320,6 +323,8 @@
         <div class="filter-title">Search In</div>
         <label class="filter"><input class="search-field" type="checkbox" data-search-field="titles" checked> Titles</label>
         <label class="filter"><input class="search-field" type="checkbox" data-search-field="descriptions" checked> Descriptions</label>
+        <div class="filter-title search-for-title">Search For</div>
+        <div id="search-for-filters" class="search-meta-groups"></div>
       </div>
       <nav id="groups"></nav>
     </aside>
@@ -434,6 +439,7 @@
     let playlistSearchTimer = null;
     const search = document.getElementById('search');
     const searchNav = document.getElementById('search-nav');
+    const searchForFilters = document.getElementById('search-for-filters');
     const refresh = document.getElementById('refresh');
     const groupsEl = document.getElementById('groups');
     const searchFields = [...document.querySelectorAll('.search-field')];
@@ -873,20 +879,22 @@
       };
       const group = groups[groupName];
       if (!group) return false;
+      const root = groupName.startsWith('search-') ? searchForFilters : meta;
       const excludedKeys = groupName === 'playlist-videos' ? new Set(['removed']) : new Set();
       for (const key of Object.keys(group)) {
         if (!excludedKeys.has(key)) group[key] = checked;
       }
-      for (const input of meta.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)) {
+      for (const input of root.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)) {
         input.checked = checked;
       }
       return true;
     }
 
     function syncMetaFilterGroup(groupName) {
+      const root = groupName.startsWith('search-') ? searchForFilters : meta;
       syncFilterGroup(
-        meta.querySelector(`[data-meta-all-filter="${groupName}"]`),
-        [...meta.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)],
+        root.querySelector(`[data-meta-all-filter="${groupName}"]`),
+        [...root.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)],
         false,
       );
     }
@@ -907,7 +915,7 @@
         for (const key of Object.keys(searchMetaVisibility[facetKey])) {
           searchMetaVisibility[facetKey][key] = checked;
         }
-        for (const input of meta.querySelectorAll(`[data-search-meta-filter^="${facetKey}:"]`)) {
+        for (const input of searchForFilters.querySelectorAll(`[data-search-meta-filter^="${facetKey}:"]`)) {
           input.checked = checked;
         }
         syncMetaFilterGroup(`search-${facetKey}`);
@@ -917,7 +925,7 @@
     }
 
     function syncSearchKindFilter(kind) {
-      const parent = meta.querySelector(`[data-search-kind-filter="${kind}"]`);
+      const parent = searchForFilters.querySelector(`[data-search-kind-filter="${kind}"]`);
       if (!(parent instanceof HTMLInputElement)) return;
       const facetKeys = searchKindFacetKeys(kind);
       if (facetKeys.length > 1) {
@@ -928,14 +936,14 @@
         const allChildrenSelected = facetSelections.every(values => values.every(Boolean));
         parent.checked = everyFacetHasSelection;
         parent.indeterminate = everyFacetHasSelection && !allChildrenSelected;
-        for (const row of meta.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
+        for (const row of searchForFilters.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
           row.classList.toggle('dimmed', !everyFacetHasSelection);
         }
         return;
       }
       syncFilterGroup(
         parent,
-        [...meta.querySelectorAll(`[data-meta-child-filter="search-${kind}"]`)],
+        [...searchForFilters.querySelectorAll(`[data-meta-child-filter="search-${kind}"]`)],
       );
     }
 
@@ -954,7 +962,7 @@
         if (Object.values(searchMetaVisibility[siblingKey]).some(Boolean)) continue;
         const defaults = defaultSearchMetaVisibility[siblingKey];
         Object.assign(searchMetaVisibility[siblingKey], defaults);
-        for (const input of meta.querySelectorAll(`[data-search-meta-filter^="${siblingKey}:"]`)) {
+        for (const input of searchForFilters.querySelectorAll(`[data-search-meta-filter^="${siblingKey}:"]`)) {
           const filterName = input.dataset.searchMetaFilter.split(':')[1];
           input.checked = Boolean(defaults[filterName]);
         }
@@ -1285,11 +1293,11 @@
 
     function updateSearchMetaProgress(dotsText = searchMetaProgressDots) {
       searchMetaProgressDots = dotsText;
-      for (const dots of meta.querySelectorAll('[data-search-meta-progress]')) {
+      for (const dots of searchForFilters.querySelectorAll('[data-search-meta-progress]')) {
         const active = pendingSearchMetaGroups.has(dots.dataset.searchMetaProgress);
         dots.classList.toggle('active', active);
         dots.textContent = active ? dotsText : '';
-        const row = dots.closest('.search-meta-row');
+        const row = dots.closest('.search-meta-kind');
         if (!row) continue;
         if (active) {
           row.setAttribute('aria-busy', 'true');
@@ -1731,9 +1739,9 @@
         Object.prototype.hasOwnProperty.call(visibility, key)
       );
       return `
-        ${showAll ? `<label class="meta-filter"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>${escapeHtml(allLabel)}</span></label>` : ''}
+        ${showAll ? `<label class="meta-filter meta-filter-parent"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>${escapeHtml(allLabel)}</span></label>` : ''}
         ${applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '' }) => `
-          <label class="meta-filter">
+          <label class="meta-filter meta-filter-child">
             <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
             ${visibilityIcon
               ? visibilityFilterLabelHtml(key, Number(counts?.[key] || 0))
@@ -1805,94 +1813,48 @@
       completionCounts,
       playlistMembershipCounts,
     ) {
-      const groups = [
-        {
-          title: 'Videos',
-          key: 'videos',
-          visibility: searchMetaVisibility.videos,
-          definitions: videoMetaFilterDefinitions,
-          counts: metaCounts?.videos,
-          allLabel: 'Availability',
-          kind: 'videos',
-        },
-        {
-          title: '',
-          key: 'reactions',
-          visibility: searchMetaVisibility.reactions,
-          definitions: reactionMetaFilterDefinitions,
-          counts: reactionCounts,
-          allLabel: 'Reactions',
-        },
-        {
-          title: '',
-          key: 'completion',
-          visibility: searchMetaVisibility.completion,
-          definitions: completionMetaFilterDefinitions,
-          counts: completionCounts,
-          allLabel: 'Completion',
-        },
-        {
-          title: '',
-          key: 'membership',
-          visibility: searchMetaVisibility.membership,
-          definitions: playlistMembershipMetaFilterDefinitions,
-          counts: playlistMembershipCounts,
-          allLabel: 'Playlist membership',
-        },
-        {
-          title: 'Playlists',
-          key: 'playlists',
-          visibility: searchMetaVisibility.playlists,
-          definitions: playlistMetaFilterDefinitions,
-          counts: metaCounts?.playlists,
-          kind: 'playlists',
-          showAll: false,
-        },
-        {
-          title: 'Channels',
-          key: 'channelSubscription',
-          visibility: searchMetaVisibility.channelSubscription,
-          definitions: channelSubscriptionMetaFilterDefinitions,
-          counts: metaCounts?.channels,
-          allLabel: 'Subscription',
-          kind: 'channels',
-          facetKind: 'channels',
-        },
-        {
-          title: '',
-          key: 'channelStatus',
-          visibility: searchMetaVisibility.channelStatus,
-          definitions: channelStatusMetaFilterDefinitions,
-          counts: metaCounts?.channels,
-          allLabel: 'Status',
-          facetKind: 'channels',
-        },
-      ];
-      return groups
-        .map(({ title, key, visibility, definitions, counts, allLabel = 'All', kind = '', facetKind = '', showAll = true }) => `
-          <div class="search-meta-row"${facetKind || searchVideoFacetKeys.includes(key) ? ` data-search-kind-facet="${facetKind || 'videos'}"` : ''}>
-            ${title
-              ? `<label class="search-meta-row-title">
-                  <span class="search-meta-progress" data-search-meta-progress="${kind || key}" aria-hidden="true"></span>
-                  <input type="checkbox" data-search-kind-filter="${kind}">
-                  <span>${title}</span>
-                  <span class="count">${Number(counts?.total || 0)}</span>
-                </label>`
-              : '<span class="search-meta-row-title" aria-hidden="true"></span>'}
-            <span class="search-meta-controls">
-              ${metaFilterControlsHtml({
-                groupName: `search-${key}`,
-                filterAttribute: 'search-meta-filter',
-                filterValuePrefix: `${key}:`,
-                visibility,
-                counts,
-                definitions,
-                allLabel,
-                showAll,
-              })}
-            </span>
+      const facetHtml = ({ key, visibility, definitions, counts, allLabel = 'All', kind, showAll = true }) => `
+        <div class="search-meta-facet${showAll ? '' : ' flat'}" data-search-kind-facet="${kind}">
+          <div class="search-meta-controls">
+            ${metaFilterControlsHtml({
+              groupName: `search-${key}`,
+              filterAttribute: 'search-meta-filter',
+              filterValuePrefix: `${key}:`,
+              visibility,
+              counts,
+              definitions,
+              allLabel,
+              showAll,
+            })}
           </div>
-        `).join('');
+        </div>
+      `;
+      const kindHtml = (titleText, kind, count, facetsHtml) => `
+        <div class="search-meta-kind">
+          <label class="search-meta-row-title">
+            <input type="checkbox" data-search-kind-filter="${kind}">
+            <span>${titleText}</span>
+            <span class="count">${Number(count || 0)}</span>
+            <span class="search-meta-progress" data-search-meta-progress="${kind}" aria-hidden="true"></span>
+          </label>
+          <div class="search-meta-kind-children">${facetsHtml}</div>
+        </div>
+      `;
+      return [
+        kindHtml('Videos', 'videos', metaCounts?.videos?.total, [
+          facetHtml({ key: 'videos', visibility: searchMetaVisibility.videos, definitions: videoMetaFilterDefinitions, counts: metaCounts?.videos, allLabel: 'Availability', kind: 'videos' }),
+          facetHtml({ key: 'reactions', visibility: searchMetaVisibility.reactions, definitions: reactionMetaFilterDefinitions, counts: reactionCounts, allLabel: 'Reactions', kind: 'videos' }),
+          facetHtml({ key: 'completion', visibility: searchMetaVisibility.completion, definitions: completionMetaFilterDefinitions, counts: completionCounts, allLabel: 'Completion', kind: 'videos' }),
+          facetHtml({ key: 'membership', visibility: searchMetaVisibility.membership, definitions: playlistMembershipMetaFilterDefinitions, counts: playlistMembershipCounts, allLabel: 'Playlist membership', kind: 'videos' }),
+        ].join('')),
+        kindHtml('Playlists', 'playlists', metaCounts?.playlists?.total,
+          facetHtml({ key: 'playlists', visibility: searchMetaVisibility.playlists, definitions: playlistMetaFilterDefinitions, counts: metaCounts?.playlists, kind: 'playlists', showAll: false })
+        ),
+        kindHtml('Channels', 'channels', metaCounts?.channels?.total, [
+          facetHtml({ key: 'channelSubscription', visibility: searchMetaVisibility.channelSubscription, definitions: channelSubscriptionMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Subscription', kind: 'channels' }),
+          facetHtml({ key: 'channelStatus', visibility: searchMetaVisibility.channelStatus, definitions: channelStatusMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Status', kind: 'channels' }),
+        ].join('')),
+      ].join('');
     }
 
     function searchResultsSortHtml() {
@@ -2523,9 +2485,9 @@
               <span>${total} results</span>
               ${searchResultsSortHtml()}
             </div>
-            ${searchMetaHtml ? `<div class="search-meta-groups">${searchMetaHtml}</div>` : ''}
           </div>
         `;
+        searchForFilters.innerHTML = searchMetaHtml;
         for (const key of ['videos', 'reactions', 'completion', 'membership', 'playlists', 'channelSubscription', 'channelStatus']) {
           syncMetaFilterGroup(`search-${key}`);
         }
@@ -3027,7 +2989,7 @@
       scrollResultsToTop();
       render();
     });
-    meta.addEventListener('change', event => {
+    function handleMetaChange(event) {
       const target = event.target;
       if (target instanceof HTMLSelectElement && target.dataset.videoSort !== undefined) {
         if (target.dataset.videoSort === 'playlist') {
@@ -3134,7 +3096,9 @@
       playlistVisibility[filter] = target.checked;
       currentPage = 1;
       render();
-    });
+    }
+    meta.addEventListener('change', handleMetaChange);
+    searchForFilters.addEventListener('change', handleMetaChange);
     meta.addEventListener('input', event => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement) || target.dataset.playlistPageSearch === undefined) return;

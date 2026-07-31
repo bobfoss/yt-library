@@ -4675,7 +4675,8 @@ class AdminServerTests(unittest.TestCase):
             "params.get(paramName) === '1' || legacySelected",
             server.INDEX_HTML,
         )
-        self.assertNotIn("Search For", server.INDEX_HTML)
+        self.assertIn("Search For", server.INDEX_HTML)
+        self.assertIn('id="search-for-filters"', server.INDEX_HTML)
         self.assertNotIn("playlist_videos\" checked> Playlist videos", server.INDEX_HTML)
         self.assertIn("video_reaction: metaFilterParamValue(searchMetaVisibility.reactions)", server.INDEX_HTML)
         self.assertIn(
@@ -4713,7 +4714,7 @@ class AdminServerTests(unittest.TestCase):
         )
         self.assertIn("filterAttribute: 'search-meta-filter'", server.INDEX_HTML)
         self.assertIn("groupName: `search-${key}`", server.INDEX_HTML)
-        self.assertIn('data-search-meta-progress="${kind || key}"', server.INDEX_HTML)
+        self.assertIn('data-search-meta-progress="${kind}"', server.INDEX_HTML)
         self.assertIn("flex: 0 0 1.4em", server.INDEX_HTML)
         self.assertIn("function animateProgressDots(update)", server.INDEX_HTML)
         self.assertIn("function showSearchMetaProgress(groupName)", server.INDEX_HTML)
@@ -4746,7 +4747,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("allLabel: 'Playlist membership'", server.INDEX_HTML)
         self.assertIn("allLabel: 'Subscription'", server.INDEX_HTML)
         self.assertIn("allLabel: 'Status'", server.INDEX_HTML)
-        self.assertIn("title: '',\n          key: 'reactions'", server.INDEX_HTML)
+        self.assertIn("kindHtml('Videos', 'videos'", server.INDEX_HTML)
         self.assertIn(
             "const searchVideoFacetKeys = ['videos', 'reactions', 'completion', 'membership'];",
             server.INDEX_HTML,
@@ -4757,7 +4758,7 @@ class AdminServerTests(unittest.TestCase):
         )
         self.assertIn("function setSearchKindFilter(kind, checked)", server.INDEX_HTML)
         self.assertIn(
-            "meta.querySelectorAll(`[data-meta-child-filter=\"${groupName}\"]`)",
+            "root.querySelectorAll(`[data-meta-child-filter=\"${groupName}\"]`)",
             server.INDEX_HTML,
         )
         self.assertIn("function syncSearchKindFilter(kind)", server.INDEX_HTML)
@@ -4771,12 +4772,22 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn('data-search-kind-filter="${kind}"', server.INDEX_HTML)
-        self.assertIn('<span class="count">${Number(counts?.total || 0)}</span>', server.INDEX_HTML)
-        self.assertIn("showAll: false", server.INDEX_HTML)
+        self.assertIn('<span class="count">${Number(count || 0)}</span>', server.INDEX_HTML)
+        self.assertIn("kind: 'playlists', showAll: false", server.INDEX_HTML)
         self.assertIn(
-            "meta.querySelectorAll(`[data-search-kind-facet=\"${kind}\"]`)",
+            "searchForFilters.querySelectorAll(`[data-search-kind-facet=\"${kind}\"]`)",
             server.INDEX_HTML,
         )
+        count_position = server.INDEX_HTML.index(
+            '<span class="count">${Number(count || 0)}</span>'
+        )
+        progress_position = server.INDEX_HTML.index(
+            '<span class="search-meta-progress" data-search-meta-progress="${kind}"',
+            count_position,
+        )
+        self.assertLess(count_position, progress_position)
+        self.assertIn("searchForFilters.innerHTML = searchMetaHtml;", server.INDEX_HTML)
+        self.assertIn("searchForFilters.addEventListener('change', handleMetaChange);", server.INDEX_HTML)
         self.assertNotIn(
             ".filter(({ counts }) => Number(counts?.total || 0) > 0)",
             server.INDEX_HTML,
@@ -4815,8 +4826,8 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertLess(
-            server.INDEX_HTML.index("title: 'Playlists'"),
-            server.INDEX_HTML.index("title: 'Channels'"),
+            server.INDEX_HTML.index("kindHtml('Playlists', 'playlists'"),
+            server.INDEX_HTML.index("kindHtml('Channels', 'channels'"),
         )
         self.assertLess(
             server.INDEX_HTML.index("const playlistSection = sectionFor('Playlists');"),
@@ -5039,7 +5050,7 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn(
-            'meta.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)],\n'
+            'root.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)],\n'
             "        false,",
             server.INDEX_HTML,
         )
