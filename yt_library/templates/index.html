@@ -1762,7 +1762,7 @@
     }
 
     function filterCountText(count) {
-      return count === null || count === undefined ? '...' : String(Number(count || 0));
+      return count === null || count === undefined ? '' : String(Number(count || 0));
     }
 
     function videoStatusFiltersHtml({

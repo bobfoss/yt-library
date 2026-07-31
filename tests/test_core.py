@@ -4793,7 +4793,7 @@ class AdminServerTests(unittest.TestCase):
         )
         self.assertIn("renderSearchMetaFilters(payload);", server.INDEX_HTML)
         self.assertIn(
-            "return count === null || count === undefined ? '...'",
+            "return count === null || count === undefined ? ''",
             server.INDEX_HTML,
         )
         initial_filter_position = server.INDEX_HTML.rindex("renderSearchMetaFilters();")
