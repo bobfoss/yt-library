@@ -61,6 +61,8 @@
     .service-controls { display: flex; align-items: center; gap: 8px; min-height: 36px; }
     .service-controls strong { font-size: 14px; }
     .theme-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
+    body:not(.advanced-enabled) .advanced-only { display: none !important; }
+    body:not(.advanced-enabled) .initialize-controls.initialization-complete { display: none; }
     .theme-switch { position: relative; display: inline-flex; cursor: pointer; }
     .theme-switch input { position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; opacity: 0; }
     .theme-track { display: flex; align-items: center; width: 46px; height: 26px; padding: 3px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); transition: background-color 150ms ease, border-color 150ms ease; }
@@ -186,6 +188,13 @@
       <div class="header-settings">
         <div class="service-controls">
           <div class="theme-control">
+            <span>Advanced</span>
+            <label class="theme-switch">
+              <input id="advancedToggle" type="checkbox" aria-label="Show advanced admin controls">
+              <span class="theme-track" aria-hidden="true"><span class="theme-thumb"></span></span>
+            </label>
+          </div>
+          <div class="theme-control">
             <span>Light</span>
             <label class="theme-switch">
               <input id="themeToggle" type="checkbox" aria-label="Use dark theme" checked>
@@ -193,15 +202,15 @@
             </label>
             <span>Dark</span>
           </div>
-          <span class="metric">Service</span>
-          <strong id="serviceStatus">Checking</strong>
-          <button id="restartService" type="button">Restart</button>
+          <span class="metric advanced-only">Service</span>
+          <strong id="serviceStatus" class="advanced-only">Checking</strong>
+          <button id="restartService" class="advanced-only" type="button">Restart</button>
         </div>
-        <div class="header-settings-row">
+        <div class="header-settings-row advanced-only">
           <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>
           <button id="detectTimezone" type="button">Use browser time zone</button>
         </div>
-        <div class="header-settings-row">
+        <div class="header-settings-row advanced-only">
           <label class="checkbox"><input id="useProxy" type="checkbox">Use proxy</label>
           <input id="proxyUrl" class="proxy-input" type="text" aria-label="SOCKS5 proxy URL" placeholder="socks5h://127.0.0.1:1080">
           <button id="saveSettings" class="primary" type="button">Save</button>
@@ -210,13 +219,13 @@
       </div>
     </header>
 
-    <div class="controls initialize-controls">
+    <div id="initializeControls" class="controls initialize-controls">
       <button id="initializeLibrary" type="button">Initialize</button>
       <span id="initializeStatus" class="metric" aria-live="polite"></span>
     </div>
 
     <section class="workstreams">
-      <section class="workstream">
+      <section class="workstream advanced-only">
         <div class="workstream-header">
           <h2>Videos</h2>
         </div>
@@ -230,7 +239,7 @@
         <div class="grid" id="videoMetadataCounts"></div>
       </section>
 
-      <section class="workstream">
+      <section class="workstream advanced-only">
         <div class="workstream-header">
           <h2>Playlists</h2>
         </div>
@@ -248,7 +257,7 @@
         </div>
       </section>
 
-      <section class="workstream">
+      <section class="workstream advanced-only">
         <div class="workstream-header">
           <h2>Channels</h2>
         </div>
@@ -282,9 +291,9 @@
             </div>
             <span id="historyScheduleStatus" class="metric" aria-live="polite"></span>
           </div>
-          <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
-          <button id="importTakeoutHistory" type="button">Import Takeout directory</button>
-          <button id="reconcileHistory" type="button">Reconcile history</button>
+          <button id="verifyLiveHistory" class="primary advanced-only" type="button">Verify history</button>
+          <button id="importTakeoutHistory" class="advanced-only" type="button">Import Takeout directory</button>
+          <button id="reconcileHistory" class="advanced-only" type="button">Reconcile history</button>
         </div>
       </section>
 
@@ -300,7 +309,7 @@
         <div class="panel"><div class="metric">Archivarix requests (24h)</div><div id="archivarixRequests24h" class="value">0</div></div>
         <div class="panel"><div class="metric">Archivarix requests tracked</div><div id="archivarixRequestsTotal" class="value">0</div></div>
       </div>
-      <fieldset class="dispatch-settings">
+      <fieldset class="dispatch-settings advanced-only">
         <legend>Dispatch mode</legend>
         <div class="dispatch-option">
           <label class="dispatch-option-heading">
@@ -323,7 +332,7 @@
           </div>
         </div>
       </fieldset>
-      <div class="controls capacity-controls">
+      <div class="controls capacity-controls advanced-only">
         <label>YouTube max in flight<input id="youtubeMaxInFlight" class="delay-input" type="number" min="1" max="100" step="1"></label>
         <label>Archivarix max in flight<input id="archivarixMaxInFlight" class="delay-input" type="number" min="1" max="20" step="1"></label>
         <span id="dispatchSettingsStatus" class="metric settings-status" aria-live="polite"></span>
@@ -425,6 +434,7 @@
   </main>
   <script>
     const fields = {
+      initializeControls: document.getElementById('initializeControls'),
       initializeLibrary: document.getElementById('initializeLibrary'),
       initializeStatus: document.getElementById('initializeStatus'),
       playlistRows: document.getElementById('playlistRows'),
@@ -484,6 +494,7 @@
       proxyUrl: document.getElementById('proxyUrl'),
       saveSettings: document.getElementById('saveSettings'),
       settingsStatus: document.getElementById('settingsStatus'),
+      advancedToggle: document.getElementById('advancedToggle'),
       themeToggle: document.getElementById('themeToggle'),
       serviceStatus: document.getElementById('serviceStatus'),
       restartService: document.getElementById('restartService'),
@@ -511,6 +522,10 @@
     let historyScheduleDirty = false;
     let historyScheduleRevision = 0;
     let historyScheduleSaveTimer = null;
+    let advancedSaving = false;
+    let advancedDirty = false;
+    let advancedRevision = 0;
+    let savedAdvanced = false;
     let currentServicePid = 0;
     let currentFeatureBackfillCounts = {};
     const logState = {
@@ -522,6 +537,10 @@
       return String(value || '').replace(/[&<>"']/g, ch => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
       }[ch]));
+    }
+
+    function applyAdvancedMode(enabled) {
+      document.body.classList.toggle('advanced-enabled', Boolean(enabled));
     }
 
     function syncDispatchModeInputs() {
@@ -829,7 +848,7 @@
       fields.serviceStatus.textContent = serviceState === 'running'
         ? `Running${service.pid ? ` (${service.pid})` : ''}`
         : (serviceState === 'restarting' ? 'Restarting' : 'Unavailable');
-      fields.serviceStatus.className = serviceState === 'running' ? 'running' : 'warn';
+      fields.serviceStatus.className = `advanced-only ${serviceState === 'running' ? 'running' : 'warn'}`;
       fields.serviceStatus.title = [
         service.pid ? `PID ${service.pid}` : '',
         service.startedAt ? `Started ${fmtTime(service.startedAt)}` : '',
@@ -837,6 +856,7 @@
       fields.restartService.disabled = serviceState === 'restarting';
 
       const hasLibraryData = Boolean(data.hasLibraryData);
+      fields.initializeControls.classList.toggle('initialization-complete', hasLibraryData);
       fields.initializeLibrary.classList.toggle('initialize-needed', !hasLibraryData);
       fields.initializeLibrary.classList.toggle('initialize-complete', hasLibraryData);
       fields.initializeLibrary.title = hasLibraryData
@@ -844,6 +864,11 @@
         : 'No library data detected; run the initial scan';
 
       const settings = data.settings || {};
+      if (!advancedSaving && !advancedDirty) {
+        savedAdvanced = Boolean(settings.adminAdvanced);
+        fields.advancedToggle.checked = savedAdvanced;
+        applyAdvancedMode(savedAdvanced);
+      }
       if (!settingsSaving && !settingsDirty) {
         fields.displayTimezone.value = settings.displayTimezone || window.YTLibraryTime.detected();
         fields.useProxy.checked = Boolean(settings.useProxy);
@@ -1069,7 +1094,7 @@
     async function waitForServiceRestart(previousPid) {
       const deadline = Date.now() + 45000;
       fields.serviceStatus.textContent = 'Restarting';
-      fields.serviceStatus.className = 'warn';
+      fields.serviceStatus.className = 'advanced-only warn';
       fields.restartService.disabled = true;
       while (Date.now() < deadline) {
         await sleep(500);
@@ -1089,7 +1114,7 @@
         }
       }
       fields.serviceStatus.textContent = 'Unavailable';
-      fields.serviceStatus.className = 'warn';
+      fields.serviceStatus.className = 'advanced-only warn';
       fields.restartService.disabled = false;
       throw new Error('Service did not come back within 45 seconds');
     }
@@ -1125,6 +1150,35 @@
       } finally {
         settingsSaving = false;
         fields.saveSettings.disabled = false;
+      }
+    }
+
+    async function saveAdvancedMode() {
+      if (advancedSaving || !advancedDirty) return;
+      const saveRevision = advancedRevision;
+      const enabled = fields.advancedToggle.checked;
+      advancedSaving = true;
+      advancedDirty = false;
+      try {
+        const payload = await requestJson('/api/admin/advanced', {
+          enabled: enabled ? '1' : '0',
+        });
+        savedAdvanced = Boolean(payload.settings?.adminAdvanced);
+        if (advancedRevision === saveRevision) {
+          fields.advancedToggle.checked = savedAdvanced;
+          applyAdvancedMode(savedAdvanced);
+        }
+      } catch (error) {
+        if (advancedRevision === saveRevision) {
+          fields.advancedToggle.checked = savedAdvanced;
+          applyAdvancedMode(savedAdvanced);
+        }
+        alert(error.message);
+      } finally {
+        advancedSaving = false;
+        if (advancedDirty || advancedRevision !== saveRevision) {
+          saveAdvancedMode();
+        }
       }
     }
 
@@ -1431,6 +1485,12 @@
     }
     fields.logSourceFilter.addEventListener('change', renderLogs);
     fields.logLevelFilter.addEventListener('change', renderLogs);
+    fields.advancedToggle.addEventListener('change', () => {
+      advancedDirty = true;
+      advancedRevision += 1;
+      applyAdvancedMode(fields.advancedToggle.checked);
+      saveAdvancedMode();
+    });
     fields.themeToggle.addEventListener('change', () => {
       const selectedTheme = window.YTLibraryTheme.set(fields.themeToggle.checked ? 'dark' : 'light');
       fields.themeToggle.checked = selectedTheme === 'dark';

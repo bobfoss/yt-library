@@ -22,6 +22,7 @@ from .config import (
     CARD_LAYOUTS,
     PAGE_SIZES,
     configured_archivarix_max_in_flight,
+    configured_admin_advanced,
     configured_dispatch_mode,
     configured_display_timezone,
     configured_history_card_layout,
@@ -742,6 +743,17 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             HISTORY_FETCH_SCHEDULER.schedule_changed(self.config_data)
             self.send_json({"ok": True, "settings": self.admin_settings()})
             return
+        if parsed.path == "/api/admin/advanced":
+            enabled = (params.get("enabled") or ["0"])[0].strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            self.config_data["admin_advanced"] = enabled
+            save_config(self.config_data)
+            self.send_json({"ok": True, "settings": self.admin_settings()})
+            return
         if parsed.path == "/api/admin/settings":
             timezone_name = (params.get("display_timezone") or [""])[0].strip()
             use_proxy = (params.get("use_proxy") or ["0"])[0].strip().lower() in {
@@ -1412,6 +1424,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "historyFetchDaily": configured_history_fetch_daily(self.config_data),
             "historyFetchTime": configured_history_fetch_time(self.config_data),
             "historyFetchSchedule": HISTORY_FETCH_SCHEDULER.status(self.config_data),
+            "adminAdvanced": configured_admin_advanced(self.config_data),
         }
 
     def service_status(self) -> dict[str, Any]:

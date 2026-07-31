@@ -27,6 +27,7 @@ from yt_library.config import (
     configured_archivarix_retry_attempts,
     configured_archivarix_retry_backoff,
     configured_archivarix_stream_timeout,
+    configured_admin_advanced,
     configured_dispatch_mode,
     configured_display_timezone,
     configured_history_card_layout,
@@ -4352,6 +4353,8 @@ class ConfigTests(unittest.TestCase):
             datetime(2026, 8, 1, 14, 30, tzinfo=timezone.utc),
         )
         self.assertFalse(configured_history_fetch_daily({}))
+        self.assertFalse(configured_admin_advanced({}))
+        self.assertTrue(configured_admin_advanced({"admin_advanced": "yes"}))
         self.assertEqual(configured_history_fetch_time({}), "03:00")
         self.assertEqual(configured_history_fetch_time({"history_fetch_time": "later"}), "03:00")
 
@@ -4422,6 +4425,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["page_size"], 100)
             self.assertFalse(payload["history_fetch_daily"])
             self.assertEqual(payload["history_fetch_time"], "03:00")
+            self.assertFalse(payload["admin_advanced"])
             self.assertEqual(payload["host"], "127.0.0.1")
             self.assertEqual(payload["youtube_cookies"], "yt_cookies.txt")
             self.assertEqual(payload["archivarix_cookies"], "archivarix_cookies.txt")
@@ -4679,16 +4683,29 @@ class AdminServerTests(unittest.TestCase):
 
     def test_admin_template_exposes_service_and_proxy_controls(self) -> None:
         self.assertIn('id="initializeLibrary"', server.ADMIN_HTML)
+        self.assertIn('id="initializeControls" class="controls initialize-controls"', server.ADMIN_HTML)
         self.assertIn('id="initializeStatus"', server.ADMIN_HTML)
         self.assertIn("'/api/admin/initialize'", server.ADMIN_HTML)
         self.assertIn("usually take a significant amount of time", server.ADMIN_HTML)
         self.assertIn("initialize-needed", server.ADMIN_HTML)
         self.assertIn("initialize-complete", server.ADMIN_HTML)
+        self.assertIn(".initialize-controls.initialization-complete", server.ADMIN_HTML)
         self.assertLess(
             server.ADMIN_HTML.index('id="initializeLibrary"'),
             server.ADMIN_HTML.index("<h2>Videos</h2>"),
         )
         self.assertIn('id="themeToggle"', server.ADMIN_HTML)
+        self.assertIn('id="advancedToggle"', server.ADMIN_HTML)
+        self.assertIn('aria-label="Show advanced admin controls"', server.ADMIN_HTML)
+        self.assertIn("body:not(.advanced-enabled) .advanced-only", server.ADMIN_HTML)
+        self.assertIn("'/api/admin/advanced'", server.ADMIN_HTML)
+        self.assertEqual(
+            server.ADMIN_HTML.count('<section class="workstream advanced-only">'),
+            3,
+        )
+        self.assertIn('<fieldset class="dispatch-settings advanced-only">', server.ADMIN_HTML)
+        self.assertIn('<div class="controls capacity-controls advanced-only">', server.ADMIN_HTML)
+        self.assertIn('id="verifyLiveHistory" class="primary advanced-only"', server.ADMIN_HTML)
         self.assertIn('aria-label="Use dark theme"', server.ADMIN_HTML)
         self.assertIn('<span>Light</span>', server.ADMIN_HTML)
         self.assertIn('<span>Dark</span>', server.ADMIN_HTML)
@@ -4721,6 +4738,24 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('id="historyScheduleStatus"', server.ADMIN_HTML)
         self.assertIn("'/api/admin/history-schedule'", server.ADMIN_HTML)
         self.assertIn('type="time" value="03:00" disabled', server.ADMIN_HTML)
+
+    def test_admin_advanced_setting_saves_without_restarting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/admin/advanced?enabled=1"
+            handler.config_data = config
+            handler.send_json = Mock()
+
+            handler.do_POST()
+
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            response = handler.send_json.call_args.args[0]
+
+        self.assertTrue(config["admin_advanced"])
+        self.assertTrue(payload["admin_advanced"])
+        self.assertTrue(response["settings"]["adminAdvanced"])
 
     def test_history_schedule_endpoint_saves_and_updates_live_scheduler(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

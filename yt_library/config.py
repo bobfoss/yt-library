@@ -32,6 +32,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "page_size": 100,
     "history_fetch_daily": False,
     "history_fetch_time": "03:00",
+    "admin_advanced": False,
     "use_proxy": False,
     "proxy": "",
     "dispatch_mode": "delay",
@@ -95,6 +96,13 @@ def configured_page_size(config: dict[str, Any]) -> int:
 
 def configured_history_fetch_daily(config: dict[str, Any]) -> bool:
     value = config.get("history_fetch_daily", DEFAULT_CONFIG["history_fetch_daily"])
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def configured_admin_advanced(config: dict[str, Any]) -> bool:
+    value = config.get("admin_advanced", DEFAULT_CONFIG["admin_advanced"])
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
@@ -351,6 +359,7 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
     config["page_size"] = configured_page_size(config)
     config["history_fetch_daily"] = configured_history_fetch_daily(config)
     config["history_fetch_time"] = configured_history_fetch_time(config)
+    config["admin_advanced"] = configured_admin_advanced(config)
     configured_proxy_address(config)
     config["_config_path"] = str(path)
     return config
