@@ -1980,8 +1980,14 @@
 
     function archivarixStatusLabel(video) {
       const status = String(video.recovered_status || '');
-      if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return `Archivarix: ${status}`;
+      if (status === 'NOT_FOUND') return 'Archivarix: No results found';
+      if (status.startsWith('DELETED_')) return `Archivarix: ${status}`;
       return '';
+    }
+
+    function archivarixStatusHtml(video) {
+      const label = archivarixStatusLabel(video);
+      return label ? `<div class="details"><span class="badge">${escapeHtml(label)}</span></div>` : '';
     }
 
     function archivarixVideoUrl(video) {
@@ -2204,7 +2210,6 @@
               ${watchUrl ? `<a class="external-link" href="${escapeHtml(watchUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
             </div>
             ${badgeRowsHtml([
-              { label: archivarixStatusLabel(video) },
               { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
               { label: matchTypeLabel(video), title: video.match_note },
             ])}
@@ -2214,6 +2219,7 @@
               video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
               archivarixLinkHtml(video),
             ])}
+            ${archivarixStatusHtml(video)}
             ${videoAvailabilityHtml(video)}
             ${watchedLineHtml(video)}
             ${watchSparklineHtml(video, true)}
@@ -2813,7 +2819,6 @@
         localUrl: video.video_id ? localVideoHref(video.video_id) : '',
         externalUrl: watchUrl,
         badges: [
-          { label: archivarixStatusLabel(video) },
           { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
           { label: matchTypeLabel(video), title: video.match_note },
         ],
@@ -2822,6 +2827,7 @@
           video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
           archivarixLinkHtml(video),
         ],
+        recoveryHtml: archivarixStatusHtml(video),
         channelHtml: creatorHtml(video.metadata_channel_thumbnail_path, channelName, channelUrl),
         sources: options.sources || [],
         playlistSourcesHtml: options.playlistSourcesHtml === undefined ? playlistSourceLinksHtml(video) : options.playlistSourcesHtml,

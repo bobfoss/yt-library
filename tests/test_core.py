@@ -4607,6 +4607,25 @@ class AdminServerTests(unittest.TestCase):
             "      ${options.watchedHtml || ''}",
             server.VIDEO_CARD_JS,
         )
+        self.assertIn(
+            "${detailRowHtml(options.details)}\n"
+            "      ${options.recoveryHtml || ''}\n"
+            "      ${options.watchDateHtml || ''}",
+            server.VIDEO_CARD_JS,
+        )
+        self.assertIn(
+            "if (status === 'NOT_FOUND') return 'Archivarix: No results found';",
+            server.INDEX_HTML,
+        )
+        self.assertIn("recoveryHtml: archivarixStatusHtml(video)", server.INDEX_HTML)
+        self.assertNotIn("{ label: archivarixStatusLabel(video) },", server.INDEX_HTML)
+        detail_card_start = server.INDEX_HTML.index("function videoDetailCardFor(video)")
+        detail_card_end = server.INDEX_HTML.index("function channelDetailCardFor(channel)")
+        detail_card_html = server.INDEX_HTML[detail_card_start:detail_card_end]
+        self.assertLess(
+            detail_card_html.index("video.video_id ?"),
+            detail_card_html.index("${archivarixStatusHtml(video)}"),
+        )
         video_card_channel = (
             '${options.channelHtml ? `<div class="details video-card-channel">'
             "${options.channelHtml}</div>` : ''}"

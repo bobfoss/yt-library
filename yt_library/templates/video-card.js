@@ -186,6 +186,7 @@
       ${titleHtml(options)}
       ${badgeRowsHtml(options.badges)}
       ${detailRowHtml(options.details)}
+      ${options.recoveryHtml || ''}
       ${options.watchDateHtml || ''}
       ${options.availabilityHtml || ''}
       ${options.watchedHtml || ''}
