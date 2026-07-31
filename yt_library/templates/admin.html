@@ -209,6 +209,8 @@
           <button id="fetchVideoMetadata" class="primary" type="button">Fetch video metadata</button>
           <label>Metadata stale days<input id="videoMetadataStaleDays" type="number" min="0" step="1" value="30"></label>
           <label class="checkbox"><input id="videoMetadataForce" type="checkbox">Refresh already fetched</label>
+          <button id="backfillVideoVisibility" type="button">Backfill visibility</button>
+          <span id="videoBackfillStatus" class="metric" aria-live="polite"></span>
         </div>
         <div class="grid" id="videoMetadataCounts"></div>
       </section>
@@ -220,10 +222,14 @@
         <div class="grid">
           <div class="panel"><div class="metric">Playlist count</div><div id="playlistRows" class="value">0</div></div>
           <div class="panel"><div class="metric">Distinct video IDs</div><div id="distinctVideos" class="value">0</div></div>
+          <div class="panel"><div class="metric">Metadata backfill</div><div id="playlistBackfillCount" class="value">0</div></div>
+          <div class="panel"><div class="metric">Metadata incomplete</div><div id="playlistIncompleteCount" class="value">0</div></div>
         </div>
         <div class="controls">
           <button id="scanPlaylists" class="primary" type="button">Scan all playlists</button>
           <button id="reconcilePlaylists" type="button">Reconcile playlists</button>
+          <button id="backfillPlaylistMetadata" type="button">Backfill owners &amp; visibility</button>
+          <span id="playlistBackfillStatus" class="metric" aria-live="polite"></span>
         </div>
       </section>
 
@@ -235,6 +241,8 @@
           <button id="fetchChannelMetadata" class="primary" type="button">Fetch channel metadata</button>
           <label>Metadata stale days<input id="channelMetadataStaleDays" type="number" min="0" step="1" value="30"></label>
           <label class="checkbox"><input id="channelMetadataForce" type="checkbox">Refresh already fetched</label>
+          <button id="backfillChannelAccount" type="button">Backfill account state</button>
+          <span id="channelBackfillStatus" class="metric" aria-live="polite"></span>
           <button id="backfillChannelFirstSeen" type="button">Backfill first seen</button>
           <span id="channelFirstSeenStatus" class="metric" aria-live="polite"></span>
         </div>
@@ -397,11 +405,19 @@
     const fields = {
       playlistRows: document.getElementById('playlistRows'),
       distinctVideos: document.getElementById('distinctVideos'),
+      playlistBackfillCount: document.getElementById('playlistBackfillCount'),
+      playlistIncompleteCount: document.getElementById('playlistIncompleteCount'),
       historyRows: document.getElementById('historyRows'),
       historyVideos: document.getElementById('historyVideos'),
       liveHistoryRows: document.getElementById('liveHistoryRows'),
       videoMetadataCounts: document.getElementById('videoMetadataCounts'),
       channelCounts: document.getElementById('channelCounts'),
+      backfillVideoVisibility: document.getElementById('backfillVideoVisibility'),
+      videoBackfillStatus: document.getElementById('videoBackfillStatus'),
+      backfillPlaylistMetadata: document.getElementById('backfillPlaylistMetadata'),
+      playlistBackfillStatus: document.getElementById('playlistBackfillStatus'),
+      backfillChannelAccount: document.getElementById('backfillChannelAccount'),
+      channelBackfillStatus: document.getElementById('channelBackfillStatus'),
       channelFirstSeenStatus: document.getElementById('channelFirstSeenStatus'),
       logs: document.getElementById('logs'),
       logSourceFilter: document.getElementById('logSourceFilter'),
@@ -465,6 +481,7 @@
     let settingsSaving = false;
     let settingsDirty = false;
     let currentServicePid = 0;
+    let currentFeatureBackfillCounts = {};
     const logState = {
       rows: [],
       keys: new Set(),
@@ -876,6 +893,12 @@
       }
 
       const channelCounts = data.channelCounts || {};
+      currentFeatureBackfillCounts = data.featureBackfillCounts || {};
+      fields.playlistBackfillCount.textContent = currentFeatureBackfillCounts.playlist_metadata || 0;
+      fields.playlistIncompleteCount.textContent = currentFeatureBackfillCounts.playlist_incomplete || 0;
+      fields.backfillVideoVisibility.disabled = !(currentFeatureBackfillCounts.video_visibility || 0);
+      fields.backfillPlaylistMetadata.disabled = !(currentFeatureBackfillCounts.playlist_metadata || 0);
+      fields.backfillChannelAccount.disabled = !(currentFeatureBackfillCounts.channel_account || 0);
       const channelCards = [
         { label: 'Channels', count: channelCounts.total || 0 },
         { label: 'Channel thumbs cached', count: channelCounts.thumbnail_cached || 0 },
@@ -884,6 +907,8 @@
         { label: 'First seen identified', count: channelCounts.first_seen || 0 },
         { label: 'First seen missing', count: channelCounts.first_seen_missing || 0 },
         { label: 'Channel URLs missing', count: channelCounts.url_missing || 0 },
+        { label: 'Account-state backfill', count: currentFeatureBackfillCounts.channel_account || 0 },
+        { label: 'Notifications missing', count: currentFeatureBackfillCounts.channel_notification_missing || 0 },
       ];
       const metadataStatusOrder = new Map([['ok', 0], ['', 1], ['no_metadata', 2]]);
       const metadataStatusLabel = status => {
@@ -901,6 +926,10 @@
         label: `Videos ${metadataStatusLabel(row.fetch_status || '')}`,
         count: row.count,
       }));
+      videoMetadataCards.push(
+        { label: 'Visibility backfill', count: currentFeatureBackfillCounts.video_visibility || 0 },
+        { label: 'Visibility/channel incomplete', count: currentFeatureBackfillCounts.video_incomplete || 0 },
+      );
       const metricCards = rows => rows.map(row => {
         const div = document.createElement('div');
         div.className = 'panel';
@@ -1171,6 +1200,44 @@
       stale_days: fields.channelMetadataStaleDays.value,
       force: fields.channelMetadataForce.checked ? '1' : '0',
     }).catch(error => alert(error.message)));
+    async function startFeatureBackfill(kind, label, statusField) {
+      const count = Number(currentFeatureBackfillCounts[kind] || 0);
+      if (!count) {
+        statusField.textContent = 'Nothing to queue';
+        return;
+      }
+      if (!confirm(`Queue ${count.toLocaleString()} ${label} requests?`)) return;
+      statusField.textContent = 'Queueing';
+      try {
+        const result = await post('/api/admin/feature-backfill/start', { kind });
+        const queue = result.queue || {};
+        statusField.textContent =
+          `Queued ${Number(queue.inserted || 0).toLocaleString()}; ${Number(queue.already_queued || 0).toLocaleString()} already queued`;
+      } catch (error) {
+        statusField.textContent = error.message;
+      }
+    }
+    fields.backfillVideoVisibility.addEventListener('click', () => {
+      startFeatureBackfill(
+        'video_visibility',
+        'video visibility backfill',
+        fields.videoBackfillStatus,
+      );
+    });
+    fields.backfillPlaylistMetadata.addEventListener('click', () => {
+      startFeatureBackfill(
+        'playlist_metadata',
+        'playlist metadata backfill',
+        fields.playlistBackfillStatus,
+      );
+    });
+    fields.backfillChannelAccount.addEventListener('click', () => {
+      startFeatureBackfill(
+        'channel_account',
+        'channel account-state backfill',
+        fields.channelBackfillStatus,
+      );
+    });
     document.getElementById('backfillChannelFirstSeen').addEventListener('click', async () => {
       fields.channelFirstSeenStatus.textContent = 'Working';
       try {

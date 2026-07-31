@@ -752,6 +752,33 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             )
             self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
             return
+        if parsed.path == "/api/admin/feature-backfill/start":
+            kind = (params.get("kind") or [""])[0].strip().lower()
+            if kind not in FEATURE_BACKFILL_KINDS:
+                self.send_json(
+                    {"error": "Feature backfill kind must be video_visibility, playlist_metadata, or channel_account"},
+                    status=400,
+                )
+                return
+            limit = max(0, int((params.get("limit") or ["0"])[0] or 0))
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    queue_stats = enqueue_feature_backfill(
+                        conn,
+                        kind,
+                        limit=limit,
+                    )
+            finally:
+                conn.close()
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+            )
+            self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
+            return
         if parsed.path == "/api/admin/channels/first-seen":
             conn = connect(self.db_path)
             try:

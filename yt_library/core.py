@@ -199,10 +199,14 @@ VIDEO_SOURCE_PRIORITY = {
 }
 
 LIKED_VIDEOS_PLAYLIST_ID = "LL"
+VIDEO_VISIBILITY_CAPTURE_START = "2026-07-30T17:54:45Z"
+PLAYLIST_METADATA_CAPTURE_START = "2026-07-30T20:26:38Z"
+CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
+CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 @dataclass(frozen=True)
@@ -411,6 +415,92 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (11, utc_now()),
+        )
+    if current_version < 12:
+        channel_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(channels)")
+        }
+        if "subscription_checked_at" not in channel_columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN subscription_checked_at TEXT")
+        if "notification_checked_at" not in channel_columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN notification_checked_at TEXT")
+
+        playlist_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(playlists)")
+        }
+        if "metadata_checked_at" not in playlist_columns:
+            conn.execute("ALTER TABLE playlists ADD COLUMN metadata_checked_at TEXT")
+
+        video_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(videos)")
+        }
+        if "visibility_checked_at" not in video_columns:
+            conn.execute("ALTER TABLE videos ADD COLUMN visibility_checked_at TEXT")
+
+        conn.execute(
+            """
+            UPDATE channels
+            SET notification_level = ''
+            WHERE subscribed = 0
+            """
+        )
+        conn.execute(
+            """
+            UPDATE channels
+            SET subscription_checked_at = fetched_at
+            WHERE fetch_status = 'ok'
+              AND fetched_at >= ?
+            """,
+            (CHANNEL_SUBSCRIPTION_CAPTURE_START,),
+        )
+        conn.execute(
+            """
+            UPDATE channels
+            SET notification_checked_at = fetched_at
+            WHERE fetch_status = 'ok'
+              AND fetched_at >= ?
+              AND (subscribed = 0 OR notification_level <> '')
+            """,
+            (CHANNEL_NOTIFICATION_CAPTURE_START,),
+        )
+        conn.execute(
+            """
+            UPDATE playlists
+            SET metadata_checked_at = (
+              SELECT ps.scanned_at
+              FROM playlist_scans ps
+              WHERE ps.playlist_id = playlists.playlist_id
+                AND ps.scan_status = 'ok'
+            )
+            WHERE COALESCE(owner_channel_id, '') <> ''
+              AND COALESCE(visibility, '') <> ''
+              AND EXISTS (
+                SELECT 1
+                FROM playlist_scans ps
+                WHERE ps.playlist_id = playlists.playlist_id
+                  AND ps.scan_status = 'ok'
+                  AND ps.scanned_at >= ?
+              )
+            """,
+            (PLAYLIST_METADATA_CAPTURE_START,),
+        )
+        conn.execute(
+            """
+            UPDATE videos
+            SET visibility_checked_at = fetched_at
+            WHERE fetch_status = 'ok'
+              AND fetched_at >= ?
+              AND availability <> 'unknown'
+              AND COALESCE(channel_id, '') <> ''
+            """,
+            (VIDEO_VISIBILITY_CAPTURE_START,),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (12, utc_now()),
         )
 
 
@@ -3725,6 +3815,15 @@ def store_video_metadata(
         checked_at=now,
         updated_at=now,
     )
+    if status == "ok":
+        conn.execute(
+            """
+            UPDATE videos
+            SET visibility_checked_at = ?
+            WHERE video_id = ?
+            """,
+            (now, metadata.get("video_id", "")),
+        )
     return channel_id
 
 
@@ -3832,23 +3931,45 @@ def store_channel_metadata(
         updated_at=now,
     )
     subscribed = str(metadata.get("channel_subscribed") or "").strip()
-    if channel_id and subscribed in {"0", "1"}:
-        conn.execute(
-            "UPDATE channels SET subscribed = ? WHERE channel_id = ?",
-            (int(subscribed), channel_id),
-        )
     notification_level = normalize_channel_notification_level(
         metadata.get("channel_notification_level", "")
     )
-    if channel_id and notification_level:
+    if channel_id and status == "ok" and subscribed == "0":
         conn.execute(
-            "UPDATE channels SET notification_level = ? WHERE channel_id = ?",
-            (notification_level, channel_id),
+            """
+            UPDATE channels
+            SET subscribed = 0,
+                notification_level = '',
+                subscription_checked_at = ?,
+                notification_checked_at = ?
+            WHERE channel_id = ?
+            """,
+            (now, now, channel_id),
         )
-    elif channel_id and subscribed == "0":
+    elif channel_id and status == "ok" and subscribed == "1":
         conn.execute(
-            "UPDATE channels SET notification_level = '' WHERE channel_id = ?",
-            (channel_id,),
+            """
+            UPDATE channels
+            SET subscribed = 1,
+                subscription_checked_at = ?,
+                notification_level = CASE
+                  WHEN ? <> '' THEN ?
+                  ELSE notification_level
+                END,
+                notification_checked_at = CASE
+                  WHEN ? <> '' THEN ?
+                  ELSE notification_checked_at
+                END
+            WHERE channel_id = ?
+            """,
+            (
+                now,
+                notification_level,
+                notification_level,
+                notification_level,
+                now,
+                channel_id,
+            ),
         )
     return channel_id
 
@@ -5695,6 +5816,15 @@ def save_playlist_scan(
                 now,
             ),
         )
+        if status == "ok":
+            conn.execute(
+                """
+                UPDATE playlists
+                SET metadata_checked_at = ?
+                WHERE playlist_id = ?
+                """,
+                (now, playlist_id),
+            )
     return len(videos), unavailable_count
 
 
@@ -6408,6 +6538,228 @@ def rebuild_playlist_scan_queue(
     return {"cleared": cleared, "inserted": inserted, "queued": playlist_scan_queue_count(conn)}
 
 
+FEATURE_BACKFILL_KINDS = {
+    "video_visibility",
+    "playlist_metadata",
+    "channel_account",
+}
+
+
+def feature_backfill_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    return {
+        "video_visibility": int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM videos
+                WHERE visibility_checked_at IS NULL
+                """
+            ).fetchone()[0]
+            or 0
+        ),
+        "video_incomplete": int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM videos
+                WHERE availability = 'unknown'
+                   OR COALESCE(channel_id, '') = ''
+                """
+            ).fetchone()[0]
+            or 0
+        ),
+        "playlist_metadata": int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM playlists
+                WHERE fetch_status <> 'removed'
+                  AND metadata_checked_at IS NULL
+                """
+            ).fetchone()[0]
+            or 0
+        ),
+        "playlist_incomplete": int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM playlists
+                WHERE fetch_status <> 'removed'
+                  AND (
+                    COALESCE(owner_channel_id, '') = ''
+                    OR COALESCE(visibility, '') = ''
+                  )
+                """
+            ).fetchone()[0]
+            or 0
+        ),
+        "channel_account": int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM channels
+                WHERE COALESCE(status, '') NOT IN ('terminated', 'deleted')
+                  AND (
+                    subscription_checked_at IS NULL
+                    OR (subscribed = 1 AND notification_checked_at IS NULL)
+                  )
+                """
+            ).fetchone()[0]
+            or 0
+        ),
+        "channel_notification_missing": int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM channels
+                WHERE subscribed = 1
+                  AND notification_checked_at IS NULL
+                  AND COALESCE(status, '') NOT IN ('terminated', 'deleted')
+                """
+            ).fetchone()[0]
+            or 0
+        ),
+    }
+
+
+def feature_backfill_candidate_rows(
+    conn: sqlite3.Connection,
+    kind: str,
+    *,
+    limit: int = 0,
+) -> list[sqlite3.Row]:
+    kind = (kind or "").strip().lower()
+    if kind not in FEATURE_BACKFILL_KINDS:
+        raise ValueError(f"Unsupported feature backfill kind: {kind}")
+    params: list[Any] = []
+    if kind == "channel_account":
+        sql = """
+            SELECT channel_id AS video_id,
+                   channel_id,
+                   COALESCE(NULLIF(title, ''), channel_id) AS channel_title,
+                   0 AS playlist_count,
+                   '' AS current_title,
+                   'channel' AS metadata_source,
+                   0 AS priority
+            FROM channels
+            WHERE COALESCE(status, '') NOT IN ('terminated', 'deleted')
+              AND (
+                subscription_checked_at IS NULL
+                OR (subscribed = 1 AND notification_checked_at IS NULL)
+              )
+            ORDER BY
+              CASE WHEN subscribed = 1 THEN 0 ELSE 1 END,
+              COALESCE(fetched_at, ''),
+              title COLLATE NOCASE,
+              channel_id
+        """
+    elif kind == "playlist_metadata":
+        sql = """
+            SELECT p.playlist_id,
+                   p.title,
+                   COALESCE(ps.scanned_at, '') AS scanned_at
+            FROM playlists p
+            LEFT JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
+            WHERE p.fetch_status <> 'removed'
+              AND p.metadata_checked_at IS NULL
+            ORDER BY
+              COALESCE(ps.scanned_at, ''),
+              p.title COLLATE NOCASE,
+              p.playlist_id
+        """
+    else:
+        sql = """
+            WITH playlist_counts AS (
+              SELECT video_id, COUNT(DISTINCT playlist_id) AS playlist_count
+              FROM playlist_items
+              WHERE video_id IS NOT NULL
+              GROUP BY video_id
+            ),
+            history_stats AS (
+              SELECT video_id,
+                     MAX(COALESCE(watched_at, watch_date, '')) AS latest_history_at
+              FROM history_events
+              GROUP BY video_id
+            )
+            SELECT v.video_id,
+                   COALESCE(v.channel_id, '') AS channel_id,
+                   COALESCE(ch.title, '') AS channel_title,
+                   COALESCE(pc.playlist_count, 0) AS playlist_count,
+                   COALESCE(v.title, '') AS current_title,
+                   CASE
+                     WHEN COALESCE(pc.playlist_count, 0) > 0 THEN 'playlist'
+                     ELSE 'history'
+                   END AS metadata_source,
+                   CASE
+                     WHEN COALESCE(pc.playlist_count, 0) > 0 THEN 2
+                     ELSE 3
+                   END AS priority,
+                   COALESCE(hs.latest_history_at, '') AS latest_history_at
+            FROM videos v
+            LEFT JOIN channels ch ON ch.channel_id = v.channel_id
+            LEFT JOIN playlist_counts pc ON pc.video_id = v.video_id
+            LEFT JOIN history_stats hs ON hs.video_id = v.video_id
+            WHERE v.visibility_checked_at IS NULL
+            ORDER BY
+              priority,
+              CASE
+                WHEN COALESCE(pc.playlist_count, 0) = 0
+                  THEN COALESCE(hs.latest_history_at, '')
+                ELSE ''
+              END DESC,
+              COALESCE(v.fetched_at, ''),
+              current_title COLLATE NOCASE,
+              v.video_id
+        """
+    if limit:
+        sql += " LIMIT ?"
+        params.append(max(1, int(limit)))
+    return conn.execute(sql, params).fetchall()
+
+
+def enqueue_feature_backfill(
+    conn: sqlite3.Connection,
+    kind: str,
+    *,
+    limit: int = 0,
+) -> dict[str, int | str]:
+    kind = (kind or "").strip().lower()
+    rows = feature_backfill_candidate_rows(conn, kind, limit=limit)
+    before = worker_queue_count(conn)
+    if kind == "playlist_metadata":
+        for index, row in enumerate(rows):
+            enqueue_playlist_scan_item(
+                conn,
+                row["playlist_id"] or "",
+                title=row["title"] or "",
+                priority=index + 1,
+                manual=False,
+            )
+    else:
+        for row in rows:
+            enqueue_metadata_item(
+                conn,
+                video_id=row["video_id"] or "",
+                channel_id=row["channel_id"] or "",
+                channel_title=row["channel_title"] or "",
+                current_title=row["current_title"] or "",
+                metadata_source=row["metadata_source"] or "history",
+                source_key=f"feature-backfill:{kind}",
+                playlist_count=int(row["playlist_count"] or 0),
+                priority=int(row["priority"] or 0),
+                manual=False,
+            )
+    after = worker_queue_count(conn)
+    inserted = max(0, after - before)
+    return {
+        "kind": kind,
+        "selected": len(rows),
+        "inserted": inserted,
+        "already_queued": max(0, len(rows) - inserted),
+        "queued": after,
+    }
+
+
 def metadata_queue_candidate_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
@@ -7065,6 +7417,7 @@ def admin_status(
                 """
             ).fetchone()
         )
+        backfill_counts = feature_backfill_counts(conn)
         worker_queue_count_value = worker_queue_count(conn)
         worker_queue_limit = max(0, min(10000, int(worker_queue_limit if worker_queue_limit is not None else 500)))
         worker_queue_preview_rows = (
@@ -7161,6 +7514,7 @@ def admin_status(
         "playlistCounts": playlist_counts,
         "metadataCounts": metadata_counts,
         "channelCounts": channel_counts,
+        "featureBackfillCounts": backfill_counts,
         "workerQueueCount": worker_queue_count_value,
         "workerQueue": worker_queue_preview_rows,
         "latestRun": dict(latest_metadata_run) if latest_metadata_run else None,

@@ -1379,13 +1379,15 @@ class CoreHelperTests(unittest.TestCase):
                             "channel_id": "UCchannel",
                             "channel": "Example Channel",
                             "channel_subscribed": "0",
-                            "channel_notification_level": "",
+                            "channel_notification_level": "personalized",
                         },
                         "ok",
+                        updated_at="2026-07-30T22:00:00Z",
                     )
                 unsubscribed = conn.execute(
                     """
-                    SELECT subscribed, notification_level
+                    SELECT subscribed, notification_level,
+                           subscription_checked_at, notification_checked_at
                     FROM channels
                     WHERE channel_id = 'UCchannel'
                     """
@@ -1395,6 +1397,43 @@ class CoreHelperTests(unittest.TestCase):
 
         self.assertEqual(unsubscribed["subscribed"], 0)
         self.assertEqual(unsubscribed["notification_level"], "")
+        self.assertEqual(
+            unsubscribed["subscription_checked_at"],
+            "2026-07-30T22:00:00Z",
+        )
+        self.assertEqual(
+            unsubscribed["notification_checked_at"],
+            "2026-07-30T22:00:00Z",
+        )
+
+    def test_successful_video_metadata_marks_visibility_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.store_video_metadata(
+                        conn,
+                        {
+                            "video_id": "checkedvid1",
+                            "title": "Checked video",
+                            "availability": "unlisted",
+                            "playability_status": "OK",
+                        },
+                        "ok",
+                        updated_at="2026-07-30T22:30:00Z",
+                    )
+                row = conn.execute(
+                    """
+                    SELECT availability, visibility_checked_at
+                    FROM videos
+                    WHERE video_id = 'checkedvid1'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(row["availability"], "unlisted")
+        self.assertEqual(row["visibility_checked_at"], "2026-07-30T22:30:00Z")
 
     def test_playlist_continuation_prefers_command_executor_token(self) -> None:
         data = {
@@ -3048,6 +3087,136 @@ class SchemaTests(unittest.TestCase):
         )
         self.assertEqual(schema_version, core.SCHEMA_VERSION)
 
+    def test_migrate_adds_feature_backfill_markers_and_cleans_notifications(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            legacy_schema = (
+                core.SCHEMA.replace(
+                    "  subscription_checked_at TEXT,\n"
+                    "  notification_checked_at TEXT,\n",
+                    "",
+                )
+                .replace("  metadata_checked_at TEXT,\n", "")
+                .replace("  visibility_checked_at TEXT,\n", "")
+            )
+            raw = sqlite3.connect(db_path)
+            try:
+                raw.executescript(legacy_schema)
+                raw.execute("DELETE FROM schema_migrations")
+                raw.execute(
+                    """
+                    INSERT INTO schema_migrations(version, applied_at)
+                    VALUES (11, '2026-07-30T00:00:00Z')
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO channels(
+                      channel_id, title, subscribed, notification_level,
+                      fetch_status, fetched_at
+                    )
+                    VALUES (
+                      'UCrecent', 'Recent', 0, 'personalized',
+                      'ok', '2026-07-31T04:00:00Z'
+                    )
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO channels(
+                      channel_id, title, subscribed, notification_level,
+                      fetch_status, fetched_at
+                    )
+                    VALUES (
+                      'UCold', 'Old', 1, '',
+                      'ok', '2026-07-30T18:00:00Z'
+                    )
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO playlists(
+                      playlist_id, title, owner_channel_id, visibility, fetch_status
+                    )
+                    VALUES ('PLcomplete', 'Complete', 'UCrecent', 'public', 'ok')
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO playlist_scans(
+                      playlist_id, scanned_at, video_count, unavailable_count,
+                      scan_status, scan_error
+                    )
+                    VALUES (
+                      'PLcomplete', '2026-07-31T03:00:00Z', 0, 0, 'ok', ''
+                    )
+                    """
+                )
+                raw.execute(
+                    """
+                    INSERT INTO videos(
+                      video_id, title, channel_id, availability,
+                      fetch_status, fetched_at
+                    )
+                    VALUES (
+                      'recentvideo', 'Recent video', 'UCrecent', 'public',
+                      'ok', '2026-07-31T03:00:00Z'
+                    )
+                    """
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                recent_channel = conn.execute(
+                    """
+                    SELECT notification_level, subscription_checked_at,
+                           notification_checked_at
+                    FROM channels
+                    WHERE channel_id = 'UCrecent'
+                    """
+                ).fetchone()
+                old_channel = conn.execute(
+                    """
+                    SELECT subscription_checked_at, notification_checked_at
+                    FROM channels
+                    WHERE channel_id = 'UCold'
+                    """
+                ).fetchone()
+                playlist_checked_at = conn.execute(
+                    """
+                    SELECT metadata_checked_at
+                    FROM playlists
+                    WHERE playlist_id = 'PLcomplete'
+                    """
+                ).fetchone()["metadata_checked_at"]
+                video_checked_at = conn.execute(
+                    """
+                    SELECT visibility_checked_at
+                    FROM videos
+                    WHERE video_id = 'recentvideo'
+                    """
+                ).fetchone()["visibility_checked_at"]
+            finally:
+                conn.close()
+
+        self.assertEqual(recent_channel["notification_level"], "")
+        self.assertEqual(
+            recent_channel["subscription_checked_at"],
+            "2026-07-31T04:00:00Z",
+        )
+        self.assertEqual(
+            recent_channel["notification_checked_at"],
+            "2026-07-31T04:00:00Z",
+        )
+        self.assertIsNone(old_channel["subscription_checked_at"])
+        self.assertIsNone(old_channel["notification_checked_at"])
+        self.assertEqual(playlist_checked_at, "2026-07-31T03:00:00Z")
+        self.assertEqual(video_checked_at, "2026-07-31T03:00:00Z")
+
     def test_channel_first_seen_backfill_uses_earliest_library_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
@@ -3311,6 +3480,94 @@ class SchemaTests(unittest.TestCase):
             {"video_id": "abc12345678", "current_title": ""},
         )
 
+    def test_feature_backfill_counts_and_queues_only_unchecked_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCchannelneeded", title="Needed channel")
+                    core.upsert_channel(conn, "UCchanneldone", title="Done channel")
+                    conn.execute(
+                        """
+                        UPDATE channels
+                        SET subscribed = 1,
+                            notification_level = 'all',
+                            subscription_checked_at = '2026-07-31T01:00:00Z',
+                            notification_checked_at = '2026-07-31T01:00:00Z'
+                        WHERE channel_id = 'UCchanneldone'
+                        """
+                    )
+                    conn.executemany(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, owner_channel_id, visibility,
+                          metadata_checked_at
+                        )
+                        VALUES (?, ?, 'UCchanneldone', 'public', ?)
+                        """,
+                        [
+                            ("PLneeded", "Needed playlist", None),
+                            ("PLdone", "Done playlist", "2026-07-31T01:00:00Z"),
+                        ],
+                    )
+                    core.upsert_video(
+                        conn,
+                        "neededvid01",
+                        title="Needed video",
+                        channel_id="UCchanneldone",
+                        availability="public",
+                    )
+                    core.upsert_video(
+                        conn,
+                        "donevideo01",
+                        title="Done video",
+                        channel_id="UCchanneldone",
+                        availability="public",
+                    )
+                    conn.execute(
+                        """
+                        UPDATE videos
+                        SET visibility_checked_at = '2026-07-31T01:00:00Z'
+                        WHERE video_id = 'donevideo01'
+                        """
+                    )
+
+                counts = core.feature_backfill_counts(conn)
+                self.assertEqual(counts["channel_account"], 1)
+                self.assertEqual(counts["playlist_metadata"], 1)
+                self.assertEqual(counts["video_visibility"], 1)
+
+                with conn:
+                    channel_result = core.enqueue_feature_backfill(
+                        conn,
+                        "channel_account",
+                    )
+                self.assertEqual(channel_result["inserted"], 1)
+                channel_row = core.metadata_queue_rows(conn, limit=1)[0]
+                self.assertEqual(channel_row["channel_id"], "UCchannelneeded")
+
+                with conn:
+                    core.clear_worker_queue(conn)
+                    playlist_result = core.enqueue_feature_backfill(
+                        conn,
+                        "playlist_metadata",
+                    )
+                self.assertEqual(playlist_result["inserted"], 1)
+                playlist_row = core.playlist_scan_queue_rows(conn, limit=1)[0]
+                self.assertEqual(playlist_row["playlist_id"], "PLneeded")
+
+                with conn:
+                    core.clear_worker_queue(conn)
+                    video_result = core.enqueue_feature_backfill(
+                        conn,
+                        "video_visibility",
+                    )
+                self.assertEqual(video_result["inserted"], 1)
+                video_row = core.metadata_queue_rows(conn, limit=1)[0]
+                self.assertEqual(video_row["video_id"], "neededvid01")
+            finally:
+                conn.close()
+
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3487,7 +3744,7 @@ class SchemaTests(unittest.TestCase):
                             },
                         )
                     row = conn.execute(
-                        "SELECT title, description, owner_channel_id, visibility, video_count, thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLrename'"
+                        "SELECT title, description, owner_channel_id, visibility, video_count, thumbnail_url, thumbnail_path, metadata_checked_at FROM playlists WHERE playlist_id = 'PLrename'"
                     ).fetchone()
                     self.assertEqual(row["title"], "New name")
                     self.assertEqual(row["description"], "New description")
@@ -3496,6 +3753,7 @@ class SchemaTests(unittest.TestCase):
                     self.assertEqual(row["video_count"], 1)
                     self.assertEqual(row["thumbnail_url"], "https://example.test/new.jpg")
                     self.assertEqual(row["thumbnail_path"], "thumbs/PLrename.jpg")
+                    self.assertTrue(row["metadata_checked_at"])
                     channel = conn.execute(
                         "SELECT title, metadata_source FROM channels WHERE channel_id = 'UCnewownerchannel123456789'"
                     ).fetchone()
@@ -4370,6 +4628,10 @@ class AdminServerTests(unittest.TestCase):
             server.ADMIN_HTML.index('id="channelMetadataForce"'),
             server.ADMIN_HTML.index('id="backfillChannelFirstSeen"'),
         )
+        self.assertIn('id="backfillVideoVisibility"', server.ADMIN_HTML)
+        self.assertIn('id="backfillPlaylistMetadata"', server.ADMIN_HTML)
+        self.assertIn('id="backfillChannelAccount"', server.ADMIN_HTML)
+        self.assertIn("/api/admin/feature-backfill/start", server.ADMIN_HTML)
         self.assertIn("reactions: { none: true, liked: true, disliked: true }", server.INDEX_HTML)
         self.assertIn(
             "completion: { complete: true, partial: true, unknown: true, never_watched: true }",
@@ -4843,6 +5105,57 @@ class AdminServerTests(unittest.TestCase):
             {"ok": True, "missing": 0, "updated": 1, "unresolved": 0},
         )
         self.assertEqual(first_seen_at, "2026-03-02")
+
+    def test_feature_backfill_endpoint_queues_selected_kind(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "backfillvid",
+                        title="Backfill video",
+                        availability="public",
+                    )
+            finally:
+                conn.close()
+
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = (
+                "/api/admin/feature-backfill/start"
+                "?kind=video_visibility&limit=1"
+            )
+            handler.db_path = db_path
+            handler.cookie_file = Path(temp_dir) / "cookies.txt"
+            handler.video_thumbs = Path(temp_dir) / "video_thumbs"
+            handler.config_data = {}
+            handler.send_json = Mock()
+
+            with patch.object(
+                server.WORKER_QUEUE_DISPATCHER,
+                "start",
+                return_value={"started": True},
+            ) as start_dispatcher:
+                handler.do_POST()
+
+            response = handler.send_json.call_args.args[0]
+            conn = core.connect(db_path)
+            try:
+                queued = conn.execute(
+                    """
+                    SELECT video_id
+                    FROM worker_queue
+                    WHERE worker_type = 'metadata'
+                    """
+                ).fetchone()["video_id"]
+            finally:
+                conn.close()
+
+        self.assertEqual(response["queue"]["kind"], "video_visibility")
+        self.assertEqual(response["queue"]["inserted"], 1)
+        self.assertEqual(queued, "backfillvid")
+        start_dispatcher.assert_called_once()
 
     def test_service_replacement_uses_dedicated_log_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
