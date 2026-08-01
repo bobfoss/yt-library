@@ -6222,6 +6222,151 @@ def worker_logs_after(
     }
 
 
+def _worker_log_source(name: str, level: str) -> str:
+    normalized_level = str(level or "").lower()
+    if name == "metadataLogs":
+        if normalized_level.startswith("queue "):
+            return "queue"
+        if normalized_level.startswith("placeholder "):
+            return "placeholder"
+        return "metadata"
+    return {
+        "playlistScanLogs": "playlist",
+        "liveHistoryLogs": "history",
+        "placeholderRecoveryLogs": "placeholder",
+    }[name]
+
+
+def _worker_log_display_level(name: str, level: str) -> str:
+    value = str(level or "")
+    if name == "metadataLogs":
+        lowered = value.lower()
+        if lowered.startswith("queue "):
+            return value[6:]
+        if lowered.startswith("placeholder "):
+            return value[12:]
+    return value
+
+
+def _worker_log_filter_sql(
+    name: str,
+    source: str,
+    severity: str,
+) -> tuple[str, list[str]] | None:
+    clauses: list[str] = []
+    params: list[str] = []
+    fixed_source = {
+        "playlistScanLogs": "playlist",
+        "liveHistoryLogs": "history",
+        "placeholderRecoveryLogs": "placeholder",
+    }.get(name)
+    if fixed_source:
+        if source and source != fixed_source:
+            return None
+    elif source == "queue":
+        clauses.append("LOWER(l.level) LIKE 'queue %'")
+    elif source == "placeholder":
+        clauses.append("LOWER(l.level) LIKE 'placeholder %'")
+    elif source == "metadata":
+        clauses.append(
+            "LOWER(l.level) NOT LIKE 'queue %' AND LOWER(l.level) NOT LIKE 'placeholder %'"
+        )
+    elif source:
+        return None
+
+    padded_level = "(' ' || LOWER(TRIM(l.level)) || ' ')"
+    if severity == "error":
+        clauses.append(f"INSTR({padded_level}, ' error ') > 0")
+    elif severity == "warn":
+        clauses.append(
+            f"(INSTR({padded_level}, ' warn ') > 0 OR "
+            f"INSTR({padded_level}, ' warning ') > 0)"
+        )
+    elif severity == "debug":
+        clauses.append(f"INSTR({padded_level}, ' debug ') > 0")
+    elif severity == "info":
+        clauses.append(
+            f"INSTR({padded_level}, ' error ') = 0 AND "
+            f"INSTR({padded_level}, ' warn ') = 0 AND "
+            f"INSTR({padded_level}, ' warning ') = 0 AND "
+            f"INSTR({padded_level}, ' debug ') = 0"
+        )
+    return (" AND ".join(clauses) if clauses else "1 = 1", params)
+
+
+def _normalized_worker_log(name: str, row: sqlite3.Row) -> dict[str, Any]:
+    source = _worker_log_source(name, row["level"])
+    identifier = row["display_id"] or ""
+    subject = row["subject_title"] or ""
+    if not subject:
+        if name == "metadataLogs":
+            subject = "" if identifier else (row["video_id"] or "")
+        elif name in {"liveHistoryLogs", "placeholderRecoveryLogs"}:
+            subject = row["video_id"] or ""
+        elif name == "playlistScanLogs":
+            subject = row["playlist_id"] or ""
+    return {
+        "stream": name,
+        "id": int(row["id"]),
+        "created_at": row["created_at"],
+        "source": source,
+        "level": _worker_log_display_level(name, row["level"]),
+        "identifier": identifier,
+        "subject_id": subject,
+        "message": row["message"],
+    }
+
+
+def worker_log_page(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    source: str = "",
+    severity: str = "",
+) -> tuple[list[dict[str, Any]], int]:
+    row_limit = max(1, min(200, int(limit)))
+    row_offset = max(0, int(offset))
+    source_filter = str(source or "").strip().lower()
+    severity_filter = str(severity or "").strip().lower()
+    if source_filter not in {"", "queue", "metadata", "playlist", "history", "placeholder"}:
+        raise ValueError(f"Unknown log source: {source}")
+    if severity_filter not in {"", "info", "warn", "error", "debug"}:
+        raise ValueError(f"Unknown log severity: {severity}")
+
+    candidates: list[dict[str, Any]] = []
+    total = 0
+    candidate_limit = row_offset + row_limit
+    for name, table in _WORKER_LOG_TABLES.items():
+        filter_result = _worker_log_filter_sql(name, source_filter, severity_filter)
+        if filter_result is None:
+            continue
+        where_sql, params = filter_result
+        total += int(
+            conn.execute(
+                f"SELECT COUNT(*) AS count FROM {table} l WHERE {where_sql}",
+                params,
+            ).fetchone()["count"]
+            or 0
+        )
+        rows = conn.execute(
+            worker_log_select(name)
+            + f" WHERE {where_sql} ORDER BY l.created_at DESC, l.id DESC LIMIT ?",
+            [*params, candidate_limit],
+        ).fetchall()
+        candidates.extend(_normalized_worker_log(name, row) for row in rows)
+
+    candidates.sort(
+        key=lambda row: (
+            str(row["created_at"] or ""),
+            str(row["stream"]),
+            int(row["id"]),
+        ),
+        reverse=True,
+    )
+    return candidates[row_offset : row_offset + row_limit], total
+
+
 def worker_queue_count(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS count FROM worker_queue").fetchone()
     return int(row["count"] or 0)

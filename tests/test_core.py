@@ -4941,6 +4941,10 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('id="proxyBlock"', server.ADMIN_HTML)
         self.assertIn('<option value="queue">Queue</option>', server.ADMIN_HTML)
         self.assertIn("startsWith('queue ')", server.ADMIN_HTML)
+        self.assertIn('id="logPanel"', server.ADMIN_HTML)
+        self.assertIn("/api/admin/logs?${params}", server.ADMIN_HTML)
+        self.assertIn("fields.logPanel.addEventListener('scroll', loadMoreLogsIfNeeded", server.ADMIN_HTML)
+        self.assertNotIn("logState.rows.slice(0, 120)", server.ADMIN_HTML)
         self.assertIn('id="saveSettings"', server.ADMIN_HTML)
         self.assertIn("<legend>Dispatch mode</legend>", server.ADMIN_HTML)
         self.assertIn('id="dispatchModeDelay"', server.ADMIN_HTML)
@@ -8179,6 +8183,68 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(deltas["liveHistoryLogs"][0]["subject_title"], "History video")
                 self.assertEqual(deltas["liveHistoryLogs"][0]["display_id"], "ghi12345678")
                 self.assertEqual(deltas["placeholderRecoveryLogs"], [])
+            finally:
+                conn.close()
+
+    def test_worker_log_page_combines_filters_and_paginates_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "abc12345678",
+                        title="Example video",
+                        source="test",
+                    )
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLexample', 'Example playlist')"
+                    )
+                    conn.execute(
+                        "INSERT INTO metadata_worker_log(run_id, created_at, level, video_id, message) "
+                        "VALUES ('run-1', '2026-07-13T12:00:04Z', 'queue error', 'abc12345678', 'queue')"
+                    )
+                    conn.execute(
+                        "INSERT INTO metadata_worker_log(run_id, created_at, level, video_id, message) "
+                        "VALUES ('run-1', '2026-07-13T12:00:03Z', 'video', 'abc12345678', 'metadata')"
+                    )
+                    conn.execute(
+                        "INSERT INTO playlist_scan_worker_log(run_id, created_at, level, playlist_id, message) "
+                        "VALUES ('run-1', '2026-07-13T12:00:02Z', 'warning', 'PLexample', 'playlist')"
+                    )
+                    conn.execute(
+                        "INSERT INTO metadata_worker_log(run_id, created_at, level, video_id, message) "
+                        "VALUES ('run-1', '2026-07-13T12:00:01Z', 'placeholder warn', 'missing-id', 'queued placeholder')"
+                    )
+                    conn.execute(
+                        "INSERT INTO placeholder_recovery_worker_log(run_id, created_at, level, video_id, message) "
+                        "VALUES ('run-1', '2026-07-13T12:00:00Z', 'found', 'missing-id', 'placeholder')"
+                    )
+
+                rows, total = core.worker_log_page(conn, limit=2)
+                self.assertEqual(total, 5)
+                self.assertEqual([row["message"] for row in rows], ["queue", "metadata"])
+                self.assertEqual(rows[0]["source"], "queue")
+                self.assertEqual(rows[0]["level"], "error")
+                self.assertEqual(rows[0]["identifier"], "abc12345678")
+
+                rows, total = core.worker_log_page(conn, limit=2, offset=2)
+                self.assertEqual(total, 5)
+                self.assertEqual([row["message"] for row in rows], ["playlist", "queued placeholder"])
+
+                rows, total = core.worker_log_page(conn, source="placeholder")
+                self.assertEqual(total, 2)
+                self.assertEqual(
+                    {(row["stream"], row["message"]) for row in rows},
+                    {
+                        ("metadataLogs", "queued placeholder"),
+                        ("placeholderRecoveryLogs", "placeholder"),
+                    },
+                )
+
+                rows, total = core.worker_log_page(conn, severity="warn")
+                self.assertEqual(total, 2)
+                self.assertEqual([row["message"] for row in rows], ["playlist", "queued placeholder"])
             finally:
                 conn.close()
 

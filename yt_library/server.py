@@ -706,6 +706,44 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/admin/logs/events":
             self.stream_worker_log_events()
             return
+        if parsed.path == "/api/admin/logs":
+            params = urllib.parse.parse_qs(parsed.query)
+            source = (params.get("source") or [""])[0].strip().lower()
+            severity = (params.get("level") or [""])[0].strip().lower()
+            if source == "all":
+                source = ""
+            if severity == "all":
+                severity = ""
+            try:
+                limit = max(1, min(200, int((params.get("limit") or ["100"])[0] or 100)))
+                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+            except ValueError:
+                self.send_json({"error": "Invalid log pagination"}, status=400)
+                return
+            conn = connect(self.db_path)
+            try:
+                try:
+                    rows, total = worker_log_page(
+                        conn,
+                        limit=limit,
+                        offset=offset,
+                        source=source,
+                        severity=severity,
+                    )
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, status=400)
+                    return
+                self.send_json(
+                    {
+                        "limit": limit,
+                        "offset": offset,
+                        "total": total,
+                        "rows": rows,
+                    }
+                )
+            finally:
+                conn.close()
+            return
         if parsed.path == "/api/admin/queue":
             params = urllib.parse.parse_qs(parsed.query)
             queue_type = (params.get("type") or [""])[0]
@@ -1616,16 +1654,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
 
         conn = connect(self.db_path)
         try:
-            conn.execute("BEGIN")
             cursors = worker_log_cursors(conn)
-            snapshot = worker_log_snapshot(conn)
-            conn.commit()
             self.send_sse(
                 "log_reset",
-                {
-                    **{name: [dict(row) for row in rows] for name, rows in snapshot.items()},
-                    "cursors": cursors,
-                },
+                {"cursors": cursors},
             )
 
             last_heartbeat = time.monotonic()

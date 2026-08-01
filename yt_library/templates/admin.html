@@ -423,7 +423,7 @@
         </colgroup>
         <thead><tr><th>Time</th><th>Level</th><th>ID</th><th>Subject</th><th>Message</th></tr></thead>
       </table>
-      <div class="log-scroll">
+      <div class="log-scroll" id="logPanel">
         <table>
           <colgroup>
             <col class="log-time-col">
@@ -464,6 +464,7 @@
       channelBackfillStatus: document.getElementById('channelBackfillStatus'),
       channelFirstSeenStatus: document.getElementById('channelFirstSeenStatus'),
       logs: document.getElementById('logs'),
+      logPanel: document.getElementById('logPanel'),
       logSourceFilter: document.getElementById('logSourceFilter'),
       logLevelFilter: document.getElementById('logLevelFilter'),
       providedQueueTarget: document.getElementById('providedQueueTarget'),
@@ -538,7 +539,12 @@
     const logState = {
       rows: [],
       keys: new Set(),
+      total: 0,
+      ready: false,
+      generation: 0,
+      loadingGeneration: null,
     };
+    const logPageSize = 100;
 
     function escapeHtml(value) {
       return String(value || '').replace(/[&<>"']/g, ch => ({
@@ -623,12 +629,14 @@
       return [
         ...(data.playlistScanLogs || []).map(log => ({
           ...log,
+          stream: 'playlistScanLogs',
           subject_id: log.subject_title || playlistSubject(log.playlist_id),
           identifier: log.display_id || log.playlist_id || '',
           source: 'playlist',
         })),
         ...(data.metadataLogs || []).map(log => ({
           ...log,
+          stream: 'metadataLogs',
           subject_id: log.subject_title || (log.display_id ? '' : log.video_id),
           identifier: log.display_id || '',
           source: String(log.level || '').startsWith('queue ')
@@ -638,12 +646,14 @@
         })),
         ...(data.placeholderRecoveryLogs || []).map(log => ({
           ...log,
+          stream: 'placeholderRecoveryLogs',
           subject_id: log.subject_title || log.video_id,
           identifier: log.display_id || '',
           source: 'placeholder',
         })),
         ...(data.liveHistoryLogs || []).map(log => ({
           ...log,
+          stream: 'liveHistoryLogs',
           subject_id: log.subject_title || log.video_id,
           identifier: log.display_id || '',
           source: 'history',
@@ -652,13 +662,7 @@
     }
 
     function renderLogs() {
-      const selectedSource = fields.logSourceFilter.value || 'all';
-      const selectedLevel = fields.logLevelFilter.value || 'all';
-      const rows = logState.rows.filter(log => (
-        (selectedSource === 'all' || log.source === selectedSource)
-        && (selectedLevel === 'all' || logSeverity(log.level) === selectedLevel)
-      ));
-      fields.logs.innerHTML = rows.length ? rows.map(log => `
+      fields.logs.innerHTML = logState.rows.length ? logState.rows.map(log => `
         <tr>
           <td class="time-cell log-time-cell">${fmtTime(log.created_at)}</td>
           <td class="level-cell log-level-cell">${escapeHtml(log.source)} ${escapeHtml(log.level)}</td>
@@ -666,7 +670,9 @@
           <td class="message log-subject-cell">${escapeHtml(log.subject_id || '')}</td>
           <td class="message log-message-cell">${escapeHtml(displayLogMessage(log))}</td>
         </tr>
-      `).join('') : '<tr><td colspan="5" class="message log-empty-cell">No log entries match these filters.</td></tr>';
+      `).join('') : (logState.ready
+        ? '<tr><td colspan="5" class="message log-empty-cell">No log entries match these filters.</td></tr>'
+        : '<tr><td colspan="5" class="message log-empty-cell">Loading log entries...</td></tr>');
     }
 
     function logSeverity(level) {
@@ -686,21 +692,97 @@
         : message;
     }
 
-    function applyLogs(data, reset = false) {
-      if (reset) {
-        logState.rows = [];
-        logState.keys.clear();
-      }
-      for (const log of normalizedLogs(data)) {
-        const key = `${log.source}:${log.id}`;
+    function selectedLogSource() {
+      return fields.logSourceFilter.value || 'all';
+    }
+
+    function selectedLogLevel() {
+      return fields.logLevelFilter.value || 'all';
+    }
+
+    function logMatchesSelection(log) {
+      return (selectedLogSource() === 'all' || log.source === selectedLogSource())
+        && (selectedLogLevel() === 'all' || logSeverity(log.level) === selectedLogLevel());
+    }
+
+    function logKey(log) {
+      return `${log.stream || log.source}:${log.id}`;
+    }
+
+    function compareLogs(left, right) {
+      return String(right.created_at || '').localeCompare(String(left.created_at || ''))
+        || String(right.stream || '').localeCompare(String(left.stream || ''))
+        || ((right.id || 0) - (left.id || 0));
+    }
+
+    function addLogRows(rows) {
+      let added = 0;
+      for (const log of rows) {
+        const key = logKey(log);
         if (logState.keys.has(key)) continue;
         logState.rows.push(log);
         logState.keys.add(key);
+        added += 1;
       }
-      logState.rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || ((b.id || 0) - (a.id || 0)));
-      logState.rows = logState.rows.slice(0, 120);
-      logState.keys = new Set(logState.rows.map(log => `${log.source}:${log.id}`));
+      logState.rows.sort(compareLogs);
+      return added;
+    }
+
+    function applyLogs(data) {
+      const oldHeight = fields.logPanel.scrollHeight;
+      const preserveScroll = fields.logPanel.scrollTop > 0;
+      const added = addLogRows(normalizedLogs(data).filter(logMatchesSelection));
+      logState.total += added;
       renderLogs();
+      if (preserveScroll && added) {
+        requestAnimationFrame(() => {
+          fields.logPanel.scrollTop += fields.logPanel.scrollHeight - oldHeight;
+        });
+      }
+    }
+
+    function resetLogState() {
+      logState.generation += 1;
+      logState.rows = [];
+      logState.keys.clear();
+      logState.total = 0;
+      logState.ready = false;
+      logState.loadingGeneration = null;
+      fields.logPanel.scrollTop = 0;
+      renderLogs();
+    }
+
+    async function loadLogPage(reset = false) {
+      if (reset) resetLogState();
+      const generation = logState.generation;
+      if (logState.loadingGeneration === generation) return;
+      if (logState.ready && logState.rows.length >= logState.total) return;
+      logState.loadingGeneration = generation;
+      const params = new URLSearchParams({
+        limit: String(logPageSize),
+        offset: String(logState.rows.length),
+        source: selectedLogSource(),
+        level: selectedLogLevel(),
+      });
+      try {
+        const response = await fetch(`/api/admin/logs?${params}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Unable to load logs');
+        if (generation !== logState.generation) return;
+        addLogRows(payload.rows || []);
+        logState.total = Math.max(Number(payload.total || 0), logState.rows.length);
+        logState.ready = true;
+        renderLogs();
+      } finally {
+        if (logState.loadingGeneration === generation) logState.loadingGeneration = null;
+      }
+    }
+
+    function loadMoreLogsIfNeeded() {
+      const remaining = fields.logPanel.scrollHeight
+        - fields.logPanel.scrollTop
+        - fields.logPanel.clientHeight;
+      if (remaining < 180) loadLogPage().catch(error => { fields.logs.title = error.message; });
     }
 
     function workerDetails(row) {
@@ -1504,8 +1586,12 @@
         flushDispatchSettingsSave();
       });
     }
-    fields.logSourceFilter.addEventListener('change', renderLogs);
-    fields.logLevelFilter.addEventListener('change', renderLogs);
+    fields.logSourceFilter.addEventListener('change', () => {
+      loadLogPage(true).catch(error => { fields.logs.title = error.message; });
+    });
+    fields.logLevelFilter.addEventListener('change', () => {
+      loadLogPage(true).catch(error => { fields.logs.title = error.message; });
+    });
     fields.advancedToggle.addEventListener('change', () => {
       advancedDirty = true;
       advancedRevision += 1;
@@ -1556,8 +1642,8 @@
 
     function connectLogEvents() {
       const stream = new EventSource('/api/admin/logs/events');
-      stream.addEventListener('log_reset', event => {
-        applyLogs(JSON.parse(event.data), true);
+      stream.addEventListener('log_reset', () => {
+        loadLogPage(true).catch(error => { fields.logs.title = error.message; });
       });
       stream.addEventListener('log_delta', event => {
         applyLogs(JSON.parse(event.data));
@@ -1573,6 +1659,7 @@
     connectQueueEvents();
     connectLogEvents();
     fields.workerQueuePanel.addEventListener('scroll', scheduleQueueRender, { passive: true });
+    fields.logPanel.addEventListener('scroll', loadMoreLogsIfNeeded, { passive: true });
     new ResizeObserver(scheduleQueueRender).observe(fields.workerQueuePanel);
     loadStatus({ force: true })
       .catch(error => { fields.playlistRunStatus.textContent = error.message; });
