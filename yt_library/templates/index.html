@@ -432,6 +432,19 @@
     const watchedLineHtml = VideoCard.watchedLineHtml;
     const watchSparklineHtml = (video, detail = false) => VideoCard.watchSparklineHtml(video, { detail });
     const pageConfig = window.YT_LIBRARY_CONFIG || {};
+    const filterPreferenceKeys = {
+      unavailableVideos: 'videos.unavailable',
+      lowPartialCompletion: 'completion.partial_below_minimum',
+      removedPlaylists: 'playlists.removed',
+      terminatedChannels: 'channels.terminated',
+    };
+    const filterPreferences = Object.fromEntries(
+      Object.entries(pageConfig.filterPreferences || {}).filter(([, enabled]) => enabled === true)
+    );
+
+    function filterPreferenceEnabled(key) {
+      return filterPreferences[key] === true;
+    }
 
     let data = null;
     let memberships = new Map();
@@ -442,30 +455,46 @@
     let partialCompletionMinimumPercent = boundedPartialMinimumPercent(
       pageConfig.partialCompletionMinPercent
     );
+    function defaultPartialBelowMinimumEnabled() {
+      return partialCompletionMinimumPercent <= 1
+        || filterPreferenceEnabled(filterPreferenceKeys.lowPartialCompletion);
+    }
     let playlistCompletionVisibility = {
       complete: true,
       partial: true,
-      partial_below_minimum: partialCompletionMinimumPercent <= 1,
+      partial_below_minimum: defaultPartialBelowMinimumEnabled(),
       unknown: true,
       never_watched: true,
     };
     let completionMinimumInputTimer = null;
     const defaultSearchMetaVisibility = {
-      videos: { public: true, unlisted: true, members_only: true, unavailable: false, unknown: true },
+      videos: {
+        public: true,
+        unlisted: true,
+        members_only: true,
+        unavailable: filterPreferenceEnabled(filterPreferenceKeys.unavailableVideos),
+        unknown: true,
+      },
       reactions: { none: true, liked: true, disliked: true },
       completion: {
         complete: true,
         partial: true,
-        partial_below_minimum: partialCompletionMinimumPercent <= 1,
+        partial_below_minimum: defaultPartialBelowMinimumEnabled(),
         unknown: true,
         never_watched: true,
       },
       membership: { member: true, non_member: true },
       channelSubscription: { subscribed: true, non_subscribed: true },
-      channelStatus: { active: true, terminated: false },
+      channelStatus: {
+        active: true,
+        terminated: filterPreferenceEnabled(filterPreferenceKeys.terminatedChannels),
+      },
       playlistVisibility: { private: true, public: true, unlisted: true, unknown: true },
       playlistOwnership: { mine: true, others: true, ownership_unknown: true },
-      playlistStatus: { active: true, removed: false },
+      playlistStatus: {
+        active: true,
+        removed: filterPreferenceEnabled(filterPreferenceKeys.removedPlaylists),
+      },
     };
     let searchMetaVisibility = Object.fromEntries(
       Object.entries(defaultSearchMetaVisibility).map(([groupName, visibility]) => [
@@ -485,9 +514,22 @@
       playlistStatus: 'ps',
     };
     const searchOptInMetaFilters = [
-      { groupName: 'videos', key: 'unavailable', paramName: 'unavailable' },
-      { groupName: 'playlistStatus', key: 'removed', paramName: 'removed' },
-      { groupName: 'channelStatus', key: 'terminated', paramName: 'terminated' },
+      {
+        groupName: 'videos', key: 'unavailable', paramName: 'unavailable',
+        preferenceKey: filterPreferenceKeys.unavailableVideos,
+      },
+      {
+        groupName: 'completion', key: 'partial_below_minimum', paramName: 'partial_below',
+        preferenceKey: filterPreferenceKeys.lowPartialCompletion,
+      },
+      {
+        groupName: 'playlistStatus', key: 'removed', paramName: 'removed',
+        preferenceKey: filterPreferenceKeys.removedPlaylists,
+      },
+      {
+        groupName: 'channelStatus', key: 'terminated', paramName: 'terminated',
+        preferenceKey: filterPreferenceKeys.terminatedChannels,
+      },
     ];
     const searchSortOptions = new Set([
       'relevance', 'title', 'newest', 'oldest', 'most_watched', 'type',
@@ -522,6 +564,8 @@
     let pageSizeSaveVersion = 0;
     let partialCompletionMinimumSaveChain = Promise.resolve();
     let partialCompletionMinimumSaveVersion = 0;
+    let filterPreferenceSaveChain = Promise.resolve();
+    const filterPreferenceSaveVersions = new Map();
     const searchPresetDefinitions = {
       videos: { kind: 'videos', sort: 'newest' },
       'playlist-videos': { kind: 'videos', sort: 'newest' },
@@ -744,7 +788,7 @@
       const nextMinimum = boundedPartialMinimumPercent(value);
       partialCompletionMinimumPercent = nextMinimum;
       if (previousMinimum <= 1 || nextMinimum <= 1) {
-        const belowMinimumEnabled = nextMinimum <= 1;
+        const belowMinimumEnabled = defaultPartialBelowMinimumEnabled();
         defaultSearchMetaVisibility.completion.partial_below_minimum = belowMinimumEnabled;
         searchMetaVisibility.completion.partial_below_minimum = belowMinimumEnabled;
         playlistCompletionVisibility.partial_below_minimum = belowMinimumEnabled;
@@ -763,6 +807,62 @@
       return searchOptInMetaFilters
         .filter(filter => filter.groupName === groupName)
         .map(filter => filter.key);
+    }
+
+    function searchOptInFilter(groupName, key) {
+      return searchOptInMetaFilters.find(
+        filter => filter.groupName === groupName && filter.key === key
+      ) || null;
+    }
+
+    function setLocalFilterPreference(preferenceKey, enabled) {
+      if (enabled) {
+        filterPreferences[preferenceKey] = true;
+      } else {
+        delete filterPreferences[preferenceKey];
+      }
+      const filter = searchOptInMetaFilters.find(
+        item => item.preferenceKey === preferenceKey
+      );
+      if (!filter) return;
+      const effectiveEnabled = (
+        preferenceKey === filterPreferenceKeys.lowPartialCompletion
+        && partialCompletionMinimumPercent <= 1
+      ) || enabled;
+      defaultSearchMetaVisibility[filter.groupName][filter.key] = effectiveEnabled;
+      searchMetaVisibility[filter.groupName][filter.key] = effectiveEnabled;
+      if (preferenceKey === filterPreferenceKeys.lowPartialCompletion) {
+        playlistCompletionVisibility.partial_below_minimum = effectiveEnabled;
+      }
+    }
+
+    function saveFilterPreference(preferenceKey, enabled) {
+      const previousEnabled = filterPreferenceEnabled(preferenceKey);
+      if (previousEnabled === enabled) return;
+      setLocalFilterPreference(preferenceKey, enabled);
+      const version = (filterPreferenceSaveVersions.get(preferenceKey) || 0) + 1;
+      filterPreferenceSaveVersions.set(preferenceKey, version);
+      void persistFilterPreference(preferenceKey, enabled).catch(error => {
+        if (filterPreferenceSaveVersions.get(preferenceKey) !== version) return;
+        setLocalFilterPreference(preferenceKey, previousEnabled);
+        if (selected === '__search__') {
+          syncSearchHashAndRender(true);
+        } else {
+          void render();
+        }
+        window.alert(error instanceof Error ? error.message : String(error));
+      });
+    }
+
+    function saveSearchOptInPreferences(groupNames) {
+      const groups = new Set(groupNames);
+      for (const filter of searchOptInMetaFilters) {
+        if (!groups.has(filter.groupName)) continue;
+        saveFilterPreference(
+          filter.preferenceKey,
+          Boolean(searchMetaVisibility[filter.groupName][filter.key]),
+        );
+      }
     }
 
     function resetSearchMetaVisibility() {
@@ -976,7 +1076,9 @@
           && legacyValue !== '__none__'
           && legacyValue.split(',').includes(key)
         );
-        searchMetaVisibility[groupName][key] = params.get(paramName) === '1' || legacySelected;
+        if (params.get(paramName) === '1' || legacySelected) {
+          searchMetaVisibility[groupName][key] = true;
+        }
       }
       const requestedSort = params.get('sort') || '';
       searchSortExplicit = searchSortOptions.has(requestedSort);
@@ -1156,7 +1258,7 @@
       playlistCompletionVisibility = {
         complete: true,
         partial: true,
-        partial_below_minimum: partialCompletionMinimumPercent <= 1,
+        partial_below_minimum: defaultPartialBelowMinimumEnabled(),
         unknown: true,
         never_watched: true,
       };
@@ -3525,6 +3627,7 @@
       }
       const searchKindFilter = target.dataset.searchKindFilter;
       if (searchKindFilter && setSearchKindFilter(searchKindFilter, target.checked)) {
+        saveSearchOptInPreferences(searchKindFacetKeys(searchKindFilter));
         currentPage = 1;
         reconcileSearchPreset();
         showSearchMetaProgress(searchKindFilter);
@@ -3539,6 +3642,7 @@
         currentPage = 1;
         if (metaAllFilter.startsWith('search-')) {
           const facetKey = metaAllFilter.slice('search-'.length);
+          saveSearchOptInPreferences([facetKey]);
           syncMetaFilterGroup(metaAllFilter);
           if (target.checked) restoreEmptySearchKindFacets(facetKey);
           syncSearchKindFilter(searchKindForFacet(facetKey));
@@ -3546,6 +3650,12 @@
           showSearchMetaProgress(facetKey);
           syncSearchHashAndRender(!activatedFromHistory);
         } else {
+          if (metaAllFilter === 'playlist-completion') {
+            saveFilterPreference(
+              filterPreferenceKeys.lowPartialCompletion,
+              playlistCompletionVisibility.partial_below_minimum,
+            );
+          }
           render();
         }
         return;
@@ -3556,6 +3666,10 @@
         const visibility = searchMetaVisibility[groupName];
         if (!visibility || !Object.prototype.hasOwnProperty.call(visibility, filterName)) return;
         visibility[filterName] = target.checked;
+        const optInFilter = searchOptInFilter(groupName, filterName);
+        if (optInFilter) {
+          saveFilterPreference(optInFilter.preferenceKey, target.checked);
+        }
         currentPage = 1;
         syncMetaFilterGroup(`search-${groupName}`);
         if (target.checked) restoreEmptySearchKindFacets(groupName);
@@ -3568,6 +3682,9 @@
       const playlistCompletionFilter = target.dataset.playlistCompletionFilter;
       if (playlistCompletionFilter) {
         playlistCompletionVisibility[playlistCompletionFilter] = target.checked;
+        if (playlistCompletionFilter === 'partial_below_minimum') {
+          saveFilterPreference(filterPreferenceKeys.lowPartialCompletion, target.checked);
+        }
         currentPage = 1;
         render();
         return;
@@ -3689,6 +3806,26 @@
       };
       const request = partialCompletionMinimumSaveChain.catch(() => {}).then(save);
       partialCompletionMinimumSaveChain = request;
+      return request;
+    }
+
+    function persistFilterPreference(preferenceKey, enabled) {
+      const save = async () => {
+        const params = new URLSearchParams({
+          key: preferenceKey,
+          enabled: enabled ? '1' : '0',
+        });
+        const response = await fetch(
+          `/api/settings/filter-preference?${params.toString()}`,
+          { method: 'POST' },
+        );
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) {
+          throw new Error(result.error || `Filter preference save failed (${response.status})`);
+        }
+      };
+      const request = filterPreferenceSaveChain.catch(() => {}).then(save);
+      filterPreferenceSaveChain = request;
       return request;
     }
 

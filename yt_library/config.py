@@ -33,6 +33,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "sort_preferences": {},
     "page_size": 100,
     "partial_completion_min_percent": 1,
+    "filter_preferences": {},
     "update_daily": False,
     "update_time": "03:00",
     "admin_advanced": False,
@@ -77,6 +78,14 @@ SORT_PREFERENCE_VALUES = {
     **{context: SEARCH_SORTS for context in SEARCH_SORT_CONTEXTS},
     "playlist": PLAYLIST_VIDEO_SORTS,
 }
+FILTER_PREFERENCE_KEYS = frozenset(
+    {
+        "videos.unavailable",
+        "completion.partial_below_minimum",
+        "playlists.removed",
+        "channels.terminated",
+    }
+)
 DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -135,6 +144,17 @@ def configured_partial_completion_min_percent(config: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         return int(DEFAULT_CONFIG["partial_completion_min_percent"])
     return max(1, min(99, value))
+
+
+def configured_filter_preferences(config: dict[str, Any]) -> dict[str, bool]:
+    raw_preferences = config.get("filter_preferences")
+    if not isinstance(raw_preferences, dict):
+        return {}
+    return {
+        str(raw_key): True
+        for raw_key, raw_value in raw_preferences.items()
+        if str(raw_key) in FILTER_PREFERENCE_KEYS and raw_value is True
+    }
 
 
 def configured_sort_preferences(config: dict[str, Any]) -> dict[str, str]:
@@ -422,6 +442,7 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
     config["partial_completion_min_percent"] = (
         configured_partial_completion_min_percent(config)
     )
+    config["filter_preferences"] = configured_filter_preferences(config)
     config["update_daily"] = configured_update_daily(config)
     config["update_time"] = configured_update_time(config)
     config["admin_advanced"] = configured_admin_advanced(config)

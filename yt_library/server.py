@@ -20,12 +20,14 @@ from typing import Any, Callable
 
 from .config import (
     CARD_LAYOUTS,
+    FILTER_PREFERENCE_KEYS,
     PAGE_SIZES,
     SORT_PREFERENCE_VALUES,
     configured_archivarix_max_in_flight,
     configured_admin_advanced,
     configured_dispatch_mode,
     configured_display_timezone,
+    configured_filter_preferences,
     configured_history_card_layout,
     configured_job_dispatch_delay,
     configured_page_size,
@@ -841,6 +843,32 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 }
             )
             return
+        if parsed.path == "/api/settings/filter-preference":
+            preference_key = (params.get("key") or [""])[0].strip()
+            enabled_value = (params.get("enabled") or [""])[0].strip().lower()
+            if preference_key not in FILTER_PREFERENCE_KEYS:
+                self.send_json({"error": "Invalid filter preference"}, status=400)
+                return
+            if enabled_value not in {"0", "1", "false", "true"}:
+                self.send_json({"error": "Invalid filter preference value"}, status=400)
+                return
+            enabled = enabled_value in {"1", "true"}
+            preferences = configured_filter_preferences(self.config_data)
+            if enabled:
+                preferences[preference_key] = True
+            else:
+                preferences.pop(preference_key, None)
+            self.config_data["filter_preferences"] = preferences
+            save_config(self.config_data)
+            self.send_json(
+                {
+                    "ok": True,
+                    "key": preference_key,
+                    "enabled": enabled,
+                    "filterPreferences": preferences,
+                }
+            )
+            return
         if parsed.path == "/api/admin/update-schedule":
             enabled = (params.get("enabled") or ["0"])[0].strip().lower() in {
                 "1",
@@ -1519,6 +1547,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "partialCompletionMinPercent": (
                 configured_partial_completion_min_percent(self.config_data)
             ),
+            "filterPreferences": configured_filter_preferences(self.config_data),
         }
 
     def dispatch_settings(self) -> dict[str, Any]:

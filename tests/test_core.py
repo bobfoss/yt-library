@@ -30,6 +30,7 @@ from yt_library.config import (
     configured_admin_advanced,
     configured_dispatch_mode,
     configured_display_timezone,
+    configured_filter_preferences,
     configured_history_card_layout,
     configured_job_dispatch_delay,
     configured_page_size,
@@ -4374,6 +4375,20 @@ class ConfigTests(unittest.TestCase):
             ),
             99,
         )
+        self.assertEqual(configured_filter_preferences({}), {})
+        self.assertEqual(
+            configured_filter_preferences(
+                {
+                    "filter_preferences": {
+                        "videos.unavailable": True,
+                        "completion.partial_below_minimum": False,
+                        "channels.terminated": 1,
+                        "unknown.filter": True,
+                    }
+                }
+            ),
+            {"videos.unavailable": True},
+        )
         self.assertEqual(configured_sort_preferences({}), {})
         self.assertEqual(
             configured_sort_preferences(
@@ -4570,6 +4585,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["sort_preferences"], {})
             self.assertEqual(payload["page_size"], 100)
             self.assertEqual(payload["partial_completion_min_percent"], 1)
+            self.assertEqual(payload["filter_preferences"], {})
             self.assertFalse(payload["update_daily"])
             self.assertEqual(payload["update_time"], "03:00")
             self.assertFalse(payload["admin_advanced"])
@@ -4719,6 +4735,55 @@ class AdminServerTests(unittest.TestCase):
         handler.do_POST()
 
         self.assertEqual(config["partial_completion_min_percent"], 1)
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
+    def test_filter_preference_saves_and_removes_sparse_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.config_data = config
+            handler.send_json = Mock()
+
+            handler.path = (
+                "/api/settings/filter-preference?"
+                "key=completion.partial_below_minimum&enabled=1"
+            )
+            handler.do_POST()
+
+            expected = {"completion.partial_below_minimum": True}
+            self.assertEqual(config["filter_preferences"], expected)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["filter_preferences"], expected)
+            handler.send_json.assert_called_with(
+                {
+                    "ok": True,
+                    "key": "completion.partial_below_minimum",
+                    "enabled": True,
+                    "filterPreferences": expected,
+                }
+            )
+
+            handler.path = (
+                "/api/settings/filter-preference?"
+                "key=completion.partial_below_minimum&enabled=0"
+            )
+            handler.do_POST()
+
+            self.assertEqual(config["filter_preferences"], {})
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["filter_preferences"], {})
+
+    def test_filter_preference_rejects_unknown_key(self) -> None:
+        config = load_config(Path("missing-test-config.json"))
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = "/api/settings/filter-preference?key=videos.public&enabled=1"
+        handler.config_data = config
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        self.assertEqual(config["filter_preferences"], {})
         self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
 
     def test_layout_preference_saves_without_restarting(self) -> None:
@@ -5201,10 +5266,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn('id="backfillChannelAccount"', server.ADMIN_HTML)
         self.assertIn("/api/admin/feature-backfill/start", server.ADMIN_HTML)
         self.assertIn("reactions: { none: true, liked: true, disliked: true }", server.INDEX_HTML)
-        self.assertIn(
-            "partial_below_minimum: partialCompletionMinimumPercent <= 1",
-            server.INDEX_HTML,
-        )
+        self.assertIn("partial_below_minimum: defaultPartialBelowMinimumEnabled()", server.INDEX_HTML)
         self.assertIn(
             "membership: { member: true, non_member: true }",
             server.INDEX_HTML,
@@ -5213,10 +5275,7 @@ class AdminServerTests(unittest.TestCase):
             "channelSubscription: { subscribed: true, non_subscribed: true }",
             server.INDEX_HTML,
         )
-        self.assertIn(
-            "channelStatus: { active: true, terminated: false }",
-            server.INDEX_HTML,
-        )
+        self.assertIn("terminated: filterPreferenceEnabled(filterPreferenceKeys.terminatedChannels)", server.INDEX_HTML)
         self.assertIn(
             "playlistVisibility: { private: true, public: true, unlisted: true, unknown: true }",
             server.INDEX_HTML,
@@ -5225,21 +5284,22 @@ class AdminServerTests(unittest.TestCase):
             "playlistOwnership: { mine: true, others: true, ownership_unknown: true }",
             server.INDEX_HTML,
         )
-        self.assertIn(
-            "playlistStatus: { active: true, removed: false }",
-            server.INDEX_HTML,
-        )
+        self.assertIn("removed: filterPreferenceEnabled(filterPreferenceKeys.removedPlaylists)", server.INDEX_HTML)
         self.assertIn("const searchOptInMetaFilters = [", server.INDEX_HTML)
         self.assertIn(
-            "{ groupName: 'videos', key: 'unavailable', paramName: 'unavailable' }",
+            "groupName: 'videos', key: 'unavailable', paramName: 'unavailable'",
             server.INDEX_HTML,
         )
         self.assertIn(
-            "{ groupName: 'playlistStatus', key: 'removed', paramName: 'removed' }",
+            "groupName: 'completion', key: 'partial_below_minimum', paramName: 'partial_below'",
             server.INDEX_HTML,
         )
         self.assertIn(
-            "{ groupName: 'channelStatus', key: 'terminated', paramName: 'terminated' }",
+            "groupName: 'playlistStatus', key: 'removed', paramName: 'removed'",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "groupName: 'channelStatus', key: 'terminated', paramName: 'terminated'",
             server.INDEX_HTML,
         )
         self.assertIn(
@@ -5266,6 +5326,10 @@ class AdminServerTests(unittest.TestCase):
         self.assertNotIn("params.set('vmin'", server.INDEX_HTML)
         self.assertIn("pageConfig.partialCompletionMinPercent", server.INDEX_HTML)
         self.assertIn("/api/settings/partial-completion-minimum", server.INDEX_HTML)
+        self.assertIn("pageConfig.filterPreferences", server.INDEX_HTML)
+        self.assertIn("/api/settings/filter-preference", server.INDEX_HTML)
+        self.assertIn("saveSearchOptInPreferences(searchKindFacetKeys(searchKindFilter));", server.INDEX_HTML)
+        self.assertIn("saveSearchOptInPreferences([facetKey]);", server.INDEX_HTML)
         self.assertIn('aria-label="Minimum partial completion percentage"', server.INDEX_HTML)
         self.assertIn('class="completion-partial-toggle"', server.INDEX_HTML)
         self.assertIn("searchForFilters.addEventListener('input', scheduleCompletionMinimumInput)", server.INDEX_HTML)
@@ -5504,10 +5568,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("{ key: 'public', label: 'public', visibilityIcon: true }", server.INDEX_HTML)
         self.assertIn("{ key: 'unlisted', label: 'unlisted', visibilityIcon: true }", server.INDEX_HTML)
         self.assertIn("{ key: 'unknown', label: 'unknown' }", server.INDEX_HTML)
-        self.assertIn(
-            "videos: { public: true, unlisted: true, members_only: true, unavailable: false, unknown: true }",
-            server.INDEX_HTML,
-        )
+        self.assertIn("unavailable: filterPreferenceEnabled(filterPreferenceKeys.unavailableVideos)", server.INDEX_HTML)
         self.assertIn("value === 'videos' ? 'public' : value", server.INDEX_HTML)
         self.assertNotIn("include_videos=", Path(server.__file__).read_text(encoding="utf-8"))
         self.assertIn("let videoMetaCountsCache = new Map();", server.INDEX_HTML)
