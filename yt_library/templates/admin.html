@@ -214,33 +214,30 @@
             <span>Dark</span>
           </div>
         </div>
-      </div>
-    </header>
-
-    <section class="panel advanced-panel advanced-only">
-      <div class="advanced-tabs" role="tablist" aria-label="Advanced settings">
-        <button class="advanced-tab active" type="button" role="tab" aria-selected="true" data-advanced-tab="controls">Controls</button>
-        <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="youtube">YouTube cookies</button>
-        <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="google">Google cookies</button>
-        <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="archivarix">Archivarix cookies</button>
-      </div>
-      <div class="advanced-tab-pane" data-advanced-pane="controls">
-        <div class="controls">
+        <div class="header-settings-row advanced-only">
           <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>
           <button id="detectTimezone" type="button">Use browser time zone</button>
         </div>
-        <div class="controls">
+        <div class="header-settings-row advanced-only">
           <label class="checkbox"><input id="useProxy" type="checkbox">Use proxy</label>
           <input id="proxyUrl" class="proxy-input" type="text" aria-label="SOCKS5 proxy URL" placeholder="socks5h://127.0.0.1:1080">
           <button id="saveSettings" class="primary" type="button">Save</button>
           <span id="settingsStatus" class="metric settings-status" aria-live="polite"></span>
         </div>
-        <div class="controls">
-          <button id="syncAccountDates" class="primary" type="button">Sync account dates</button>
-          <span class="metric">Collect My Activity watch/subscription events and YouTube Data API playlist dates when configured.</span>
-        </div>
       </div>
-      <div class="advanced-tab-pane cookie-editor" data-advanced-pane="youtube" hidden>
+    </header>
+
+    <section class="panel advanced-panel advanced-only">
+      <div class="controls">
+        <button id="syncAccountDates" class="primary" type="button">Sync account dates</button>
+        <span class="metric">Collect My Activity watch/subscription events and YouTube Data API playlist dates when configured.</span>
+      </div>
+      <div class="advanced-tabs" role="tablist" aria-label="Cookie files">
+        <button class="advanced-tab active" type="button" role="tab" aria-selected="true" data-advanced-tab="youtube">YouTube cookies</button>
+        <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="google">Google cookies</button>
+        <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="archivarix">Archivarix cookies</button>
+      </div>
+      <div class="advanced-tab-pane cookie-editor" data-advanced-pane="youtube">
         <div id="youtubeCookieStatus" class="metric cookie-status" aria-live="polite">Checking cookie file</div>
         <textarea id="youtubeCookieText" spellcheck="false" autocomplete="off" placeholder="Paste a Netscape HTTP Cookie File export. Saved cookie values are never displayed here."></textarea>
         <div class="controls"><button class="primary save-cookie" type="button" data-cookie-kind="youtube">Replace YouTube cookie file</button></div>
@@ -1725,7 +1722,7 @@
       settingsDirty = true;
     });
     for (const button of document.querySelectorAll('[data-advanced-tab]')) {
-      button.addEventListener('click', () => selectAdvancedTab(button.dataset.advancedTab || 'controls'));
+      button.addEventListener('click', () => selectAdvancedTab(button.dataset.advancedTab || 'youtube'));
     }
     for (const button of document.querySelectorAll('.save-cookie')) {
       button.addEventListener('click', () => saveCookieFile(button.dataset.cookieKind || '', button));

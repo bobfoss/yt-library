@@ -5033,6 +5033,21 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("fields.logPanel.addEventListener('scroll', loadMoreLogsIfNeeded", server.ADMIN_HTML)
         self.assertNotIn("logState.rows.slice(0, 120)", server.ADMIN_HTML)
         self.assertIn('id="saveSettings"', server.ADMIN_HTML)
+        self.assertIn('aria-label="Cookie files"', server.ADMIN_HTML)
+        self.assertNotIn('data-advanced-tab="controls"', server.ADMIN_HTML)
+        self.assertEqual(server.ADMIN_HTML.count('data-advanced-tab="'), 3)
+        self.assertLess(
+            server.ADMIN_HTML.index('class="header-settings-row advanced-only"'),
+            server.ADMIN_HTML.index('class="advanced-tabs"'),
+        )
+        self.assertLess(
+            server.ADMIN_HTML.index('id="syncAccountDates"'),
+            server.ADMIN_HTML.index('class="advanced-tabs"'),
+        )
+        self.assertIn(
+            'class="advanced-tab-pane cookie-editor" data-advanced-pane="youtube">',
+            server.ADMIN_HTML,
+        )
         self.assertIn("<legend>Dispatch mode</legend>", server.ADMIN_HTML)
         self.assertIn('id="dispatchModeDelay"', server.ADMIN_HTML)
         self.assertIn('id="dispatchModeThrottle"', server.ADMIN_HTML)
