@@ -30,6 +30,7 @@ from .config import (
     configured_job_dispatch_delay,
     configured_page_size,
     configured_partial_completion_min_percent,
+    configured_playlist_card_layout,
     configured_proxy_address,
     configured_request_delay_range,
     configured_search_card_layout,
@@ -786,6 +787,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             layout = (params.get("value") or [""])[0].strip().lower()
             config_key = {
                 "search": "search_card_layout",
+                "playlist": "playlist_card_layout",
                 "history": "history_card_layout",
             }.get(context)
             if config_key is None or layout not in CARD_LAYOUTS:
@@ -1510,6 +1512,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def layout_settings(self) -> dict[str, Any]:
         return {
             "searchCardLayout": configured_search_card_layout(self.config_data),
+            "playlistCardLayout": configured_playlist_card_layout(self.config_data),
             "historyCardLayout": configured_history_card_layout(self.config_data),
             "sortPreferences": configured_sort_preferences(self.config_data),
             "pageSize": configured_page_size(self.config_data),

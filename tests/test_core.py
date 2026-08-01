@@ -34,6 +34,7 @@ from yt_library.config import (
     configured_job_dispatch_delay,
     configured_page_size,
     configured_partial_completion_min_percent,
+    configured_playlist_card_layout,
     configured_proxy_address,
     configured_request_delay_range,
     configured_search_card_layout,
@@ -4355,6 +4356,7 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(effective_display_timezone({"display_timezone": ""}), "UTC")
         self.assertEqual(configured_search_card_layout({}), "grid")
+        self.assertEqual(configured_playlist_card_layout({}), "grid")
         self.assertEqual(configured_history_card_layout({}), "compact")
         self.assertEqual(configured_page_size({}), 100)
         self.assertEqual(configured_page_size({"page_size": 250}), 250)
@@ -4394,6 +4396,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             configured_search_card_layout({"search_card_layout": "detailed"}),
             "detailed",
+        )
+        self.assertEqual(
+            configured_playlist_card_layout({"playlist_card_layout": "compact"}),
+            "compact",
         )
         self.assertEqual(
             configured_history_card_layout({"history_card_layout": "invalid"}),
@@ -4559,6 +4565,7 @@ class ConfigTests(unittest.TestCase):
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["display_timezone"], "")
             self.assertEqual(payload["search_card_layout"], "grid")
+            self.assertEqual(payload["playlist_card_layout"], "grid")
             self.assertEqual(payload["history_card_layout"], "compact")
             self.assertEqual(payload["sort_preferences"], {})
             self.assertEqual(payload["page_size"], 100)
@@ -4731,6 +4738,17 @@ class AdminServerTests(unittest.TestCase):
             self.assertEqual(payload["search_card_layout"], "grid")
             handler.send_json.assert_called_once_with(
                 {"ok": True, "context": "history", "layout": "detailed"}
+            )
+
+            handler.path = "/api/settings/layout?context=playlist&value=compact"
+            handler.send_json.reset_mock()
+            handler.do_POST()
+
+            self.assertEqual(config["playlist_card_layout"], "compact")
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["playlist_card_layout"], "compact")
+            handler.send_json.assert_called_once_with(
+                {"ok": True, "context": "playlist", "layout": "compact"}
             )
 
     def test_layout_preference_rejects_unknown_values(self) -> None:
@@ -5532,6 +5550,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("const kindsValue = selectedSearchResultKinds().join(',') || '__none__';", server.INDEX_HTML)
         self.assertIn("playlist_group_key: searchPlaylistGroupKey,", server.INDEX_HTML)
         self.assertIn("pageConfig.searchCardLayout", server.INDEX_HTML)
+        self.assertIn("pageConfig.playlistCardLayout", server.INDEX_HTML)
         self.assertIn("pageConfig.historyCardLayout", server.INDEX_HTML)
         self.assertIn("pageConfig.sortPreferences", server.INDEX_HTML)
         self.assertIn("pageConfig.pageSize", server.INDEX_HTML)
@@ -5545,6 +5564,8 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("preferredSearchResultsSort('', preset)", server.INDEX_HTML)
         self.assertIn("persistPageSizePreference(nextPageSize)", server.INDEX_HTML)
         self.assertIn("layoutContext: 'history',", server.INDEX_HTML)
+        self.assertIn("cardLayoutHtml(playlistCardLayout, 'playlist')", server.INDEX_HTML)
+        self.assertIn("applyPlaylistCardLayout();", server.INDEX_HTML)
         self.assertIn("function rightPanelListMetaHtml(", server.INDEX_HTML)
         self.assertIn("data-card-layout=", server.INDEX_HTML)
         self.assertIn("data-card-layout-context=", server.INDEX_HTML)

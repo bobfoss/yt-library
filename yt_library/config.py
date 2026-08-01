@@ -28,6 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "port": 8765,
     "display_timezone": "",
     "search_card_layout": "grid",
+    "playlist_card_layout": "grid",
     "history_card_layout": "compact",
     "sort_preferences": {},
     "page_size": 100,
@@ -105,6 +106,10 @@ def configured_card_layout(
 
 def configured_search_card_layout(config: dict[str, Any]) -> str:
     return configured_card_layout(config, "search_card_layout", "grid")
+
+
+def configured_playlist_card_layout(config: dict[str, Any]) -> str:
+    return configured_card_layout(config, "playlist_card_layout", "grid")
 
 
 def configured_history_card_layout(config: dict[str, Any]) -> str:
@@ -410,6 +415,7 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
     config["youtube_max_in_flight"] = configured_youtube_max_in_flight(config)
     config["archivarix_max_in_flight"] = configured_archivarix_max_in_flight(config)
     config["search_card_layout"] = configured_search_card_layout(config)
+    config["playlist_card_layout"] = configured_playlist_card_layout(config)
     config["history_card_layout"] = configured_history_card_layout(config)
     config["sort_preferences"] = configured_sort_preferences(config)
     config["page_size"] = configured_page_size(config)

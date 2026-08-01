@@ -131,7 +131,8 @@
     .video-filter-search, .video-filter-stack, .video-filter-facet { display: contents; }
     .video-removed-filter { display: inline-flex; align-items: center; margin-left: auto; white-space: nowrap; }
     .video-filter-separator { color: var(--muted); margin-left: 8px; }
-    .view-top.video-collection-top .view-sort { grid-column: 2; margin-left: 0; white-space: nowrap; }
+    .view-top.video-collection-top .video-collection-view-controls { grid-column: 2; white-space: nowrap; }
+    .view-top.video-collection-top .view-sort { margin-left: 0; }
     @media (min-width: 761px) {
       .video-filter-groups.has-search {
         display: grid;
@@ -505,14 +506,18 @@
     let searchCardLayout = cardLayouts.has(pageConfig.searchCardLayout)
       ? pageConfig.searchCardLayout
       : 'grid';
+    let playlistCardLayout = cardLayouts.has(pageConfig.playlistCardLayout)
+      ? pageConfig.playlistCardLayout
+      : 'grid';
     let historyCardLayout = cardLayouts.has(pageConfig.historyCardLayout)
       ? pageConfig.historyCardLayout
       : 'compact';
     const cardLayoutSaveChains = {
       search: Promise.resolve(),
+      playlist: Promise.resolve(),
       history: Promise.resolve(),
     };
-    const cardLayoutSaveVersions = { search: 0, history: 0 };
+    const cardLayoutSaveVersions = { search: 0, playlist: 0, history: 0 };
     let sortPreferenceSaveChain = Promise.resolve();
     const sortPreferenceSaveVersions = new Map();
     let pageSizeSaveChain = Promise.resolve();
@@ -2487,6 +2492,10 @@
       grid.className = `grid search-grid layout-${searchCardLayout}`;
     }
 
+    function applyPlaylistCardLayout() {
+      grid.className = `grid search-grid layout-${playlistCardLayout}`;
+    }
+
     function applyHistoryCardLayout() {
       grid.className = `grid search-grid history-list layout-${historyCardLayout}`;
       for (const card of grid.querySelectorAll('.history-card')) {
@@ -3151,12 +3160,15 @@
             payload.completionCounts,
             `<input class="playlist-search" type="search" data-playlist-page-search placeholder="Search this playlist" autocomplete="off" value="${escapeHtml(playlistPageSearch)}">`,
           )}
-          ${videoSortHtml(playlistViewSort, 'playlist')}
+          <span class="result-view-controls video-collection-view-controls">
+            ${cardLayoutHtml(playlistCardLayout, 'playlist')}
+            ${videoSortHtml(playlistViewSort, 'playlist')}
+          </span>
         `;
         syncMetaFilterGroup('playlist-videos');
         syncMetaFilterGroup('playlist-completion');
         renderPager(remotePayloadPageInfo(payload, rows.length));
-        grid.className = 'grid';
+        applyPlaylistCardLayout();
         grid.replaceChildren(...rows.map(video => playlistVideoCardFor(video, { showPosition: true })));
         empty.hidden = rows.length !== 0;
         empty.textContent = playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.';
@@ -3590,6 +3602,9 @@
       if (context === 'history') {
         historyCardLayout = layout;
         applyHistoryCardLayout();
+      } else if (context === 'playlist') {
+        playlistCardLayout = layout;
+        applyPlaylistCardLayout();
       } else {
         searchCardLayout = layout;
         applySearchCardLayout();
@@ -3693,7 +3708,9 @@
       if (!(button instanceof HTMLButtonElement)) return;
       const layout = button.dataset.cardLayout || '';
       const context = button.dataset.cardLayoutContext || 'search';
-      const activeLayout = context === 'history' ? historyCardLayout : searchCardLayout;
+      const activeLayout = context === 'history'
+        ? historyCardLayout
+        : (context === 'playlist' ? playlistCardLayout : searchCardLayout);
       if (!cardLayouts.has(layout) || layout === activeLayout) return;
       const version = ++cardLayoutSaveVersions[context];
       applyCardLayoutPreference(context, layout);
