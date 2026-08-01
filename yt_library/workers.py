@@ -915,10 +915,13 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     if header_expected_count
                     else "yt-dlp playlist metadata"
                 )
-                exact_count_required = playlist_scan_requires_exact_count(
-                    header_metadata,
-                    known_owner_channel_id=row["owner_channel_id"] if "owner_channel_id" in row.keys() else "",
-                    known_visibility=row["visibility"] if "visibility" in row.keys() else "",
+                exact_count_required = (
+                    playlist_id != LIKED_VIDEOS_PLAYLIST_ID
+                    and playlist_scan_requires_exact_count(
+                        header_metadata,
+                        known_owner_channel_id=row["owner_channel_id"] if "owner_channel_id" in row.keys() else "",
+                        known_visibility=row["visibility"] if "visibility" in row.keys() else "",
+                    )
                 )
                 previous_scan_count = int(row["video_count"] or 0)
                 if status == "ok" and not header_count_available and not ytdlp_expected_count:
@@ -998,6 +1001,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 with conn:
                     metadata_queued = 0
                     placeholder_queued = 0
+                    liked_partial_note = ""
                     if status in {"removed", "unavailable"}:
                         video_count, unavailable_count = save_playlist_missing_status(
                             conn,
@@ -1014,11 +1018,22 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     elif status == "error":
                         video_count, unavailable_count = save_playlist_scan_error(conn, playlist_id, error)
                     elif playlist_id == LIKED_VIDEOS_PLAYLIST_ID:
+                        replace_likes = not expected_count or len(videos) >= expected_count
                         video_count, unavailable_count = save_liked_video_reactions(
                             conn,
                             videos,
-                            replace=not expected_count or len(videos) >= expected_count,
+                            replace=replace_likes,
                         )
+                        if not replace_likes:
+                            liked_total = int(
+                                conn.execute(
+                                    "SELECT COUNT(*) FROM videos WHERE reaction = 'L'"
+                                ).fetchone()[0]
+                                or 0
+                            )
+                            liked_partial_note = (
+                                f"; partial result merged, {liked_total} canonical likes retained"
+                            )
                     else:
                         video_count, unavailable_count = save_playlist_scan(
                             conn,
@@ -1085,6 +1100,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 f"{title}: {video_count} videos, {unavailable_count} unavailable"
                                 + reported_note
                                 + count_change_note
+                                + liked_partial_note
                                 + (f"; queued {metadata_queued} metadata items" if metadata_queued else "")
                                 + (f"; queued {placeholder_queued} placeholder recoveries" if placeholder_queued else "")
                             ),

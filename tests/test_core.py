@@ -6977,6 +6977,90 @@ class WorkerQueueTests(unittest.TestCase):
         self.assertEqual(log["level"], "info")
         self.assertIn("count changed 1 -> 2 (+1)", log["message"])
 
+    def test_liked_video_worker_merges_short_scan_without_failing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_video(conn, "oldliked123", title="Existing like", source="metadata")
+                    conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'oldliked123'")
+                    core.enqueue_playlist_scan_item(conn, "LL", manual=False)
+            finally:
+                conn.close()
+
+            ytdlp_videos = [
+                {
+                    "video_id": "newliked123",
+                    "title": "New like",
+                    "is_playable": True,
+                },
+                {
+                    "video_id": "newliked456",
+                    "title": "Another like",
+                    "is_playable": True,
+                },
+            ]
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.request_text", return_value="header page"),
+                patch(
+                    "yt_library.workers.extract_playlist_metadata",
+                    return_value={
+                        "video_count": 3,
+                        "has_video_count": True,
+                        "visibility": "private",
+                    },
+                ),
+                patch(
+                    "yt_library.workers.scan_playlist_ytdlp",
+                    return_value=(ytdlp_videos, {}),
+                ),
+                patch("yt_library.workers.youtube_session_status", return_value=(True, "")),
+                patch(
+                    "yt_library.workers.scan_playlist_videos",
+                    return_value=[ytdlp_videos[0]],
+                ),
+            ):
+                worker._run(
+                    "test-liked-short-scan",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                reactions = {
+                    row["video_id"]: row["reaction"]
+                    for row in conn.execute(
+                        "SELECT video_id, reaction FROM videos ORDER BY video_id"
+                    )
+                }
+                log = conn.execute(
+                    "SELECT level, message FROM playlist_scan_worker_log "
+                    "WHERE run_id = 'test-liked-short-scan'"
+                ).fetchone()
+                run = conn.execute(
+                    "SELECT found, failed FROM playlist_scan_worker_runs "
+                    "WHERE run_id = 'test-liked-short-scan'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(reactions["oldliked123"], "L")
+        self.assertEqual(reactions["newliked123"], "L")
+        self.assertEqual(reactions["newliked456"], "L")
+        self.assertEqual(dict(run), {"found": 1, "failed": 0})
+        self.assertEqual(log["level"], "info")
+        self.assertIn("2 exposed of 3 reported", log["message"])
+        self.assertIn("partial result merged, 3 canonical likes retained", log["message"])
+
     def test_playlist_worker_caches_playlist_thumbnail(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
