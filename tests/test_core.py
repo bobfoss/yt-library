@@ -5672,6 +5672,18 @@ class AdminServerTests(unittest.TestCase):
             detail_card_html.index("video.video_id ?"),
             detail_card_html.index("${archivarixStatusHtml(video)}"),
         )
+        render_start = server.INDEX_HTML.index("async function render()")
+        video_route_start = server.INDEX_HTML.index(
+            "if (selected.startsWith('__video__:'))", render_start
+        )
+        video_route_end = server.INDEX_HTML.index(
+            "if (selected.startsWith('__channel__:'))", video_route_start
+        )
+        video_route_html = server.INDEX_HTML[video_route_start:video_route_end]
+        self.assertLess(
+            video_route_html.index("grid.className = 'grid';"),
+            video_route_html.index("grid.replaceChildren(videoDetailCardFor(video));"),
+        )
         video_card_channel = (
             '${options.channelHtml ? `<div class="details video-card-channel">'
             "${options.channelHtml}</div>` : ''}"
