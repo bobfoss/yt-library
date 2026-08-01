@@ -1226,15 +1226,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             )
             self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
             return
-        if parsed.path == "/api/admin/channels/first-seen":
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    stats = backfill_channel_first_seen(conn)
-            finally:
-                conn.close()
-            self.send_json({"ok": True, **stats})
-            return
         if parsed.path == "/api/admin/queue/add-target":
             target = (params.get("target") or [""])[0]
             conn = connect(self.db_path)

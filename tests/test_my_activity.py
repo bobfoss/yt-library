@@ -189,6 +189,23 @@ class MyActivityTests(unittest.TestCase):
         self.assertEqual(events[0].subscribed_at, "2026-07-30T01:50:34.140162Z")
         self.assertEqual(events[0].title, "Example channel")
 
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    core.save_my_activity_events(conn, [], events, "UTC")
+                channel = conn.execute(
+                    "SELECT * FROM channels WHERE channel_id = 'UCexample123'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(channel["subscribed_at"], "2026-07-30T01:50:34.140162Z")
+        self.assertEqual(channel["subscribed_at_source"], "my_activity")
+        self.assertIsNone(channel["first_seen_at"])
+
     def test_bootstrap_exposes_dynamic_continuation_request(self) -> None:
         page, session = parse_my_activity_bootstrap(
             bootstrap_page(

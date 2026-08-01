@@ -210,6 +210,7 @@ class YouTubeDataApiTests(unittest.TestCase):
         self.assertEqual(current["subscribed"], 1)
         self.assertEqual(current["subscribed_at"], "2020-01-02T03:04:05Z")
         self.assertEqual(current["subscribed_at_source"], "youtube_data_api")
+        self.assertIsNone(current["first_seen_at"])
         self.assertEqual(old["subscribed"], 0)
         self.assertEqual(playlist["created_at"], "2022-03-04T05:06:07Z")
         self.assertEqual(item["added_at"], "2023-04-05T06:07:08Z")
@@ -283,6 +284,45 @@ class YouTubeDataApiTests(unittest.TestCase):
             [row["channel_id"] for row in data["results"]],
             ["UCsubscribedlater", "UCfirstseenlater"],
         )
+
+    def test_my_activity_subscription_date_outweighs_data_api_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCgold", title="Gold standard")
+                    conn.execute(
+                        """
+                        UPDATE channels
+                        SET subscribed=1,
+                            subscribed_at='2020-01-02T03:04:05Z',
+                            subscribed_at_source='my_activity'
+                        WHERE channel_id='UCgold'
+                        """
+                    )
+                    core.save_youtube_data_api_snapshot(
+                        conn,
+                        YouTubeAccountSnapshot(
+                            subscriptions=(
+                                YouTubeSubscription(
+                                    "UCgold",
+                                    "Gold standard",
+                                    "2024-05-06T07:08:09Z",
+                                ),
+                            ),
+                            playlists=(),
+                        ),
+                    )
+                channel = conn.execute(
+                    "SELECT * FROM channels WHERE channel_id='UCgold'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(channel["subscribed_at"], "2020-01-02T03:04:05Z")
+        self.assertEqual(channel["subscribed_at_source"], "my_activity")
 
 
 if __name__ == "__main__":

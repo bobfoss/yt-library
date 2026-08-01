@@ -473,13 +473,6 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                         store_channel_metadata(conn, channel_metadata, channel_status, channel_error, updated_at=now)
                     if metadata_source == "channel":
                         store_channel_metadata(conn, metadata, status, error, updated_at=now)
-                        if bool(row["manual"]):
-                            identify_channel_first_seen(
-                                conn,
-                                str(metadata.get("channel_id") or "").strip()
-                                or queued_channel_id
-                                or video_id,
-                            )
                     else:
                         store_video_metadata(conn, metadata, status, error, updated_at=now)
                         if status == "no_metadata":

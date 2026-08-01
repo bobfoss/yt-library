@@ -1053,117 +1053,13 @@ def upsert_channel(
                 status_reason,
                 fetch_status,
                 fetch_error,
-                first_seen_at or now,
+                first_seen_at,
                 fetched_at,
                 source,
                 now,
             ),
         )
     return channel_id
-
-
-def channel_first_seen_evidence(
-    conn: sqlite3.Connection,
-    channel_id: str = "",
-) -> dict[str, str]:
-    channel_id = (channel_id or "").strip()
-    channel_filter = "AND evidence.channel_id = ?" if channel_id else ""
-    params = (channel_id,) if channel_id else ()
-    rows = conn.execute(
-        f"""
-        WITH evidence AS (
-          SELECT v.channel_id,
-                 MIN(COALESCE(NULLIF(h.watched_at, ''), NULLIF(h.watch_date, ''))) AS first_seen_at
-          FROM videos v
-          JOIN history_events h ON h.video_id = v.video_id
-          WHERE COALESCE(v.channel_id, '') <> ''
-          GROUP BY v.channel_id
-          UNION ALL
-          SELECT v.channel_id,
-                 MIN(NULLIF(pi.added_at, '')) AS first_seen_at
-          FROM videos v
-          JOIN playlist_items pi ON pi.video_id = v.video_id
-          WHERE COALESCE(v.channel_id, '') <> ''
-          GROUP BY v.channel_id
-        )
-        SELECT evidence.channel_id, MIN(evidence.first_seen_at) AS first_seen_at
-        FROM evidence
-        WHERE COALESCE(evidence.first_seen_at, '') <> ''
-          {channel_filter}
-        GROUP BY evidence.channel_id
-        """,
-        params,
-    ).fetchall()
-    return {
-        row["channel_id"]: row["first_seen_at"]
-        for row in rows
-        if row["channel_id"] and row["first_seen_at"]
-    }
-
-
-def identify_channel_first_seen(conn: sqlite3.Connection, channel_id: str) -> str:
-    channel_id = (channel_id or "").strip()
-    if not channel_id:
-        return ""
-    row = conn.execute(
-        "SELECT first_seen_at FROM channels WHERE channel_id = ?",
-        (channel_id,),
-    ).fetchone()
-    if row is None:
-        return ""
-    candidate = channel_first_seen_evidence(conn, channel_id).get(channel_id, "")
-    first_seen_at = earliest_timestamp(row["first_seen_at"], candidate)
-    if first_seen_at and first_seen_at != (row["first_seen_at"] or ""):
-        conn.execute(
-            "UPDATE channels SET first_seen_at = ? WHERE channel_id = ?",
-            (first_seen_at, channel_id),
-        )
-    return first_seen_at
-
-
-def backfill_channel_first_seen(conn: sqlite3.Connection) -> dict[str, int]:
-    current_values = {
-        row["channel_id"]: row["first_seen_at"] or ""
-        for row in conn.execute(
-            """
-            SELECT channel_id, first_seen_at
-            FROM channels
-            """
-        )
-    }
-    missing_ids = {
-        channel_id
-        for channel_id, first_seen_at in current_values.items()
-        if not first_seen_at
-    }
-    evidence = channel_first_seen_evidence(conn)
-    updates = [
-        (first_seen_at, channel_id)
-        for channel_id, first_seen_at in evidence.items()
-        if channel_id in current_values
-        and (
-            not current_values[channel_id]
-            or first_seen_at < current_values[channel_id]
-        )
-    ]
-    conn.executemany(
-        """
-        UPDATE channels
-        SET first_seen_at = ?
-        WHERE channel_id = ?
-        """,
-        updates,
-    )
-    resolved_missing = sum(
-        1
-        for _first_seen_at, channel_id in updates
-        if channel_id in missing_ids
-    )
-    return {
-        "missing": len(missing_ids),
-        "updated": len(updates),
-        "unresolved": len(missing_ids) - resolved_missing,
-    }
 
 
 def useful_video_title(value: str, video_id: str = "") -> bool:
@@ -1243,9 +1139,6 @@ def upsert_video(
     else:
         canonical_title = ""
     canonical_channel = channel_id if authoritative and channel_id else ((existing["channel_id"] if existing else None) or channel_id)
-    channel_association_changed = bool(canonical_channel) and (
-        not existing or (existing["channel_id"] or "") != canonical_channel
-    )
     incoming_playability = None if is_playable is None else int(bool(is_playable))
     canonical_playability = incoming_playability if incoming_playability is not None else (existing["is_playable"] if existing else None)
     canonical_availability = normalize_video_availability(
@@ -1302,8 +1195,6 @@ def upsert_video(
             """,
             (video_id, *values),
         )
-    if channel_association_changed:
-        identify_channel_first_seen(conn, canonical_channel)
     return video_id
 
 
@@ -5434,7 +5325,6 @@ def save_my_activity_events(
             channel_id,
             title=observed_title,
             url=observed_url,
-            first_seen_at=subscribed_at,
             source="my_activity",
             updated_at=now,
         )
@@ -5479,8 +5369,13 @@ def save_my_activity_events(
             "SELECT subscribed_at, subscribed_at_source FROM channels WHERE channel_id = ?",
             (channel_id,),
         ).fetchone()
-        if channel and channel["subscribed_at_source"] != "youtube_data_api":
-            selected_at = max(channel["subscribed_at"] or "", subscribed_at)
+        if channel:
+            selected_at = max(
+                channel["subscribed_at"] or ""
+                if channel["subscribed_at_source"] == "my_activity"
+                else "",
+                subscribed_at,
+            )
             conn.execute(
                 """
                 UPDATE channels
@@ -5531,7 +5426,6 @@ def save_youtube_data_api_snapshot(
             conn,
             channel_id,
             title=str(subscription.title or ""),
-            first_seen_at=subscribed_at or None,
             source="youtube_data_api",
             updated_at=now,
         )
@@ -5539,8 +5433,12 @@ def save_youtube_data_api_snapshot(
             """
             UPDATE channels
             SET subscribed=1,
-                subscribed_at=COALESCE(NULLIF(?, ''), subscribed_at),
+                subscribed_at=CASE
+                  WHEN subscribed_at_source = 'my_activity' THEN subscribed_at
+                  ELSE COALESCE(NULLIF(?, ''), subscribed_at)
+                END,
                 subscribed_at_source=CASE
+                  WHEN subscribed_at_source = 'my_activity' THEN subscribed_at_source
                   WHEN ? <> '' THEN 'youtube_data_api'
                   ELSE subscribed_at_source
                 END,
@@ -7985,8 +7883,6 @@ def enqueue_metadata_item(
             now,
         ),
     )
-    if metadata_source == "channel" and manual:
-        identify_channel_first_seen(conn, channel_id or video_id)
     return subject_key
 
 

@@ -315,8 +315,6 @@
           <label class="checkbox"><input id="channelMetadataForce" type="checkbox">Refresh already fetched</label>
           <button id="backfillChannelAccount" type="button">Backfill account state</button>
           <span id="channelBackfillStatus" class="metric" aria-live="polite"></span>
-          <button id="backfillChannelFirstSeen" type="button">Backfill first seen</button>
-          <span id="channelFirstSeenStatus" class="metric" aria-live="polite"></span>
         </div>
         <div class="grid" id="channelCounts"></div>
       </section>
@@ -498,7 +496,6 @@
       playlistBackfillStatus: document.getElementById('playlistBackfillStatus'),
       backfillChannelAccount: document.getElementById('backfillChannelAccount'),
       channelBackfillStatus: document.getElementById('channelBackfillStatus'),
-      channelFirstSeenStatus: document.getElementById('channelFirstSeenStatus'),
       logs: document.getElementById('logs'),
       logPanel: document.getElementById('logPanel'),
       logSourceFilter: document.getElementById('logSourceFilter'),
@@ -1177,8 +1174,8 @@
         { label: 'Channel thumbs cached', count: channelCounts.thumbnail_cached || 0 },
         { label: 'Channel thumbs missing', count: channelCounts.thumbnail_missing || 0 },
         { label: 'Channels terminated', count: channelCounts.terminated || 0 },
-        { label: 'First seen identified', count: channelCounts.first_seen || 0 },
-        { label: 'First seen missing', count: channelCounts.first_seen_missing || 0 },
+        { label: 'First watch identified', count: channelCounts.first_seen || 0 },
+        { label: 'First watch unavailable', count: channelCounts.first_seen_missing || 0 },
         { label: 'Channel URLs missing', count: channelCounts.url_missing || 0 },
         { label: 'Account-state backfill', count: currentFeatureBackfillCounts.channel_account || 0 },
         { label: 'Notifications missing', count: currentFeatureBackfillCounts.channel_notification_missing || 0 },
@@ -1615,16 +1612,6 @@
         'channel account-state backfill',
         fields.channelBackfillStatus,
       );
-    });
-    document.getElementById('backfillChannelFirstSeen').addEventListener('click', async () => {
-      fields.channelFirstSeenStatus.textContent = 'Working';
-      try {
-        const result = await post('/api/admin/channels/first-seen');
-        fields.channelFirstSeenStatus.textContent =
-          `Updated ${result.updated}; ${result.unresolved} unresolved`;
-      } catch (error) {
-        fields.channelFirstSeenStatus.textContent = error.message;
-      }
     });
     document.getElementById('queueProvidedTarget').addEventListener('click', async () => {
       const target = fields.providedQueueTarget.value.trim();

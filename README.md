@@ -219,8 +219,9 @@ The first command opens Google's OAuth consent flow and saves the refreshable
 token locally. Both account sources are optional during normal Update scans:
 missing credentials produce an informational worker log; expired or rejected
 credentials produce a warning and do not halt the rest of the queue. Channel
-date sorting prefers the Data API subscription date, then My Activity evidence,
-then the existing first-seen fallback.
+date sorting uses the My Activity subscription date as the gold standard, then
+the Data API subscription date, then a first watch observed directly in history.
+Metadata and playlist backfills do not assign channel first-seen dates.
 
 ## Testing
 
