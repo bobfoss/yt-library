@@ -5178,7 +5178,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(':root[data-theme="light"]', server.ADMIN_HTML)
         self.assertIn(':root[data-theme="light"]', server.INDEX_HTML)
         self.assertIn('<script src="/theme.js"></script>', server.INDEX_HTML)
-        self.assertIn('.video-card-channel { margin-top: 0; margin-bottom: 7px; }', server.INDEX_HTML)
+        self.assertIn('.video-card-channel { margin-top: 0; margin-bottom: 7px; font-weight: 650; }', server.INDEX_HTML)
         self.assertNotIn('.video-card-channel .creator-link { color:', server.INDEX_HTML)
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-all-filter='), 1)
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 2)
