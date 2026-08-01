@@ -603,7 +603,13 @@ VIDEO_AVAILABILITY_CATEGORIES = (
     "unavailable",
     "unknown",
 )
-VIDEO_COMPLETION_CATEGORIES = ("complete", "partial", "unknown", "never_watched")
+VIDEO_COMPLETION_CATEGORIES = (
+    "complete",
+    "partial",
+    "partial_below_minimum",
+    "unknown",
+    "never_watched",
+)
 
 
 def _bounded_partial_min_percent(value: Any) -> int:
@@ -667,12 +673,23 @@ def _video_matches_completion_filter(
     selected_filters: set[str],
     partial_min_percent: int,
 ) -> bool:
+    return (
+        _video_completion_filter_category(item, partial_min_percent)
+        in selected_filters
+    )
+
+
+def _video_completion_filter_category(
+    item: dict[str, Any],
+    partial_min_percent: int,
+) -> str:
     category = _video_completion_category(item)
-    if category not in selected_filters:
-        return False
-    if category != "partial":
-        return True
-    return int(item.get("watch_progress_percent") or 0) >= partial_min_percent
+    if (
+        category == "partial"
+        and int(item.get("watch_progress_percent") or 0) < partial_min_percent
+    ):
+        return "partial_below_minimum"
+    return category
 
 
 def video_collection_data(
@@ -734,7 +751,10 @@ def video_collection_data(
     for index, item in enumerate(candidates):
         category = _video_collection_category(item)
         item["collection_category"] = category
-        completion_category = _video_completion_category(item)
+        completion_category = _video_completion_filter_category(
+            item,
+            partial_min_percent,
+        )
         item["completion_category"] = completion_category
         count_key = item.get("video_id") or (
             item.get("playlist_id"),
@@ -742,11 +762,7 @@ def video_collection_data(
             index,
         )
         count_keys[category].add(count_key)
-        if (
-            completion_category != "partial"
-            or int(item.get("watch_progress_percent") or 0) >= partial_min_percent
-        ):
-            completion_count_keys[completion_category].add(count_key)
+        completion_count_keys[completion_category].add(count_key)
     counts = {category: len(keys) for category, keys in count_keys.items()}
     completion_counts = {
         category: len(keys)
@@ -1122,8 +1138,14 @@ def _omni_reaction_counts(results: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _omni_video_completion_category(result: dict[str, Any]) -> str:
-    return _video_completion_category(result["item"])
+def _omni_video_completion_category(
+    result: dict[str, Any],
+    partial_min_percent: int = 1,
+) -> str:
+    return _video_completion_filter_category(
+        result["item"],
+        partial_min_percent,
+    )
 
 
 def _omni_completion_counts(
@@ -1139,13 +1161,7 @@ def _omni_completion_counts(
         if result["kind"] != "video":
             continue
         counts["total"] += 1
-        category = _omni_video_completion_category(result)
-        if (
-            category != "partial"
-            or int(result["item"].get("watch_progress_percent") or 0)
-            >= partial_min_percent
-        ):
-            counts[category] += 1
+        counts[_omni_video_completion_category(result, partial_min_percent)] += 1
     return counts
 
 

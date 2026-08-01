@@ -966,6 +966,7 @@ class NormalizedReadModelTests(unittest.TestCase):
                 "total": 5,
                 "complete": 1,
                 "partial": 1,
+                "partial_below_minimum": 0,
                 "unknown": 2,
                 "never_watched": 1,
             },
@@ -1054,6 +1055,20 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.assertEqual(filtered["completionCounts"]["total"], 2)
         self.assertEqual(filtered["completionCounts"]["partial"], 1)
+        self.assertEqual(filtered["completionCounts"]["partial_below_minimum"], 1)
+
+        below_minimum = omni_search_data(
+            self.conn,
+            "partial",
+            result_kinds={"video"},
+            video_completion_filters={"partial_below_minimum"},
+            video_partial_min_percent=50,
+            limit=100,
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in below_minimum["results"]],
+            ["partial-low"],
+        )
 
     def test_library_bootstrap_contains_counts_without_card_collections(self) -> None:
         self.add_video("liked1", "Liked", "UC_subscribed")
@@ -1314,6 +1329,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         expected_counts = {
             "complete": 2,
             "partial": 1,
+            "partial_below_minimum": 0,
             "unknown": 1,
             "never_watched": 1,
         }
@@ -1369,6 +1385,18 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["partial-high"],
         )
         self.assertEqual(filtered["completionCounts"]["partial"], 1)
+        self.assertEqual(filtered["completionCounts"]["partial_below_minimum"], 1)
+
+        below_minimum = video_collection_data(
+            self.conn,
+            playlist_id="PLminimum",
+            completion_filters={"partial_below_minimum"},
+            partial_min_percent=50,
+        )
+        self.assertEqual(
+            [row["video_id"] for row in below_minimum["results"]],
+            ["partial-low"],
+        )
 
     def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:
         self.add_video("old123", "Old Router Video")

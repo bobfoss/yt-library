@@ -5060,7 +5060,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("/api/admin/feature-backfill/start", server.ADMIN_HTML)
         self.assertIn("reactions: { none: true, liked: true, disliked: true }", server.INDEX_HTML)
         self.assertIn(
-            "completion: { complete: true, partial: true, unknown: true, never_watched: true }",
+            "partial_below_minimum: partialCompletionMinimumPercent <= 1",
             server.INDEX_HTML,
         )
         self.assertIn(
@@ -5158,6 +5158,9 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn("function completionMetaFilterDefinitions(", server.INDEX_HTML)
+        self.assertIn("partial_below_minimum", server.INDEX_HTML)
+        self.assertIn("label: `partial \\u2264 ${boundedMinimum - 1}%`", server.INDEX_HTML)
+        self.assertIn("!allMetaFilterChildrenChecked(metaAllFilter)", server.INDEX_HTML)
         self.assertIn(
             "const playlistMembershipMetaFilterDefinitions = [",
             server.INDEX_HTML,

@@ -432,6 +432,7 @@
     const watchProgressPercent = VideoCard.watchProgressPercent;
     const watchedLineHtml = VideoCard.watchedLineHtml;
     const watchSparklineHtml = (video, detail = false) => VideoCard.watchSparklineHtml(video, { detail });
+    const pageConfig = window.YT_LIBRARY_CONFIG || {};
 
     let data = null;
     let memberships = new Map();
@@ -439,13 +440,27 @@
 
     let selected = '';
     let playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
-    let playlistCompletionVisibility = { complete: true, partial: true, unknown: true, never_watched: true };
-    let partialCompletionMinimumPercent = 1;
+    let partialCompletionMinimumPercent = boundedPartialMinimumPercent(
+      pageConfig.partialCompletionMinPercent
+    );
+    let playlistCompletionVisibility = {
+      complete: true,
+      partial: true,
+      partial_below_minimum: partialCompletionMinimumPercent <= 1,
+      unknown: true,
+      never_watched: true,
+    };
     let completionMinimumInputTimer = null;
     const defaultSearchMetaVisibility = {
       videos: { public: true, unlisted: true, members_only: true, unavailable: false, unknown: true },
       reactions: { none: true, liked: true, disliked: true },
-      completion: { complete: true, partial: true, unknown: true, never_watched: true },
+      completion: {
+        complete: true,
+        partial: true,
+        partial_below_minimum: partialCompletionMinimumPercent <= 1,
+        unknown: true,
+        never_watched: true,
+      },
       membership: { member: true, non_member: true },
       channelSubscription: { subscribed: true, non_subscribed: true },
       channelStatus: { active: true, terminated: false },
@@ -475,10 +490,6 @@
       { groupName: 'playlistStatus', key: 'removed', paramName: 'removed' },
       { groupName: 'channelStatus', key: 'terminated', paramName: 'terminated' },
     ];
-    const pageConfig = window.YT_LIBRARY_CONFIG || {};
-    partialCompletionMinimumPercent = boundedPartialMinimumPercent(
-      pageConfig.partialCompletionMinPercent
-    );
     const searchSortOptions = new Set([
       'relevance', 'title', 'newest', 'oldest', 'most_watched', 'type',
     ]);
@@ -723,6 +734,19 @@
     function boundedPartialMinimumPercent(value) {
       const parsed = Number.parseInt(String(value ?? ''), 10);
       return Number.isFinite(parsed) ? Math.max(1, Math.min(99, parsed)) : 1;
+    }
+
+    function setPartialCompletionMinimum(value) {
+      const previousMinimum = partialCompletionMinimumPercent;
+      const nextMinimum = boundedPartialMinimumPercent(value);
+      partialCompletionMinimumPercent = nextMinimum;
+      if (previousMinimum <= 1 || nextMinimum <= 1) {
+        const belowMinimumEnabled = nextMinimum <= 1;
+        defaultSearchMetaVisibility.completion.partial_below_minimum = belowMinimumEnabled;
+        searchMetaVisibility.completion.partial_below_minimum = belowMinimumEnabled;
+        playlistCompletionVisibility.partial_below_minimum = belowMinimumEnabled;
+      }
+      return previousMinimum;
     }
 
     function allMetaFiltersEnabled(visibility, excludedKeys = []) {
@@ -1126,7 +1150,13 @@
       if (playlistVisibilityPlaylistId === playlistId) return;
       playlistVisibilityPlaylistId = playlistId;
       playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
-      playlistCompletionVisibility = { complete: true, partial: true, unknown: true, never_watched: true };
+      playlistCompletionVisibility = {
+        complete: true,
+        partial: true,
+        partial_below_minimum: partialCompletionMinimumPercent <= 1,
+        unknown: true,
+        never_watched: true,
+      };
       playlistPageSearch = '';
     }
 
@@ -1152,7 +1182,7 @@
       setFilterDimmed(childFilters, dimChildrenWhenUnchecked && !parent.checked);
     }
 
-    function setMetaFilterGroup(groupName, checked) {
+    function metaFilterGroupVisibility(groupName) {
       const groups = {
         'playlist-videos': playlistVisibility,
         'playlist-completion': playlistCompletionVisibility,
@@ -1166,10 +1196,18 @@
         'search-playlistOwnership': searchMetaVisibility.playlistOwnership,
         'search-playlistStatus': searchMetaVisibility.playlistStatus,
       };
-      const group = groups[groupName];
+      return groups[groupName] || null;
+    }
+
+    function metaFilterGroupExcludedKeys(groupName) {
+      return groupName === 'playlist-videos' ? new Set(['removed']) : new Set();
+    }
+
+    function setMetaFilterGroup(groupName, checked) {
+      const group = metaFilterGroupVisibility(groupName);
       if (!group) return false;
       const root = groupName.startsWith('search-') ? searchForFilters : meta;
-      const excludedKeys = groupName === 'playlist-videos' ? new Set(['removed']) : new Set();
+      const excludedKeys = metaFilterGroupExcludedKeys(groupName);
       for (const key of Object.keys(group)) {
         if (!excludedKeys.has(key)) group[key] = checked;
       }
@@ -1177,6 +1215,14 @@
         input.checked = checked;
       }
       return true;
+    }
+
+    function allMetaFilterChildrenChecked(groupName) {
+      const group = metaFilterGroupVisibility(groupName);
+      if (!group) return false;
+      const excludedKeys = metaFilterGroupExcludedKeys(groupName);
+      const children = Object.entries(group).filter(([key]) => !excludedKeys.has(key));
+      return children.length > 0 && children.every(([, checked]) => checked);
     }
 
     function syncMetaFilterGroup(groupName) {
@@ -2125,17 +2171,25 @@
       { key: 'disliked', label: 'disliked', decoratorHtml: thumbIconHtml('dislike', false) },
     ];
     function completionMetaFilterDefinitions(minimumPercent, minimumAttribute) {
-      return [
+      const boundedMinimum = boundedPartialMinimumPercent(minimumPercent);
+      const definitions = [
         { key: 'complete', label: 'complete' },
         {
           key: 'partial',
           label: 'partial',
-          minimumPercent: boundedPartialMinimumPercent(minimumPercent),
+          minimumPercent: boundedMinimum,
           minimumAttribute,
         },
         { key: 'unknown', label: 'unknown' },
         { key: 'never_watched', label: 'never watched' },
       ];
+      if (boundedMinimum > 1) {
+        definitions.splice(2, 0, {
+          key: 'partial_below_minimum',
+          label: `partial \u2264 ${boundedMinimum - 1}%`,
+        });
+      }
+      return definitions;
     }
     const playlistMembershipMetaFilterDefinitions = [
       { key: 'member', label: 'member' },
@@ -3413,8 +3467,7 @@
         ? activateSearchFromHistory()
         : false;
       if (target.dataset.searchCompletionMinimum !== undefined) {
-        const previousMinimum = partialCompletionMinimumPercent;
-        partialCompletionMinimumPercent = boundedPartialMinimumPercent(target.value);
+        const previousMinimum = setPartialCompletionMinimum(target.value);
         target.value = String(partialCompletionMinimumPercent);
         if (
           previousMinimum === partialCompletionMinimumPercent
@@ -3439,8 +3492,7 @@
         return;
       }
       if (target.dataset.playlistCompletionMinimum !== undefined) {
-        const previousMinimum = partialCompletionMinimumPercent;
-        partialCompletionMinimumPercent = boundedPartialMinimumPercent(target.value);
+        const previousMinimum = setPartialCompletionMinimum(target.value);
         target.value = String(partialCompletionMinimumPercent);
         if (
           previousMinimum === partialCompletionMinimumPercent
@@ -3469,7 +3521,10 @@
         return;
       }
       const metaAllFilter = target.dataset.metaAllFilter;
-      if (metaAllFilter && setMetaFilterGroup(metaAllFilter, target.checked)) {
+      const selectAllMetaChildren = metaAllFilter
+        ? !allMetaFilterChildrenChecked(metaAllFilter)
+        : false;
+      if (metaAllFilter && setMetaFilterGroup(metaAllFilter, selectAllMetaChildren)) {
         currentPage = 1;
         if (metaAllFilter.startsWith('search-')) {
           const facetKey = metaAllFilter.slice('search-'.length);
