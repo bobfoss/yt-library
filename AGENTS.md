@@ -1,10 +1,47 @@
 # Repository Guidelines
 
-At the start of every chat, read this file and `WORKING_AGREEMENT.md` before
-investigating or changing the project. `WORKING_AGREEMENT.md` captures the
-durable collaboration, runtime, product, and data-model decisions accumulated
-while building the application. Treat `TODO.md` as the separate source for
-unfinished or deferred work.
+Read this file at the start of every chat. Treat `TODO.md` as the separate
+source for unfinished or deferred work.
+
+## Working Agreement
+
+- Start from evidence: read the owning code and correlate UI reports with the
+  API and database before diagnosing or changing behavior.
+- Unless the user is explicitly exploring or asking only for an explanation,
+  carry work through implementation, verification, live QA, and commit.
+- Inspect `git status` first. Preserve unrelated tracked and untracked work,
+  isolate intended hunks when staging, and never commit personal runtime data.
+- Commit every coherent change after it passes verification unless asked not to.
+  Use a substantive commit body. Push only when explicitly requested.
+- Use the configured host and port. Runtime work is complete only after a live
+  status or smoke check succeeds; include the PID when reporting a restart.
+- Before restarting, record whether the persistent queue is running and its
+  count. Stop it cleanly, restart to a new healthy PID, and resume it only if it
+  was running before. Never clear queued work just to restart the service.
+- Restart after server, worker, served HTML/JS, schema/bootstrap, or source
+  config changes. Database-only updates normally do not require a restart.
+- Run the full local checks below for code changes. UI and settings changes also
+  require browser QA, including reload persistence and rapid-input behavior.
+- Keep runtime settings and user preferences in `yt_library.config.json`, apply
+  them live where designed, and provide migrations for schema changes.
+- Store exact timestamps in UTC and present them in the configured display
+  timezone. When discussing the user's data, convert times to Pacific unless
+  the configured timezone says otherwise.
+- Search is the default landing view; History remains a separate occurrence
+  view with repeated watches and the daily heatmap. Keep detail and admin views.
+  Use the order Videos, Playlists, Channels where applicable.
+- Prefer shared UI and query helpers. Facet counts must remain stable when a
+  filter is toggled, and loading must preserve existing headers, controls,
+  pagination, heatmaps, and results instead of briefly blanking them.
+- Watch completion belongs to history occurrences; manual metadata scans do not
+  assign it. Leave missing titles blank, and derive channel `first_seen` from
+  the earliest library evidence rather than the metadata-fetch date.
+- Fetch YouTube metadata by direct ID or URL, not search fallback. Continuously
+  validate configured authentication during long runs. A configured proxy is
+  general and applies to all outbound services.
+- Preserve useful playlist and video identity on failures. Keep unavailable,
+  members-only, unlisted, private, removed, and unknown states distinct when
+  evidence supports the distinction; do not invent missing rows or metadata.
 
 ## Project Structure & Module Organization
 
