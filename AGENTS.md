@@ -1,5 +1,11 @@
 # Repository Guidelines
 
+At the start of every chat, read this file and `WORKING_AGREEMENT.md` before
+investigating or changing the project. `WORKING_AGREEMENT.md` captures the
+durable collaboration, runtime, product, and data-model decisions accumulated
+while building the application. Treat `TODO.md` as the separate source for
+unfinished or deferred work.
+
 ## Project Structure & Module Organization
 
 This repository is a Python web app for browsing, enriching, and reconciling a personal YouTube library.
