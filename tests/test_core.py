@@ -5160,6 +5160,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(':root[data-theme="light"]', server.ADMIN_HTML)
         self.assertIn(':root[data-theme="light"]', server.INDEX_HTML)
         self.assertIn('<script src="/theme.js"></script>', server.INDEX_HTML)
+        self.assertIn('.video-card-channel { margin-top: 0; margin-bottom: 7px; color: var(--ink); font-weight: 400; }', server.INDEX_HTML)
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-all-filter='), 1)
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 2)
         self.assertIn("const videoMetaFilterDefinitions = [", server.INDEX_HTML)
