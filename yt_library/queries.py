@@ -606,6 +606,13 @@ VIDEO_AVAILABILITY_CATEGORIES = (
 VIDEO_COMPLETION_CATEGORIES = ("complete", "partial", "unknown", "never_watched")
 
 
+def _bounded_partial_min_percent(value: Any) -> int:
+    try:
+        return max(1, min(99, int(value)))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _video_availability_category(item: dict[str, Any]) -> str:
     if not item.get("video_id"):
         return "unavailable"
@@ -655,6 +662,19 @@ def _video_completion_category(item: dict[str, Any]) -> str:
     return "never_watched"
 
 
+def _video_matches_completion_filter(
+    item: dict[str, Any],
+    selected_filters: set[str],
+    partial_min_percent: int,
+) -> bool:
+    category = _video_completion_category(item)
+    if category not in selected_filters:
+        return False
+    if category != "partial":
+        return True
+    return int(item.get("watch_progress_percent") or 0) >= partial_min_percent
+
+
 def video_collection_data(
     conn: sqlite3.Connection,
     *,
@@ -669,6 +689,7 @@ def video_collection_data(
     include_unknown: bool = True,
     include_removed: bool = True,
     completion_filters: set[str] | None = None,
+    partial_min_percent: int = 1,
     sort: str = "newest_added",
     limit: int = 100,
     offset: int = 0,
@@ -697,6 +718,7 @@ def video_collection_data(
         if completion_filters is None
         else set(completion_filters) & set(VIDEO_COMPLETION_CATEGORIES)
     )
+    partial_min_percent = _bounded_partial_min_percent(partial_min_percent)
     count_keys = {
         "public": set(),
         "unlisted": set(),
@@ -720,7 +742,11 @@ def video_collection_data(
             index,
         )
         count_keys[category].add(count_key)
-        completion_count_keys[completion_category].add(count_key)
+        if (
+            completion_category != "partial"
+            or int(item.get("watch_progress_percent") or 0) >= partial_min_percent
+        ):
+            completion_count_keys[completion_category].add(count_key)
     counts = {category: len(keys) for category, keys in count_keys.items()}
     completion_counts = {
         category: len(keys)
@@ -731,7 +757,11 @@ def video_collection_data(
         for item in candidates
         if (
             categories[item["collection_category"]]
-            and item["completion_category"] in selected_completion_filters
+            and _video_matches_completion_filter(
+                item,
+                selected_completion_filters,
+                partial_min_percent,
+            )
         )
     ]
     if not playlist_id:
@@ -1096,7 +1126,11 @@ def _omni_video_completion_category(result: dict[str, Any]) -> str:
     return _video_completion_category(result["item"])
 
 
-def _omni_completion_counts(results: list[dict[str, Any]]) -> dict[str, int]:
+def _omni_completion_counts(
+    results: list[dict[str, Any]],
+    partial_min_percent: int = 1,
+) -> dict[str, int]:
+    partial_min_percent = _bounded_partial_min_percent(partial_min_percent)
     counts = {
         "total": 0,
         **{category: 0 for category in OMNI_SEARCH_COMPLETION_FILTERS},
@@ -1105,7 +1139,13 @@ def _omni_completion_counts(results: list[dict[str, Any]]) -> dict[str, int]:
         if result["kind"] != "video":
             continue
         counts["total"] += 1
-        counts[_omni_video_completion_category(result)] += 1
+        category = _omni_video_completion_category(result)
+        if (
+            category != "partial"
+            or int(result["item"].get("watch_progress_percent") or 0)
+            >= partial_min_percent
+        ):
+            counts[category] += 1
     return counts
 
 
@@ -1280,6 +1320,7 @@ def omni_search_data(
     video_meta_filters: set[str] | None = None,
     video_reaction_filters: set[str] | None = None,
     video_completion_filters: set[str] | None = None,
+    video_partial_min_percent: int = 1,
     video_playlist_membership_filters: set[str] | None = None,
     channel_subscription_filters: set[str] | None = None,
     channel_status_filters: set[str] | None = None,
@@ -1602,7 +1643,10 @@ def omni_search_data(
     _assign_omni_meta_categories(conn, results)
     meta_counts = _omni_meta_counts(results)
     reaction_counts = _omni_reaction_counts(results)
-    completion_counts = _omni_completion_counts(results)
+    video_partial_min_percent = _bounded_partial_min_percent(
+        video_partial_min_percent
+    )
+    completion_counts = _omni_completion_counts(results, video_partial_min_percent)
     playlist_membership_counts = _omni_playlist_membership_counts(results)
     selected_meta_filters = {
         "video": _selected_omni_meta_filters(video_meta_filters, "video"),
@@ -1667,8 +1711,11 @@ def omni_search_data(
                 and (
                     _omni_video_reaction_category(result)
                     in selected_reaction_filters
-                    and _omni_video_completion_category(result)
-                    in selected_completion_filters
+                    and _video_matches_completion_filter(
+                        result["item"],
+                        selected_completion_filters,
+                        video_partial_min_percent,
+                    )
                     and _omni_video_playlist_membership_category(result)
                     in selected_playlist_membership_filters
                 )

@@ -79,6 +79,9 @@
     .meta-filter { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; }
     .meta-filter.dimmed { opacity: .42; }
     .meta-filter input { accent-color: var(--accent); }
+    .completion-partial-toggle { display: inline-flex; align-items: center; gap: 5px; }
+    .completion-minimum-control { display: inline-flex; align-items: center; gap: 4px; }
+    .completion-minimum-input { width: 52px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 4px; padding: 2px 4px; font: inherit; }
     .meta-filter-decorated { display: inline-flex; align-items: center; gap: 4px; }
     .meta-filter-decorated .reaction-icon { width: 14px; height: 14px; flex: 0 0 14px; }
     .search-result-meta { display: grid; gap: 8px; justify-items: end; }
@@ -437,6 +440,9 @@
     let selected = '';
     let playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
     let playlistCompletionVisibility = { complete: true, partial: true, unknown: true, never_watched: true };
+    let playlistPartialMinimumPercent = 1;
+    let searchPartialMinimumPercent = 1;
+    let completionMinimumInputTimer = null;
     const defaultSearchMetaVisibility = {
       videos: { public: true, unlisted: true, members_only: true, unavailable: false, unknown: true },
       reactions: { none: true, liked: true, disliked: true },
@@ -710,6 +716,11 @@
       return selected.length ? selected.join(',') : '__none__';
     }
 
+    function boundedPartialMinimumPercent(value) {
+      const parsed = Number.parseInt(String(value ?? ''), 10);
+      return Number.isFinite(parsed) ? Math.max(1, Math.min(99, parsed)) : 1;
+    }
+
     function allMetaFiltersEnabled(visibility, excludedKeys = []) {
       const excluded = new Set(excludedKeys);
       return Object.entries(visibility)
@@ -886,6 +897,9 @@
         params.set('sort', searchResultsSort);
       }
       if (currentPage > 1) params.set('page', String(currentPage));
+      if (searchPartialMinimumPercent !== 1) {
+        params.set('vmin', String(searchPartialMinimumPercent));
+      }
       return `#search${params.toString() ? `?${params.toString()}` : ''}`;
     }
 
@@ -905,6 +919,7 @@
         for (const input of searchFields) input.checked = true;
       }
       applySearchPresetState(params.get('preset') || '', params.get('group') || '');
+      searchPartialMinimumPercent = boundedPartialMinimumPercent(params.get('vmin'));
       const videoMetaParam = params.get(searchMetaParamNames.videos);
       const compatibleVideoMetaParam = videoMetaParam === null
         ? null
@@ -1112,6 +1127,7 @@
       playlistVisibilityPlaylistId = playlistId;
       playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
       playlistCompletionVisibility = { complete: true, partial: true, unknown: true, never_watched: true };
+      playlistPartialMinimumPercent = 1;
       playlistPageSearch = '';
     }
 
@@ -2109,12 +2125,19 @@
       { key: 'liked', label: 'liked', decoratorHtml: thumbIconHtml('like', false) },
       { key: 'disliked', label: 'disliked', decoratorHtml: thumbIconHtml('dislike', false) },
     ];
-    const completionMetaFilterDefinitions = [
-      { key: 'complete', label: 'complete' },
-      { key: 'partial', label: 'partial' },
-      { key: 'unknown', label: 'unknown' },
-      { key: 'never_watched', label: 'never watched' },
-    ];
+    function completionMetaFilterDefinitions(minimumPercent, minimumAttribute) {
+      return [
+        { key: 'complete', label: 'complete' },
+        {
+          key: 'partial',
+          label: 'partial',
+          minimumPercent: boundedPartialMinimumPercent(minimumPercent),
+          minimumAttribute,
+        },
+        { key: 'unknown', label: 'unknown' },
+        { key: 'never_watched', label: 'never watched' },
+      ];
+    }
     const playlistMembershipMetaFilterDefinitions = [
       { key: 'member', label: 'member' },
       { key: 'non_member', label: 'non-member' },
@@ -2167,14 +2190,26 @@
       );
       return `
         ${showAll ? `<label class="meta-filter meta-filter-parent"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>${escapeHtml(allLabel)}</span></label>` : ''}
-        ${applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '' }) => `
-          <label class="meta-filter meta-filter-child">
-            <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
-            ${visibilityIcon
-              ? visibilityFilterLabelHtml(key, metaFilterCount(counts, key))
-              : `<span${className || decoratorHtml ? ` class="${[className, decoratorHtml ? 'meta-filter-decorated' : ''].filter(Boolean).join(' ')}"` : ''}>${decoratorHtml}<span>${escapeHtml(label)} <span class="meta-filter-count">${filterCountText(metaFilterCount(counts, key))}</span></span></span>`}
-          </label>
-        `).join('')}
+        ${applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '', minimumPercent = null, minimumAttribute = '' }) => minimumPercent === null ? `
+            <label class="meta-filter meta-filter-child">
+              <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
+              ${visibilityIcon
+                ? visibilityFilterLabelHtml(key, metaFilterCount(counts, key))
+                : `<span${className || decoratorHtml ? ` class="${[className, decoratorHtml ? 'meta-filter-decorated' : ''].filter(Boolean).join(' ')}"` : ''}>${decoratorHtml}<span>${escapeHtml(label)} <span class="meta-filter-count">${filterCountText(metaFilterCount(counts, key))}</span></span></span>`}
+            </label>
+          ` : `
+            <div class="meta-filter meta-filter-child">
+              <label class="completion-partial-toggle">
+                <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
+                <span>${escapeHtml(label)}</span>
+              </label>
+              <span class="completion-minimum-control">
+                <span>&ge;</span>
+                <input class="completion-minimum-input" type="number" min="1" max="99" step="1" value="${minimumPercent}" data-${escapeHtml(minimumAttribute)} aria-label="Minimum partial completion percentage">
+                <span>% <span class="meta-filter-count">${filterCountText(metaFilterCount(counts, key))}</span></span>
+              </span>
+            </div>
+          `).join('')}
       `;
     }
 
@@ -2234,7 +2269,10 @@
                 filterAttribute: 'playlist-completion-filter',
                 visibility: playlistCompletionVisibility,
                 counts: completionCounts,
-                definitions: completionMetaFilterDefinitions,
+                definitions: completionMetaFilterDefinitions(
+                  playlistPartialMinimumPercent,
+                  'playlist-completion-minimum',
+                ),
                 allLabel: 'Completion',
               })}
             </span>
@@ -2283,7 +2321,7 @@
         kindHtml('Videos', 'videos', metaCounts?.videos?.total, [
           facetHtml({ key: 'videos', visibility: searchMetaVisibility.videos, definitions: videoMetaFilterDefinitions, counts: metaCounts?.videos, allLabel: 'Availability', kind: 'videos' }),
           facetHtml({ key: 'reactions', visibility: searchMetaVisibility.reactions, definitions: reactionMetaFilterDefinitions, counts: reactionCounts, allLabel: 'Reactions', kind: 'videos' }),
-          facetHtml({ key: 'completion', visibility: searchMetaVisibility.completion, definitions: completionMetaFilterDefinitions, counts: completionCounts, allLabel: 'Completion', kind: 'videos' }),
+          facetHtml({ key: 'completion', visibility: searchMetaVisibility.completion, definitions: completionMetaFilterDefinitions(searchPartialMinimumPercent, 'search-completion-minimum'), counts: completionCounts, allLabel: 'Completion', kind: 'videos' }),
           facetHtml({ key: 'membership', visibility: searchMetaVisibility.membership, definitions: playlistMembershipMetaFilterDefinitions, counts: playlistMembershipCounts, allLabel: 'Playlist membership', kind: 'videos' }),
         ].join('')),
         kindHtml('Playlists', 'playlists', metaCounts?.playlists?.total, [
@@ -2512,6 +2550,7 @@
         searchPlaylistGroupKey,
         sourceScopes.video,
         sourceScopes.channel,
+        searchPartialMinimumPercent,
       ]);
       const metaCountsCache = omniMetaCountsCache;
       const reactionCountsCache = omniReactionCountsCache;
@@ -2527,6 +2566,7 @@
         video_meta: metaFilterParamValue(searchMetaVisibility.videos),
         video_reaction: metaFilterParamValue(searchMetaVisibility.reactions),
         video_completion: metaFilterParamValue(searchMetaVisibility.completion),
+        video_completion_min_percent: String(searchPartialMinimumPercent),
         video_playlist_membership: metaFilterParamValue(searchMetaVisibility.membership),
         channel_subscription: metaFilterParamValue(searchMetaVisibility.channelSubscription),
         channel_status: metaFilterParamValue(searchMetaVisibility.channelStatus),
@@ -2585,11 +2625,19 @@
       query = '',
       visibility = playlistVisibility,
       completion = null,
+      partialMinimumPercent = 1,
     } = {}) {
       const base = playlistId
         ? `/api/playlists/${encodeURIComponent(playlistId)}/videos`
         : '/api/videos';
-      const metaCountsKey = JSON.stringify([scope, playlistId, channelId, query]);
+      partialMinimumPercent = boundedPartialMinimumPercent(partialMinimumPercent);
+      const metaCountsKey = JSON.stringify([
+        scope,
+        playlistId,
+        channelId,
+        query,
+        partialMinimumPercent,
+      ]);
       const metaCountsCache = videoMetaCountsCache;
       const params = {
         scope,
@@ -2604,6 +2652,7 @@
         sort,
       };
       if (completion) params.completion = metaFilterParamValue(completion);
+      if (completion) params.completion_min_percent = String(partialMinimumPercent);
       const path = remoteListPath(base, params);
       const payload = await fetchViewData(path);
       if (!metaCountsCache.has(metaCountsKey)) {
@@ -3014,6 +3063,7 @@
               sort: playlistViewSort,
               query: playlistPageSearch.trim(),
               completion: playlistCompletionVisibility,
+              partialMinimumPercent: playlistPartialMinimumPercent,
             }),
           ]);
         } catch (error) {
@@ -3357,11 +3407,52 @@
       const searchFilterInteraction = (
         target.dataset.searchKindFilter
         || target.dataset.searchMetaFilter
+        || target.dataset.searchCompletionMinimum !== undefined
         || String(target.dataset.metaAllFilter || '').startsWith('search-')
       );
       const activatedFromHistory = searchFilterInteraction
         ? activateSearchFromHistory()
         : false;
+      if (target.dataset.searchCompletionMinimum !== undefined) {
+        const previousMinimum = searchPartialMinimumPercent;
+        searchPartialMinimumPercent = boundedPartialMinimumPercent(target.value);
+        target.value = String(searchPartialMinimumPercent);
+        if (
+          previousMinimum === searchPartialMinimumPercent
+          && searchMetaVisibility.completion.partial
+        ) return;
+        searchMetaVisibility.completion.partial = true;
+        const partialInput = searchForFilters.querySelector(
+          '[data-search-meta-filter="completion:partial"]'
+        );
+        if (partialInput instanceof HTMLInputElement) partialInput.checked = true;
+        currentPage = 1;
+        syncMetaFilterGroup('search-completion');
+        restoreEmptySearchKindFacets('completion');
+        syncSearchKindFilter('videos');
+        reconcileSearchPreset();
+        showSearchMetaProgress('completion');
+        syncSearchHashAndRender(!activatedFromHistory);
+        return;
+      }
+      if (target.dataset.playlistCompletionMinimum !== undefined) {
+        const previousMinimum = playlistPartialMinimumPercent;
+        playlistPartialMinimumPercent = boundedPartialMinimumPercent(target.value);
+        target.value = String(playlistPartialMinimumPercent);
+        if (
+          previousMinimum === playlistPartialMinimumPercent
+          && playlistCompletionVisibility.partial
+        ) return;
+        playlistCompletionVisibility.partial = true;
+        const partialInput = meta.querySelector(
+          '[data-playlist-completion-filter="partial"]'
+        );
+        if (partialInput instanceof HTMLInputElement) partialInput.checked = true;
+        currentPage = 1;
+        syncMetaFilterGroup('playlist-completion');
+        render();
+        return;
+      }
       const searchKindFilter = target.dataset.searchKindFilter;
       if (searchKindFilter && setSearchKindFilter(searchKindFilter, target.checked)) {
         currentPage = 1;
@@ -3416,6 +3507,23 @@
     }
     meta.addEventListener('change', handleMetaChange);
     searchForFilters.addEventListener('change', handleMetaChange);
+    function scheduleCompletionMinimumInput(event) {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      if (
+        target.dataset.searchCompletionMinimum === undefined
+        && target.dataset.playlistCompletionMinimum === undefined
+      ) return;
+      if (completionMinimumInputTimer !== null) {
+        clearTimeout(completionMinimumInputTimer);
+      }
+      completionMinimumInputTimer = setTimeout(() => {
+        completionMinimumInputTimer = null;
+        handleMetaChange({ target });
+      }, 250);
+    }
+    meta.addEventListener('input', scheduleCompletionMinimumInput);
+    searchForFilters.addEventListener('input', scheduleCompletionMinimumInput);
     function applyCardLayoutPreference(context, layout) {
       if (context === 'history') {
         historyCardLayout = layout;

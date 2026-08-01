@@ -1016,6 +1016,45 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["never1", "unknown1"],
         )
 
+    def test_omni_search_filters_partial_completion_by_minimum_percentage(self) -> None:
+        for video_id, title in (
+            ("partial-low", "Partial low"),
+            ("partial-high", "Partial high"),
+        ):
+            self.add_video(video_id, title)
+        self.conn.executemany(
+            "UPDATE videos SET is_playable = 1 WHERE video_id = ?",
+            [("partial-low",), ("partial-high",)],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watch_date, time_precision, watch_progress_percent
+            ) VALUES (?, ?, '2026-07-01', 'date_only', ?)
+            """,
+            [
+                ("partial-low-watch", "partial-low", 24),
+                ("partial-high-watch", "partial-high", 68),
+            ],
+        )
+        self.conn.commit()
+
+        filtered = omni_search_data(
+            self.conn,
+            "partial",
+            result_kinds={"video"},
+            video_completion_filters={"partial"},
+            video_partial_min_percent=50,
+            limit=100,
+        )
+
+        self.assertEqual(
+            [result["item"]["video_id"] for result in filtered["results"]],
+            ["partial-high"],
+        )
+        self.assertEqual(filtered["completionCounts"]["total"], 2)
+        self.assertEqual(filtered["completionCounts"]["partial"], 1)
+
     def test_library_bootstrap_contains_counts_without_card_collections(self) -> None:
         self.add_video("liked1", "Liked", "UC_subscribed")
         self.conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'liked1'")
@@ -1291,6 +1330,45 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.assertEqual(filtered["total"], 2)
         self.assertEqual(filtered["completionCounts"], expected_counts)
+
+    def test_playlist_collection_filters_partial_completion_by_minimum_percentage(self) -> None:
+        for video_id, title in (
+            ("partial-low", "Partial low"),
+            ("partial-high", "Partial high"),
+        ):
+            self.add_video(video_id, title)
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLminimum', 'Minimum')"
+        )
+        self.conn.executemany(
+            "INSERT INTO playlist_items(playlist_id, position, video_id) VALUES ('PLminimum', ?, ?)",
+            [(1, "partial-low"), (2, "partial-high")],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watch_date, time_precision, watch_progress_percent
+            ) VALUES (?, ?, '2026-07-30', 'date_only', ?)
+            """,
+            [
+                ("partial-low-watch", "partial-low", 20),
+                ("partial-high-watch", "partial-high", 75),
+            ],
+        )
+        self.conn.commit()
+
+        filtered = video_collection_data(
+            self.conn,
+            playlist_id="PLminimum",
+            completion_filters={"partial"},
+            partial_min_percent=50,
+        )
+
+        self.assertEqual(
+            [row["video_id"] for row in filtered["results"]],
+            ["partial-high"],
+        )
+        self.assertEqual(filtered["completionCounts"]["partial"], 1)
 
     def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:
         self.add_video("old123", "Old Router Video")

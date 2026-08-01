@@ -4994,7 +4994,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(':root[data-theme="light"]', server.INDEX_HTML)
         self.assertIn('<script src="/theme.js"></script>', server.INDEX_HTML)
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-all-filter='), 1)
-        self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 1)
+        self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 2)
         self.assertIn("const videoMetaFilterDefinitions = [", server.INDEX_HTML)
         self.assertIn("const reactionMetaFilterDefinitions = [", server.INDEX_HTML)
         self.assertLess(
@@ -5073,6 +5073,14 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn(
+            "video_completion_min_percent: String(searchPartialMinimumPercent)",
+            server.INDEX_HTML,
+        )
+        self.assertIn("params.set('vmin', String(searchPartialMinimumPercent))", server.INDEX_HTML)
+        self.assertIn('aria-label="Minimum partial completion percentage"', server.INDEX_HTML)
+        self.assertIn('class="completion-partial-toggle"', server.INDEX_HTML)
+        self.assertIn("searchForFilters.addEventListener('input', scheduleCompletionMinimumInput)", server.INDEX_HTML)
+        self.assertIn(
             "video_playlist_membership: metaFilterParamValue(searchMetaVisibility.membership)",
             server.INDEX_HTML,
         )
@@ -5102,7 +5110,7 @@ class AdminServerTests(unittest.TestCase):
             "const playlistStatusMetaFilterDefinitions = [",
             server.INDEX_HTML,
         )
-        self.assertIn("const completionMetaFilterDefinitions = [", server.INDEX_HTML)
+        self.assertIn("function completionMetaFilterDefinitions(", server.INDEX_HTML)
         self.assertIn(
             "const playlistMembershipMetaFilterDefinitions = [",
             server.INDEX_HTML,
@@ -5340,7 +5348,12 @@ class AdminServerTests(unittest.TestCase):
         self.assertNotIn("progressMessageAnimation(empty, 'Searching')", server.INDEX_HTML)
         self.assertIn("grid.setAttribute('aria-busy', 'true');", server.INDEX_HTML)
         self.assertIn(
-            "const metaCountsKey = JSON.stringify([scope, playlistId, channelId, query]);",
+            "const metaCountsKey = JSON.stringify([\n"
+            "        scope,\n"
+            "        playlistId,\n"
+            "        channelId,\n"
+            "        query,\n"
+            "        partialMinimumPercent,",
             server.INDEX_HTML,
         )
         self.assertIn("const kindsValue = selectedSearchResultKinds().join(',') || '__none__';", server.INDEX_HTML)
@@ -5513,13 +5526,14 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("syncMetaFilterGroup('playlist-videos')", server.INDEX_HTML)
         self.assertEqual(
             server.INDEX_HTML.count("syncMetaFilterGroup('playlist-completion')"),
-            1,
+            2,
         )
         self.assertEqual(
             server.INDEX_HTML.count("completion: playlistCompletionVisibility"),
             1,
         )
         self.assertIn("filterAttribute: 'playlist-completion-filter'", server.INDEX_HTML)
+        self.assertIn("params.completion_min_percent = String(partialMinimumPercent)", server.INDEX_HTML)
         self.assertIn("'video-collection-top'", server.INDEX_HTML)
         self.assertIn(
             ".view-top.video-collection-top #view-meta",

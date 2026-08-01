@@ -102,6 +102,16 @@ def query_bool_param(
     return values[0].strip().lower() not in {"0", "false", "no"}
 
 
+def query_partial_min_percent(
+    params: dict[str, list[str]],
+    name: str,
+) -> int:
+    try:
+        return max(1, min(99, int((params.get(name) or ["1"])[0] or 1)))
+    except ValueError:
+        return 1
+
+
 def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, Any]:
     return {
         "include_public": query_bool_param(params, "public", legacy_name="videos"),
@@ -111,6 +121,10 @@ def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, Any]
         "include_unknown": query_bool_param(params, "unknown"),
         "include_removed": query_bool_param(params, "removed"),
         "completion_filters": query_set_param(params, "completion"),
+        "partial_min_percent": query_partial_min_percent(
+            params,
+            "completion_min_percent",
+        ),
     }
 
 
@@ -580,6 +594,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     video_meta_filters=query_set_param(params, "video_meta"),
                     video_reaction_filters=query_set_param(params, "video_reaction"),
                     video_completion_filters=query_set_param(params, "video_completion"),
+                    video_partial_min_percent=query_partial_min_percent(
+                        params,
+                        "video_completion_min_percent",
+                    ),
                     video_playlist_membership_filters=query_set_param(
                         params,
                         "video_playlist_membership",
