@@ -5031,7 +5031,15 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn(
-            "playlists: { private: true, public: true, unlisted: true, others: true, unknown: true, removed: false }",
+            "playlistVisibility: { private: true, public: true, unlisted: true, unknown: true }",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "playlistOwnership: { mine: true, others: true, ownership_unknown: true }",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "playlistStatus: { active: true, removed: false }",
             server.INDEX_HTML,
         )
         self.assertIn("const searchOptInMetaFilters = [", server.INDEX_HTML)
@@ -5040,7 +5048,7 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn(
-            "{ groupName: 'playlists', key: 'removed', paramName: 'removed' }",
+            "{ groupName: 'playlistStatus', key: 'removed', paramName: 'removed' }",
             server.INDEX_HTML,
         )
         self.assertIn(
@@ -5082,7 +5090,18 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn("const channelStatusMetaFilterDefinitions = [", server.INDEX_HTML)
-        self.assertIn("const playlistMetaFilterDefinitions = [", server.INDEX_HTML)
+        self.assertIn(
+            "const playlistVisibilityMetaFilterDefinitions = [",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "const playlistOwnershipMetaFilterDefinitions = [",
+            server.INDEX_HTML,
+        )
+        self.assertIn(
+            "const playlistStatusMetaFilterDefinitions = [",
+            server.INDEX_HTML,
+        )
         self.assertIn("const completionMetaFilterDefinitions = [", server.INDEX_HTML)
         self.assertIn(
             "const playlistMembershipMetaFilterDefinitions = [",
@@ -5142,6 +5161,10 @@ class AdminServerTests(unittest.TestCase):
             "const searchChannelFacetKeys = ['channelSubscription', 'channelStatus'];",
             server.INDEX_HTML,
         )
+        self.assertIn(
+            "const searchPlaylistFacetKeys = ['playlistVisibility', 'playlistOwnership', 'playlistStatus'];",
+            server.INDEX_HTML,
+        )
         self.assertIn("function setSearchKindFilter(kind, checked)", server.INDEX_HTML)
         self.assertIn(
             "root.querySelectorAll(`[data-meta-child-filter=\"${groupName}\"]`)",
@@ -5162,7 +5185,9 @@ class AdminServerTests(unittest.TestCase):
             '<span class="count">${kindEnabled ? filterCountText(count) : \'\'}</span>',
             server.INDEX_HTML,
         )
-        self.assertIn("kind: 'playlists', showAll: false", server.INDEX_HTML)
+        self.assertIn("allLabel: 'Visibility', kind: 'playlists'", server.INDEX_HTML)
+        self.assertIn("allLabel: 'Ownership', kind: 'playlists'", server.INDEX_HTML)
+        self.assertIn("allLabel: 'Status', kind: 'playlists'", server.INDEX_HTML)
         self.assertIn(
             "searchForFilters.querySelectorAll(`[data-search-kind-facet=\"${kind}\"]`)",
             server.INDEX_HTML,
@@ -5241,7 +5266,7 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML.index("const channelSection = sectionFor('Channels');"),
         )
         self.assertIn(
-            "['videos', 'reactions', 'completion', 'membership', 'playlists', 'channelSubscription', 'channelStatus']",
+            "['videos', 'reactions', 'completion', 'membership', 'playlistVisibility', 'playlistOwnership', 'playlistStatus', 'channelSubscription', 'channelStatus']",
             server.INDEX_HTML,
         )
         self.assertLess(

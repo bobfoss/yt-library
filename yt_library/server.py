@@ -590,6 +590,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     ),
                     channel_status_filters=query_set_param(params, "channel_status"),
                     playlist_meta_filters=query_set_param(params, "playlist_meta"),
+                    playlist_ownership_filters=query_set_param(
+                        params,
+                        "playlist_ownership",
+                    ),
+                    playlist_status_filters=query_set_param(params, "playlist_status"),
                     sort=sort,
                     limit=limit,
                     offset=offset,

@@ -245,26 +245,45 @@ def clean_playlist_owner_name(value: str) -> str:
 
 
 def mark_library_owner_playlists(playlists: list[dict[str, Any]]) -> None:
+    explicit_channel_counts: dict[str, int] = {}
+    explicit_name_counts: dict[str, int] = {}
     channel_counts: dict[str, int] = {}
     name_counts: dict[str, int] = {}
     for playlist in playlists:
-        if (playlist.get("visibility") or "").strip():
-            continue
         owner_channel_id = (playlist.get("owner_channel_id") or "").strip()
         owner_name = clean_playlist_owner_name(playlist.get("owner_channel_title") or "")
+        if int(playlist.get("is_library_playlist") or 0):
+            if owner_channel_id:
+                explicit_channel_counts[owner_channel_id] = (
+                    explicit_channel_counts.get(owner_channel_id, 0) + 1
+                )
+            if owner_name:
+                key = owner_name.casefold()
+                explicit_name_counts[key] = explicit_name_counts.get(key, 0) + 1
+        if (playlist.get("visibility") or "").strip():
+            continue
         if owner_channel_id:
             channel_counts[owner_channel_id] = channel_counts.get(owner_channel_id, 0) + 1
         if owner_name:
             key = owner_name.casefold()
             name_counts[key] = name_counts.get(key, 0) + 1
-    library_channel_id = dominant_owner_key(channel_counts)
-    library_owner_name = dominant_owner_key(name_counts)
+    library_channel_id = (
+        max(explicit_channel_counts, key=explicit_channel_counts.get)
+        if explicit_channel_counts
+        else dominant_owner_key(channel_counts)
+    )
+    library_owner_name = (
+        max(explicit_name_counts, key=explicit_name_counts.get)
+        if explicit_name_counts
+        else dominant_owner_key(name_counts)
+    )
     for playlist in playlists:
         owner_channel_id = (playlist.get("owner_channel_id") or "").strip()
         owner_name = clean_playlist_owner_name(playlist.get("owner_channel_title") or "")
         playlist["owner_channel_title"] = owner_name
         playlist["is_library_owner"] = int(
-            bool(library_channel_id and owner_channel_id == library_channel_id)
+            bool(int(playlist.get("is_library_playlist") or 0))
+            or bool(library_channel_id and owner_channel_id == library_channel_id)
             or bool(library_owner_name and owner_name.casefold() == library_owner_name)
         )
 
@@ -347,15 +366,30 @@ def _playlist_visibility_category(playlist: dict[str, Any]) -> str:
     visibility = str(playlist.get("visibility") or "").strip().lower()
     if visibility in {"private", "public", "unlisted"}:
         return visibility
-    if str(playlist.get("owner_channel_id") or "").strip() and not int(playlist.get("is_library_owner") or 0):
-        return "others"
     return "unknown"
 
 
+def _playlist_ownership_category(playlist: dict[str, Any]) -> str:
+    if int(playlist.get("is_library_playlist") or 0) or int(playlist.get("is_library_owner") or 0):
+        return "mine"
+    if str(playlist.get("owner_channel_id") or playlist.get("owner_channel_title") or "").strip():
+        return "others"
+    return "ownership_unknown"
+
+
+def _playlist_status_category(playlist: dict[str, Any]) -> str:
+    return "removed" if str(playlist.get("fetch_status") or "") == "removed" else "active"
+
+
 def _playlist_list_category(playlist: dict[str, Any]) -> str:
-    if str(playlist.get("fetch_status") or "") == "removed":
+    if _playlist_status_category(playlist) == "removed":
         return "removed"
-    return _playlist_visibility_category(playlist)
+    visibility = _playlist_visibility_category(playlist)
+    if visibility != "unknown":
+        return visibility
+    if _playlist_ownership_category(playlist) == "others":
+        return "others"
+    return "unknown"
 
 
 def playlist_list_data(
@@ -863,11 +897,13 @@ OMNI_SEARCH_SORTS = {"relevance", "title", "newest", "oldest", "most_watched", "
 OMNI_SEARCH_KIND_ORDER = ("video", "playlist", "channel")
 OMNI_SEARCH_META_FILTERS = {
     "video": VIDEO_AVAILABILITY_CATEGORIES,
-    "playlist": ("private", "public", "unlisted", "others", "unknown", "removed"),
+    "playlist": ("private", "public", "unlisted", "unknown"),
 }
 OMNI_SEARCH_REACTION_FILTERS = ("none", "liked", "disliked")
 OMNI_SEARCH_COMPLETION_FILTERS = VIDEO_COMPLETION_CATEGORIES
 OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS = ("member", "non_member")
+OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS = ("mine", "others", "ownership_unknown")
+OMNI_SEARCH_PLAYLIST_STATUS_FILTERS = ("active", "removed")
 OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS = ("subscribed", "non_subscribed")
 OMNI_SEARCH_CHANNEL_STATUS_FILTERS = ("active", "terminated")
 
@@ -971,7 +1007,11 @@ def _assign_omni_meta_categories(
     results: list[dict[str, Any]],
 ) -> None:
     playlist_categories = {
-        row["playlist_id"]: _playlist_list_category(row)
+        row["playlist_id"]: (
+            _playlist_visibility_category(row),
+            _playlist_ownership_category(row),
+            _playlist_status_category(row),
+        )
         for row in _playlist_rows(conn)
     } if any(result["kind"] == "playlist" for result in results) else {}
     for result in results:
@@ -983,10 +1023,16 @@ def _assign_omni_meta_categories(
             result["channelStatus"] = _channel_status_category(item)
             continue
         else:
-            category = playlist_categories.get(
+            category, ownership, status = playlist_categories.get(
                 item.get("playlist_id") or "",
-                _playlist_list_category(item),
+                (
+                    _playlist_visibility_category(item),
+                    _playlist_ownership_category(item),
+                    _playlist_status_category(item),
+                ),
             )
+            result["playlistOwnership"] = ownership
+            result["playlistStatus"] = status
         result["metaCategory"] = category
 
 
@@ -1003,12 +1049,22 @@ def _omni_meta_counts(results: list[dict[str, Any]]) -> dict[str, dict[str, int]
         **{category: 0 for category in OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS},
         **{category: 0 for category in OMNI_SEARCH_CHANNEL_STATUS_FILTERS},
     }
+    counts["playlists"].update(
+        {
+            **{category: 0 for category in OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS},
+            **{category: 0 for category in OMNI_SEARCH_PLAYLIST_STATUS_FILTERS},
+        }
+    )
     for result in results:
         group = counts[f"{result['kind']}s"]
         group["total"] += 1
         if result["kind"] == "channel":
             group[result["channelSubscription"]] += 1
             group[result["channelStatus"]] += 1
+        elif result["kind"] == "playlist":
+            group[result["metaCategory"]] += 1
+            group[result["playlistOwnership"]] += 1
+            group[result["playlistStatus"]] += 1
         else:
             group[result["metaCategory"]] += 1
     return counts
@@ -1228,6 +1284,8 @@ def omni_search_data(
     channel_subscription_filters: set[str] | None = None,
     channel_status_filters: set[str] | None = None,
     playlist_meta_filters: set[str] | None = None,
+    playlist_ownership_filters: set[str] | None = None,
+    playlist_status_filters: set[str] | None = None,
     sort: str | None = None,
     limit: int = 100,
     offset: int = 0,
@@ -1566,6 +1624,16 @@ def omni_search_data(
         else set(video_playlist_membership_filters)
         & set(OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS)
     )
+    selected_playlist_ownership_filters = (
+        set(OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS)
+        if playlist_ownership_filters is None
+        else set(playlist_ownership_filters) & set(OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS)
+    )
+    selected_playlist_status_filters = (
+        set(OMNI_SEARCH_PLAYLIST_STATUS_FILTERS)
+        if playlist_status_filters is None
+        else set(playlist_status_filters) & set(OMNI_SEARCH_PLAYLIST_STATUS_FILTERS)
+    )
     selected_channel_subscription_filters = (
         set(OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS)
         if channel_subscription_filters is None
@@ -1588,18 +1656,21 @@ def omni_search_data(
                 and result["channelStatus"] in selected_channel_status_filters
             )
             or (
-                result["kind"] != "channel"
+                result["kind"] == "playlist"
+                and result["metaCategory"] in selected_meta_filters[result["kind"]]
+                and result["playlistOwnership"] in selected_playlist_ownership_filters
+                and result["playlistStatus"] in selected_playlist_status_filters
+            )
+            or (
+                result["kind"] == "video"
                 and result["metaCategory"] in selected_meta_filters[result["kind"]]
                 and (
-                    result["kind"] != "video"
-                    or (
-                        _omni_video_reaction_category(result)
-                        in selected_reaction_filters
-                        and _omni_video_completion_category(result)
-                        in selected_completion_filters
-                        and _omni_video_playlist_membership_category(result)
-                        in selected_playlist_membership_filters
-                    )
+                    _omni_video_reaction_category(result)
+                    in selected_reaction_filters
+                    and _omni_video_completion_category(result)
+                    in selected_completion_filters
+                    and _omni_video_playlist_membership_category(result)
+                    in selected_playlist_membership_filters
                 )
             )
         )
