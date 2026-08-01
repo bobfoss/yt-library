@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS channels (
   description TEXT NOT NULL DEFAULT '',
   aliases TEXT NOT NULL DEFAULT '',
   subscribed INTEGER NOT NULL DEFAULT 0 CHECK (subscribed IN (0, 1)),
+  subscribed_at TEXT,
+  subscribed_at_source TEXT NOT NULL DEFAULT '',
   notification_level TEXT NOT NULL DEFAULT ''
     CHECK (notification_level IN ('', 'all', 'personalized', 'none')),
   subscription_checked_at TEXT,
@@ -34,6 +36,7 @@ CREATE TABLE IF NOT EXISTS playlists (
   description TEXT NOT NULL DEFAULT '',
   owner_channel_id TEXT REFERENCES channels(channel_id),
   visibility TEXT NOT NULL DEFAULT '',
+  created_at TEXT,
   metadata_checked_at TEXT,
   is_library_playlist INTEGER NOT NULL DEFAULT 0 CHECK (is_library_playlist IN (0, 1)),
   video_count INTEGER NOT NULL DEFAULT 0,
@@ -119,6 +122,26 @@ CREATE TABLE IF NOT EXISTS video_recovery (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS my_activity_watch_events (
+  event_id TEXT PRIMARY KEY,
+  video_id TEXT NOT NULL REFERENCES videos(video_id),
+  watched_at TEXT NOT NULL,
+  observed_title TEXT NOT NULL DEFAULT '',
+  observed_url TEXT NOT NULL DEFAULT '',
+  collected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS my_activity_subscription_events (
+  event_id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES channels(channel_id),
+  subscribed_at TEXT NOT NULL,
+  observed_title TEXT NOT NULL DEFAULT '',
+  observed_url TEXT NOT NULL DEFAULT '',
+  collected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
 CREATE TABLE IF NOT EXISTS history_events (
   event_id TEXT PRIMARY KEY,
   video_id TEXT NOT NULL REFERENCES videos(video_id),
@@ -128,6 +151,7 @@ CREATE TABLE IF NOT EXISTS history_events (
   source_type TEXT NOT NULL DEFAULT '',
   match_type TEXT NOT NULL DEFAULT '',
   youtube_ordinal INTEGER,
+  my_activity_event_id TEXT REFERENCES my_activity_watch_events(event_id),
   takeout_history_key TEXT,
   takeout_row_key TEXT,
   watch_progress_percent INTEGER NOT NULL DEFAULT 0,
@@ -315,11 +339,18 @@ CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel_id);
 CREATE INDEX IF NOT EXISTS idx_videos_fetch ON videos(fetch_status, fetched_at);
 CREATE INDEX IF NOT EXISTS idx_videos_availability ON videos(is_playable, availability);
 CREATE INDEX IF NOT EXISTS idx_playlist_items_video ON playlist_items(video_id);
+CREATE INDEX IF NOT EXISTS idx_my_activity_watch_video_time
+  ON my_activity_watch_events(video_id, watched_at);
+CREATE INDEX IF NOT EXISTS idx_my_activity_subscription_channel_time
+  ON my_activity_subscription_events(channel_id, subscribed_at);
 CREATE INDEX IF NOT EXISTS idx_playlist_items_state ON playlist_items(membership_state, playlist_id, position);
 CREATE INDEX IF NOT EXISTS idx_video_recovery_status ON video_recovery(search_status, searched_at);
 CREATE INDEX IF NOT EXISTS idx_history_events_video ON history_events(video_id);
 CREATE INDEX IF NOT EXISTS idx_history_events_date ON history_events(watch_date, youtube_ordinal);
 CREATE INDEX IF NOT EXISTS idx_history_events_time ON history_events(watched_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_history_my_activity_event
+  ON history_events(my_activity_event_id)
+  WHERE my_activity_event_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_history_events_takeout
   ON history_events(takeout_history_key, takeout_row_key)
   WHERE takeout_history_key IS NOT NULL AND takeout_row_key IS NOT NULL;

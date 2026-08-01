@@ -906,9 +906,26 @@ def channel_list_data(
     if sort == "title_desc":
         rows.sort(key=lambda row: str(row.get("title") or row.get("channel_id") or "").casefold(), reverse=True)
     elif sort == "newest_updated":
-        rows.sort(key=lambda row: str(row.get("updated_at") or row.get("fetched_at") or ""), reverse=True)
+        rows.sort(
+            key=lambda row: str(
+                row.get("subscribed_at")
+                or row.get("first_seen_at")
+                or row.get("updated_at")
+                or row.get("fetched_at")
+                or ""
+            ),
+            reverse=True,
+        )
     elif sort == "oldest_updated":
-        rows.sort(key=lambda row: str(row.get("updated_at") or row.get("fetched_at") or ""))
+        rows.sort(
+            key=lambda row: str(
+                row.get("subscribed_at")
+                or row.get("first_seen_at")
+                or row.get("updated_at")
+                or row.get("fetched_at")
+                or ""
+            )
+        )
     else:
         rows.sort(key=lambda row: str(row.get("title") or row.get("channel_id") or "").casefold())
     limit = max(1, min(int(limit), 500))
@@ -995,9 +1012,10 @@ def _omni_result(
         watch_count = int(item.get("watch_count") or 0)
     elif kind == "channel":
         title = item.get("title") or item.get("channel_id") or ""
+        subscribed_at = item.get("subscribed_at") or ""
         first_seen_at = item.get("first_seen_at") or ""
-        sort_date = first_seen_at or item.get("updated_at") or item.get("fetched_at") or ""
-        sort_date_fallback = not bool(first_seen_at)
+        sort_date = subscribed_at or first_seen_at or item.get("updated_at") or item.get("fetched_at") or ""
+        sort_date_fallback = not bool(subscribed_at or first_seen_at)
         watch_count = 0
     else:
         title = item.get("title") or item.get("playlist_id") or ""

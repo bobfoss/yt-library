@@ -76,6 +76,15 @@
     .proxy-input { width: 320px; }
     .delay-input { width: 150px; }
     .settings-status { align-self: center; min-width: 64px; }
+    .advanced-panel { margin: 0 0 18px; }
+    .advanced-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+    .advanced-tab { border: 0; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; color: var(--muted); }
+    .advanced-tab.active { border-bottom-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
+    .advanced-tab-pane[hidden] { display: none; }
+    .cookie-editor { display: grid; gap: 10px; }
+    .cookie-editor textarea { box-sizing: border-box; width: 100%; min-height: 190px; resize: vertical; border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: var(--bg); color: var(--ink); font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
+    .cookie-editor .controls { margin: 0; }
+    .cookie-status.warn { color: var(--warn); }
     .dispatch-settings { display: grid; gap: 10px; margin: 14px 0 10px; padding: 0; border: 0; }
     .dispatch-settings legend { margin-bottom: 7px; color: var(--ink); font-size: 14px; font-weight: 700; }
     .dispatch-option { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
@@ -205,18 +214,48 @@
             <span>Dark</span>
           </div>
         </div>
-        <div class="header-settings-row advanced-only">
+      </div>
+    </header>
+
+    <section class="panel advanced-panel advanced-only">
+      <div class="advanced-tabs" role="tablist" aria-label="Advanced settings">
+        <button class="advanced-tab active" type="button" role="tab" aria-selected="true" data-advanced-tab="controls">Controls</button>
+        <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="youtube">YouTube cookies</button>
+        <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="google">Google cookies</button>
+        <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="archivarix">Archivarix cookies</button>
+      </div>
+      <div class="advanced-tab-pane" data-advanced-pane="controls">
+        <div class="controls">
           <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>
           <button id="detectTimezone" type="button">Use browser time zone</button>
         </div>
-        <div class="header-settings-row advanced-only">
+        <div class="controls">
           <label class="checkbox"><input id="useProxy" type="checkbox">Use proxy</label>
           <input id="proxyUrl" class="proxy-input" type="text" aria-label="SOCKS5 proxy URL" placeholder="socks5h://127.0.0.1:1080">
           <button id="saveSettings" class="primary" type="button">Save</button>
           <span id="settingsStatus" class="metric settings-status" aria-live="polite"></span>
         </div>
+        <div class="controls">
+          <button id="syncAccountDates" class="primary" type="button">Sync account dates</button>
+          <span class="metric">Collect My Activity watch/subscription events and YouTube Data API playlist dates when configured.</span>
+        </div>
       </div>
-    </header>
+      <div class="advanced-tab-pane cookie-editor" data-advanced-pane="youtube" hidden>
+        <div id="youtubeCookieStatus" class="metric cookie-status" aria-live="polite">Checking cookie file</div>
+        <textarea id="youtubeCookieText" spellcheck="false" autocomplete="off" placeholder="Paste a Netscape HTTP Cookie File export. Saved cookie values are never displayed here."></textarea>
+        <div class="controls"><button class="primary save-cookie" type="button" data-cookie-kind="youtube">Replace YouTube cookie file</button></div>
+      </div>
+      <div class="advanced-tab-pane cookie-editor" data-advanced-pane="google" hidden>
+        <div id="googleCookieStatus" class="metric cookie-status" aria-live="polite">Checking cookie file</div>
+        <textarea id="googleCookieText" spellcheck="false" autocomplete="off" placeholder="Paste a Netscape HTTP Cookie File export. Saved cookie values are never displayed here."></textarea>
+        <div class="controls"><button class="primary save-cookie" type="button" data-cookie-kind="google">Replace Google cookie file</button></div>
+      </div>
+      <div class="advanced-tab-pane cookie-editor" data-advanced-pane="archivarix" hidden>
+        <div id="archivarixCookieStatus" class="metric cookie-status" aria-live="polite">Checking cookie file</div>
+        <textarea id="archivarixCookieText" spellcheck="false" autocomplete="off" placeholder="Paste a Netscape HTTP Cookie File export. Saved cookie values are never displayed here."></textarea>
+        <div class="controls"><button class="primary save-cookie" type="button" data-cookie-kind="archivarix">Replace Archivarix cookie file</button></div>
+      </div>
+    </section>
 
     <div id="initializeControls" class="controls initialize-controls">
       <button id="initializeLibrary" type="button">Initialize</button>
@@ -506,6 +545,12 @@
       themeToggle: document.getElementById('themeToggle'),
       serviceStatus: document.getElementById('serviceStatus'),
       restartService: document.getElementById('restartService'),
+      youtubeCookieStatus: document.getElementById('youtubeCookieStatus'),
+      youtubeCookieText: document.getElementById('youtubeCookieText'),
+      googleCookieStatus: document.getElementById('googleCookieStatus'),
+      googleCookieText: document.getElementById('googleCookieText'),
+      archivarixCookieStatus: document.getElementById('archivarixCookieStatus'),
+      archivarixCookieText: document.getElementById('archivarixCookieText'),
     };
     fields.displayTimezone.value = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
     fields.themeToggle.checked = window.YTLibraryTheme.current() === 'dark';
@@ -554,6 +599,73 @@
 
     function applyAdvancedMode(enabled) {
       document.body.classList.toggle('advanced-enabled', Boolean(enabled));
+    }
+
+    function selectAdvancedTab(kind) {
+      for (const button of document.querySelectorAll('[data-advanced-tab]')) {
+        const active = button.dataset.advancedTab === kind;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', String(active));
+      }
+      for (const pane of document.querySelectorAll('[data-advanced-pane]')) {
+        pane.hidden = pane.dataset.advancedPane !== kind;
+      }
+    }
+
+    function cookieFields(kind) {
+      return {
+        status: fields[`${kind}CookieStatus`],
+        text: fields[`${kind}CookieText`],
+      };
+    }
+
+    function renderCookieStatus(kind, status) {
+      const target = cookieFields(kind).status;
+      const matching = Number(status.matchingCookieCount || 0);
+      const unexpired = Number(status.unexpiredMatchingCookieCount || 0);
+      const modified = status.modifiedAt ? ` Updated ${fmtTime(status.modifiedAt)}.` : '';
+      target.textContent = `${status.message || 'Cookie status unavailable'} ${matching} matching, ${unexpired} unexpired.${modified}`;
+      target.classList.toggle('warn', !status.exists || !status.valid || unexpired === 0);
+      target.title = status.configuredPath || '';
+    }
+
+    async function loadCookieStatuses() {
+      const response = await fetch('/api/admin/cookies/status', { cache: 'no-store' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `Cookie status failed: ${response.status}`);
+      for (const kind of ['youtube', 'google', 'archivarix']) {
+        renderCookieStatus(kind, payload.cookies?.[kind] || {});
+      }
+    }
+
+    async function saveCookieFile(kind, button) {
+      const editor = cookieFields(kind);
+      const value = editor.text.value;
+      if (!value.trim()) {
+        alert('Paste a Netscape cookie export first.');
+        return;
+      }
+      button.disabled = true;
+      editor.status.textContent = 'Validating and saving';
+      try {
+        const response = await fetch(`/api/admin/cookies/${encodeURIComponent(kind)}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'X-YT-Library-Admin': '1',
+          },
+          body: value,
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `Cookie update failed: ${response.status}`);
+        editor.text.value = '';
+        renderCookieStatus(kind, payload.status || {});
+      } catch (error) {
+        editor.status.textContent = `Not saved: ${error.message}`;
+        editor.status.classList.add('warn');
+      } finally {
+        button.disabled = false;
+      }
     }
 
     function syncDispatchModeInputs() {
@@ -1429,7 +1541,7 @@
     }
 
     fields.initializeLibrary.addEventListener('click', async () => {
-      const warning = 'Initialize the library? This queues a full YouTube history verification, scans Liked videos and every known playlist, and fetches missing or stale video and channel metadata. This will usually take a significant amount of time.';
+      const warning = 'Initialize the library? This queues a full YouTube history verification, account-date sync, scans Liked videos and every known playlist, and fetches missing or stale video and channel metadata. This will usually take a significant amount of time.';
       if (!confirm(warning)) return;
       fields.initializeLibrary.disabled = true;
       fields.initializeStatus.textContent = 'Queueing';
@@ -1539,6 +1651,7 @@
       post('/api/admin/queue/remove', { queue_id: queueId }).catch(error => alert(error.message));
     });
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start').catch(error => alert(error.message)));
+    document.getElementById('syncAccountDates').addEventListener('click', () => post('/api/admin/account/start').catch(error => alert(error.message)));
     fields.updateDaily.addEventListener('change', () => {
       fields.updateTime.disabled = !fields.updateDaily.checked;
       scheduleUpdateScheduleSave();
@@ -1559,7 +1672,7 @@
     document.getElementById('retryArchivarix').addEventListener('click', () => post('/api/admin/archivarix/retry').catch(error => alert(error.message)));
     document.getElementById('rebuildWorkerQueue').addEventListener('click', () => post('/api/admin/queue/rebuild').catch(error => alert(error.message)));
     document.getElementById('clearWorkerQueue').addEventListener('click', () => {
-      if (!confirm('Clear the worker queue? This will remove all pending metadata, playlist, and history jobs.')) return;
+      if (!confirm('Clear the worker queue? This will remove all pending account, metadata, playlist, and history jobs.')) return;
       post('/api/admin/queue/clear').catch(error => alert(error.message));
     });
     document.getElementById('stopWorkerQueue').addEventListener('click', () => stopWorkersNow().catch(error => alert(error.message)));
@@ -1611,6 +1724,12 @@
       fields.displayTimezone.value = window.YTLibraryTime.detected();
       settingsDirty = true;
     });
+    for (const button of document.querySelectorAll('[data-advanced-tab]')) {
+      button.addEventListener('click', () => selectAdvancedTab(button.dataset.advancedTab || 'controls'));
+    }
+    for (const button of document.querySelectorAll('.save-cookie')) {
+      button.addEventListener('click', () => saveCookieFile(button.dataset.cookieKind || '', button));
+    }
 
     function connectQueueEvents() {
       const stream = new EventSource('/api/admin/queue/events');
@@ -1663,6 +1782,8 @@
     new ResizeObserver(scheduleQueueRender).observe(fields.workerQueuePanel);
     loadStatus({ force: true })
       .catch(error => { fields.playlistRunStatus.textContent = error.message; });
+    loadCookieStatuses()
+      .catch(error => { fields.googleCookieStatus.textContent = error.message; });
     setInterval(() => {
       loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
     }, statusPollMs);

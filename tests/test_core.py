@@ -343,7 +343,8 @@ class CoreHelperTests(unittest.TestCase):
                 )
                 self.assertTrue(result["started"])
                 self.assertTrue(entered.wait(1))
-                self.assertEqual(captured_args[-1], "socks5h://127.0.0.1:1080")
+                self.assertEqual(captured_args[-2], "socks5h://127.0.0.1:1080")
+                self.assertEqual(captured_args[-1]["proxy"], "socks5h://127.0.0.1:1080")
                 release.set()
                 deadline = time.time() + 1
                 while dispatcher.is_alive() and time.time() < deadline:
@@ -3637,19 +3638,21 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(stats["metadata"], 2)
         self.assertEqual(stats["playlists"], 2)
         self.assertEqual(stats["history"], 1)
-        self.assertEqual(stats["selected"], 5)
-        self.assertEqual(stats["inserted"], 5)
+        self.assertEqual(stats["account"], 1)
+        self.assertEqual(stats["selected"], 6)
+        self.assertEqual(stats["inserted"], 6)
         self.assertEqual(stats["already_queued"], 0)
-        self.assertEqual(stats["queued"], 6)
+        self.assertEqual(stats["queued"], 7)
         self.assertEqual(repeated_stats["inserted"], 0)
-        self.assertEqual(repeated_stats["already_queued"], 5)
-        self.assertEqual(repeated_stats["queued"], 6)
+        self.assertEqual(repeated_stats["already_queued"], 6)
+        self.assertEqual(repeated_stats["queued"], 7)
         self.assertIn(existing["subject_key"], subjects)
         self.assertIn("metadata:channel:UCinitialize", subjects)
         self.assertIn("metadata:video:initvideo01", subjects)
         self.assertIn("playlist:scan:LL", subjects)
         self.assertIn("playlist:scan:PLinitialize", subjects)
         self.assertIn("history:verify", subjects)
+        self.assertIn("account:sync", subjects)
 
     def test_update_queues_incremental_discovery_and_never_fetched_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3693,15 +3696,16 @@ class SchemaTests(unittest.TestCase):
             finally:
                 conn.close()
 
-        self.assertEqual(stats["selected"], 6)
-        self.assertEqual(stats["inserted"], 6)
+        self.assertEqual(stats["selected"], 7)
+        self.assertEqual(stats["inserted"], 7)
         self.assertEqual(stats["already_queued"], 0)
-        self.assertEqual(stats["queued"], 7)
+        self.assertEqual(stats["queued"], 8)
         self.assertEqual(repeated_stats["inserted"], 0)
-        self.assertEqual(repeated_stats["already_queued"], 6)
+        self.assertEqual(repeated_stats["already_queued"], 7)
         self.assertIn(existing["subject_key"], subjects)
         self.assertIn("playlist:discover-current", subjects)
         self.assertIn("history:recent", subjects)
+        self.assertIn("account:sync", subjects)
         self.assertIn("playlist:scan:LL", subjects)
         self.assertIn("playlist:scan:PLupdate", subjects)
         self.assertNotIn("playlist:scan:PLremoved", subjects)
@@ -5144,10 +5148,10 @@ class AdminServerTests(unittest.TestCase):
                 conn.close()
 
         self.assertEqual(result["dispatcher"], {"started": True})
-        self.assertEqual(result["queue"]["inserted"], 3)
+        self.assertEqual(result["queue"]["inserted"], 4)
         self.assertEqual(
             {row["subject_key"] for row in queue_rows},
-            {"history:recent", "playlist:discover-current", "playlist:scan:LL"},
+            {"account:sync", "history:recent", "playlist:discover-current", "playlist:scan:LL"},
         )
         self.assertEqual(tuple(log)[0], "queue info")
         self.assertIn("Scheduled update queued", tuple(log)[1])
@@ -5729,6 +5733,7 @@ class AdminServerTests(unittest.TestCase):
         detail_card_start = server.INDEX_HTML.index("function videoDetailCardFor(video)")
         detail_card_end = server.INDEX_HTML.index("function channelDetailCardFor(channel)")
         detail_card_html = server.INDEX_HTML[detail_card_start:detail_card_end]
+        self.assertIn("${latestWatchDateHtml(video)}", detail_card_html)
         self.assertLess(
             detail_card_html.index("video.video_id ?"),
             detail_card_html.index("${archivarixStatusHtml(video)}"),
@@ -5851,10 +5856,10 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("fields.themeToggle.checked ? 'dark' : 'light'", server.ADMIN_HTML)
         self.assertIn("function formatDate(value)", server.TIMEZONE_JS)
         self.assertIn("formatDate,", server.TIMEZONE_JS)
-        self.assertIn("function channelFirstSeenHtml(channel)", server.INDEX_HTML)
+        self.assertIn("function channelDatesHtml(channel)", server.INDEX_HTML)
         self.assertIn('class="details channel-first-seen"', server.INDEX_HTML)
-        self.assertIn("First seen ${escapeHtml(date)}", server.INDEX_HTML)
-        self.assertEqual(server.INDEX_HTML.count("${channelFirstSeenHtml(channel)}"), 2)
+        self.assertIn("Subscribed ${escapeHtml(subscribedDate)}", server.INDEX_HTML)
+        self.assertEqual(server.INDEX_HTML.count("${channelDatesHtml(channel)}"), 2)
         self.assertIn("function channelNotificationHtml(channel)", server.INDEX_HTML)
         self.assertEqual(server.INDEX_HTML.count("${channelNotificationHtml(channel)}"), 2)
         self.assertIn("All notifications", server.INDEX_HTML)
@@ -6026,8 +6031,8 @@ class AdminServerTests(unittest.TestCase):
 
         self.assertTrue(response["ok"])
         self.assertFalse(response["queue"]["had_data"])
-        self.assertEqual(response["queue"]["inserted"], 2)
-        self.assertEqual(subjects, {"history:verify", "playlist:scan:LL"})
+        self.assertEqual(response["queue"]["inserted"], 3)
+        self.assertEqual(subjects, {"account:sync", "history:verify", "playlist:scan:LL"})
         start_dispatcher.assert_called_once_with(
             db_path,
             handler.cookie_file,

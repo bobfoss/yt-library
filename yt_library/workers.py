@@ -27,6 +27,13 @@ from .config import (
     effective_display_timezone,
 )
 from .core import *
+from .my_activity import MyActivityError, fetch_my_activity_pages
+from .youtube_data_api import (
+    YouTubeDataApiError,
+    YouTubeDataApiNotConfigured,
+    build_youtube_data_service,
+    fetch_youtube_account_snapshot,
+)
 
 
 _YOUTUBE_AUTH_PROBE_LOCK = threading.Lock()
@@ -1912,6 +1919,150 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
 PLACEHOLDER_RECOVERY_WORKER = PlaceholderRecoveryWorker()
 
 
+def run_optional_account_sync(
+    db_path: Path,
+    config: dict[str, Any],
+    timezone_name: str,
+    queue_id: int,
+) -> None:
+    """Collect optional account-level timestamp sources without blocking other work."""
+
+    my_activity_cookie = config_path(config, "my_activity_cookies")
+    if not my_activity_cookie.is_file():
+        conn = connect(db_path)
+        try:
+            with conn:
+                log_worker_queue_event(
+                    conn,
+                    "info",
+                    "Google My Activity cookies are not configured; exact watch and subscription dates may be incomplete.",
+                )
+        finally:
+            conn.close()
+    else:
+        try:
+            pages = fetch_my_activity_pages(
+                my_activity_cookie,
+                max_pages=25,
+                proxy_url=configured_proxy(config),
+            )
+            watch_events = sorted(
+                {event.event_id: event for page in pages for event in page.events}.values(),
+                key=lambda event: (event.watched_at, event.event_id),
+                reverse=True,
+            )
+            subscription_events = sorted(
+                {
+                    event.event_id: event
+                    for page in pages
+                    for event in page.subscription_events
+                }.values(),
+                key=lambda event: (event.subscribed_at, event.event_id),
+                reverse=True,
+            )
+            conn = connect(db_path)
+            try:
+                with conn:
+                    stats = save_my_activity_events(
+                        conn,
+                        watch_events,
+                        subscription_events,
+                        timezone_name,
+                    )
+                    gap = bool(
+                        not stats["first_collection"] and not stats["overlap_events"]
+                    )
+                    level = "warn" if gap else "info"
+                    suffix = (
+                        " No stored event overlapped this scan, so a collection gap may exist."
+                        if gap
+                        else ""
+                    )
+                    log_worker_queue_event(
+                        conn,
+                        level,
+                        (
+                            "My Activity sync: "
+                            f"{stats['watch_inserted']} new watches, "
+                            f"{stats['subscription_inserted']} new subscriptions, "
+                            f"{stats['overlap_events']} overlapping events across "
+                            f"{len(pages)} pages.{suffix}"
+                        ),
+                    )
+            finally:
+                conn.close()
+        except (MyActivityError, OSError, RuntimeError) as exc:
+            conn = connect(db_path)
+            try:
+                with conn:
+                    log_worker_queue_event(
+                        conn,
+                        "warn",
+                        f"My Activity sync was skipped: {exc}",
+                    )
+            finally:
+                conn.close()
+
+    token_path = config_path(config, "youtube_oauth_token")
+    if not token_path.is_file():
+        conn = connect(db_path)
+        try:
+            with conn:
+                log_worker_queue_event(
+                    conn,
+                    "info",
+                    "YouTube Data API OAuth is not configured; subscription and playlist published dates may be incomplete.",
+                )
+        finally:
+            conn.close()
+    else:
+        try:
+            service = build_youtube_data_service(
+                config_path(config, "youtube_oauth_client_secrets"),
+                token_path,
+                configured_proxy(config),
+            )
+            snapshot = fetch_youtube_account_snapshot(
+                service,
+                before_request=pace_outbound_request,
+            )
+            conn = connect(db_path)
+            try:
+                with conn:
+                    stats = save_youtube_data_api_snapshot(conn, snapshot)
+                    log_worker_queue_event(
+                        conn,
+                        "info",
+                        (
+                            "YouTube Data API sync: "
+                            f"{stats['subscriptions']} subscriptions, "
+                            f"{stats['playlists']} playlists, and "
+                            f"{stats['playlist_items']} playlist items; "
+                            f"{stats['playlist_items_unmatched']} timestamps could not be matched."
+                        ),
+                    )
+            finally:
+                conn.close()
+        except (YouTubeDataApiNotConfigured, YouTubeDataApiError, OSError, RuntimeError) as exc:
+            conn = connect(db_path)
+            try:
+                with conn:
+                    log_worker_queue_event(
+                        conn,
+                        "warn",
+                        f"YouTube Data API sync was skipped: {exc}",
+                    )
+            finally:
+                conn.close()
+
+    conn = connect(db_path)
+    try:
+        with conn:
+            remove_worker_queue_entry(conn, queue_id)
+    finally:
+        conn.close()
+
+
 class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
     def __init__(self) -> None:
         super().__init__()
@@ -2031,6 +2182,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 configured_archivarix_retry_attempts(config),
                 configured_archivarix_retry_backoff(config),
                 proxy_url,
+                dict(config),
             ),
             started_message="Worker queue dispatcher started",
             already_running_message="Worker queue dispatcher already running",
@@ -2200,6 +2352,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         archivarix_retry_attempts: int = 3,
         archivarix_retry_backoff_seconds: float = 2.0,
         proxy_url: str = "",
+        config: dict[str, Any] | None = None,
     ) -> None:
         conn = connect(db_path)
         try:
@@ -2328,7 +2481,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     eligible_worker_types.append("placeholder")
                 has_active = bool(metadata_queue_ids or placeholder_queue_ids)
                 if not proxy_blocked and not has_active and not youtube_blocked:
-                    eligible_worker_types.extend(("playlist", "history"))
+                    eligible_worker_types.extend(("account", "playlist", "history"))
                 if not eligible_worker_types:
                     if has_active:
                         self._stop.wait(0.05)
@@ -2453,6 +2606,17 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     if LIVE_HISTORY_WORKER.proxy_block_reason():
                         proxy_blocked = True
                     elif not self._stop.is_set():
+                        self._mark_completed()
+                elif worker_type == "account":
+                    run_optional_account_sync(
+                        db_path,
+                        config or {},
+                        timezone_name,
+                        queue_id,
+                    )
+                    launched = True
+                    launched_at = time.monotonic()
+                    if not self._stop.is_set():
                         self._mark_completed()
                 else:
                     self._drop_unknown_row(db_path, row)

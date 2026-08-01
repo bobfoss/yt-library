@@ -10,27 +10,78 @@ from typing import Any
 from .config import (
     config_int,
     config_path,
+    configured_proxy,
     ensure_config_file,
     load_config,
 )
 from .core import (
+    connect,
     configure_request_pacing,
     discover_current_playlists,
     import_history,
     import_playlists,
     import_takeout_playlists,
     migrate_database,
+    pace_outbound_request,
     recover_archivarix_thumbnails,
     recover_unavailable_videos,
+    save_youtube_data_api_snapshot,
     scan_hidden,
 )
+from .my_activity import collect_my_activity
 from .server import serve
+from .youtube_data_api import (
+    YouTubeDataApiError,
+    authorize_youtube_data_api,
+    build_youtube_data_service,
+    fetch_youtube_account_snapshot,
+)
 
 
 def migrate(args: argparse.Namespace) -> None:
     ensure_config_file(args.config_data)
     migrate_database(Path(args.db))
     print(f"Migrated {args.db}")
+
+
+def authorize_youtube(args: argparse.Namespace) -> None:
+    try:
+        token_path = authorize_youtube_data_api(
+            Path(args.client_secrets),
+            Path(args.token),
+        )
+    except YouTubeDataApiError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"Saved YouTube Data API OAuth token to {token_path}")
+
+
+def collect_youtube_data_api(args: argparse.Namespace) -> dict[str, int]:
+    try:
+        service = build_youtube_data_service(
+            Path(args.client_secrets),
+            Path(args.token),
+            configured_proxy(getattr(args, "config_data", {})),
+        )
+        snapshot = fetch_youtube_account_snapshot(
+            service,
+            before_request=pace_outbound_request,
+        )
+    except YouTubeDataApiError as exc:
+        raise SystemExit(str(exc)) from exc
+    conn = connect(Path(args.db))
+    try:
+        with conn:
+            stats = save_youtube_data_api_snapshot(conn, snapshot)
+    finally:
+        conn.close()
+    print(
+        f"Collected {stats['subscriptions']} subscriptions, "
+        f"{stats['playlists']} playlists, and {stats['playlist_items']} playlist "
+        f"items from the YouTube Data API; updated {stats['playlist_items_updated']} "
+        f"and inserted {stats['playlist_items_inserted']} playlist-item dates "
+        f"({stats['playlist_items_unmatched']} unmatched)."
+    )
+    return stats
 
 
 def _preparse_config(argv: list[str] | None) -> tuple[list[str] | None, dict[str, Any]]:
@@ -101,6 +152,58 @@ def main(argv: list[str] | None = None) -> int:
     history_parser.add_argument("--history-key", default="")
     history_parser.set_defaults(func=import_history)
 
+    my_activity_parser = subparsers.add_parser(
+        "collect-my-activity",
+        help="Collect exact YouTube watch and subscription events from Google My Activity",
+    )
+    my_activity_parser.add_argument("--db", default=str(config_path(config, "database")))
+    my_activity_parser.add_argument(
+        "--cookies",
+        default=str(config_path(config, "my_activity_cookies")),
+        help="Netscape cookie export containing google.com cookies",
+    )
+    my_activity_parser.add_argument(
+        "--html",
+        default="",
+        help="Parse a saved My Activity HTML page instead of fetching it",
+    )
+    my_activity_parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=25,
+        help="Fetch at most N activity pages, including the initial page (default: 25)",
+    )
+    my_activity_parser.set_defaults(func=collect_my_activity)
+
+    youtube_authorize_parser = subparsers.add_parser(
+        "authorize-youtube-data-api",
+        help="Authorize read-only YouTube Data API access and save a local OAuth token",
+    )
+    youtube_authorize_parser.add_argument(
+        "--client-secrets",
+        default=str(config_path(config, "youtube_oauth_client_secrets")),
+    )
+    youtube_authorize_parser.add_argument(
+        "--token",
+        default=str(config_path(config, "youtube_oauth_token")),
+    )
+    youtube_authorize_parser.set_defaults(func=authorize_youtube)
+
+    youtube_collect_parser = subparsers.add_parser(
+        "collect-youtube-data-api",
+        help="Collect subscription, playlist, and playlist-item dates through YouTube Data API",
+    )
+    youtube_collect_parser.add_argument("--db", default=str(config_path(config, "database")))
+    youtube_collect_parser.add_argument(
+        "--client-secrets",
+        default=str(config_path(config, "youtube_oauth_client_secrets")),
+    )
+    youtube_collect_parser.add_argument(
+        "--token",
+        default=str(config_path(config, "youtube_oauth_token")),
+    )
+    youtube_collect_parser.set_defaults(func=collect_youtube_data_api)
+
     recover_missing_parser = subparsers.add_parser(
         "recover-missing-thumbnails",
         help="Recover Archivarix metadata for exact unavailable video IDs",
@@ -134,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         args = parser.parse_args([*(argv or []), "serve"])
     _attach_config(args, config)
-    if args.command not in {"serve", "migrate"}:
+    if hasattr(args, "db") and args.command not in {"serve", "migrate"}:
         migrate_database(Path(args.db))
     args.func(args)
     return 0

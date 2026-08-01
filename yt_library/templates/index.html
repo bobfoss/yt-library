@@ -2943,6 +2943,7 @@
             ])}
             ${archivarixStatusHtml(video)}
             ${videoAvailabilityHtml(video)}
+            ${latestWatchDateHtml(video)}
             ${watchedLineHtml(video)}
             ${watchSparklineHtml(video, true)}
             ${reactionIconsHtml(video)}
@@ -2987,7 +2988,7 @@
               ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
               ${channel.archivarix_channel_id ? `<span>Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
             </div>
-            ${channelFirstSeenHtml(channel)}
+            ${channelDatesHtml(channel)}
             ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
             ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
             ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : '<div class="empty">No channel description captured.</div>'}
@@ -2998,10 +2999,27 @@
       return article;
     }
 
-    function channelFirstSeenHtml(channel) {
-      if (!channel.first_seen_at) return '';
-      const date = window.YTLibraryTime.formatDate(channel.first_seen_at);
-      return date ? `<div class="details channel-first-seen"><span>First seen ${escapeHtml(date)}</span></div>` : '';
+    function channelDatesHtml(channel) {
+      const subscribedDate = channel.subscribed_at
+        ? window.YTLibraryTime.formatDate(channel.subscribed_at)
+        : '';
+      const firstSeenDate = channel.first_seen_at
+        ? window.YTLibraryTime.formatDate(channel.first_seen_at)
+        : '';
+      const values = [];
+      if (subscribedDate) values.push(`<span>Subscribed ${escapeHtml(subscribedDate)}</span>`);
+      if (firstSeenDate && firstSeenDate !== subscribedDate) {
+        values.push(`<span>First seen ${escapeHtml(firstSeenDate)}</span>`);
+      }
+      return values.length
+        ? `<div class="details channel-first-seen">${values.join('')}</div>`
+        : '';
+    }
+
+    function playlistCreatedHtml(playlist) {
+      if (!playlist.created_at) return '';
+      const date = window.YTLibraryTime.formatDate(playlist.created_at);
+      return date ? `<span>Created ${escapeHtml(date)}</span>` : '';
     }
 
     function channelTabsFor(activeTab, playlistCount, historyCount) {
@@ -3302,6 +3320,7 @@
         </div>
         <div class="details">
           ${playlist.playlist_id ? `<span>${escapeHtml(playlist.playlist_id)}</span>` : ''}
+          ${playlistCreatedHtml(playlist)}
         </div>
         `,
       });
@@ -3461,7 +3480,7 @@
           ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
           ${channel.archivarix_channel_id ? `<span>Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
         </div>
-        ${channelFirstSeenHtml(channel)}
+        ${channelDatesHtml(channel)}
         ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
         ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
         ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : ''}

@@ -19,7 +19,10 @@ DEFAULT_CONFIG_PATH = ROOT / "yt_library.config.json"
 DEFAULT_CONFIG: dict[str, Any] = {
     "database": "yt_library.sqlite3",
     "youtube_cookies": "yt_cookies.txt",
+    "my_activity_cookies": "my_activity_cookies.txt",
     "archivarix_cookies": "archivarix_cookies.txt",
+    "youtube_oauth_client_secrets": "youtube_oauth_client_secret.json",
+    "youtube_oauth_token": "youtube_oauth_token.json",
     "thumbnail_dir": "thumbs",
     "archivarix_thumbnail_dir": "archivarix_thumbs",
     "video_thumbnail_dir": "video_thumbs",
@@ -345,7 +348,10 @@ def configured_archivarix_retry_backoff(config: dict[str, Any]) -> float:
 PATH_KEYS = {
     "database",
     "youtube_cookies",
+    "my_activity_cookies",
     "archivarix_cookies",
+    "youtube_oauth_client_secrets",
+    "youtube_oauth_token",
     "thumbnail_dir",
     "archivarix_thumbnail_dir",
     "video_thumbnail_dir",

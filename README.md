@@ -7,6 +7,8 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 - Browse current playlists, canonical videos, and retained unavailable videos.
 - Search watch history with paginated results across titles, channels, IDs, and fetched metadata descriptions.
 - Import YouTube Takeout history zip files without extracting them first.
+- Collect exact YouTube watch and channel-subscription timestamps from Google My Activity directly into SQLite.
+- Collect subscription, owned-playlist creation, and playlist-item-added timestamps through the YouTube Data API.
 - Reconcile date-only live YouTube history observations with precise Takeout watch timestamps.
 - Cache video thumbnails and creator channel avatars locally.
 - Capture YouTube like/dislike reaction state during metadata fetches and expose a derived Liked videos view.
@@ -55,7 +57,10 @@ in the generated config file:
 {
   "database": "yt_library.sqlite3",
   "youtube_cookies": "yt_cookies.txt",
+  "my_activity_cookies": "my_activity_cookies.txt",
   "archivarix_cookies": "archivarix_cookies.txt",
+  "youtube_oauth_client_secrets": "youtube_oauth_client_secret.json",
+  "youtube_oauth_token": "youtube_oauth_token.json",
   "thumbnail_dir": "thumbs",
   "archivarix_thumbnail_dir": "archivarix_thumbs",
   "video_thumbnail_dir": "video_thumbs",
@@ -104,9 +109,11 @@ settings are migrated when an older config is loaded.
 Set `use_proxy` to `true` and `proxy` to a URL such as
 `socks5h://127.0.0.1:1080` to route every outbound YouTube and Archivarix page,
 API, stream, thumbnail, and yt-dlp request through a SOCKS5 proxy. Use `socks5h`
-for proxy-side DNS resolution. The Admin header can update the timezone and
-proxy settings together; changing either proxy setting restarts the service so
-all new network clients use the saved configuration.
+for proxy-side DNS resolution. The Admin Advanced panel has tabs for controls
+and the YouTube, Google, and Archivarix cookie files. Cookie updates are
+validated as Netscape exports and saved atomically; existing cookie values are
+never sent back to the browser. Changing either proxy setting restarts the
+service so all new network clients use the saved configuration.
 `dispatch_mode` selects one of two queue policies. In `delay` mode,
 `job_dispatch_delay_seconds` spaces every worker launch, regardless of worker
 type. In `throttle` mode, jobs launch without that dispatch delay and every
@@ -142,18 +149,91 @@ python -m py_compile @files
 python -m unittest discover -s tests -v
 python yt_library_manager.py migrate
 python yt_library_manager.py import-history
+python yt_library_manager.py collect-my-activity
+python yt_library_manager.py authorize-youtube-data-api
+python yt_library_manager.py collect-youtube-data-api
 git diff --check
 ```
 
-`import-history` uses only the newest Takeout zip in the selected path. It imports current playlists, watch events, and subscriptions, then reconciles exact Takeout times with live-history ordinals. Older exports are not retained as metadata history.
+`import-history` reads all Takeout zips in the selected path, skips duplicate
+watch events, imports current playlists and subscriptions, then reconciles exact
+Takeout times with live-history ordinals.
+
+### Account dates without repeated Takeout exports
+
+`collect-my-activity` reads the structured bootstrap data behind the signed-in
+[YouTube My Activity page](https://myactivity.google.com/product/youtube). Unlike
+the visible page, which rounds times to the minute, the bootstrap records include
+an exact UTC timestamp and a distinct activity token for each watch event. The
+same stream includes timestamped `Subscribed to` events when Google exposes
+them.
+
+Export a separate Netscape-format cookie file that includes `google.com` cookies
+to `my_activity_cookies.txt`, then run:
+
+```powershell
+python yt_library_manager.py collect-my-activity
+```
+
+The command writes normalized evidence directly to dedicated SQLite source
+tables and projects watch events into canonical history and subscription events
+onto channels. It hashes Google's opaque activity token before storing it and is
+idempotent. By default it fetches at most 25 pages and reports whether the
+collection overlaps stored events. A non-overlapping run is preserved but
+logged as a possible coverage gap.
+
+For a bounded historical backfill, follow Google's structured continuation pages:
+
+```powershell
+python yt_library_manager.py collect-my-activity --max-pages 10
+```
+
+`--max-pages` includes the initial page. The command validates every continuation
+response and rejects token loops and pages that make no progress. It reports
+whether older activity is still available; increase the bound until it reports
+that it reached the end.
+Each invocation starts at the newest page, so progressively larger bounds refetch
+and deduplicate the already-seen prefix. The collector keeps the hashed My
+Activity event ID as source identity, replaces matching YouTube date-only
+occurrences with the exact event
+while retaining their ordinal and progress fields, and merges a matching Takeout
+event by video ID and UTC second. This prevents a later Takeout import from
+duplicating the same watch. Retain Takeout until the My Activity continuation
+backfill reaches the end of the available history.
+
+A saved signed-in page can be tested without a network request using
+`--html path\to\my-activity.html`; saved HTML supports only one page.
+
+The YouTube Data API supplies the authoritative current subscription snapshot
+and its subscription `publishedAt` dates, plus owned-playlist creation dates and
+playlist-item-added dates. Enable YouTube Data API v3 in a Google Cloud project,
+create an OAuth client for a desktop application, and save the downloaded client
+file as `youtube_oauth_client_secret.json`. Then authorize the read-only grant:
+
+```powershell
+python yt_library_manager.py authorize-youtube-data-api
+python yt_library_manager.py collect-youtube-data-api
+```
+
+The first command opens Google's OAuth consent flow and saves the refreshable
+token locally. Both account sources are optional during normal Update scans:
+missing credentials produce an informational worker log; expired or rejected
+credentials produce a warning and do not halt the rest of the queue. Channel
+date sorting prefers the Data API subscription date, then My Activity evidence,
+then the existing first-seen fallback.
 
 ## Testing
 
-The test suite uses the Python standard library `unittest` runner, so there is no separate test dependency. Current coverage focuses on stable, local behavior: date/time normalization, reaction extraction, Takeout watch-history parsing, fresh SQLite schema bootstrap, bootstrap/list/detail read models, and omni/history search filtering, deduplication, sorting, and paging. Tests must not use real cookies, network requests, or personal runtime databases.
+The test suite uses the Python standard library `unittest` runner, so there is no separate test dependency. Current coverage focuses on stable, local behavior: date/time normalization, reaction extraction, Takeout and My Activity watch-history parsing and reconciliation, fresh SQLite schema bootstrap, bootstrap/list/detail read models, and omni/history search filtering, deduplication, sorting, and paging. Tests must not use real cookies, network requests, or personal runtime databases.
 
 ## Data Notes
 
-Takeout history is the authoritative source for exact watch times. Live YouTube history is useful for recent observations and ordering, but it may only provide date-level data. Reconciled history rows use compact `source_type`, `match_type`, and `time_quality` values so fetch time is not mistaken for watch time.
+Takeout remains the historical seed for exact watch times until a My Activity
+continuation backfill reaches the end. My Activity is the prospective exact-time
+source. Live YouTube history is useful for recent observations and ordering, but
+it may only provide date-level data. Reconciled history rows use compact
+`source_type`, `match_type`, and `time_quality` values so fetch time is not
+mistaken for watch time.
 
 Recent history fetches use 200-entry batches and stop after two consecutive complete days have the same per-video occurrence counts as the prior YouTube observation. Full history verification retains 1,000-entry batches and scans to the end. A live watch occurrence is reused by video ID, local watch date, and occurrence number within that video/day group; `youtube_ordinal` records current display order and is not event identity.
 

@@ -133,6 +133,12 @@ def configure_request_pacing(config: dict[str, Any]) -> None:
     _request_pacer = RequestPacer(*request_range)
 
 
+def pace_outbound_request() -> None:
+    """Apply the configured global request gate to a non-urllib client."""
+
+    _request_pacer.wait()
+
+
 def request_url_matches_hosts(url: str, hosts: tuple[str, ...]) -> bool:
     hostname = (urllib.parse.urlparse(url).hostname or "").lower().rstrip(".")
     return any(hostname == host or hostname.endswith(f".{host}") for host in hosts)
@@ -170,12 +176,19 @@ PLAYLIST_MATCH_TYPE_LABELS = {
 }
 
 HISTORY_SOURCE_TYPE_LABELS = {
+    "takeout_my_activity_youtube": "Takeout + My Activity + YouTube",
+    "takeout_my_activity": "Takeout + My Activity",
     "takeout_youtube": "Takeout + YouTube",
+    "my_activity_youtube": "My Activity + YouTube",
+    "my_activity": "My Activity",
     "takeout": "Takeout",
     "youtube": "YouTube",
 }
 HISTORY_MATCH_TYPE_LABELS = {
+    "video_id_time_date": "matched by video/time and video/date",
+    "video_id_time": "matched by video/time",
     "video_id_date": "matched by video/date",
+    "my_activity_only": "My Activity only",
     "takeout_only": "Takeout only",
     "youtube_only": "YouTube only",
 }
@@ -192,8 +205,10 @@ VIDEO_SOURCE_PRIORITY = {
     "": 0,
     "archivarix": 10,
     "takeout": 20,
+    "my_activity": 25,
     "youtube_history": 30,
     "playlist": 40,
+    "youtube_data_api": 45,
     "youtube": 50,
     "metadata": 50,
 }
@@ -206,7 +221,7 @@ CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 @dataclass(frozen=True)
@@ -274,6 +289,37 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         )
     if current_version == SCHEMA_VERSION:
         return
+    if 0 < current_version < 13:
+        existing_tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "channels" in existing_tables:
+            channel_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(channels)")
+            }
+            if "subscribed_at" not in channel_columns:
+                conn.execute("ALTER TABLE channels ADD COLUMN subscribed_at TEXT")
+            if "subscribed_at_source" not in channel_columns:
+                conn.execute(
+                    "ALTER TABLE channels ADD COLUMN subscribed_at_source TEXT NOT NULL DEFAULT ''"
+                )
+        if "playlists" in existing_tables:
+            playlist_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(playlists)")
+            }
+            if "created_at" not in playlist_columns:
+                conn.execute("ALTER TABLE playlists ADD COLUMN created_at TEXT")
+        if "history_events" in existing_tables:
+            history_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(history_events)")
+            }
+            if "my_activity_event_id" not in history_columns:
+                conn.execute(
+                    "ALTER TABLE history_events ADD COLUMN my_activity_event_id TEXT"
+                )
     _bootstrap_database(conn)
     if current_version < 2:
         conn.execute("DROP TABLE IF EXISTS app_settings")
@@ -501,6 +547,73 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (12, utc_now()),
+        )
+    if current_version < 13:
+        channel_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(channels)")
+        }
+        if "subscribed_at" not in channel_columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN subscribed_at TEXT")
+        if "subscribed_at_source" not in channel_columns:
+            conn.execute(
+                "ALTER TABLE channels ADD COLUMN subscribed_at_source TEXT NOT NULL DEFAULT ''"
+            )
+
+        playlist_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(playlists)")
+        }
+        if "created_at" not in playlist_columns:
+            conn.execute("ALTER TABLE playlists ADD COLUMN created_at TEXT")
+
+        history_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(history_events)")
+        }
+        if "my_activity_event_id" not in history_columns:
+            conn.execute(
+                """
+                ALTER TABLE history_events
+                ADD COLUMN my_activity_event_id TEXT
+                REFERENCES my_activity_watch_events(event_id)
+                """
+            )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO my_activity_watch_events(
+              event_id, video_id, watched_at, observed_title, observed_url,
+              collected_at, updated_at
+            )
+            SELECT h.event_id, h.video_id, h.watched_at, COALESCE(v.title, ''),
+                   'https://www.youtube.com/watch?v=' || h.video_id,
+                   COALESCE(h.imported_at, h.updated_at, ?),
+                   COALESCE(h.updated_at, h.imported_at, ?)
+            FROM history_events h
+            LEFT JOIN videos v ON v.video_id = h.video_id
+            WHERE h.event_id LIKE 'my_activity:%'
+              AND COALESCE(h.watched_at, '') <> ''
+            """,
+            (utc_now(), utc_now()),
+        )
+        conn.execute(
+            """
+            UPDATE history_events
+            SET my_activity_event_id = event_id
+            WHERE event_id LIKE 'my_activity:%'
+              AND my_activity_event_id IS NULL
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_history_my_activity_event
+            ON history_events(my_activity_event_id)
+            WHERE my_activity_event_id IS NOT NULL
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (13, utc_now()),
         )
 
 
@@ -5114,6 +5227,485 @@ HistoryOccurrenceKey = tuple[str, str]
 HistoryOccurrenceSnapshot = dict[HistoryOccurrenceKey, list[tuple[str, int]]]
 
 
+def history_source_type_for_identity(
+    my_activity_event_id: str | None,
+    takeout_history_key: str | None,
+    youtube_ordinal: int | None,
+) -> str:
+    has_my_activity = bool(my_activity_event_id)
+    has_takeout = bool(takeout_history_key)
+    has_youtube = youtube_ordinal is not None
+    if has_my_activity and has_takeout and has_youtube:
+        return "takeout_my_activity_youtube"
+    if has_my_activity and has_takeout:
+        return "takeout_my_activity"
+    if has_my_activity and has_youtube:
+        return "my_activity_youtube"
+    if has_takeout and has_youtube:
+        return "takeout_youtube"
+    if has_my_activity:
+        return "my_activity"
+    if has_takeout:
+        return "takeout"
+    return "youtube"
+
+
+def history_match_type_for_identity(
+    my_activity_event_id: str | None,
+    takeout_history_key: str | None,
+    youtube_ordinal: int | None,
+) -> str:
+    has_my_activity = bool(my_activity_event_id)
+    has_takeout = bool(takeout_history_key)
+    has_youtube = youtube_ordinal is not None
+    if has_my_activity and has_takeout and has_youtube:
+        return "video_id_time_date"
+    if has_my_activity and has_takeout:
+        return "video_id_time"
+    if has_youtube and (has_my_activity or has_takeout):
+        return "video_id_date"
+    if has_my_activity:
+        return "my_activity_only"
+    if has_takeout:
+        return "takeout_only"
+    return "youtube_only"
+
+
+def history_instant_key(video_id: str, watched_at: str) -> tuple[str, str]:
+    return video_id or "", normalize_utc_timestamp(watched_at)
+
+
+def save_my_activity_events(
+    conn: sqlite3.Connection,
+    watch_events: Sequence[Any],
+    subscription_events: Sequence[Any],
+    timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
+) -> dict[str, Any]:
+    """Persist normalized My Activity evidence and refresh canonical projections."""
+
+    now = utc_now()
+    incoming_ids = {
+        str(event.event_id)
+        for event in (*watch_events, *subscription_events)
+    }
+    known_ids = {
+        str(row["event_id"])
+        for row in conn.execute(
+            """
+            SELECT event_id FROM my_activity_watch_events
+            UNION
+            SELECT event_id FROM my_activity_subscription_events
+            """
+        )
+    }
+    watch_inserted = 0
+    watch_existing = 0
+    subscription_inserted = 0
+    subscription_existing = 0
+
+    for event in watch_events:
+        event_id = str(event.event_id)
+        video_id = str(event.video_id)
+        watched_at = str(event.watched_at)
+        observed_title = str(event.title or "")
+        observed_url = str(event.url or "")
+        upsert_video(
+            conn,
+            video_id,
+            title=observed_title,
+            source="my_activity",
+            updated_at=now,
+        )
+        stored_source = conn.execute(
+            "SELECT * FROM my_activity_watch_events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        if stored_source and (
+            stored_source["video_id"] != video_id
+            or stored_source["watched_at"] != watched_at
+        ):
+            raise RuntimeError(f"Stored My Activity identity conflicts with {event_id}")
+        conn.execute(
+            """
+            INSERT INTO my_activity_watch_events(
+              event_id, video_id, watched_at, observed_title, observed_url,
+              collected_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+              observed_title=CASE
+                WHEN excluded.observed_title <> '' THEN excluded.observed_title
+                ELSE my_activity_watch_events.observed_title
+              END,
+              observed_url=CASE
+                WHEN excluded.observed_url <> '' THEN excluded.observed_url
+                ELSE my_activity_watch_events.observed_url
+              END,
+              updated_at=excluded.updated_at
+            """,
+            (
+                event_id,
+                video_id,
+                watched_at,
+                observed_title,
+                observed_url,
+                now,
+                now,
+            ),
+        )
+        canonical = conn.execute(
+            """
+            SELECT *
+            FROM history_events
+            WHERE my_activity_event_id = ? OR event_id = ?
+            ORDER BY my_activity_event_id IS NOT NULL DESC
+            LIMIT 1
+            """,
+            (event_id, event_id),
+        ).fetchone()
+        watch_date = local_date_for_utc_instant(watched_at, timezone_name)
+        if canonical:
+            if (
+                canonical["video_id"] != video_id
+                or history_instant_key(canonical["video_id"], canonical["watched_at"])
+                != history_instant_key(video_id, watched_at)
+            ):
+                raise RuntimeError(f"Canonical history identity conflicts with {event_id}")
+            source_type = history_source_type_for_identity(
+                event_id,
+                canonical["takeout_history_key"],
+                canonical["youtube_ordinal"],
+            )
+            match_type = history_match_type_for_identity(
+                event_id,
+                canonical["takeout_history_key"],
+                canonical["youtube_ordinal"],
+            )
+            conn.execute(
+                """
+                UPDATE history_events
+                SET video_id=?, watched_at=?, watch_date=?, time_precision='exact',
+                    my_activity_event_id=?, source_type=?, match_type=?, updated_at=?
+                WHERE event_id=?
+                """,
+                (
+                    video_id,
+                    watched_at,
+                    watch_date or None,
+                    event_id,
+                    source_type,
+                    match_type,
+                    now,
+                    canonical["event_id"],
+                ),
+            )
+            watch_existing += 1
+        else:
+            conn.execute(
+                """
+                INSERT INTO history_events(
+                  event_id, video_id, watched_at, watch_date, time_precision,
+                  source_type, match_type, my_activity_event_id,
+                  imported_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 'exact', 'my_activity',
+                        'my_activity_only', ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    video_id,
+                    watched_at,
+                    watch_date or None,
+                    event_id,
+                    now,
+                    now,
+                ),
+            )
+            watch_inserted += 1
+
+    for event in subscription_events:
+        event_id = str(event.event_id)
+        channel_id = str(event.channel_id)
+        subscribed_at = str(event.subscribed_at)
+        observed_title = str(event.title or "")
+        observed_url = str(event.url or "")
+        upsert_channel(
+            conn,
+            channel_id,
+            title=observed_title,
+            url=observed_url,
+            first_seen_at=subscribed_at,
+            source="my_activity",
+            updated_at=now,
+        )
+        stored_source = conn.execute(
+            "SELECT * FROM my_activity_subscription_events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        if stored_source and (
+            stored_source["channel_id"] != channel_id
+            or stored_source["subscribed_at"] != subscribed_at
+        ):
+            raise RuntimeError(f"Stored My Activity identity conflicts with {event_id}")
+        conn.execute(
+            """
+            INSERT INTO my_activity_subscription_events(
+              event_id, channel_id, subscribed_at, observed_title, observed_url,
+              collected_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+              observed_title=CASE
+                WHEN excluded.observed_title <> '' THEN excluded.observed_title
+                ELSE my_activity_subscription_events.observed_title
+              END,
+              observed_url=CASE
+                WHEN excluded.observed_url <> '' THEN excluded.observed_url
+                ELSE my_activity_subscription_events.observed_url
+              END,
+              updated_at=excluded.updated_at
+            """,
+            (
+                event_id,
+                channel_id,
+                subscribed_at,
+                observed_title,
+                observed_url,
+                now,
+                now,
+            ),
+        )
+        channel = conn.execute(
+            "SELECT subscribed_at, subscribed_at_source FROM channels WHERE channel_id = ?",
+            (channel_id,),
+        ).fetchone()
+        if channel and channel["subscribed_at_source"] != "youtube_data_api":
+            selected_at = max(channel["subscribed_at"] or "", subscribed_at)
+            conn.execute(
+                """
+                UPDATE channels
+                SET subscribed_at=?, subscribed_at_source='my_activity', updated_at=?
+                WHERE channel_id=?
+                """,
+                (selected_at, now, channel_id),
+            )
+        if stored_source:
+            subscription_existing += 1
+        else:
+            subscription_inserted += 1
+
+    merge_stats = merge_my_activity_takeout_duplicates(conn)
+    reconciliation = rebuild_history_reconciliation(conn, timezone_name)
+    return {
+        "watch_events": len(watch_events),
+        "watch_inserted": watch_inserted,
+        "watch_existing": watch_existing,
+        "subscription_events": len(subscription_events),
+        "subscription_inserted": subscription_inserted,
+        "subscription_existing": subscription_existing,
+        "known_before": len(known_ids),
+        "overlap_events": len(known_ids & incoming_ids),
+        "first_collection": not known_ids,
+        "merged_takeout_rows": merge_stats["merged"],
+        "ambiguous_takeout_rows": merge_stats["ambiguous"],
+        "history_rows": reconciliation["rows"],
+        "matched_history_rows": reconciliation["matched"],
+    }
+
+
+def save_youtube_data_api_snapshot(
+    conn: sqlite3.Connection,
+    snapshot: Any,
+) -> dict[str, int]:
+    """Apply a complete current YouTube Data API snapshot without keeping scan diffs."""
+
+    now = utc_now()
+    subscription_ids: set[str] = set()
+    for subscription in snapshot.subscriptions:
+        channel_id = str(subscription.channel_id or "").strip()
+        if not channel_id:
+            continue
+        subscription_ids.add(channel_id)
+        subscribed_at = normalize_utc_timestamp(str(subscription.published_at or ""))
+        upsert_channel(
+            conn,
+            channel_id,
+            title=str(subscription.title or ""),
+            first_seen_at=subscribed_at or None,
+            source="youtube_data_api",
+            updated_at=now,
+        )
+        conn.execute(
+            """
+            UPDATE channels
+            SET subscribed=1,
+                subscribed_at=COALESCE(NULLIF(?, ''), subscribed_at),
+                subscribed_at_source=CASE
+                  WHEN ? <> '' THEN 'youtube_data_api'
+                  ELSE subscribed_at_source
+                END,
+                subscription_checked_at=?, updated_at=?
+            WHERE channel_id=?
+            """,
+            (subscribed_at, subscribed_at, now, now, channel_id),
+        )
+    if subscription_ids:
+        placeholders = ",".join("?" for _ in subscription_ids)
+        conn.execute(
+            f"""
+            UPDATE channels
+            SET subscribed=0, notification_level='', subscription_checked_at=?, updated_at=?
+            WHERE subscribed=1 AND channel_id NOT IN ({placeholders})
+            """,
+            (now, now, *sorted(subscription_ids)),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE channels
+            SET subscribed=0, notification_level='', subscription_checked_at=?, updated_at=?
+            WHERE subscribed=1
+            """,
+            (now, now),
+        )
+
+    playlist_items_updated = 0
+    playlist_items_inserted = 0
+    playlist_items_unmatched = 0
+    for playlist in snapshot.playlists:
+        playlist_id = str(playlist.playlist_id or "").strip()
+        if not playlist_id:
+            continue
+        owner_channel_id = upsert_channel(
+            conn,
+            str(playlist.owner_channel_id or ""),
+            source="youtube_data_api",
+            updated_at=now,
+        ) or None
+        created_at = normalize_utc_timestamp(str(playlist.published_at or ""))
+        conn.execute(
+            """
+            INSERT INTO playlists(
+              playlist_id, title, description, owner_channel_id, visibility,
+              created_at, metadata_checked_at, is_library_playlist, video_count,
+              fetch_status, fetch_error, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'ok', '', ?)
+            ON CONFLICT(playlist_id) DO UPDATE SET
+              title=CASE WHEN excluded.title <> '' THEN excluded.title ELSE playlists.title END,
+              description=CASE
+                WHEN excluded.description <> '' THEN excluded.description
+                ELSE playlists.description
+              END,
+              owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
+              visibility=CASE
+                WHEN excluded.visibility <> '' THEN excluded.visibility
+                ELSE playlists.visibility
+              END,
+              created_at=COALESCE(excluded.created_at, playlists.created_at),
+              metadata_checked_at=excluded.metadata_checked_at,
+              is_library_playlist=1,
+              video_count=excluded.video_count,
+              fetch_status='ok', fetch_error='', updated_at=excluded.updated_at
+            """,
+            (
+                playlist_id,
+                str(playlist.title or ""),
+                str(playlist.description or ""),
+                owner_channel_id,
+                normalize_playlist_visibility(str(playlist.visibility or "")),
+                created_at or None,
+                now,
+                max(0, int(playlist.video_count or 0)),
+                now,
+            ),
+        )
+        for item in playlist.items:
+            video_id = str(item.video_id or "").strip()
+            if not video_id:
+                continue
+            added_at = normalize_utc_timestamp(str(item.published_at or ""))
+            upsert_video(
+                conn,
+                video_id,
+                title=str(item.title or ""),
+                source="youtube_data_api",
+                updated_at=now,
+            )
+            position = max(1, int(item.position or 1))
+            exact = conn.execute(
+                """
+                SELECT 1 FROM playlist_items
+                WHERE playlist_id=? AND position=? AND video_id=?
+                """,
+                (playlist_id, position, video_id),
+            ).fetchone()
+            if exact:
+                conn.execute(
+                    """
+                    UPDATE playlist_items
+                    SET added_at=COALESCE(NULLIF(?, ''), added_at), updated_at=?
+                    WHERE playlist_id=? AND position=? AND video_id=?
+                    """,
+                    (added_at, now, playlist_id, position, video_id),
+                )
+                playlist_items_updated += 1
+                continue
+            same_video = conn.execute(
+                """
+                SELECT position FROM playlist_items
+                WHERE playlist_id=? AND video_id=?
+                ORDER BY position
+                """,
+                (playlist_id, video_id),
+            ).fetchall()
+            if len(same_video) == 1:
+                conn.execute(
+                    """
+                    UPDATE playlist_items
+                    SET added_at=COALESCE(NULLIF(?, ''), added_at), updated_at=?
+                    WHERE playlist_id=? AND position=?
+                    """,
+                    (added_at, now, playlist_id, same_video[0]["position"]),
+                )
+                playlist_items_updated += 1
+                continue
+            occupied = conn.execute(
+                "SELECT 1 FROM playlist_items WHERE playlist_id=? AND position=?",
+                (playlist_id, position),
+            ).fetchone()
+            if occupied:
+                playlist_items_unmatched += 1
+                continue
+            conn.execute(
+                """
+                INSERT INTO playlist_items(
+                  playlist_id, position, video_id, membership_state,
+                  source_quality, added_at, updated_at
+                )
+                VALUES (?, ?, ?, 'current', 'youtube_api', ?, ?)
+                """,
+                (playlist_id, position, video_id, added_at or None, now),
+            )
+            playlist_items_inserted += 1
+        enqueue_playlist_scan_item(
+            conn,
+            playlist_id,
+            title=str(playlist.title or ""),
+            source_key="youtube_data_api",
+            priority=-1,
+            manual=False,
+        )
+    return {
+        "subscriptions": len(subscription_ids),
+        "playlists": len(snapshot.playlists),
+        "playlist_items": sum(len(playlist.items) for playlist in snapshot.playlists),
+        "playlist_items_updated": playlist_items_updated,
+        "playlist_items_inserted": playlist_items_inserted,
+        "playlist_items_unmatched": playlist_items_unmatched,
+    }
+
+
 def history_occurrence_key(row: sqlite3.Row | dict[str, Any]) -> HistoryOccurrenceKey:
     if isinstance(row, dict):
         return str(row.get("video_id") or ""), str(row.get("watch_date") or "")
@@ -5291,10 +5883,22 @@ def save_youtube_history_events(
                 """
                 UPDATE history_events
                 SET video_id=?,
-                    watch_date=CASE WHEN takeout_history_key IS NULL THEN ? ELSE watch_date END,
-                    time_precision=CASE WHEN takeout_history_key IS NULL THEN ? ELSE time_precision END,
-                    source_type=CASE WHEN takeout_history_key IS NULL THEN 'youtube' ELSE 'takeout_youtube' END,
-                    match_type=CASE WHEN takeout_history_key IS NULL THEN 'youtube_only' ELSE 'video_id_date' END,
+                    watch_date=CASE WHEN watched_at IS NULL THEN ? ELSE watch_date END,
+                    time_precision=CASE WHEN watched_at IS NULL THEN ? ELSE 'exact' END,
+                    source_type=CASE
+                      WHEN my_activity_event_id IS NOT NULL AND takeout_history_key IS NOT NULL
+                        THEN 'takeout_my_activity_youtube'
+                      WHEN my_activity_event_id IS NOT NULL THEN 'my_activity_youtube'
+                      WHEN takeout_history_key IS NOT NULL THEN 'takeout_youtube'
+                      ELSE 'youtube'
+                    END,
+                    match_type=CASE
+                      WHEN my_activity_event_id IS NOT NULL AND takeout_history_key IS NOT NULL
+                        THEN 'video_id_time_date'
+                      WHEN my_activity_event_id IS NOT NULL OR takeout_history_key IS NOT NULL
+                        THEN 'video_id_date'
+                      ELSE 'youtube_only'
+                    END,
                     youtube_ordinal=?, watch_progress_percent=?, watch_resume_seconds=?,
                     observed_at=?, updated_at=?
                 WHERE event_id=?
@@ -5408,22 +6012,52 @@ def synchronize_youtube_history_order(
     conn.executemany(
         """
         UPDATE history_events
-        SET youtube_ordinal=NULL, source_type='takeout',
-            match_type='takeout_only', updated_at=?
-        WHERE event_id=? AND takeout_history_key IS NOT NULL
+        SET youtube_ordinal=NULL,
+            source_type=CASE
+              WHEN my_activity_event_id IS NOT NULL AND takeout_history_key IS NOT NULL
+                THEN 'takeout_my_activity'
+              WHEN my_activity_event_id IS NOT NULL THEN 'my_activity'
+              ELSE 'takeout'
+            END,
+            match_type=CASE
+              WHEN my_activity_event_id IS NOT NULL AND takeout_history_key IS NOT NULL
+                THEN 'video_id_time'
+              WHEN my_activity_event_id IS NOT NULL THEN 'my_activity_only'
+              ELSE 'takeout_only'
+            END,
+            updated_at=?
+        WHERE event_id=?
+          AND (takeout_history_key IS NOT NULL OR my_activity_event_id IS NOT NULL)
         """,
         [(now, event_id) for event_id in removed_event_ids],
     )
     conn.executemany(
-        "DELETE FROM history_events WHERE event_id=? AND takeout_history_key IS NULL",
+        """
+        DELETE FROM history_events
+        WHERE event_id=?
+          AND takeout_history_key IS NULL
+          AND my_activity_event_id IS NULL
+        """,
         [(event_id,) for event_id in removed_event_ids],
     )
     conn.executemany(
         """
         UPDATE history_events
         SET youtube_ordinal=NULL,
-            source_type=CASE WHEN takeout_history_key IS NULL THEN 'youtube' ELSE 'takeout' END,
-            match_type=CASE WHEN takeout_history_key IS NULL THEN 'youtube_only' ELSE 'takeout_only' END,
+            source_type=CASE
+              WHEN my_activity_event_id IS NOT NULL AND takeout_history_key IS NOT NULL
+                THEN 'takeout_my_activity'
+              WHEN my_activity_event_id IS NOT NULL THEN 'my_activity'
+              WHEN takeout_history_key IS NOT NULL THEN 'takeout'
+              ELSE 'youtube'
+            END,
+            match_type=CASE
+              WHEN my_activity_event_id IS NOT NULL AND takeout_history_key IS NOT NULL
+                THEN 'video_id_time'
+              WHEN my_activity_event_id IS NOT NULL THEN 'my_activity_only'
+              WHEN takeout_history_key IS NOT NULL THEN 'takeout_only'
+              ELSE 'youtube_only'
+            END,
             updated_at=?
         WHERE event_id=?
         """,
@@ -5479,6 +6113,118 @@ def history_row_hash(row: dict[str, str]) -> str:
     return hashlib.sha1(payload.encode("utf-8", "replace")).hexdigest()
 
 
+def merge_my_activity_takeout_duplicates(
+    conn: sqlite3.Connection,
+) -> dict[str, int]:
+    activity_by_instant: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in conn.execute(
+        """
+        SELECT *
+        FROM history_events
+        WHERE my_activity_event_id IS NOT NULL
+          AND COALESCE(watched_at, '') <> ''
+        """
+    ):
+        activity_by_instant.setdefault(
+            history_instant_key(row["video_id"], row["watched_at"]),
+            [],
+        ).append(row)
+
+    takeout_by_instant: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in conn.execute(
+        """
+        SELECT *
+        FROM history_events
+        WHERE takeout_history_key IS NOT NULL
+          AND my_activity_event_id IS NULL
+          AND COALESCE(watched_at, '') <> ''
+        """
+    ):
+        takeout_by_instant.setdefault(
+            history_instant_key(row["video_id"], row["watched_at"]),
+            [],
+        ).append(row)
+
+    now = utc_now()
+    merged = 0
+    ambiguous = 0
+    for instant_key in activity_by_instant.keys() & takeout_by_instant.keys():
+        activity_candidates = activity_by_instant[instant_key]
+        takeout_candidates = takeout_by_instant[instant_key]
+        if len(activity_candidates) != 1 or len(takeout_candidates) != 1:
+            ambiguous += 1
+            continue
+        activity = activity_candidates[0]
+        takeout = takeout_candidates[0]
+        if (
+            activity["takeout_history_key"]
+            and activity["takeout_history_key"] != takeout["takeout_history_key"]
+        ):
+            ambiguous += 1
+            continue
+        activity_ordinal = activity["youtube_ordinal"]
+        takeout_ordinal = takeout["youtube_ordinal"]
+        if (
+            activity_ordinal is not None
+            and takeout_ordinal is not None
+            and activity_ordinal != takeout_ordinal
+        ):
+            ambiguous += 1
+            continue
+        youtube_ordinal = (
+            activity_ordinal if activity_ordinal is not None else takeout_ordinal
+        )
+        progress_source = (
+            activity
+            if activity_ordinal is not None or takeout_ordinal is None
+            else takeout
+        )
+        imported_values = [
+            value
+            for value in (activity["imported_at"], takeout["imported_at"])
+            if value
+        ]
+        source_type = history_source_type_for_identity(
+            activity["my_activity_event_id"],
+            takeout["takeout_history_key"],
+            youtube_ordinal,
+        )
+        match_type = history_match_type_for_identity(
+            activity["my_activity_event_id"],
+            takeout["takeout_history_key"],
+            youtube_ordinal,
+        )
+        conn.execute(
+            "DELETE FROM history_events WHERE event_id = ?",
+            (takeout["event_id"],),
+        )
+        conn.execute(
+            """
+            UPDATE history_events
+            SET takeout_history_key=?, takeout_row_key=?,
+                source_type=?, match_type=?, youtube_ordinal=?,
+                watch_progress_percent=?, watch_resume_seconds=?,
+                observed_at=COALESCE(?, observed_at), imported_at=?, updated_at=?
+            WHERE event_id=?
+            """,
+            (
+                takeout["takeout_history_key"],
+                takeout["takeout_row_key"],
+                source_type,
+                match_type,
+                youtube_ordinal,
+                progress_source["watch_progress_percent"],
+                progress_source["watch_resume_seconds"],
+                progress_source["observed_at"],
+                min(imported_values) if imported_values else now,
+                now,
+                activity["event_id"],
+            ),
+        )
+        merged += 1
+    return {"merged": merged, "ambiguous": ambiguous}
+
+
 def rebuild_history_reconciliation(
     conn: sqlite3.Connection,
     timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
@@ -5488,51 +6234,66 @@ def rebuild_history_reconciliation(
         """
         SELECT *
         FROM history_events
-        WHERE youtube_ordinal IS NOT NULL AND takeout_history_key IS NULL
+        WHERE youtube_ordinal IS NOT NULL
+          AND watched_at IS NULL
         ORDER BY youtube_ordinal
         """
     ).fetchall()
-    takeout_rows = conn.execute(
+    exact_rows = conn.execute(
         """
         SELECT *
         FROM history_events
-        WHERE takeout_history_key IS NOT NULL AND youtube_ordinal IS NULL
-        ORDER BY watched_at DESC, takeout_history_key, takeout_row_key
+        WHERE youtube_ordinal IS NULL
+          AND COALESCE(watched_at, '') <> ''
+          AND (takeout_history_key IS NOT NULL OR my_activity_event_id IS NOT NULL)
+        ORDER BY watched_at DESC, event_id
         """
     ).fetchall()
 
-    takeout_by_video_date: dict[tuple[str, str], list[sqlite3.Row]] = {}
-    for row in takeout_rows:
+    exact_by_video_date: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in exact_rows:
         match_date = local_date_for_utc_instant(row["watched_at"], timezone_name)
-        takeout_by_video_date.setdefault((row["video_id"], match_date), []).append(row)
+        exact_by_video_date.setdefault((row["video_id"], match_date), []).append(row)
 
-    matched_takeout: set[str] = set()
+    matched_exact: set[str] = set()
     matched = 0
     for youtube in youtube_rows:
         key = (youtube["video_id"], youtube["watch_date"])
         if not key[0] or not key[1]:
             continue
-        candidates = takeout_by_video_date.get(key, [])
-        for takeout in candidates:
-            takeout_key = takeout["event_id"]
-            if takeout_key in matched_takeout:
+        candidates = exact_by_video_date.get(key, [])
+        for exact in candidates:
+            exact_key = exact["event_id"]
+            if exact_key in matched_exact:
                 continue
-            matched_takeout.add(takeout_key)
+            matched_exact.add(exact_key)
+            source_type = history_source_type_for_identity(
+                exact["my_activity_event_id"],
+                exact["takeout_history_key"],
+                youtube["youtube_ordinal"],
+            )
+            match_type = history_match_type_for_identity(
+                exact["my_activity_event_id"],
+                exact["takeout_history_key"],
+                youtube["youtube_ordinal"],
+            )
             conn.execute(
                 """
                 UPDATE history_events
-                SET source_type='takeout_youtube', match_type='video_id_date',
+                SET source_type=?, match_type=?,
                     youtube_ordinal=?, watch_progress_percent=?, watch_resume_seconds=?,
                     observed_at=?, updated_at=?
                 WHERE event_id=?
                 """,
                 (
+                    source_type,
+                    match_type,
                     youtube["youtube_ordinal"],
                     youtube["watch_progress_percent"],
                     youtube["watch_resume_seconds"],
                     youtube["observed_at"],
                     now,
-                    takeout["event_id"],
+                    exact["event_id"],
                 ),
             )
             conn.execute("DELETE FROM history_events WHERE event_id = ?", (youtube["event_id"],))
@@ -5542,7 +6303,9 @@ def rebuild_history_reconciliation(
     return {
         "rows": inserted,
         "matched": matched,
-        "takeout": len(takeout_rows),
+        "takeout": sum(bool(row["takeout_history_key"]) for row in exact_rows),
+        "my_activity": sum(bool(row["my_activity_event_id"]) for row in exact_rows),
+        "exact": len(exact_rows),
         "youtube": len(youtube_rows),
     }
 
@@ -6490,6 +7253,35 @@ def enqueue_history_task(conn: sqlite3.Connection, mode: str, *, priority: int =
     return subject_key
 
 
+def enqueue_account_sync_task(
+    conn: sqlite3.Connection,
+    *,
+    priority: int = 100,
+    manual: bool = True,
+) -> str:
+    now = utc_now()
+    subject_key = "account:sync"
+    conn.execute(
+        """
+        INSERT INTO worker_queue(
+          subject_key, worker_type, task_type, video_id, channel_id, playlist_id,
+          channel_title, current_title, source_key, playlist_count, priority,
+          manual, created_at, updated_at
+        )
+        VALUES (?, 'account', 'sync', '', '', '', '', 'Sync account dates', '', 0,
+                ?, ?, ?, ?)
+        ON CONFLICT(subject_key) DO UPDATE SET
+          worker_type='account', task_type='sync',
+          current_title='Sync account dates',
+          priority=MIN(worker_queue.priority, excluded.priority),
+          manual=MAX(worker_queue.manual, excluded.manual),
+          updated_at=excluded.updated_at
+        """,
+        (subject_key, int(priority), 1 if manual else 0, now, now),
+    )
+    return subject_key
+
+
 def enqueue_playlist_scan_item(
     conn: sqlite3.Connection,
     playlist_id: str,
@@ -7306,6 +8098,7 @@ def enqueue_update_tasks(conn: sqlite3.Connection) -> dict[str, int]:
         never_fetched_only=True,
     )
 
+    enqueue_account_sync_task(conn, priority=-4, manual=False)
     enqueue_playlist_discovery_item(conn, priority=-3, mode="new")
     enqueue_history_task(conn, "recent", priority=-2, manual=False)
     enqueue_playlist_scan_item(
@@ -7348,9 +8141,10 @@ def enqueue_update_tasks(conn: sqlite3.Connection) -> dict[str, int]:
         )
 
     queued_after = worker_queue_count(conn)
-    selected = 3 + playlist_count + len(metadata_rows)
+    selected = 4 + playlist_count + len(metadata_rows)
     inserted = max(0, queued_after - queued_before)
     return {
+        "account": 1,
         "discovery": 1,
         "history": 1,
         "liked_videos": 1,
@@ -7366,6 +8160,7 @@ def enqueue_update_tasks(conn: sqlite3.Connection) -> dict[str, int]:
 def enqueue_initialization_tasks(conn: sqlite3.Connection) -> dict[str, int | bool]:
     had_data = library_has_data(conn)
     queued_before = worker_queue_count(conn)
+    enqueue_account_sync_task(conn, priority=-1, manual=False)
 
     metadata_rows = metadata_queue_candidate_rows(
         conn,
@@ -7419,12 +8214,13 @@ def enqueue_initialization_tasks(conn: sqlite3.Connection) -> dict[str, int | bo
     enqueue_history_task(conn, "verify", priority=0, manual=True)
 
     queued_after = worker_queue_count(conn)
-    selected = len(metadata_rows) + playlist_count + 1
+    selected = len(metadata_rows) + playlist_count + 2
     inserted = max(0, queued_after - queued_before)
     return {
         "had_data": had_data,
         "metadata": len(metadata_rows),
         "playlists": playlist_count,
+        "account": 1,
         "history": 1,
         "selected": selected,
         "inserted": inserted,
@@ -8448,7 +9244,7 @@ def load_takeout_history_sources(takeout_path: Path, requested_key: str = "") ->
 
 def existing_takeout_history_event_keys(conn: sqlite3.Connection) -> set[tuple[str, str]]:
     return {
-        (row["video_id"] or "", row["watched_at"] or "")
+        history_instant_key(row["video_id"] or "", row["watched_at"] or "")
         for row in conn.execute(
             """
             SELECT video_id, watched_at
@@ -8498,7 +9294,7 @@ def import_history(args: argparse.Namespace) -> dict[str, Any]:
             total_watch_rows += len(watch_rows)
             for position, row in enumerate(watch_rows, start=1):
                 watched_at_iso = takeout_watch_datetime(row["watched_at"])
-                event_key = (row["video_id"], watched_at_iso)
+                event_key = history_instant_key(row["video_id"], watched_at_iso)
                 if event_key in existing_events:
                     duplicate_watch_rows += 1
                     continue
@@ -8549,6 +9345,7 @@ def import_history(args: argparse.Namespace) -> dict[str, Any]:
                 inserted_watch_rows += 1
                 existing_events.add(event_key)
         timezone_name = effective_display_timezone(getattr(args, "config_data", {}))
+        merge_stats = merge_my_activity_takeout_duplicates(conn)
         stats = rebuild_history_reconciliation(conn, timezone_name)
     conn.close()
     result = {
@@ -8559,6 +9356,8 @@ def import_history(args: argparse.Namespace) -> dict[str, Any]:
         "imported_keys": imported_keys,
         "reconciled_rows": stats["rows"],
         "matched_rows": stats["matched"],
+        "merged_my_activity_rows": merge_stats["merged"],
+        "ambiguous_my_activity_rows": merge_stats["ambiguous"],
         "playlist_stats": playlist_stats,
     }
     print(

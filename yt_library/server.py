@@ -41,12 +41,20 @@ from .config import (
     configured_update_time,
     configured_use_proxy,
     configured_youtube_max_in_flight,
+    config_path,
     effective_display_timezone,
     ensure_config_file,
     ensure_directory,
     next_update_at,
     save_config,
     valid_update_time,
+)
+from .cookie_files import (
+    COOKIE_CONFIG,
+    MAX_COOKIE_FILE_BYTES,
+    CookieFileError,
+    cookie_file_status,
+    replace_cookie_file,
 )
 from .core import *
 from .network import validated_socks5_proxy_url
@@ -703,6 +711,19 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             data["service"] = self.service_status()
             self.send_json(data)
             return
+        if parsed.path == "/api/admin/cookies/status":
+            self.send_json(
+                {
+                    "cookies": {
+                        kind: cookie_file_status(
+                            config_path(self.config_data, config_key),
+                            expected_domains,
+                        )
+                        for kind, (config_key, expected_domains) in COOKIE_CONFIG.items()
+                    }
+                }
+            )
+            return
         if parsed.path == "/api/admin/queue/events":
             self.stream_worker_queue_events()
             return
@@ -784,6 +805,42 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if parsed.path.startswith("/api/admin/cookies/"):
+            kind = parsed.path.rsplit("/", 1)[-1]
+            cookie_config = COOKIE_CONFIG.get(kind)
+            if cookie_config is None:
+                self.send_json({"error": "Unknown cookie service"}, status=404)
+                return
+            if self.headers.get("X-YT-Library-Admin") != "1":
+                self.send_json({"error": "Missing admin request header"}, status=403)
+                return
+            origin = self.headers.get("Origin", "")
+            if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host", ""):
+                self.send_json({"error": "Cross-origin cookie updates are not allowed"}, status=403)
+                return
+            if not self.headers.get("Content-Type", "").lower().startswith("text/plain"):
+                self.send_json({"error": "Cookie updates require text/plain content"}, status=415)
+                return
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                content_length = 0
+            if content_length < 1 or content_length > MAX_COOKIE_FILE_BYTES:
+                self.send_json({"error": "Cookie content must be from 1 byte to 2 MiB"}, status=413)
+                return
+            content = self.rfile.read(content_length)
+            config_key, expected_domains = cookie_config
+            try:
+                status = replace_cookie_file(
+                    config_path(self.config_data, config_key),
+                    content,
+                    expected_domains,
+                )
+            except CookieFileError as exc:
+                self.send_json({"error": str(exc)}, status=400)
+                return
+            self.send_json({"ok": True, "kind": kind, "status": status})
+            return
         if parsed.path == "/api/settings/layout":
             context = (params.get("context") or [""])[0].strip().lower()
             layout = (params.get("value") or [""])[0].strip().lower()
@@ -1208,7 +1265,8 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     metadata = rebuild_metadata_queue(conn, force=False, stale_days=30)
                     playlists = rebuild_playlist_scan_queue(conn, force=False, stale_days=7)
                     enqueue_history_task(conn, "recent", priority=0, manual=False)
-                self.send_json({"ok": True, "cleared": cleared, "metadata": metadata, "playlists": playlists, "history": 1})
+                    enqueue_account_sync_task(conn, priority=-1, manual=False)
+                self.send_json({"ok": True, "cleared": cleared, "metadata": metadata, "playlists": playlists, "history": 1, "account": 1})
             finally:
                 conn.close()
             return
@@ -1383,6 +1441,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 with conn:
                     enqueue_history_task(conn, "recent", priority=0, manual=True)
+                    enqueue_account_sync_task(conn, priority=-1, manual=True)
             finally:
                 conn.close()
             dispatcher = WORKER_QUEUE_DISPATCHER.start(
@@ -1398,6 +1457,22 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 with conn:
                     enqueue_history_task(conn, "verify", priority=0, manual=True)
+                    enqueue_account_sync_task(conn, priority=-1, manual=True)
+            finally:
+                conn.close()
+            dispatcher = WORKER_QUEUE_DISPATCHER.start(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+            )
+            self.send_json({"dispatcher": dispatcher})
+            return
+        if parsed.path == "/api/admin/account/start":
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    enqueue_account_sync_task(conn, priority=0, manual=True)
             finally:
                 conn.close()
             dispatcher = WORKER_QUEUE_DISPATCHER.start(

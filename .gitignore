@@ -14,6 +14,7 @@ video_thumbs/
 *cookies*.txt
 YT cookies.txt
 archivarix.net cookies.txt
+youtube_oauth_*.json
 
 # Personal exports and snapshots
 *.zip
