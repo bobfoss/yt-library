@@ -4000,6 +4000,26 @@ class SchemaTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_playlist_queue_rebuild_can_prepend_live_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLregular', 'Regular')")
+                    stats = core.rebuild_playlist_scan_queue(
+                        conn,
+                        force=True,
+                        discover_current=True,
+                    )
+                rows = core.playlist_scan_queue_rows(conn)
+                self.assertEqual(stats["inserted"], 3)
+                self.assertEqual(
+                    [(row["task_type"], row["playlist_id"]) for row in rows],
+                    [("discover", ""), ("scan", "LL"), ("scan", "PLregular")],
+                )
+            finally:
+                conn.close()
+
     def test_save_playlist_scan_error_preserves_existing_counts(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -6805,6 +6825,157 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertIn("yt_dlp_probe=cookies_rotated", debug_log["message"])
             finally:
                 conn.close()
+
+    def test_playlist_worker_discovers_and_queues_current_playlists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            cookie_file = Path(temp_dir) / "cookies.txt"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_playlist_discovery_item(conn)
+            finally:
+                conn.close()
+
+            records = [
+                {
+                    "playlist_id": "PLnewcurrent",
+                    "title": "New current playlist",
+                    "description": "Discovered live",
+                    "owner": "Owner",
+                    "owner_channel_id": "UCdiscoverowner1234567",
+                    "owner_thumbnail_url": "",
+                    "visibility": "private",
+                    "video_count": "3",
+                    "thumbnail_url": "https://example.test/playlist.jpg",
+                    "url": "https://www.youtube.com/playlist?list=PLnewcurrent",
+                },
+                {
+                    "playlist_id": "LL",
+                    "title": "Liked videos",
+                    "description": "",
+                    "owner": "",
+                    "owner_channel_id": "",
+                    "owner_thumbnail_url": "",
+                    "visibility": "private",
+                    "video_count": "1",
+                    "thumbnail_url": "",
+                    "url": "https://www.youtube.com/playlist?list=LL",
+                },
+            ]
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.fetch_current_youtube_playlists",
+                    return_value=(object(), records),
+                ) as discover,
+            ):
+                worker._run(
+                    "test-playlist-discovery",
+                    db_path,
+                    cookie_file,
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            discover.assert_called_once_with(cookie_file, proxy_url="")
+            conn = core.connect(db_path)
+            try:
+                playlist = conn.execute(
+                    "SELECT title, visibility, video_count, is_library_playlist "
+                    "FROM playlists WHERE playlist_id = 'PLnewcurrent'"
+                ).fetchone()
+                queued = core.playlist_scan_queue_rows(conn)
+                log = conn.execute(
+                    "SELECT level, message FROM playlist_scan_worker_log "
+                    "WHERE run_id = 'test-playlist-discovery'"
+                ).fetchone()
+                grouped = conn.execute(
+                    "SELECT group_key FROM group_playlists WHERE playlist_id = 'PLnewcurrent'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            dict(playlist),
+            {
+                "title": "New current playlist",
+                "visibility": "private",
+                "video_count": 3,
+                "is_library_playlist": 1,
+            },
+        )
+        self.assertEqual(
+            [(row["task_type"], row["playlist_id"]) for row in queued],
+            [("scan", "PLnewcurrent")],
+        )
+        self.assertEqual(grouped["group_key"], "youtube-ungrouped")
+        self.assertEqual(log["level"], "info")
+        self.assertIn("1 current, 1 new, 0 existing", log["message"])
+
+    def test_playlist_worker_logs_existing_playlist_count_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLchanged', 'Changed')")
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scans(
+                          playlist_id, scanned_at, video_count, unavailable_count, scan_status
+                        ) VALUES ('PLchanged', '2026-07-01T00:00:00Z', 1, 0, 'ok')
+                        """
+                    )
+                    core.enqueue_playlist_scan_item(conn, "PLchanged", manual=False)
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.request_text", return_value="header page"),
+                patch(
+                    "yt_library.workers.extract_playlist_metadata",
+                    return_value={"video_count": 2, "has_video_count": True},
+                ),
+                patch(
+                    "yt_library.workers.scan_playlist_ytdlp",
+                    return_value=([{"video_id": "first"}, {"video_id": "second"}], {}),
+                ),
+                patch("yt_library.workers.scan_playlist_videos"),
+                patch("yt_library.workers.save_playlist_scan", return_value=(2, 0)),
+                patch(
+                    "yt_library.workers.enqueue_placeholder_recovery_targets",
+                    return_value={"inserted": 0},
+                ),
+            ):
+                worker._run(
+                    "test-playlist-count-change",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                log = conn.execute(
+                    "SELECT level, message FROM playlist_scan_worker_log "
+                    "WHERE run_id = 'test-playlist-count-change'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(log["level"], "info")
+        self.assertIn("count changed 1 -> 2 (+1)", log["message"])
 
     def test_playlist_worker_caches_playlist_thumbnail(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

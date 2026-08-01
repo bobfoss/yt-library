@@ -4543,6 +4543,112 @@ def is_system_playlist(playlist_id: str) -> bool:
     return playlist_id in {"LL", "LM", "WL"} or playlist_id.startswith("RD")
 
 
+def save_discovered_playlists(
+    conn: sqlite3.Connection,
+    records: list[dict[str, str]],
+    *,
+    group_key: str = "youtube-ungrouped",
+    group_name: str = "Ungrouped / YouTube",
+) -> dict[str, int]:
+    existing_ids = {
+        row["playlist_id"]
+        for row in conn.execute("SELECT playlist_id FROM playlists")
+    }
+    existing_groups = {
+        row["playlist_id"]
+        for row in conn.execute("SELECT DISTINCT playlist_id FROM group_playlists")
+    }
+    top_position = conn.execute(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM groups WHERE parent_key IS NULL"
+    ).fetchone()[0]
+    conn.execute(
+        """
+        INSERT INTO groups(group_key, name, parent_key, position, icon)
+        VALUES (?, ?, NULL, ?, '')
+        ON CONFLICT(group_key) DO UPDATE SET
+          name=excluded.name,
+          parent_key=NULL,
+          position=groups.position
+        """,
+        (group_key, group_name, top_position),
+    )
+    group_position = conn.execute(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM group_playlists WHERE group_key = ?",
+        (group_key,),
+    ).fetchone()[0]
+
+    inserted = 0
+    grouped = 0
+    for record in records:
+        playlist_id = (record.get("playlist_id") or "").strip()
+        if not playlist_id:
+            continue
+        if playlist_id not in existing_ids:
+            inserted += 1
+            existing_ids.add(playlist_id)
+        owner_channel_id = (record.get("owner_channel_id") or "").strip()
+        if owner_channel_id:
+            owner_channel_id = upsert_channel(
+                conn,
+                owner_channel_id,
+                title=record.get("owner", ""),
+                thumbnail_url=record.get("owner_thumbnail_url", ""),
+                thumbnail_path=record.get("owner_thumbnail_path", ""),
+                source="playlist_owner",
+                updated_at=utc_now(),
+            )
+        conn.execute(
+            """
+            INSERT INTO playlists(
+              playlist_id, title, description, owner_channel_id, visibility,
+              is_library_playlist, video_count, thumbnail_url, thumbnail_path,
+              fetch_status, fetch_error, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 'ok', '', ?)
+            ON CONFLICT(playlist_id) DO UPDATE SET
+              title=excluded.title,
+              description=excluded.description,
+              is_library_playlist=1,
+              owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
+              visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
+              video_count=excluded.video_count,
+              thumbnail_url=COALESCE(NULLIF(excluded.thumbnail_url, ''), playlists.thumbnail_url),
+              thumbnail_path=COALESCE(NULLIF(excluded.thumbnail_path, ''), playlists.thumbnail_path),
+              fetch_status='ok',
+              fetch_error='',
+              updated_at=excluded.updated_at
+            """,
+            (
+                playlist_id,
+                record.get("title", ""),
+                record.get("description", ""),
+                owner_channel_id or None,
+                record.get("visibility", ""),
+                max(0, int(record.get("video_count") or 0)),
+                record.get("thumbnail_url", ""),
+                record.get("thumbnail_path", ""),
+                utc_now(),
+            ),
+        )
+        if playlist_id not in existing_groups:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO group_playlists(group_key, playlist_id, position)
+                VALUES (?, ?, ?)
+                """,
+                (group_key, playlist_id, group_position),
+            )
+            existing_groups.add(playlist_id)
+            group_position += 1
+            grouped += 1
+    return {
+        "discovered": len(records),
+        "inserted": inserted,
+        "updated": max(0, len(records) - inserted),
+        "grouped": grouped,
+    }
+
+
 def discover_current_playlists(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     thumb_dir = Path(args.thumbs)
@@ -4555,116 +4661,42 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
     if not args.include_system:
         records = [record for record in records if not is_system_playlist(record["playlist_id"])]
 
-    conn = connect(db_path)
-    existing_groups = {
-        row["playlist_id"]
-        for row in conn.execute("SELECT DISTINCT playlist_id FROM group_playlists")
-    }
-    inserted_ungrouped: list[str] = []
-    with conn:
-        top_position = conn.execute(
-            "SELECT COALESCE(MAX(position), -1) + 1 FROM groups WHERE parent_key IS NULL"
-        ).fetchone()[0]
-        conn.execute(
-            """
-            INSERT INTO groups(group_key, name, parent_key, position, icon)
-            VALUES (?, ?, NULL, ?, '')
-            ON CONFLICT(group_key) DO UPDATE SET
-              name=excluded.name,
-              parent_key=NULL,
-              position=groups.position
-            """,
-            (args.group_key, args.group_name, top_position),
-        )
-        group_position = conn.execute(
-            "SELECT COALESCE(MAX(position), -1) + 1 FROM group_playlists WHERE group_key = ?",
-            (args.group_key,),
-        ).fetchone()[0]
-
     print(f"Discovered {len(records)} current YouTube playlists.")
+    enriched_records: list[dict[str, str]] = []
     for index, record in enumerate(records, start=1):
+        record = dict(record)
         playlist_id = record["playlist_id"]
-        existing = conn.execute(
-            "SELECT thumbnail_path FROM playlists WHERE playlist_id = ?",
-            (playlist_id,),
-        ).fetchone()
-        thumbnail_path = cache_thumbnail(
+        record["thumbnail_path"] = cache_thumbnail(
             opener,
             playlist_id,
             record["thumbnail_url"],
             thumb_dir,
         )
-        if not thumbnail_path and existing:
-            thumbnail_path = existing["thumbnail_path"]
-        with conn:
-            owner_channel_id = record.get("owner_channel_id", "")
-            owner_thumbnail_path = ""
-            if owner_channel_id and record.get("owner_thumbnail_url"):
-                owner_thumbnail_path = cache_channel_thumbnail(
-                    opener,
-                    owner_channel_id,
-                    record.get("owner_thumbnail_url", ""),
-                    DEFAULT_VIDEO_THUMB_DIR,
-                    referer_url=record["url"],
-                )
-            if owner_channel_id:
-                owner_channel_id = upsert_channel(
-                    conn,
-                    owner_channel_id,
-                    title=record.get("owner", ""),
-                    thumbnail_url=record.get("owner_thumbnail_url", ""),
-                    thumbnail_path=owner_thumbnail_path,
-                    source="playlist_owner",
-                    updated_at=utc_now(),
-                )
-            conn.execute(
-                """
-                INSERT INTO playlists(
-                  playlist_id, title, description, owner_channel_id, visibility,
-                  is_library_playlist, video_count,
-                  thumbnail_url, thumbnail_path, fetch_status, fetch_error, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 'ok', '', ?)
-                ON CONFLICT(playlist_id) DO UPDATE SET
-                  title=excluded.title,
-                  description=excluded.description,
-                  is_library_playlist=1,
-                  owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
-                  visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
-                  video_count=excluded.video_count,
-                  thumbnail_url=excluded.thumbnail_url,
-                  thumbnail_path=excluded.thumbnail_path,
-                  fetch_status='ok',
-                  fetch_error='',
-                  updated_at=excluded.updated_at
-                """,
-                (
-                    playlist_id,
-                    record["title"],
-                    record["description"],
-                    owner_channel_id or None,
-                    record["visibility"],
-                    record["video_count"],
-                    record["thumbnail_url"],
-                    thumbnail_path,
-                    utc_now(),
-                ),
+        owner_channel_id = record.get("owner_channel_id", "")
+        if owner_channel_id and record.get("owner_thumbnail_url"):
+            record["owner_thumbnail_path"] = cache_channel_thumbnail(
+                opener,
+                owner_channel_id,
+                record.get("owner_thumbnail_url", ""),
+                DEFAULT_VIDEO_THUMB_DIR,
+                referer_url=record["url"],
             )
-            if playlist_id not in existing_groups:
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO group_playlists(group_key, playlist_id, position)
-                    VALUES (?, ?, ?)
-                    """,
-                    (args.group_key, playlist_id, group_position),
-                )
-                existing_groups.add(playlist_id)
-                inserted_ungrouped.append(playlist_id)
-                group_position += 1
+        enriched_records.append(record)
         print(f"[{index:03d}/{len(records):03d}] {record['title']}")
 
+    conn = connect(db_path)
+    try:
+        with conn:
+            stats = save_discovered_playlists(
+                conn,
+                enriched_records,
+                group_key=args.group_key,
+                group_name=args.group_name,
+            )
+    finally:
+        conn.close()
     print(
-        f"Updated {len(records)} playlists; added {len(inserted_ungrouped)} "
+        f"Updated {len(records)} playlists; added {stats['grouped']} "
         f"to {args.group_name}."
     )
     print(f"Wrote {db_path}")
@@ -6367,6 +6399,33 @@ def enqueue_playlist_scan_item(
     return subject_key
 
 
+def enqueue_playlist_discovery_item(
+    conn: sqlite3.Connection,
+    *,
+    priority: int = -1,
+) -> str:
+    now = utc_now()
+    subject_key = "playlist:discover-current"
+    conn.execute(
+        """
+        INSERT INTO worker_queue(
+          subject_key, worker_type, task_type, video_id, channel_id, playlist_id,
+          channel_title, current_title, source_key, playlist_count, priority, manual,
+          created_at, updated_at
+        )
+        VALUES (?, 'playlist', 'discover', '', '', '', '', 'Current YouTube playlists',
+                'youtube', 0, ?, 0, ?, ?)
+        ON CONFLICT(subject_key) DO UPDATE SET
+          worker_type='playlist',
+          task_type='discover',
+          priority=MIN(worker_queue.priority, excluded.priority),
+          updated_at=excluded.updated_at
+        """,
+        (subject_key, int(priority), now, now),
+    )
+    return subject_key
+
+
 def playlist_scan_queue_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
@@ -6378,6 +6437,7 @@ def playlist_scan_queue_rows(
     sql = f"""
         SELECT w.queue_id,
                w.subject_key,
+               w.task_type,
                w.playlist_id,
                COALESCE(NULLIF(w.current_title, ''), p.title, w.playlist_id) AS title,
                p.video_count AS playlist_video_count,
@@ -6413,14 +6473,17 @@ def clear_playlist_scan_queue(conn: sqlite3.Connection) -> int:
     return clear_worker_queue_type(conn, "playlist")
 
 
-def rebuild_playlist_scan_queue(
+def enqueue_all_playlist_scan_items(
     conn: sqlite3.Connection,
     *,
     force: bool = False,
     stale_days: int = 7,
+    discover_current: bool = False,
 ) -> dict[str, int]:
     rows = playlist_scan_candidate_rows(conn, force=force, stale_days=stale_days)
-    cleared = clear_playlist_scan_queue(conn)
+    queued_before = playlist_scan_queue_count(conn)
+    if discover_current:
+        enqueue_playlist_discovery_item(conn)
     enqueue_playlist_scan_item(
         conn,
         LIKED_VIDEOS_PLAYLIST_ID,
@@ -6428,7 +6491,6 @@ def rebuild_playlist_scan_queue(
         priority=0,
         manual=False,
     )
-    inserted = 1
     for index, row in enumerate(rows, start=1):
         if row["playlist_id"] == LIKED_VIDEOS_PLAYLIST_ID:
             continue
@@ -6439,8 +6501,29 @@ def rebuild_playlist_scan_queue(
             priority=index,
             manual=False,
         )
-        inserted += 1
-    return {"cleared": cleared, "inserted": inserted, "queued": playlist_scan_queue_count(conn)}
+    queued_after = playlist_scan_queue_count(conn)
+    return {
+        "cleared": 0,
+        "inserted": max(0, queued_after - queued_before),
+        "queued": queued_after,
+    }
+
+
+def rebuild_playlist_scan_queue(
+    conn: sqlite3.Connection,
+    *,
+    force: bool = False,
+    stale_days: int = 7,
+    discover_current: bool = False,
+) -> dict[str, int]:
+    cleared = clear_playlist_scan_queue(conn)
+    stats = enqueue_all_playlist_scan_items(
+        conn,
+        force=force,
+        stale_days=stale_days,
+        discover_current=discover_current,
+    )
+    return {**stats, "cleared": cleared}
 
 
 FEATURE_BACKFILL_KINDS = {

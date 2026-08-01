@@ -729,6 +729,94 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 title = row["title"] or playlist_id
                 current_queue_id = queue_id
                 current_playlist_id = playlist_id
+                if row["task_type"] == "discover":
+                    try:
+                        _opener, discovered_records = fetch_current_youtube_playlists(
+                            cookie_file,
+                            proxy_url=proxy_url,
+                        )
+                        discovered_records = [
+                            record
+                            for record in discovered_records
+                            if not is_system_playlist(record.get("playlist_id", ""))
+                        ]
+                        with conn:
+                            discovery_stats = save_discovered_playlists(
+                                conn,
+                                discovered_records,
+                            )
+                            for index, record in enumerate(discovered_records, start=1):
+                                enqueue_playlist_scan_item(
+                                    conn,
+                                    record.get("playlist_id", ""),
+                                    title=record.get("title", ""),
+                                    priority=index,
+                                    manual=False,
+                                )
+                            if queue_id:
+                                conn.execute(
+                                    "DELETE FROM worker_queue WHERE queue_id = ?",
+                                    (queue_id,),
+                                )
+                            processed += 1
+                            found += int(discovery_stats["inserted"])
+                            remaining = worker_queue_type_count(conn, "playlist")
+                            message = (
+                                "Playlist discovery: "
+                                f"{discovery_stats['discovered']} current, "
+                                f"{discovery_stats['inserted']} new, "
+                                f"{discovery_stats['updated']} existing; "
+                                f"{remaining} playlist scans queued"
+                            )
+                            log_playlist_scan_event(conn, run_id, "info", message)
+                            conn.execute(
+                                """
+                                UPDATE playlist_scan_worker_runs
+                                SET total = ?, processed = ?, found = ?, failed = ?,
+                                    last_playlist_id = '', message = ?
+                                WHERE run_id = ?
+                                """,
+                                (
+                                    run_total,
+                                    processed,
+                                    found,
+                                    failed,
+                                    message,
+                                    run_id,
+                                ),
+                            )
+                    except ProxyUnavailableError:
+                        raise
+                    except Exception as exc:
+                        with conn:
+                            processed += 1
+                            failed += 1
+                            message = f"Playlist discovery failed: {exc}"
+                            log_playlist_scan_event(conn, run_id, "error", message)
+                            if queue_id:
+                                conn.execute(
+                                    "DELETE FROM worker_queue WHERE queue_id = ?",
+                                    (queue_id,),
+                                )
+                            conn.execute(
+                                """
+                                UPDATE playlist_scan_worker_runs
+                                SET total = ?, processed = ?, found = ?, failed = ?,
+                                    last_playlist_id = '', message = ?
+                                WHERE run_id = ?
+                                """,
+                                (
+                                    run_total,
+                                    processed,
+                                    found,
+                                    failed,
+                                    message,
+                                    run_id,
+                                ),
+                            )
+                    if delay and worker_queue_type_count(conn, "playlist") > 0:
+                        time.sleep(delay)
+                    continue
                 status = "ok"
                 error = ""
                 ytdlp_error = ""
@@ -976,12 +1064,19 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     else:
                         found += 1
                         reported_note = ""
+                        count_change_note = ""
                         if (
                             expected_count
                             and not exact_count_required
                             and video_count < expected_count
                         ):
                             reported_note = f"; {video_count} exposed of {expected_count} reported"
+                        if row["scanned_at"] and video_count != previous_scan_count:
+                            count_delta = video_count - previous_scan_count
+                            count_change_note = (
+                                f"; count changed {previous_scan_count} -> {video_count} "
+                                f"({count_delta:+d})"
+                            )
                         log_playlist_scan_event(
                             conn,
                             run_id,
@@ -989,6 +1084,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                             (
                                 f"{title}: {video_count} videos, {unavailable_count} unavailable"
                                 + reported_note
+                                + count_change_note
                                 + (f"; queued {metadata_queued} metadata items" if metadata_queued else "")
                                 + (f"; queued {placeholder_queued} placeholder recoveries" if placeholder_queued else "")
                             ),

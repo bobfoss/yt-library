@@ -1221,14 +1221,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             conn = connect(self.db_path)
             try:
                 with conn:
-                    if playlist_scan_queue_count(conn) == 0:
-                        queue_stats = rebuild_playlist_scan_queue(conn, force=True, stale_days=7)
-                    else:
-                        queue_stats = {
-                            "cleared": 0,
-                            "inserted": 0,
-                            "queued": playlist_scan_queue_count(conn),
-                        }
+                    queue_stats = enqueue_all_playlist_scan_items(
+                        conn,
+                        force=True,
+                        stale_days=7,
+                        discover_current=True,
+                    )
             finally:
                 conn.close()
             dispatcher = WORKER_QUEUE_DISPATCHER.start(
