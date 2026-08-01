@@ -5178,7 +5178,8 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn(':root[data-theme="light"]', server.ADMIN_HTML)
         self.assertIn(':root[data-theme="light"]', server.INDEX_HTML)
         self.assertIn('<script src="/theme.js"></script>', server.INDEX_HTML)
-        self.assertIn('.video-card-channel { margin-top: 0; margin-bottom: 7px; color: var(--ink); font-weight: 400; }', server.INDEX_HTML)
+        self.assertIn('.video-card-channel { margin-top: 0; margin-bottom: 7px; }', server.INDEX_HTML)
+        self.assertNotIn('.video-card-channel .creator-link { color:', server.INDEX_HTML)
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-all-filter='), 1)
         self.assertEqual(server.INDEX_HTML.count('<input type="checkbox" data-meta-child-filter='), 2)
         self.assertIn("const videoMetaFilterDefinitions = [", server.INDEX_HTML)
@@ -5692,7 +5693,7 @@ class AdminServerTests(unittest.TestCase):
             server.COLLECTION_CARD_JS.index("${options.headerHtml || ''}"),
             server.COLLECTION_CARD_JS.index('<div class="title-row">'),
         )
-        self.assertIn(".video-card-channel .creator-link", server.INDEX_HTML)
+        self.assertIn(".creator-link { color: var(--muted);", server.INDEX_HTML)
         self.assertIn(
             "return usefulMetadataTitle(video) || video.title || '';",
             server.INDEX_HTML,
