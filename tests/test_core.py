@@ -35,6 +35,7 @@ from yt_library.config import (
     configured_history_fetch_time,
     configured_job_dispatch_delay,
     configured_page_size,
+    configured_partial_completion_min_percent,
     configured_proxy_address,
     configured_request_delay_range,
     configured_search_card_layout,
@@ -4278,6 +4279,19 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(configured_page_size({}), 100)
         self.assertEqual(configured_page_size({"page_size": 250}), 250)
         self.assertEqual(configured_page_size({"page_size": 42}), 100)
+        self.assertEqual(configured_partial_completion_min_percent({}), 1)
+        self.assertEqual(
+            configured_partial_completion_min_percent(
+                {"partial_completion_min_percent": 65}
+            ),
+            65,
+        )
+        self.assertEqual(
+            configured_partial_completion_min_percent(
+                {"partial_completion_min_percent": 500}
+            ),
+            99,
+        )
         self.assertEqual(configured_sort_preferences({}), {})
         self.assertEqual(
             configured_sort_preferences(
@@ -4444,6 +4458,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["history_card_layout"], "compact")
             self.assertEqual(payload["sort_preferences"], {})
             self.assertEqual(payload["page_size"], 100)
+            self.assertEqual(payload["partial_completion_min_percent"], 1)
             self.assertFalse(payload["history_fetch_daily"])
             self.assertEqual(payload["history_fetch_time"], "03:00")
             self.assertFalse(payload["admin_advanced"])
@@ -4563,6 +4578,36 @@ class AdminServerTests(unittest.TestCase):
         handler.do_POST()
 
         self.assertEqual(config["page_size"], 100)
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
+    def test_partial_completion_minimum_saves_without_restarting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/settings/partial-completion-minimum?value=65"
+            handler.config_data = config
+            handler.send_json = Mock()
+
+            handler.do_POST()
+
+            self.assertEqual(config["partial_completion_min_percent"], 65)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["partial_completion_min_percent"], 65)
+            handler.send_json.assert_called_once_with(
+                {"ok": True, "partialCompletionMinPercent": 65}
+            )
+
+    def test_partial_completion_minimum_rejects_out_of_range_value(self) -> None:
+        config = load_config(Path("missing-test-config.json"))
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = "/api/settings/partial-completion-minimum?value=100"
+        handler.config_data = config
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        self.assertEqual(config["partial_completion_min_percent"], 1)
         self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
 
     def test_layout_preference_saves_without_restarting(self) -> None:
@@ -5073,10 +5118,12 @@ class AdminServerTests(unittest.TestCase):
             server.INDEX_HTML,
         )
         self.assertIn(
-            "video_completion_min_percent: String(searchPartialMinimumPercent)",
+            "video_completion_min_percent: String(partialCompletionMinimumPercent)",
             server.INDEX_HTML,
         )
-        self.assertIn("params.set('vmin', String(searchPartialMinimumPercent))", server.INDEX_HTML)
+        self.assertNotIn("params.set('vmin'", server.INDEX_HTML)
+        self.assertIn("pageConfig.partialCompletionMinPercent", server.INDEX_HTML)
+        self.assertIn("/api/settings/partial-completion-minimum", server.INDEX_HTML)
         self.assertIn('aria-label="Minimum partial completion percentage"', server.INDEX_HTML)
         self.assertIn('class="completion-partial-toggle"', server.INDEX_HTML)
         self.assertIn("searchForFilters.addEventListener('input', scheduleCompletionMinimumInput)", server.INDEX_HTML)

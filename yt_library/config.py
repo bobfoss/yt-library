@@ -31,6 +31,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "history_card_layout": "compact",
     "sort_preferences": {},
     "page_size": 100,
+    "partial_completion_min_percent": 1,
     "history_fetch_daily": False,
     "history_fetch_time": "03:00",
     "admin_advanced": False,
@@ -116,6 +117,19 @@ def configured_page_size(config: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         return int(DEFAULT_CONFIG["page_size"])
     return value if value in PAGE_SIZES else int(DEFAULT_CONFIG["page_size"])
+
+
+def configured_partial_completion_min_percent(config: dict[str, Any]) -> int:
+    try:
+        value = int(
+            config.get(
+                "partial_completion_min_percent",
+                DEFAULT_CONFIG["partial_completion_min_percent"],
+            )
+        )
+    except (TypeError, ValueError):
+        return int(DEFAULT_CONFIG["partial_completion_min_percent"])
+    return max(1, min(99, value))
 
 
 def configured_sort_preferences(config: dict[str, Any]) -> dict[str, str]:
@@ -395,6 +409,9 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
     config["history_card_layout"] = configured_history_card_layout(config)
     config["sort_preferences"] = configured_sort_preferences(config)
     config["page_size"] = configured_page_size(config)
+    config["partial_completion_min_percent"] = (
+        configured_partial_completion_min_percent(config)
+    )
     config["history_fetch_daily"] = configured_history_fetch_daily(config)
     config["history_fetch_time"] = configured_history_fetch_time(config)
     config["admin_advanced"] = configured_admin_advanced(config)

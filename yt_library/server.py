@@ -31,6 +31,7 @@ from .config import (
     configured_history_fetch_time,
     configured_job_dispatch_delay,
     configured_page_size,
+    configured_partial_completion_min_percent,
     configured_proxy_address,
     configured_request_delay_range,
     configured_search_card_layout,
@@ -763,6 +764,26 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             save_config(self.config_data)
             self.send_json({"ok": True, "pageSize": page_size})
             return
+        if parsed.path == "/api/settings/partial-completion-minimum":
+            try:
+                minimum_percent = int((params.get("value") or [""])[0])
+            except ValueError:
+                minimum_percent = 0
+            if not 1 <= minimum_percent <= 99:
+                self.send_json(
+                    {"error": "Partial completion minimum must be from 1 to 99"},
+                    status=400,
+                )
+                return
+            self.config_data["partial_completion_min_percent"] = minimum_percent
+            save_config(self.config_data)
+            self.send_json(
+                {
+                    "ok": True,
+                    "partialCompletionMinPercent": minimum_percent,
+                }
+            )
+            return
         if parsed.path == "/api/admin/history-schedule":
             enabled = (params.get("enabled") or ["0"])[0].strip().lower() in {
                 "1",
@@ -1430,6 +1451,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "historyCardLayout": configured_history_card_layout(self.config_data),
             "sortPreferences": configured_sort_preferences(self.config_data),
             "pageSize": configured_page_size(self.config_data),
+            "partialCompletionMinPercent": (
+                configured_partial_completion_min_percent(self.config_data)
+            ),
         }
 
     def dispatch_settings(self) -> dict[str, Any]:

@@ -440,8 +440,7 @@
     let selected = '';
     let playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
     let playlistCompletionVisibility = { complete: true, partial: true, unknown: true, never_watched: true };
-    let playlistPartialMinimumPercent = 1;
-    let searchPartialMinimumPercent = 1;
+    let partialCompletionMinimumPercent = 1;
     let completionMinimumInputTimer = null;
     const defaultSearchMetaVisibility = {
       videos: { public: true, unlisted: true, members_only: true, unavailable: false, unknown: true },
@@ -477,6 +476,9 @@
       { groupName: 'channelStatus', key: 'terminated', paramName: 'terminated' },
     ];
     const pageConfig = window.YT_LIBRARY_CONFIG || {};
+    partialCompletionMinimumPercent = boundedPartialMinimumPercent(
+      pageConfig.partialCompletionMinPercent
+    );
     const searchSortOptions = new Set([
       'relevance', 'title', 'newest', 'oldest', 'most_watched', 'type',
     ]);
@@ -504,6 +506,8 @@
     const sortPreferenceSaveVersions = new Map();
     let pageSizeSaveChain = Promise.resolve();
     let pageSizeSaveVersion = 0;
+    let partialCompletionMinimumSaveChain = Promise.resolve();
+    let partialCompletionMinimumSaveVersion = 0;
     const searchPresetDefinitions = {
       videos: { kind: 'videos', sort: 'newest' },
       'playlist-videos': { kind: 'videos', sort: 'newest' },
@@ -897,9 +901,6 @@
         params.set('sort', searchResultsSort);
       }
       if (currentPage > 1) params.set('page', String(currentPage));
-      if (searchPartialMinimumPercent !== 1) {
-        params.set('vmin', String(searchPartialMinimumPercent));
-      }
       return `#search${params.toString() ? `?${params.toString()}` : ''}`;
     }
 
@@ -919,7 +920,6 @@
         for (const input of searchFields) input.checked = true;
       }
       applySearchPresetState(params.get('preset') || '', params.get('group') || '');
-      searchPartialMinimumPercent = boundedPartialMinimumPercent(params.get('vmin'));
       const videoMetaParam = params.get(searchMetaParamNames.videos);
       const compatibleVideoMetaParam = videoMetaParam === null
         ? null
@@ -1127,7 +1127,6 @@
       playlistVisibilityPlaylistId = playlistId;
       playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
       playlistCompletionVisibility = { complete: true, partial: true, unknown: true, never_watched: true };
-      playlistPartialMinimumPercent = 1;
       playlistPageSearch = '';
     }
 
@@ -2270,7 +2269,7 @@
                 visibility: playlistCompletionVisibility,
                 counts: completionCounts,
                 definitions: completionMetaFilterDefinitions(
-                  playlistPartialMinimumPercent,
+                  partialCompletionMinimumPercent,
                   'playlist-completion-minimum',
                 ),
                 allLabel: 'Completion',
@@ -2321,7 +2320,7 @@
         kindHtml('Videos', 'videos', metaCounts?.videos?.total, [
           facetHtml({ key: 'videos', visibility: searchMetaVisibility.videos, definitions: videoMetaFilterDefinitions, counts: metaCounts?.videos, allLabel: 'Availability', kind: 'videos' }),
           facetHtml({ key: 'reactions', visibility: searchMetaVisibility.reactions, definitions: reactionMetaFilterDefinitions, counts: reactionCounts, allLabel: 'Reactions', kind: 'videos' }),
-          facetHtml({ key: 'completion', visibility: searchMetaVisibility.completion, definitions: completionMetaFilterDefinitions(searchPartialMinimumPercent, 'search-completion-minimum'), counts: completionCounts, allLabel: 'Completion', kind: 'videos' }),
+          facetHtml({ key: 'completion', visibility: searchMetaVisibility.completion, definitions: completionMetaFilterDefinitions(partialCompletionMinimumPercent, 'search-completion-minimum'), counts: completionCounts, allLabel: 'Completion', kind: 'videos' }),
           facetHtml({ key: 'membership', visibility: searchMetaVisibility.membership, definitions: playlistMembershipMetaFilterDefinitions, counts: playlistMembershipCounts, allLabel: 'Playlist membership', kind: 'videos' }),
         ].join('')),
         kindHtml('Playlists', 'playlists', metaCounts?.playlists?.total, [
@@ -2550,7 +2549,7 @@
         searchPlaylistGroupKey,
         sourceScopes.video,
         sourceScopes.channel,
-        searchPartialMinimumPercent,
+        partialCompletionMinimumPercent,
       ]);
       const metaCountsCache = omniMetaCountsCache;
       const reactionCountsCache = omniReactionCountsCache;
@@ -2566,7 +2565,7 @@
         video_meta: metaFilterParamValue(searchMetaVisibility.videos),
         video_reaction: metaFilterParamValue(searchMetaVisibility.reactions),
         video_completion: metaFilterParamValue(searchMetaVisibility.completion),
-        video_completion_min_percent: String(searchPartialMinimumPercent),
+        video_completion_min_percent: String(partialCompletionMinimumPercent),
         video_playlist_membership: metaFilterParamValue(searchMetaVisibility.membership),
         channel_subscription: metaFilterParamValue(searchMetaVisibility.channelSubscription),
         channel_status: metaFilterParamValue(searchMetaVisibility.channelStatus),
@@ -3063,7 +3062,7 @@
               sort: playlistViewSort,
               query: playlistPageSearch.trim(),
               completion: playlistCompletionVisibility,
-              partialMinimumPercent: playlistPartialMinimumPercent,
+              partialMinimumPercent: partialCompletionMinimumPercent,
             }),
           ]);
         } catch (error) {
@@ -3414,13 +3413,17 @@
         ? activateSearchFromHistory()
         : false;
       if (target.dataset.searchCompletionMinimum !== undefined) {
-        const previousMinimum = searchPartialMinimumPercent;
-        searchPartialMinimumPercent = boundedPartialMinimumPercent(target.value);
-        target.value = String(searchPartialMinimumPercent);
+        const previousMinimum = partialCompletionMinimumPercent;
+        partialCompletionMinimumPercent = boundedPartialMinimumPercent(target.value);
+        target.value = String(partialCompletionMinimumPercent);
         if (
-          previousMinimum === searchPartialMinimumPercent
+          previousMinimum === partialCompletionMinimumPercent
           && searchMetaVisibility.completion.partial
         ) return;
+        savePartialCompletionMinimum(
+          partialCompletionMinimumPercent,
+          previousMinimum,
+        );
         searchMetaVisibility.completion.partial = true;
         const partialInput = searchForFilters.querySelector(
           '[data-search-meta-filter="completion:partial"]'
@@ -3436,13 +3439,17 @@
         return;
       }
       if (target.dataset.playlistCompletionMinimum !== undefined) {
-        const previousMinimum = playlistPartialMinimumPercent;
-        playlistPartialMinimumPercent = boundedPartialMinimumPercent(target.value);
-        target.value = String(playlistPartialMinimumPercent);
+        const previousMinimum = partialCompletionMinimumPercent;
+        partialCompletionMinimumPercent = boundedPartialMinimumPercent(target.value);
+        target.value = String(partialCompletionMinimumPercent);
         if (
-          previousMinimum === playlistPartialMinimumPercent
+          previousMinimum === partialCompletionMinimumPercent
           && playlistCompletionVisibility.partial
         ) return;
+        savePartialCompletionMinimum(
+          partialCompletionMinimumPercent,
+          previousMinimum,
+        );
         playlistCompletionVisibility.partial = true;
         const partialInput = meta.querySelector(
           '[data-playlist-completion-filter="partial"]'
@@ -3595,6 +3602,35 @@
       const request = pageSizeSaveChain.catch(() => {}).then(save);
       pageSizeSaveChain = request;
       return request;
+    }
+
+    function persistPartialCompletionMinimum(value) {
+      const save = async () => {
+        const params = new URLSearchParams({ value });
+        const response = await fetch(
+          `/api/settings/partial-completion-minimum?${params.toString()}`,
+          { method: 'POST' },
+        );
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) {
+          throw new Error(
+            result.error || `Partial completion minimum save failed (${response.status})`
+          );
+        }
+      };
+      const request = partialCompletionMinimumSaveChain.catch(() => {}).then(save);
+      partialCompletionMinimumSaveChain = request;
+      return request;
+    }
+
+    function savePartialCompletionMinimum(value, previousValue) {
+      const version = ++partialCompletionMinimumSaveVersion;
+      void persistPartialCompletionMinimum(value).catch(error => {
+        if (partialCompletionMinimumSaveVersion !== version) return;
+        partialCompletionMinimumPercent = previousValue;
+        void render();
+        window.alert(error instanceof Error ? error.message : String(error));
+      });
     }
 
     meta.addEventListener('click', async event => {
