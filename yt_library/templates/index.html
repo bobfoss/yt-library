@@ -431,6 +431,7 @@
     const watchProgressPercent = VideoCard.watchProgressPercent;
     const watchedLineHtml = VideoCard.watchedLineHtml;
     const watchSparklineHtml = (video, detail = false) => VideoCard.watchSparklineHtml(video, { detail });
+    const defaultDocumentTitle = 'YT Library';
     const pageConfig = window.YT_LIBRARY_CONFIG || {};
     const filterPreferenceKeys = {
       unavailableVideos: 'videos.unavailable',
@@ -444,6 +445,13 @@
 
     function filterPreferenceEnabled(key) {
       return filterPreferences[key] === true;
+    }
+
+    function setDocumentTitle(itemTitle = '') {
+      const normalizedTitle = String(itemTitle || '').trim();
+      document.title = normalizedTitle
+        ? `${defaultDocumentTitle} - ${normalizedTitle}`
+        : defaultDocumentTitle;
     }
 
     let data = null;
@@ -3044,6 +3052,7 @@
 
     async function render() {
       const generation = ++renderGeneration;
+      setDocumentTitle();
       if (selected !== '__search__') {
         searchResultsRendered = false;
         stopSearchMetaProgress();
@@ -3095,6 +3104,7 @@
           return;
         }
         if (generation !== renderGeneration) return;
+        setDocumentTitle(displayVideoTitle(video) || videoId);
         hidePager();
         grid.className = 'grid';
         grid.replaceChildren(videoDetailCardFor(video));
@@ -3121,6 +3131,7 @@
           return;
         }
         if (generation !== renderGeneration) return;
+        setDocumentTitle(channel.title || channelId);
         const playlistCount = Number(playlistSummary.total || 0);
         const historyCount = cachedChannelHistoryCount(channelId);
         const currentHeatmap = channelDetailTab === 'history'
@@ -3257,6 +3268,7 @@
           return;
         }
         if (generation !== renderGeneration) return;
+        setDocumentTitle(playlist.title || playlistId);
         const rows = payload.results || [];
         const playlistCount = playlistVideoCountLabel(playlist);
         const playlistHeadingMeta = [
