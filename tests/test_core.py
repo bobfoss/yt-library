@@ -5270,6 +5270,10 @@ class AdminServerTests(unittest.TestCase):
             "presetButton('videos', 'Videos', counts.videos || 0)",
             server.INDEX_HTML,
         )
+        self.assertIn(
+            "presetButton('all-playlists', 'Playlists', counts.playlists || 0)",
+            server.INDEX_HTML,
+        )
         self.assertIn("button.dataset.preset = 'playlist-group';", server.INDEX_HTML)
         self.assertNotIn("Playlists with unavailable", server.INDEX_HTML)
         self.assertIn("{ key: 'public', label: 'public', visibilityIcon: true }", server.INDEX_HTML)

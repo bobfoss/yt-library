@@ -2664,7 +2664,7 @@
       videoSection.appendChild(presetButton('liked-videos', 'Liked videos', counts.liked_videos || 0));
 
       const playlistSection = sectionFor('Playlists');
-      playlistSection.appendChild(presetButton('all-playlists', 'All playlists', counts.playlists || 0));
+      playlistSection.appendChild(presetButton('all-playlists', 'Playlists', counts.playlists || 0));
       for (const group of children.get('') || []) {
         playlistSection.appendChild(buttonFor(group));
         for (const child of children.get(group.group_key) || []) {
