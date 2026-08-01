@@ -97,7 +97,7 @@ The left-navigation library lists are named omni-search presets. Search returns 
 
 ## Planned Features
 
-- Persist scheduled Fetch History last-run and failure status across service restarts; the daily schedule and next-run status are available now.
+- Persist scheduled Update last-run and failure status across service restarts; the daily schedule and next-run status are available now.
 - Make parent-child relationships in hierarchical filters more visually obvious, including enabled, disabled, selected, and partially selected states.
 - Begin publishing versioned releases through GitHub with a defined versioning and release process.
 - Maintain a changelog for each released version that summarizes user-facing changes, fixes, schema impact, and operational notes.

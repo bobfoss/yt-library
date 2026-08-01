@@ -66,6 +66,8 @@ in the generated config file:
   "search_card_layout": "grid",
   "history_card_layout": "compact",
   "sort_preferences": {},
+  "update_daily": false,
+  "update_time": "03:00",
   "use_proxy": false,
   "proxy": "",
   "dispatch_mode": "delay",
@@ -93,6 +95,12 @@ The search and history card selectors save `search_card_layout` and
 `history_card_layout` immediately, without changing the current URL.
 Sort selectors save independent preferences for unscoped search, each sidebar
 preset, and playlist-detail video lists in `sort_preferences`.
+The Admin **Update** action incrementally discovers new playlists, fetches recent
+history and Liked videos, refreshes due playlist memberships, and enriches
+metadata that has never been fetched. `update_daily` and `update_time` attach
+the daily schedule to that complete Update workflow; the configured time uses
+the display timezone. Existing `history_fetch_daily` and `history_fetch_time`
+settings are migrated when an older config is loaded.
 Set `use_proxy` to `true` and `proxy` to a URL such as
 `socks5h://127.0.0.1:1080` to route every outbound YouTube and Archivarix page,
 API, stream, thumbnail, and yt-dlp request through a SOCKS5 proxy. Use `socks5h`

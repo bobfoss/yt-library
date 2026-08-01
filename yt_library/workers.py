@@ -731,6 +731,13 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 current_playlist_id = playlist_id
                 if row["task_type"] == "discover":
                     try:
+                        discovery_mode = (
+                            str(row["source_key"] or "all").strip().lower()
+                            if "source_key" in row.keys()
+                            else "all"
+                        )
+                        if discovery_mode not in {"all", "new"}:
+                            discovery_mode = "all"
                         _opener, discovered_records = fetch_current_youtube_playlists(
                             cookie_file,
                             proxy_url=proxy_url,
@@ -741,17 +748,34 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                             if not is_system_playlist(record.get("playlist_id", ""))
                         ]
                         with conn:
+                            known_playlist_ids = {
+                                existing["playlist_id"]
+                                for existing in conn.execute(
+                                    "SELECT playlist_id FROM playlists WHERE playlist_id <> ''"
+                                )
+                            }
                             discovery_stats = save_discovered_playlists(
                                 conn,
                                 discovered_records,
                             )
-                            for index, record in enumerate(discovered_records, start=1):
+                            scan_records = (
+                                [
+                                    record
+                                    for record in discovered_records
+                                    if record.get("playlist_id", "") not in known_playlist_ids
+                                ]
+                                if discovery_mode == "new"
+                                else discovered_records
+                            )
+                            for index, record in enumerate(scan_records, start=1):
+                                is_new = record.get("playlist_id", "") not in known_playlist_ids
                                 enqueue_playlist_scan_item(
                                     conn,
                                     record.get("playlist_id", ""),
                                     title=record.get("title", ""),
+                                    source_key="update" if discovery_mode == "new" else "",
                                     priority=index,
-                                    manual=False,
+                                    manual=is_new,
                                 )
                             if queue_id:
                                 conn.execute(
@@ -766,6 +790,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 f"{discovery_stats['discovered']} current, "
                                 f"{discovery_stats['inserted']} new, "
                                 f"{discovery_stats['updated']} existing; "
+                                f"{len(scan_records)} scans added, "
                                 f"{remaining} playlist scans queued"
                             )
                             log_playlist_scan_event(conn, run_id, "info", message)

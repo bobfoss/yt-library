@@ -32,8 +32,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "sort_preferences": {},
     "page_size": 100,
     "partial_completion_min_percent": 1,
-    "history_fetch_daily": False,
-    "history_fetch_time": "03:00",
+    "update_daily": False,
+    "update_time": "03:00",
     "admin_advanced": False,
     "use_proxy": False,
     "proxy": "",
@@ -145,8 +145,8 @@ def configured_sort_preferences(config: dict[str, Any]) -> dict[str, str]:
     return preferences
 
 
-def configured_history_fetch_daily(config: dict[str, Any]) -> bool:
-    value = config.get("history_fetch_daily", DEFAULT_CONFIG["history_fetch_daily"])
+def configured_update_daily(config: dict[str, Any]) -> bool:
+    value = config.get("update_daily", DEFAULT_CONFIG["update_daily"])
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
@@ -159,23 +159,23 @@ def configured_admin_advanced(config: dict[str, Any]) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def valid_history_fetch_time(value: str) -> bool:
+def valid_update_time(value: str) -> bool:
     return bool(DAILY_TIME_PATTERN.fullmatch((value or "").strip()))
 
 
-def configured_history_fetch_time(config: dict[str, Any]) -> str:
-    value = str(config.get("history_fetch_time") or "").strip()
-    return value if valid_history_fetch_time(value) else str(DEFAULT_CONFIG["history_fetch_time"])
+def configured_update_time(config: dict[str, Any]) -> str:
+    value = str(config.get("update_time") or "").strip()
+    return value if valid_update_time(value) else str(DEFAULT_CONFIG["update_time"])
 
 
-def next_history_fetch_at(
+def next_update_at(
     config: dict[str, Any],
     now: datetime | None = None,
 ) -> datetime:
     current_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     zone = ZoneInfo(effective_display_timezone(config))
     local_now = current_utc.astimezone(zone)
-    hour, minute = (int(part) for part in configured_history_fetch_time(config).split(":"))
+    hour, minute = (int(part) for part in configured_update_time(config).split(":"))
     candidate = datetime.combine(
         local_now.date(),
         time(hour=hour, minute=minute),
@@ -342,6 +342,10 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
                 if key in DEFAULT_CONFIG and value is not None
             }
         )
+        if "update_daily" not in loaded and "history_fetch_daily" in loaded:
+            config["update_daily"] = loaded["history_fetch_daily"]
+        if "update_time" not in loaded and "history_fetch_time" in loaded:
+            config["update_time"] = loaded["history_fetch_time"]
         if "dispatch_mode" not in loaded:
             config["dispatch_mode"] = configured_dispatch_mode(loaded)
         if "job_dispatch_delay_seconds" not in loaded:
@@ -412,8 +416,8 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
     config["partial_completion_min_percent"] = (
         configured_partial_completion_min_percent(config)
     )
-    config["history_fetch_daily"] = configured_history_fetch_daily(config)
-    config["history_fetch_time"] = configured_history_fetch_time(config)
+    config["update_daily"] = configured_update_daily(config)
+    config["update_time"] = configured_update_time(config)
     config["admin_advanced"] = configured_admin_advanced(config)
     configured_proxy_address(config)
     config["_config_path"] = str(path)

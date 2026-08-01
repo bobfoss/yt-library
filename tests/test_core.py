@@ -31,8 +31,6 @@ from yt_library.config import (
     configured_dispatch_mode,
     configured_display_timezone,
     configured_history_card_layout,
-    configured_history_fetch_daily,
-    configured_history_fetch_time,
     configured_job_dispatch_delay,
     configured_page_size,
     configured_partial_completion_min_percent,
@@ -40,6 +38,8 @@ from yt_library.config import (
     configured_request_delay_range,
     configured_search_card_layout,
     configured_sort_preferences,
+    configured_update_daily,
+    configured_update_time,
     configured_use_proxy,
     configured_youtube_max_in_flight,
     configured_proxy,
@@ -47,9 +47,9 @@ from yt_library.config import (
     ensure_config_file,
     ensure_directory,
     load_config,
-    next_history_fetch_at,
+    next_update_at,
     save_config,
-    valid_history_fetch_time,
+    valid_update_time,
 )
 from yt_library.workers import (
     LiveHistoryWorker,
@@ -3649,6 +3649,66 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("playlist:scan:PLinitialize", subjects)
         self.assertIn("history:verify", subjects)
 
+    def test_update_queues_incremental_discovery_and_never_fetched_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCupdatechannel", title="New channel")
+                    core.upsert_video(
+                        conn,
+                        "newupdate01",
+                        title="New video",
+                        channel_id="UCupdatechannel",
+                    )
+                    core.upsert_video(conn, "oldupdate01", title="Old video")
+                    conn.execute(
+                        "UPDATE videos SET fetched_at = '2025-01-01T00:00:00Z' "
+                        "WHERE video_id = 'oldupdate01'"
+                    )
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLupdate', 'Due playlist')"
+                    )
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLremoved', 'Removed playlist')"
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scans(
+                          playlist_id, scanned_at, video_count, unavailable_count, scan_status
+                        ) VALUES ('PLremoved', '2026-07-01T00:00:00Z', 0, 0, 'removed')
+                        """
+                    )
+                    existing = core.enqueue_worker_queue_target(conn, "queuedvid01")
+                    stats = core.enqueue_update_tasks(conn)
+                    repeated_stats = core.enqueue_update_tasks(conn)
+
+                rows = conn.execute(
+                    "SELECT subject_key, source_key, manual FROM worker_queue ORDER BY subject_key"
+                ).fetchall()
+                subjects = {row["subject_key"] for row in rows}
+                discovery = next(row for row in rows if row["subject_key"] == "playlist:discover-current")
+            finally:
+                conn.close()
+
+        self.assertEqual(stats["selected"], 6)
+        self.assertEqual(stats["inserted"], 6)
+        self.assertEqual(stats["already_queued"], 0)
+        self.assertEqual(stats["queued"], 7)
+        self.assertEqual(repeated_stats["inserted"], 0)
+        self.assertEqual(repeated_stats["already_queued"], 6)
+        self.assertIn(existing["subject_key"], subjects)
+        self.assertIn("playlist:discover-current", subjects)
+        self.assertIn("history:recent", subjects)
+        self.assertIn("playlist:scan:LL", subjects)
+        self.assertIn("playlist:scan:PLupdate", subjects)
+        self.assertNotIn("playlist:scan:PLremoved", subjects)
+        self.assertIn("metadata:channel:UCupdatechannel", subjects)
+        self.assertIn("metadata:video:newupdate01", subjects)
+        self.assertNotIn("metadata:video:oldupdate01", subjects)
+        self.assertEqual(discovery["source_key"], "new")
+        self.assertFalse(discovery["manual"])
+
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -4385,32 +4445,32 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(configured_archivarix_retry_attempts({"archivarix_retry_attempts": 500}), 10)
         self.assertEqual(configured_archivarix_retry_backoff({"archivarix_retry_backoff_seconds": -1}), 0.0)
 
-    def test_daily_history_fetch_schedule_uses_display_timezone(self) -> None:
+    def test_daily_update_schedule_uses_display_timezone(self) -> None:
         config = {
             "display_timezone": "America/Los_Angeles",
-            "history_fetch_daily": True,
-            "history_fetch_time": "09:30",
+            "update_daily": True,
+            "update_time": "09:30",
         }
         now = datetime(2026, 7, 31, 15, 0, tzinfo=timezone.utc)
 
-        self.assertTrue(configured_history_fetch_daily(config))
-        self.assertEqual(configured_history_fetch_time(config), "09:30")
-        self.assertTrue(valid_history_fetch_time("23:59"))
-        self.assertFalse(valid_history_fetch_time("24:00"))
+        self.assertTrue(configured_update_daily(config))
+        self.assertEqual(configured_update_time(config), "09:30")
+        self.assertTrue(valid_update_time("23:59"))
+        self.assertFalse(valid_update_time("24:00"))
         self.assertEqual(
-            next_history_fetch_at(config, now),
+            next_update_at(config, now),
             datetime(2026, 7, 31, 16, 30, tzinfo=timezone.utc),
         )
-        config["history_fetch_time"] = "07:30"
+        config["update_time"] = "07:30"
         self.assertEqual(
-            next_history_fetch_at(config, now),
+            next_update_at(config, now),
             datetime(2026, 8, 1, 14, 30, tzinfo=timezone.utc),
         )
-        self.assertFalse(configured_history_fetch_daily({}))
+        self.assertFalse(configured_update_daily({}))
         self.assertFalse(configured_admin_advanced({}))
         self.assertTrue(configured_admin_advanced({"admin_advanced": "yes"}))
-        self.assertEqual(configured_history_fetch_time({}), "03:00")
-        self.assertEqual(configured_history_fetch_time({"history_fetch_time": "later"}), "03:00")
+        self.assertEqual(configured_update_time({}), "03:00")
+        self.assertEqual(configured_update_time({"update_time": "later"}), "03:00")
 
     def test_load_config_rejects_invalid_proxy(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -4462,6 +4522,30 @@ class ConfigTests(unittest.TestCase):
             self.assertNotIn("youtube_request_interval_seconds", payload)
             self.assertNotIn("archivarix_request_delay_max_seconds", payload)
 
+    def test_load_config_migrates_history_schedule_to_update_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "history_fetch_daily": True,
+                        "history_fetch_time": "04:30",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+            self.assertTrue(configured_update_daily(config))
+            self.assertEqual(configured_update_time(config), "04:30")
+
+            save_config(config)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(payload["update_daily"])
+            self.assertEqual(payload["update_time"], "04:30")
+            self.assertNotIn("history_fetch_daily", payload)
+            self.assertNotIn("history_fetch_time", payload)
+
     def test_migrate_creates_default_config_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"
@@ -4479,8 +4563,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["sort_preferences"], {})
             self.assertEqual(payload["page_size"], 100)
             self.assertEqual(payload["partial_completion_min_percent"], 1)
-            self.assertFalse(payload["history_fetch_daily"])
-            self.assertEqual(payload["history_fetch_time"], "03:00")
+            self.assertFalse(payload["update_daily"])
+            self.assertEqual(payload["update_time"], "03:00")
             self.assertFalse(payload["admin_advanced"])
             self.assertEqual(payload["host"], "127.0.0.1")
             self.assertEqual(payload["youtube_cookies"], "yt_cookies.txt")
@@ -4826,7 +4910,17 @@ class AdminServerTests(unittest.TestCase):
         )
         self.assertIn('<fieldset class="dispatch-settings advanced-only">', server.ADMIN_HTML)
         self.assertIn('<div class="controls capacity-controls advanced-only">', server.ADMIN_HTML)
-        self.assertIn('id="verifyLiveHistory" class="primary advanced-only"', server.ADMIN_HTML)
+        self.assertIn('<div class="controls history-controls advanced-only">', server.ADMIN_HTML)
+        self.assertIn('id="updateLibrary"', server.ADMIN_HTML)
+        self.assertIn('id="updateDaily"', server.ADMIN_HTML)
+        self.assertIn('id="updateTime"', server.ADMIN_HTML)
+        self.assertIn('id="updateScheduleStatus"', server.ADMIN_HTML)
+        self.assertIn("'/api/admin/update/start'", server.ADMIN_HTML)
+        self.assertIn("'/api/admin/update-schedule'", server.ADMIN_HTML)
+        self.assertLess(
+            server.ADMIN_HTML.index("<h2>Update</h2>"),
+            server.ADMIN_HTML.index("<h2>Videos</h2>"),
+        )
         self.assertIn('aria-label="Use dark theme"', server.ADMIN_HTML)
         self.assertIn('<span>Light</span>', server.ADMIN_HTML)
         self.assertIn('<span>Dark</span>', server.ADMIN_HTML)
@@ -4862,10 +4956,8 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(server.ADMIN_HTML.count("<th>ID</th>"), 2)
         self.assertNotIn("<th>Video ID</th>", server.ADMIN_HTML)
         self.assertIn("return row.channel_id || row.video_id || '';", server.ADMIN_HTML)
-        self.assertIn('id="historyFetchDaily"', server.ADMIN_HTML)
-        self.assertIn('id="historyFetchTime"', server.ADMIN_HTML)
-        self.assertIn('id="historyScheduleStatus"', server.ADMIN_HTML)
-        self.assertIn("'/api/admin/history-schedule'", server.ADMIN_HTML)
+        self.assertNotIn('id="historyFetchDaily"', server.ADMIN_HTML)
+        self.assertNotIn("'/api/admin/history-schedule'", server.ADMIN_HTML)
         self.assertIn('type="time" value="03:00" disabled', server.ADMIN_HTML)
 
     def test_admin_advanced_setting_saves_without_restarting(self) -> None:
@@ -4886,17 +4978,17 @@ class AdminServerTests(unittest.TestCase):
         self.assertTrue(payload["admin_advanced"])
         self.assertTrue(response["settings"]["adminAdvanced"])
 
-    def test_history_schedule_endpoint_saves_and_updates_live_scheduler(self) -> None:
+    def test_update_schedule_endpoint_saves_and_updates_live_scheduler(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"
             config = load_config(config_path)
             handler = object.__new__(server.LibraryHandler)
-            handler.path = "/api/admin/history-schedule?enabled=1&at=04%3A30"
+            handler.path = "/api/admin/update-schedule?enabled=1&at=04%3A30"
             handler.config_data = config
             handler.send_json = Mock()
 
             with patch.object(
-                server.HISTORY_FETCH_SCHEDULER,
+                server.UPDATE_SCHEDULER,
                 "schedule_changed",
             ) as schedule_changed:
                 handler.do_POST()
@@ -4904,15 +4996,15 @@ class AdminServerTests(unittest.TestCase):
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             response = handler.send_json.call_args.args[0]
 
-        self.assertTrue(payload["history_fetch_daily"])
-        self.assertEqual(payload["history_fetch_time"], "04:30")
-        self.assertTrue(response["settings"]["historyFetchDaily"])
-        self.assertEqual(response["settings"]["historyFetchTime"], "04:30")
+        self.assertTrue(payload["update_daily"])
+        self.assertEqual(payload["update_time"], "04:30")
+        self.assertTrue(response["settings"]["updateDaily"])
+        self.assertEqual(response["settings"]["updateTime"], "04:30")
         schedule_changed.assert_called_once_with(config)
 
-    def test_history_schedule_endpoint_rejects_invalid_time(self) -> None:
+    def test_update_schedule_endpoint_rejects_invalid_time(self) -> None:
         handler = object.__new__(server.LibraryHandler)
-        handler.path = "/api/admin/history-schedule?enabled=1&at=25%3A00"
+        handler.path = "/api/admin/update-schedule?enabled=1&at=25%3A00"
         handler.config_data = load_config(Path("missing-test-config.json"))
         handler.send_json = Mock()
 
@@ -4922,7 +5014,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("HH:MM", response["error"])
         self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
 
-    def test_scheduled_history_fetch_queues_recent_history_and_starts_dispatcher(self) -> None:
+    def test_scheduled_update_queues_incremental_work_and_starts_dispatcher(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
             conn = migrated_connection(db_path)
@@ -4936,22 +5028,23 @@ class AdminServerTests(unittest.TestCase):
                 "start",
                 return_value={"started": True},
             ) as start_dispatcher:
-                result = server.enqueue_scheduled_history_fetch(
+                result = server.enqueue_library_update(
                     db_path,
                     cookie_file,
                     video_thumbs,
                     config,
+                    scheduled=True,
                 )
 
             conn = core.connect(db_path)
             try:
-                queue_row = conn.execute(
+                queue_rows = conn.execute(
                     """
                     SELECT subject_key, task_type, manual
                     FROM worker_queue
-                    WHERE worker_type = 'history'
+                    ORDER BY subject_key
                     """
-                ).fetchone()
+                ).fetchall()
                 log = conn.execute(
                     """
                     SELECT level, message
@@ -4963,9 +5056,14 @@ class AdminServerTests(unittest.TestCase):
             finally:
                 conn.close()
 
-        self.assertEqual(result, {"started": True})
-        self.assertEqual(tuple(queue_row), ("history:recent", "recent", 0))
-        self.assertEqual(tuple(log), ("queue info", "Scheduled history fetch queued."))
+        self.assertEqual(result["dispatcher"], {"started": True})
+        self.assertEqual(result["queue"]["inserted"], 3)
+        self.assertEqual(
+            {row["subject_key"] for row in queue_rows},
+            {"history:recent", "playlist:discover-current", "playlist:scan:LL"},
+        )
+        self.assertEqual(tuple(log)[0], "queue info")
+        self.assertIn("Scheduled update queued", tuple(log)[1])
         start_dispatcher.assert_called_once_with(
             db_path,
             cookie_file,
@@ -6913,9 +7011,72 @@ class WorkerQueueTests(unittest.TestCase):
             [(row["task_type"], row["playlist_id"]) for row in queued],
             [("scan", "PLnewcurrent")],
         )
+        self.assertTrue(queued[0]["manual"])
         self.assertEqual(grouped["group_key"], "youtube-ungrouped")
         self.assertEqual(log["level"], "info")
         self.assertIn("1 current, 1 new, 0 existing", log["message"])
+
+    def test_update_playlist_discovery_scans_only_new_playlists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            cookie_file = Path(temp_dir) / "cookies.txt"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLexisting', 'Existing')"
+                    )
+                    core.enqueue_playlist_discovery_item(conn, mode="new")
+            finally:
+                conn.close()
+
+            records = [
+                {
+                    "playlist_id": "PLexisting",
+                    "title": "Existing updated",
+                    "visibility": "private",
+                    "video_count": "2",
+                },
+                {
+                    "playlist_id": "PLbrandnew",
+                    "title": "Brand new",
+                    "visibility": "unlisted",
+                    "video_count": "3",
+                },
+            ]
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.fetch_current_youtube_playlists",
+                    return_value=(object(), records),
+                ),
+            ):
+                worker._run(
+                    "test-update-playlist-discovery",
+                    db_path,
+                    cookie_file,
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                queued = core.playlist_scan_queue_rows(conn)
+                existing_title = conn.execute(
+                    "SELECT title FROM playlists WHERE playlist_id = 'PLexisting'"
+                ).fetchone()["title"]
+            finally:
+                conn.close()
+
+        self.assertEqual(existing_title, "Existing updated")
+        self.assertEqual(
+            [(row["playlist_id"], row["manual"]) for row in queued],
+            [("PLbrandnew", 1)],
+        )
 
     def test_playlist_worker_logs_existing_playlist_count_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

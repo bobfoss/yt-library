@@ -6403,8 +6403,12 @@ def enqueue_playlist_discovery_item(
     conn: sqlite3.Connection,
     *,
     priority: int = -1,
+    mode: str = "all",
 ) -> str:
     now = utc_now()
+    mode = (mode or "all").strip().lower()
+    if mode not in {"all", "new"}:
+        raise ValueError("Playlist discovery mode must be all or new")
     subject_key = "playlist:discover-current"
     conn.execute(
         """
@@ -6414,14 +6418,18 @@ def enqueue_playlist_discovery_item(
           created_at, updated_at
         )
         VALUES (?, 'playlist', 'discover', '', '', '', '', 'Current YouTube playlists',
-                'youtube', 0, ?, 0, ?, ?)
+                ?, 0, ?, 0, ?, ?)
         ON CONFLICT(subject_key) DO UPDATE SET
           worker_type='playlist',
           task_type='discover',
+          source_key=CASE
+            WHEN worker_queue.source_key = 'all' OR excluded.source_key = 'all' THEN 'all'
+            ELSE excluded.source_key
+          END,
           priority=MIN(worker_queue.priority, excluded.priority),
           updated_at=excluded.updated_at
         """,
-        (subject_key, int(priority), now, now),
+        (subject_key, mode, int(priority), now, now),
     )
     return subject_key
 
@@ -6445,6 +6453,7 @@ def playlist_scan_queue_rows(
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
                COALESCE(ps.unavailable_count, 0) AS unavailable_count,
+               w.source_key,
                w.priority,
                w.manual,
                w.created_at,
@@ -6483,7 +6492,7 @@ def enqueue_all_playlist_scan_items(
     rows = playlist_scan_candidate_rows(conn, force=force, stale_days=stale_days)
     queued_before = playlist_scan_queue_count(conn)
     if discover_current:
-        enqueue_playlist_discovery_item(conn)
+        enqueue_playlist_discovery_item(conn, mode="all")
     enqueue_playlist_scan_item(
         conn,
         LIKED_VIDEOS_PLAYLIST_ID,
@@ -6755,6 +6764,7 @@ def metadata_queue_candidate_rows(
     force: bool = False,
     stale_days: int = 30,
     metadata_kind: str = "all",
+    never_fetched_only: bool = False,
 ) -> list[sqlite3.Row]:
     stale_before = utc_days_ago(stale_days)
     metadata_kind = (metadata_kind or "all").strip().lower()
@@ -6762,7 +6772,9 @@ def metadata_queue_candidate_rows(
         raise ValueError("Metadata kind must be all, video, or channel")
     conditions: list[str] = []
     params: list[Any] = []
-    if not force:
+    if never_fetched_only:
+        conditions.append("fetched_at IS NULL")
+    elif not force:
         conditions.append(
             "(fetch_status = 'error' OR fetched_at IS NULL OR fetched_at < ?)"
         )
@@ -6831,6 +6843,7 @@ def metadata_queue_candidate_count(
     force: bool = False,
     stale_days: int = 30,
     metadata_kind: str = "all",
+    never_fetched_only: bool = False,
 ) -> int:
     return len(
         metadata_queue_candidate_rows(
@@ -6838,6 +6851,7 @@ def metadata_queue_candidate_count(
             force=force,
             stale_days=stale_days,
             metadata_kind=metadata_kind,
+            never_fetched_only=never_fetched_only,
         )
     )
 
@@ -7131,6 +7145,77 @@ def library_has_data(conn: sqlite3.Connection) -> bool:
         """
     ).fetchone()
     return bool(row[0])
+
+
+def enqueue_update_tasks(conn: sqlite3.Connection) -> dict[str, int]:
+    queued_before = worker_queue_count(conn)
+    playlist_rows = playlist_scan_candidate_rows(
+        conn,
+        force=False,
+        stale_days=7,
+    )
+    metadata_rows = metadata_queue_candidate_rows(
+        conn,
+        force=False,
+        metadata_kind="all",
+        never_fetched_only=True,
+    )
+
+    enqueue_playlist_discovery_item(conn, priority=-3, mode="new")
+    enqueue_history_task(conn, "recent", priority=-2, manual=False)
+    enqueue_playlist_scan_item(
+        conn,
+        LIKED_VIDEOS_PLAYLIST_ID,
+        title="Liked videos",
+        source_key="update",
+        priority=-1,
+        manual=False,
+    )
+
+    playlist_count = 0
+    for index, row in enumerate(playlist_rows, start=1):
+        if row["playlist_id"] == LIKED_VIDEOS_PLAYLIST_ID:
+            continue
+        enqueue_playlist_scan_item(
+            conn,
+            row["playlist_id"] or "",
+            title=row["title"] or "",
+            source_key="update",
+            priority=index,
+            manual=False,
+        )
+        playlist_count += 1
+
+    for index, row in enumerate(metadata_rows, start=1):
+        source = row["metadata_source"] or "history"
+        priority = 1_000_000 + int(row["priority"] or 0) * 1_000_000 + index
+        enqueue_metadata_item(
+            conn,
+            video_id=row["video_id"] or "",
+            channel_id=row["channel_id"] or "",
+            channel_title=row["channel_title"] or "",
+            current_title=row["current_title"] or "",
+            metadata_source=source,
+            source_key="update",
+            playlist_count=int(row["playlist_count"] or 0),
+            priority=priority,
+            manual=False,
+        )
+
+    queued_after = worker_queue_count(conn)
+    selected = 3 + playlist_count + len(metadata_rows)
+    inserted = max(0, queued_after - queued_before)
+    return {
+        "discovery": 1,
+        "history": 1,
+        "liked_videos": 1,
+        "playlists": playlist_count,
+        "metadata": len(metadata_rows),
+        "selected": selected,
+        "inserted": inserted,
+        "already_queued": max(0, selected - inserted),
+        "queued": queued_after,
+    }
 
 
 def enqueue_initialization_tasks(conn: sqlite3.Connection) -> dict[str, int | bool]:

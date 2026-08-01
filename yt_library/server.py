@@ -27,8 +27,6 @@ from .config import (
     configured_dispatch_mode,
     configured_display_timezone,
     configured_history_card_layout,
-    configured_history_fetch_daily,
-    configured_history_fetch_time,
     configured_job_dispatch_delay,
     configured_page_size,
     configured_partial_completion_min_percent,
@@ -36,14 +34,16 @@ from .config import (
     configured_request_delay_range,
     configured_search_card_layout,
     configured_sort_preferences,
+    configured_update_daily,
+    configured_update_time,
     configured_use_proxy,
     configured_youtube_max_in_flight,
     effective_display_timezone,
     ensure_config_file,
     ensure_directory,
-    next_history_fetch_at,
+    next_update_at,
     save_config,
-    valid_history_fetch_time,
+    valid_update_time,
 )
 from .core import *
 from .network import validated_socks5_proxy_url
@@ -160,28 +160,43 @@ def utc_timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def enqueue_scheduled_history_fetch(
+def enqueue_library_update(
     db_path: Path,
     cookie_file: Path,
     video_thumbs: Path,
     config_data: dict[str, Any],
+    *,
+    scheduled: bool = False,
 ) -> dict[str, Any]:
     conn = connect(db_path)
     try:
         with conn:
-            enqueue_history_task(conn, "recent", priority=0, manual=False)
-            log_worker_queue_event(conn, "info", "Scheduled history fetch queued.")
+            queue_stats = enqueue_update_tasks(conn)
+            log_worker_queue_event(
+                conn,
+                "info",
+                (
+                    "Scheduled update queued: "
+                    if scheduled
+                    else "Update queued: "
+                )
+                + (
+                    f"{queue_stats['inserted']} new jobs, "
+                    f"{queue_stats['already_queued']} already queued"
+                ),
+            )
     finally:
         conn.close()
-    return WORKER_QUEUE_DISPATCHER.start(
+    dispatcher = WORKER_QUEUE_DISPATCHER.start(
         db_path,
         cookie_file,
         video_thumbs,
         config_data,
     )
+    return {"queue": queue_stats, "dispatcher": dispatcher}
 
 
-class DailyHistoryFetchScheduler:
+class DailyUpdateScheduler:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -215,7 +230,7 @@ class DailyHistoryFetchScheduler:
             self._wake = threading.Event()
             self._thread = threading.Thread(
                 target=self._run,
-                name="history-fetch-scheduler",
+                name="library-update-scheduler",
                 daemon=True,
             )
             self._thread.start()
@@ -235,14 +250,14 @@ class DailyHistoryFetchScheduler:
         self._wake.set()
 
     def status(self, config_data: dict[str, Any]) -> dict[str, Any]:
-        enabled = configured_history_fetch_daily(config_data)
+        enabled = configured_update_daily(config_data)
         with self._lock:
             next_run_at = self._next_run_at
             if enabled and next_run_at is None:
-                next_run_at = next_history_fetch_at(config_data)
+                next_run_at = next_update_at(config_data)
             return {
                 "enabled": enabled,
-                "time": configured_history_fetch_time(config_data),
+                "time": configured_update_time(config_data),
                 "nextRunAt": utc_timestamp(next_run_at) if enabled and next_run_at else "",
                 "lastQueuedAt": self._last_queued_at,
                 "lastError": self._last_error,
@@ -250,9 +265,9 @@ class DailyHistoryFetchScheduler:
 
     @staticmethod
     def _calculate_next_run(config_data: dict[str, Any]) -> datetime | None:
-        if not configured_history_fetch_daily(config_data):
+        if not configured_update_daily(config_data):
             return None
-        return next_history_fetch_at(config_data)
+        return next_update_at(config_data)
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -264,7 +279,7 @@ class DailyHistoryFetchScheduler:
                 video_thumbs = self._video_thumbs
             if (
                 not config_data
-                or not configured_history_fetch_daily(config_data)
+                or not configured_update_daily(config_data)
                 or not next_run_at
                 or not db_path
                 or not cookie_file
@@ -283,12 +298,14 @@ class DailyHistoryFetchScheduler:
             queued_at = utc_now()
             error = ""
             try:
-                dispatcher = enqueue_scheduled_history_fetch(
+                result = enqueue_library_update(
                     db_path,
                     cookie_file,
                     video_thumbs,
                     config_data,
+                    scheduled=True,
                 )
+                dispatcher = result["dispatcher"]
                 if dispatcher.get("blocked"):
                     error = str(dispatcher.get("message") or "Worker queue could not start")
             except Exception as exc:
@@ -299,7 +316,7 @@ class DailyHistoryFetchScheduler:
                 self._next_run_at = self._calculate_next_run(config_data)
 
 
-HISTORY_FETCH_SCHEDULER = DailyHistoryFetchScheduler()
+UPDATE_SCHEDULER = DailyUpdateScheduler()
 
 
 class LibraryHandler(http.server.SimpleHTTPRequestHandler):
@@ -784,21 +801,21 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 }
             )
             return
-        if parsed.path == "/api/admin/history-schedule":
+        if parsed.path == "/api/admin/update-schedule":
             enabled = (params.get("enabled") or ["0"])[0].strip().lower() in {
                 "1",
                 "true",
                 "yes",
                 "on",
             }
-            fetch_time = (params.get("at") or [""])[0].strip()
-            if not valid_history_fetch_time(fetch_time):
-                self.send_json({"error": "History fetch time must use HH:MM"}, status=400)
+            update_time = (params.get("at") or [""])[0].strip()
+            if not valid_update_time(update_time):
+                self.send_json({"error": "Update time must use HH:MM"}, status=400)
                 return
-            self.config_data["history_fetch_daily"] = enabled
-            self.config_data["history_fetch_time"] = fetch_time
+            self.config_data["update_daily"] = enabled
+            self.config_data["update_time"] = update_time
             save_config(self.config_data)
-            HISTORY_FETCH_SCHEDULER.schedule_changed(self.config_data)
+            UPDATE_SCHEDULER.schedule_changed(self.config_data)
             self.send_json({"ok": True, "settings": self.admin_settings()})
             return
         if parsed.path == "/api/admin/advanced":
@@ -851,7 +868,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.config_data["proxy"] = proxy_url
             save_config(self.config_data)
             if previous_timezone != timezone_name:
-                HISTORY_FETCH_SCHEDULER.schedule_changed(self.config_data)
+                UPDATE_SCHEDULER.schedule_changed(self.config_data)
             if previous_timezone != timezone_name:
                 conn = connect(self.db_path)
                 try:
@@ -896,7 +913,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 with conn:
                     self.config_data["display_timezone"] = value
                     save_config(self.config_data)
-                    HISTORY_FETCH_SCHEDULER.schedule_changed(self.config_data)
+                    UPDATE_SCHEDULER.schedule_changed(self.config_data)
                     refresh_exact_history_dates(conn, value)
             finally:
                 conn.close()
@@ -1001,6 +1018,15 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 self.config_data,
             )
             self.send_json({"ok": True, "queue": queue_stats, "dispatcher": dispatcher})
+            return
+        if parsed.path == "/api/admin/update/start":
+            result = enqueue_library_update(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+            )
+            self.send_json({"ok": True, **result})
             return
         if parsed.path == "/api/admin/metadata/start":
             stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
@@ -1481,9 +1507,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "displayTimezone": configured_display_timezone(self.config_data),
             "useProxy": configured_use_proxy(self.config_data),
             "proxy": configured_proxy_address(self.config_data),
-            "historyFetchDaily": configured_history_fetch_daily(self.config_data),
-            "historyFetchTime": configured_history_fetch_time(self.config_data),
-            "historyFetchSchedule": HISTORY_FETCH_SCHEDULER.status(self.config_data),
+            "updateDaily": configured_update_daily(self.config_data),
+            "updateTime": configured_update_time(self.config_data),
+            "updateSchedule": UPDATE_SCHEDULER.status(self.config_data),
             "adminAdvanced": configured_admin_advanced(self.config_data),
         }
 
@@ -1696,7 +1722,7 @@ def serve(args: argparse.Namespace) -> None:
         )
 
     server = http.server.ThreadingHTTPServer((args.host, args.port), handler)
-    HISTORY_FETCH_SCHEDULER.start(
+    UPDATE_SCHEDULER.start(
         db_path,
         Path(args.cookies),
         Path(args.video_thumbs),
@@ -1708,7 +1734,7 @@ def serve(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("\nStopped")
     finally:
-        HISTORY_FETCH_SCHEDULER.stop()
+        UPDATE_SCHEDULER.stop()
         server.server_close()
     if restart_requested.is_set():
         print("Restarting service")

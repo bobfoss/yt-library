@@ -50,11 +50,10 @@
     .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
     .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0 18px; }
     .history-controls { align-items: flex-start; }
-    .history-fetch-stack { display: grid; justify-items: start; gap: 7px; }
-    .history-schedule-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
-    .history-schedule-controls label.checkbox { padding: 0; }
-    label.history-time-label { display: flex; align-items: center; gap: 6px; }
-    .history-time-input { width: 110px; }
+    .update-controls { align-items: center; }
+    .update-controls label.checkbox { padding: 0; }
+    label.update-time-label { display: flex; align-items: center; gap: 6px; }
+    .update-time-input { width: 110px; }
     .header-settings { display: grid; justify-items: end; gap: 8px; }
     .header-settings-row { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: end; gap: 8px; }
     .header-settings label { text-align: left; }
@@ -225,6 +224,19 @@
     </div>
 
     <section class="workstreams">
+      <section class="workstream">
+        <div class="workstream-header">
+          <h2>Update</h2>
+        </div>
+        <div class="controls update-controls">
+          <button id="updateLibrary" class="primary" type="button">Update</button>
+          <label class="checkbox"><input id="updateDaily" type="checkbox">Update daily</label>
+          <label class="update-time-label">At<input id="updateTime" class="update-time-input" type="time" value="03:00" disabled></label>
+          <span id="updateStatus" class="metric" aria-live="polite"></span>
+          <span id="updateScheduleStatus" class="metric" aria-live="polite"></span>
+        </div>
+      </section>
+
       <section class="workstream advanced-only">
         <div class="workstream-header">
           <h2>Videos</h2>
@@ -282,18 +294,11 @@
           <div class="panel"><div class="metric">History video IDs</div><div id="historyVideos" class="value">0</div></div>
           <div class="panel"><div class="metric">Fetched history rows</div><div id="liveHistoryRows" class="value">0</div></div>
         </div>
-        <div class="controls history-controls">
-          <div class="history-fetch-stack">
-            <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
-            <div class="history-schedule-controls">
-              <label class="checkbox"><input id="historyFetchDaily" type="checkbox">Fetch daily</label>
-              <label class="history-time-label">At<input id="historyFetchTime" class="history-time-input" type="time" value="03:00" disabled></label>
-            </div>
-            <span id="historyScheduleStatus" class="metric" aria-live="polite"></span>
-          </div>
-          <button id="verifyLiveHistory" class="primary advanced-only" type="button">Verify history</button>
-          <button id="importTakeoutHistory" class="advanced-only" type="button">Import Takeout directory</button>
-          <button id="reconcileHistory" class="advanced-only" type="button">Reconcile history</button>
+        <div class="controls history-controls advanced-only">
+          <button id="startLiveHistory" class="primary" type="button">Fetch history</button>
+          <button id="verifyLiveHistory" class="primary" type="button">Verify history</button>
+          <button id="importTakeoutHistory" type="button">Import Takeout directory</button>
+          <button id="reconcileHistory" type="button">Reconcile history</button>
         </div>
       </section>
 
@@ -437,6 +442,11 @@
       initializeControls: document.getElementById('initializeControls'),
       initializeLibrary: document.getElementById('initializeLibrary'),
       initializeStatus: document.getElementById('initializeStatus'),
+      updateLibrary: document.getElementById('updateLibrary'),
+      updateDaily: document.getElementById('updateDaily'),
+      updateTime: document.getElementById('updateTime'),
+      updateStatus: document.getElementById('updateStatus'),
+      updateScheduleStatus: document.getElementById('updateScheduleStatus'),
       playlistRows: document.getElementById('playlistRows'),
       distinctVideos: document.getElementById('distinctVideos'),
       playlistBackfillCount: document.getElementById('playlistBackfillCount'),
@@ -444,9 +454,6 @@
       historyRows: document.getElementById('historyRows'),
       historyVideos: document.getElementById('historyVideos'),
       liveHistoryRows: document.getElementById('liveHistoryRows'),
-      historyFetchDaily: document.getElementById('historyFetchDaily'),
-      historyFetchTime: document.getElementById('historyFetchTime'),
-      historyScheduleStatus: document.getElementById('historyScheduleStatus'),
       videoMetadataCounts: document.getElementById('videoMetadataCounts'),
       channelCounts: document.getElementById('channelCounts'),
       backfillVideoVisibility: document.getElementById('backfillVideoVisibility'),
@@ -518,10 +525,10 @@
     let dispatchSettingsSaveTimer = null;
     let settingsSaving = false;
     let settingsDirty = false;
-    let historyScheduleSaving = false;
-    let historyScheduleDirty = false;
-    let historyScheduleRevision = 0;
-    let historyScheduleSaveTimer = null;
+    let updateScheduleSaving = false;
+    let updateScheduleDirty = false;
+    let updateScheduleRevision = 0;
+    let updateScheduleSaveTimer = null;
     let advancedSaving = false;
     let advancedDirty = false;
     let advancedRevision = 0;
@@ -874,17 +881,17 @@
         fields.useProxy.checked = Boolean(settings.useProxy);
         fields.proxyUrl.value = settings.proxy || '';
       }
-      if (!historyScheduleSaving && !historyScheduleDirty) {
-        fields.historyFetchDaily.checked = Boolean(settings.historyFetchDaily);
-        fields.historyFetchTime.value = settings.historyFetchTime || '03:00';
-        fields.historyFetchTime.disabled = !fields.historyFetchDaily.checked;
-        const historySchedule = settings.historyFetchSchedule || {};
-        fields.historyScheduleStatus.textContent = historySchedule.lastError
-          ? `Error: ${historySchedule.lastError}`
-          : (historySchedule.enabled && historySchedule.nextRunAt
-            ? `Next ${fmtTime(historySchedule.nextRunAt)}`
+      if (!updateScheduleSaving && !updateScheduleDirty) {
+        fields.updateDaily.checked = Boolean(settings.updateDaily);
+        fields.updateTime.value = settings.updateTime || '03:00';
+        fields.updateTime.disabled = !fields.updateDaily.checked;
+        const updateSchedule = settings.updateSchedule || {};
+        fields.updateScheduleStatus.textContent = updateSchedule.lastError
+          ? `Error: ${updateSchedule.lastError}`
+          : (updateSchedule.enabled && updateSchedule.nextRunAt
+            ? `Next ${fmtTime(updateSchedule.nextRunAt)}`
             : '');
-        fields.historyScheduleStatus.className = `metric ${historySchedule.lastError ? 'warn' : ''}`;
+        fields.updateScheduleStatus.className = `metric ${updateSchedule.lastError ? 'warn' : ''}`;
       }
 
       fields.playlistRows.textContent = data.playlistCounts.total_playlists || 0;
@@ -1293,49 +1300,49 @@
       saveDispatchSettings();
     }
 
-    async function saveHistorySchedule() {
-      if (historyScheduleSaving || !historyScheduleDirty) return;
-      const saveRevision = historyScheduleRevision;
-      const enabled = fields.historyFetchDaily.checked;
-      const at = fields.historyFetchTime.value;
+    async function saveUpdateSchedule() {
+      if (updateScheduleSaving || !updateScheduleDirty) return;
+      const saveRevision = updateScheduleRevision;
+      const enabled = fields.updateDaily.checked;
+      const at = fields.updateTime.value;
       if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(at)) {
-        fields.historyScheduleStatus.textContent = 'Choose a time';
-        fields.historyScheduleStatus.className = 'metric warn';
+        fields.updateScheduleStatus.textContent = 'Choose a time';
+        fields.updateScheduleStatus.className = 'metric warn';
         return;
       }
-      historyScheduleSaving = true;
-      fields.historyScheduleStatus.textContent = 'Saving';
-      fields.historyScheduleStatus.className = 'metric';
+      updateScheduleSaving = true;
+      fields.updateScheduleStatus.textContent = 'Saving';
+      fields.updateScheduleStatus.className = 'metric';
       try {
-        await requestJson('/api/admin/history-schedule', {
+        await requestJson('/api/admin/update-schedule', {
           enabled: enabled ? '1' : '0',
           at,
         });
-        if (historyScheduleRevision === saveRevision) {
-          historyScheduleDirty = false;
+        if (updateScheduleRevision === saveRevision) {
+          updateScheduleDirty = false;
         }
-        historyScheduleSaving = false;
+        updateScheduleSaving = false;
         await loadStatus({ force: true });
       } catch (error) {
-        fields.historyScheduleStatus.textContent = error.message;
-        fields.historyScheduleStatus.className = 'metric warn';
+        fields.updateScheduleStatus.textContent = error.message;
+        fields.updateScheduleStatus.className = 'metric warn';
       } finally {
-        historyScheduleSaving = false;
-        if (historyScheduleDirty && historyScheduleRevision !== saveRevision) {
-          scheduleHistoryScheduleSave();
+        updateScheduleSaving = false;
+        if (updateScheduleDirty && updateScheduleRevision !== saveRevision) {
+          scheduleUpdateScheduleSave();
         }
       }
     }
 
-    function scheduleHistoryScheduleSave() {
-      historyScheduleDirty = true;
-      historyScheduleRevision += 1;
-      if (historyScheduleSaveTimer !== null) {
-        window.clearTimeout(historyScheduleSaveTimer);
+    function scheduleUpdateScheduleSave() {
+      updateScheduleDirty = true;
+      updateScheduleRevision += 1;
+      if (updateScheduleSaveTimer !== null) {
+        window.clearTimeout(updateScheduleSaveTimer);
       }
-      historyScheduleSaveTimer = window.setTimeout(() => {
-        historyScheduleSaveTimer = null;
-        saveHistorySchedule();
+      updateScheduleSaveTimer = window.setTimeout(() => {
+        updateScheduleSaveTimer = null;
+        saveUpdateSchedule();
       }, 250);
     }
 
@@ -1353,6 +1360,20 @@
         fields.initializeStatus.textContent = error.message;
       } finally {
         fields.initializeLibrary.disabled = false;
+      }
+    });
+    fields.updateLibrary.addEventListener('click', async () => {
+      fields.updateLibrary.disabled = true;
+      fields.updateStatus.textContent = 'Queueing';
+      try {
+        const result = await post('/api/admin/update/start');
+        const queue = result.queue || {};
+        fields.updateStatus.textContent =
+          `Queued ${Number(queue.inserted || 0).toLocaleString()}; ${Number(queue.already_queued || 0).toLocaleString()} already queued`;
+      } catch (error) {
+        fields.updateStatus.textContent = error.message;
+      } finally {
+        fields.updateLibrary.disabled = false;
       }
     });
     document.getElementById('scanPlaylists').addEventListener('click', () => post('/api/admin/playlists/start').catch(error => alert(error.message)));
@@ -1436,11 +1457,11 @@
       post('/api/admin/queue/remove', { queue_id: queueId }).catch(error => alert(error.message));
     });
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start').catch(error => alert(error.message)));
-    fields.historyFetchDaily.addEventListener('change', () => {
-      fields.historyFetchTime.disabled = !fields.historyFetchDaily.checked;
-      scheduleHistoryScheduleSave();
+    fields.updateDaily.addEventListener('change', () => {
+      fields.updateTime.disabled = !fields.updateDaily.checked;
+      scheduleUpdateScheduleSave();
     });
-    fields.historyFetchTime.addEventListener('change', scheduleHistoryScheduleSave);
+    fields.updateTime.addEventListener('change', scheduleUpdateScheduleSave);
     document.getElementById('verifyLiveHistory').addEventListener('click', () => {
       if (!confirm('Verify the full YouTube history? This may run for a long time, but existing fetched history will be kept.')) return;
       post('/api/admin/live-history/verify').catch(error => alert(error.message));
