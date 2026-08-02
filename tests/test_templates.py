@@ -143,7 +143,7 @@ class TemplateDomTests(unittest.TestCase):
             for element in self.admin.matching(tag="section", class_name="advanced-only")
             if "workstream" in (element[1].get("class") or "").split()
         ]
-        self.assertEqual(len(advanced_workstreams), 4)
+        self.assertEqual(len(advanced_workstreams), 5)
 
         tabs = {
             attributes["data-advanced-tab"]
