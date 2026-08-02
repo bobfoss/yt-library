@@ -1134,6 +1134,61 @@ class NormalizedReadModelTests(unittest.TestCase):
         unavailable = playlist_list_data(self.conn, unavailable_only=True)
         self.assertEqual([row["playlist_id"] for row in unavailable["results"]], ["PLz"])
 
+    def test_playlist_and_channel_lists_apply_pagination_in_sql(self) -> None:
+        self.conn.executemany(
+            "INSERT INTO playlists(playlist_id, title) VALUES (?, ?)",
+            [("PLc", "Charlie"), ("PLa", "Alpha"), ("PLb", "Bravo")],
+        )
+        for channel_id, title in (
+            ("UCc", "Charlie Channel"),
+            ("UCa", "Alpha Channel"),
+            ("UCb", "Bravo Channel"),
+        ):
+            core.upsert_channel(self.conn, channel_id, title=title)
+        for video_id, title in (
+            ("video-c", "Charlie Video"),
+            ("video-a", "Alpha Video"),
+            ("video-b", "Bravo Video"),
+        ):
+            core.upsert_video(self.conn, video_id, title=title, source="test")
+        self.conn.execute("UPDATE videos SET reaction = 'L'")
+        self.conn.commit()
+
+        statements: list[str] = []
+        self.conn.set_trace_callback(statements.append)
+        try:
+            playlist_page = playlist_list_data(self.conn, limit=1, offset=1)
+            channel_page = channel_list_data(self.conn, limit=1, offset=1)
+            video_page = video_collection_data(
+                self.conn,
+                scope="liked",
+                sort="title",
+                limit=1,
+                offset=1,
+            )
+        finally:
+            self.conn.set_trace_callback(None)
+
+        self.assertEqual(
+            [row["playlist_id"] for row in playlist_page["results"]],
+            ["PLb"],
+        )
+        self.assertEqual(
+            [row["channel_id"] for row in channel_page["results"]],
+            ["UCb"],
+        )
+        self.assertEqual(
+            [row["video_id"] for row in video_page["results"]],
+            ["video-b"],
+        )
+        paged_queries = [
+            " ".join(statement.upper().split())
+            for statement in statements
+            if "ORDER BY" in statement.upper() and "LIMIT" in statement.upper()
+        ]
+        self.assertEqual(len(paged_queries), 3)
+        self.assertTrue(all("LIMIT 1 OFFSET 1" in query for query in paged_queries))
+
     def test_video_and_channel_collections_hydrate_only_requested_page(self) -> None:
         self.add_video("available1", "Alpha", "UC_subscribed")
         self.add_video("unavailable1", "Beta", "UC_other")
