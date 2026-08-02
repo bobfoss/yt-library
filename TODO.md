@@ -81,35 +81,42 @@ Remove a vestigial candidate only when all are true:
 - No current-schema behavior test protects it.
 - No current local data operation needs it.
 
-## Current Cleanup Review (2026-08-02)
+## Cleanup Review (2026-08-02)
 
 The current-tree review found no release-blocking behavior regressions. The
-first implementation pass is intentionally limited to verified removal and
-deduplication work; broader performance and module-organization changes remain
-for review after live validation.
+verified removal and deduplication pass is complete and live-validated. Broader
+performance and module-organization changes remain for review.
 
-### Verified Removal
+### Completed Removal
 
-- Remove the retired whole-library `fetch_app_data` read model and move any
-  useful assertions to the active paginated read models.
-- Remove the superseded synchronous `fetch_provided_metadata` path; manual
-  targets already use the persistent worker queue.
-- Remove the unused `/api/admin/live-history/stop` endpoint; the Admin UI uses
+- Removed the retired whole-library `fetch_app_data` read model and moved useful
+  assertions to the active paginated and detail read models.
+- Removed the superseded synchronous `fetch_provided_metadata` path; manual
+  targets continue to use the persistent worker queue.
+- Removed the unused `/api/admin/live-history/stop` endpoint; the Admin UI uses
   the unified queue stop endpoint.
-- Remove unreferenced Python helpers, imports, constants, browser helpers, and
-  the stale tests that only preserve superseded APIs.
-- Remove queue accessor parameters that are no longer read after queue
+- Removed unreferenced Python helpers, imports, constants, browser helpers, and
+  stale tests that only preserved superseded APIs.
+- Removed queue accessor parameters that were no longer read after queue
   persistence was unified.
 
-### Deduplication
+### Completed Deduplication
 
-- Centralize repeated worker run/log persistence and interrupted-run handling
-  without changing the current schema or worker-specific behavior.
-- Reuse common video playlist-link and presentation hydration for History,
-  Search, collection, and detail read models.
-- Extract the repeated Admin transaction/enqueue/dispatcher-start sequence and
-  split the large HTTP route dispatchers into named route handlers where doing
-  so is behavior-preserving.
+- Centralized repeated worker log persistence and interrupted-run handling
+  without changing the schema or worker-specific public functions.
+- Reused common video playlist-link and identity hydration for History, Search,
+  collection, and detail read models.
+- Extracted the repeated Admin transaction/enqueue/dispatcher-start sequence
+  and moved the affected POST routes into named handlers.
+
+### Verification
+
+- Passed Python compilation, all 249 local unit tests, and `git diff --check`.
+- Restarted the configured service to a new healthy PID without clearing the
+  persistent queue, then passed `/api/admin/status` and History search smoke
+  checks.
+- Verified Search, History, and Admin in a browser with no console errors;
+  rapid layout changes persisted the final choice across a reload.
 
 ### Recommendations After This Pass
 
