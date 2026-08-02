@@ -9,6 +9,7 @@ import json
 import math
 import os
 import posixpath
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -356,6 +357,102 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         self.restart_pending = restart_pending
         self.request_restart = request_restart
         super().__init__(*args, directory=directory, **kwargs)
+
+    def _run_transaction(
+        self,
+        operation: Callable[[sqlite3.Connection], Any],
+    ) -> Any:
+        conn = connect(self.db_path)
+        try:
+            with conn:
+                return operation(conn)
+        finally:
+            conn.close()
+
+    def _start_worker_queue(self) -> dict[str, Any]:
+        return WORKER_QUEUE_DISPATCHER.start(
+            self.db_path,
+            self.cookie_file,
+            self.video_thumbs,
+            self.config_data,
+        )
+
+    def _enqueue_and_start(
+        self,
+        enqueue: Callable[[sqlite3.Connection], Any],
+    ) -> tuple[Any, dict[str, Any]]:
+        result = self._run_transaction(enqueue)
+        return result, self._start_worker_queue()
+
+    def _handle_initialize(self) -> None:
+        queue_stats, dispatcher = self._enqueue_and_start(enqueue_initialization_tasks)
+        self.send_json({"ok": True, "queue": queue_stats, "dispatcher": dispatcher})
+
+    def _handle_metadata_start(self, params: dict[str, list[str]]) -> None:
+        stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
+        force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
+        metadata_kind = (params.get("kind") or ["all"])[0].strip().lower()
+        if metadata_kind not in {"all", "video", "channel"}:
+            self.send_json(
+                {"error": "Metadata kind must be all, video, or channel"},
+                status=400,
+            )
+            return
+
+        def enqueue(conn: sqlite3.Connection) -> dict[str, Any]:
+            if metadata_queue_count(conn, metadata_kind=metadata_kind) == 0:
+                return rebuild_metadata_queue(
+                    conn,
+                    force=force,
+                    stale_days=stale_days,
+                    metadata_kind=metadata_kind,
+                )
+            return {
+                "cleared": 0,
+                "inserted": 0,
+                "queued": metadata_queue_count(conn, metadata_kind=metadata_kind),
+            }
+
+        queue_stats, dispatcher = self._enqueue_and_start(enqueue)
+        self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
+
+    def _handle_feature_backfill_start(self, params: dict[str, list[str]]) -> None:
+        kind = (params.get("kind") or [""])[0].strip().lower()
+        if kind not in FEATURE_BACKFILL_KINDS:
+            self.send_json(
+                {
+                    "error": (
+                        "Feature backfill kind must be video_visibility, "
+                        "playlist_metadata, or channel_account"
+                    )
+                },
+                status=400,
+            )
+            return
+        limit = max(0, int((params.get("limit") or ["0"])[0] or 0))
+        queue_stats, dispatcher = self._enqueue_and_start(
+            lambda conn: enqueue_feature_backfill(conn, kind, limit=limit)
+        )
+        self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
+
+    def _handle_playlist_scan_start(self) -> None:
+        queue_stats, dispatcher = self._enqueue_and_start(
+            lambda conn: enqueue_all_playlist_scan_items(
+                conn,
+                force=True,
+                stale_days=7,
+                discover_current=True,
+            )
+        )
+        self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
+
+    def _handle_history_fetch_start(self, mode: str) -> None:
+        def enqueue(conn: sqlite3.Connection) -> None:
+            enqueue_history_task(conn, mode, priority=0, manual=True)
+            enqueue_account_sync_task(conn, priority=-1, manual=True)
+
+        _, dispatcher = self._enqueue_and_start(enqueue)
+        self.send_json({"dispatcher": dispatcher})
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
@@ -1130,19 +1227,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/admin/initialize":
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    queue_stats = enqueue_initialization_tasks(conn)
-            finally:
-                conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(
-                self.db_path,
-                self.cookie_file,
-                self.video_thumbs,
-                self.config_data,
-            )
-            self.send_json({"ok": True, "queue": queue_stats, "dispatcher": dispatcher})
+            self._handle_initialize()
             return
         if parsed.path == "/api/admin/update/start":
             result = enqueue_library_update(
@@ -1154,73 +1239,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": True, **result})
             return
         if parsed.path == "/api/admin/metadata/start":
-            stale_days = max(0, int((params.get("stale_days") or ["30"])[0] or 30))
-            force = (params.get("force") or ["0"])[0] in {"1", "true", "yes"}
-            metadata_kind = (params.get("kind") or ["all"])[0].strip().lower()
-            if metadata_kind not in {"all", "video", "channel"}:
-                self.send_json(
-                    {"error": "Metadata kind must be all, video, or channel"},
-                    status=400,
-                )
-                return
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    if metadata_queue_count(
-                        conn,
-                        metadata_kind=metadata_kind,
-                    ) == 0:
-                        queue_stats = rebuild_metadata_queue(
-                            conn,
-                            force=force,
-                            stale_days=stale_days,
-                            metadata_kind=metadata_kind,
-                        )
-                    else:
-                        queue_stats = {
-                            "cleared": 0,
-                            "inserted": 0,
-                            "queued": metadata_queue_count(
-                                conn,
-                                metadata_kind=metadata_kind,
-                            ),
-                        }
-            finally:
-                conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(
-                self.db_path,
-                self.cookie_file,
-                self.video_thumbs,
-                self.config_data,
-            )
-            self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
+            self._handle_metadata_start(params)
             return
         if parsed.path == "/api/admin/feature-backfill/start":
-            kind = (params.get("kind") or [""])[0].strip().lower()
-            if kind not in FEATURE_BACKFILL_KINDS:
-                self.send_json(
-                    {"error": "Feature backfill kind must be video_visibility, playlist_metadata, or channel_account"},
-                    status=400,
-                )
-                return
-            limit = max(0, int((params.get("limit") or ["0"])[0] or 0))
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    queue_stats = enqueue_feature_backfill(
-                        conn,
-                        kind,
-                        limit=limit,
-                    )
-            finally:
-                conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(
-                self.db_path,
-                self.cookie_file,
-                self.video_thumbs,
-                self.config_data,
-            )
-            self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
+            self._handle_feature_backfill_start(params)
             return
         if parsed.path == "/api/admin/queue/add-target":
             target = (params.get("target") or [""])[0]
@@ -1291,12 +1313,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": removed, "removed": removed})
             return
         if parsed.path == "/api/admin/queue/start":
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(
-                self.db_path,
-                self.cookie_file,
-                self.video_thumbs,
-                self.config_data,
-            )
+            dispatcher = self._start_worker_queue()
             self.send_json({"ok": True, "dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/archivarix/retry":
@@ -1307,12 +1324,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             finally:
                 conn.close()
             WORKER_QUEUE_DISPATCHER.allow_archivarix_retry()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(
-                self.db_path,
-                self.cookie_file,
-                self.video_thumbs,
-                self.config_data,
-            )
+            dispatcher = self._start_worker_queue()
             self.send_json({"ok": True, "cleared": cleared, "dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/proxy/retry":
@@ -1327,12 +1339,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     )
             finally:
                 conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(
-                self.db_path,
-                self.cookie_file,
-                self.video_thumbs,
-                self.config_data,
-            )
+            dispatcher = self._start_worker_queue()
             conn = connect(self.db_path)
             try:
                 proxy_block = external_service_block(conn, "proxy")
@@ -1357,24 +1364,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": True, **result})
             return
         if parsed.path == "/api/admin/playlists/start":
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    queue_stats = enqueue_all_playlist_scan_items(
-                        conn,
-                        force=True,
-                        stale_days=7,
-                        discover_current=True,
-                    )
-            finally:
-                conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(
-                self.db_path,
-                self.cookie_file,
-                self.video_thumbs,
-                self.config_data,
-            )
-            self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
+            self._handle_playlist_scan_start()
             return
         if parsed.path == "/api/admin/playlists/reconcile":
             conn = connect(self.db_path)
@@ -1424,36 +1414,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "run_id": run_id, **stats})
             return
         if parsed.path == "/api/admin/live-history/start":
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    enqueue_history_task(conn, "recent", priority=0, manual=True)
-                    enqueue_account_sync_task(conn, priority=-1, manual=True)
-            finally:
-                conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(
-                self.db_path,
-                self.cookie_file,
-                self.video_thumbs,
-                self.config_data,
-            )
-            self.send_json({"dispatcher": dispatcher})
+            self._handle_history_fetch_start("recent")
             return
         if parsed.path == "/api/admin/live-history/verify":
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    enqueue_history_task(conn, "verify", priority=0, manual=True)
-                    enqueue_account_sync_task(conn, priority=-1, manual=True)
-            finally:
-                conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(
-                self.db_path,
-                self.cookie_file,
-                self.video_thumbs,
-                self.config_data,
-            )
-            self.send_json({"dispatcher": dispatcher})
+            self._handle_history_fetch_start("verify")
             return
         if parsed.path == "/api/admin/history/import-takeout":
             try:

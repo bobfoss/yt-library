@@ -988,14 +988,10 @@ def _omni_playlist_membership_counts(results: list[dict[str, Any]]) -> dict[str,
     return counts
 
 
-def _add_omni_video_links(conn: sqlite3.Connection, results: list[dict[str, Any]]) -> None:
-    video_ids = sorted(
-        {
-            result["item"].get("video_id")
-            for result in results
-            if result["kind"] == "video" and result["item"].get("video_id")
-        }
-    )
+def _playlist_links_by_video(
+    conn: sqlite3.Connection,
+    video_ids: list[str],
+) -> dict[str, list[dict[str, Any]]]:
     links_by_video: dict[str, list[dict[str, Any]]] = {}
     if video_ids:
         placeholders = ",".join("?" for _ in video_ids)
@@ -1016,11 +1012,36 @@ def _add_omni_video_links(conn: sqlite3.Connection, results: list[dict[str, Any]
                     "removed": row["membership_state"] == "retained_unavailable",
                 }
             )
-    for result in results:
-        if result["kind"] != "video":
-            continue
-        item = result["item"]
-        item["playlist_links"] = links_by_video.get(item.get("video_id") or "", item.get("playlist_links", []))
+    return links_by_video
+
+
+def _add_video_playlist_links(
+    conn: sqlite3.Connection,
+    items: list[dict[str, Any]],
+) -> None:
+    video_ids = sorted({item.get("video_id") for item in items if item.get("video_id")})
+    links_by_video = _playlist_links_by_video(conn, video_ids)
+    for item in items:
+        item["playlist_links"] = links_by_video.get(
+            item.get("video_id") or "",
+            item.get("playlist_links", []),
+        )
+
+
+def _add_omni_video_links(conn: sqlite3.Connection, results: list[dict[str, Any]]) -> None:
+    _add_video_playlist_links(
+        conn,
+        [result["item"] for result in results if result["kind"] == "video"],
+    )
+
+
+def _hydrate_video_identity(item: dict[str, Any], playlist_id: str = "") -> None:
+    video_id = item.get("video_id") or ""
+    item["url"] = youtube_video_url(video_id, playlist_id)
+    item["metadata_channel_url"] = youtube_channel_url(item.get("metadata_channel_id") or "")
+    item["watch_dates"] = [
+        value for value in (item.pop("watch_dates_text", "") or "").split("|") if value
+    ]
 
 
 def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]) -> None:
@@ -1114,16 +1135,12 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
             continue
         if "collection_category" in result["item"]:
             item["collection_category"] = result["item"]["collection_category"]
-        item["url"] = youtube_video_url(video_id, item.get("playlist_id") or "")
+        _hydrate_video_identity(item, item.get("playlist_id") or "")
         item["playlist_url"] = youtube_playlist_url(item.get("playlist_id") or "")
-        item["metadata_channel_url"] = youtube_channel_url(item.get("metadata_channel_id") or "")
         item["archive_url"] = wayback_video_url(video_id, item.get("archive_capture_at"))
         item["video_file_url"] = archivarix_media_url(video_id) if item.get("media_available") else ""
         item["match_label"] = playlist_match_type_label(item.get("match_type") or "")
         item["match_note"] = playlist_match_type_note(item.get("match_type") or "")
-        item["watch_dates"] = [
-            value for value in (item.pop("watch_dates_text", "") or "").split("|") if value
-        ]
         result["item"] = item
 
 
@@ -1663,29 +1680,9 @@ def history_search_data(
             [*params, limit, offset],
         )
     ]
-    video_ids = sorted({row["video_id"] for row in rows})
-    playlist_links: dict[str, list[dict[str, Any]]] = {}
-    if video_ids:
-        placeholders = ",".join("?" for _ in video_ids)
-        for link in conn.execute(
-            f"""
-            SELECT DISTINCT pi.video_id, pi.playlist_id, p.title, pi.membership_state
-            FROM playlist_items pi JOIN playlists p ON p.playlist_id = pi.playlist_id
-            WHERE pi.video_id IN ({placeholders})
-            ORDER BY p.title COLLATE NOCASE
-            """,
-            video_ids,
-        ):
-            playlist_links.setdefault(link["video_id"], []).append(
-                {
-                    "playlist_id": link["playlist_id"],
-                    "title": link["title"] or link["playlist_id"],
-                    "removed": link["membership_state"] == "retained_unavailable",
-                }
-            )
+    _add_video_playlist_links(conn, rows)
     for row in rows:
-        row["url"] = youtube_video_url(row["video_id"])
-        row["metadata_channel_url"] = youtube_channel_url(row.get("metadata_channel_id") or "")
+        _hydrate_video_identity(row)
         row["source_label"] = history_source_type_label(row.get("source_type") or "")
         row["time_quality_label"] = history_time_quality_label(row.get("time_quality") or "")
         row["match_label"] = history_match_type_label(row.get("match_type") or "")
@@ -1695,8 +1692,6 @@ def history_search_data(
             for value in (row["time_quality_label"],)
             if value
         ]
-        row["watch_dates"] = [value for value in (row.pop("watch_dates_text", "") or "").split("|") if value]
-        row["playlist_links"] = playlist_links.get(row["video_id"], [])
     totals = dict(
         conn.execute(
             """

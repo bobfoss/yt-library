@@ -1428,6 +1428,46 @@ class NormalizedReadModelTests(unittest.TestCase):
         filtered = history_search_data(self.conn, "fiber")
         self.assertEqual([row["video_id"] for row in filtered["watch"]], ["new123"])
 
+    def test_history_search_hydrates_all_playlist_links_and_video_identity(self) -> None:
+        self.add_video("historylinks", "Linked History Video", "UC_historylinks")
+        self.conn.executemany(
+            "INSERT INTO playlists(playlist_id, title) VALUES (?, ?)",
+            [("PLcurrent", "Alpha Playlist"), ("PLremoved", "Zeta Playlist")],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO playlist_items(playlist_id, position, video_id, membership_state)
+            VALUES (?, 1, 'historylinks', ?)
+            """,
+            [("PLcurrent", "current"), ("PLremoved", "retained_unavailable")],
+        )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watched_at, watch_date, time_precision
+            ) VALUES (
+              'history-links', 'historylinks', '2026-07-03T16:00:00Z', '2026-07-03', 'exact'
+            )
+            """
+        )
+        self.conn.commit()
+
+        row = history_search_data(self.conn, "Linked History", limit=1)["watch"][0]
+
+        self.assertEqual(row["url"], "https://www.youtube.com/watch?v=historylinks")
+        self.assertEqual(
+            row["metadata_channel_url"],
+            "https://www.youtube.com/channel/UC_historylinks",
+        )
+        self.assertEqual(row["watch_dates"], ["2026-07-03"])
+        self.assertEqual(
+            row["playlist_links"],
+            [
+                {"playlist_id": "PLcurrent", "title": "Alpha Playlist", "removed": False},
+                {"playlist_id": "PLremoved", "title": "Zeta Playlist", "removed": True},
+            ],
+        )
+
     def test_history_search_preserves_date_only_without_fabricating_time(self) -> None:
         self.add_video("date123", "Date Only")
         self.conn.execute(
