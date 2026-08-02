@@ -345,20 +345,6 @@ def configured_archivarix_retry_backoff(config: dict[str, Any]) -> float:
     )
 
 
-PATH_KEYS = {
-    "database",
-    "youtube_cookies",
-    "my_activity_cookies",
-    "archivarix_cookies",
-    "youtube_oauth_client_secrets",
-    "youtube_oauth_token",
-    "thumbnail_dir",
-    "archivarix_thumbnail_dir",
-    "video_thumbnail_dir",
-    "takeout_dir",
-}
-
-
 def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
     path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
     config = dict(DEFAULT_CONFIG)

@@ -13,8 +13,6 @@ import importlib.metadata
 import io
 import json
 import mimetypes
-import os
-import posixpath
 import random
 import re
 import shutil
@@ -26,7 +24,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 import zipfile
 from collections import Counter
 from collections.abc import Iterator
@@ -45,8 +42,6 @@ from .config import (
     effective_display_timezone,
 )
 from .network import (
-    ProxyUnavailableError,
-    probe_socks5_proxy,
     proxy_unavailable_error,
     socks5_proxy_handlers,
     ytdlp_proxy_options,
@@ -59,14 +54,10 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB = ROOT / "yt_library.sqlite3"
 DEFAULT_THUMB_DIR = ROOT / "thumbs"
 DEFAULT_ARCHIVARIX_THUMB_DIR = ROOT / "archivarix_thumbs"
 DEFAULT_VIDEO_THUMB_DIR = ROOT / "video_thumbs"
-COOKIE_FILE = ROOT / "yt_cookies.txt"
 ARCHIVARIX_COOKIE_FILE = ROOT / "archivarix_cookies.txt"
-POCKETTUBE_EXPORT = ROOT / "youtube_playlist_manager_2026-07-02-17_13.json"
-TAKEOUT_DIR = ROOT / "YouTube and YouTube Music"
 HISTORY_BATCH_SIZE = 1000
 RECENT_HISTORY_BATCH_SIZE = 200
 HISTORY_BATCH_DELAY_SECONDS = 10.0
@@ -1037,44 +1028,6 @@ def watch_playability_availability(
     return ""
 
 
-def apply_watch_playability_to_playlist_rows(
-    conn: sqlite3.Connection,
-    video_id: str,
-    metadata: dict[str, Any],
-) -> int:
-    video_id = (video_id or "").strip()
-    playability = watch_playability_value(metadata)
-    if not video_id or playability is None:
-        return 0
-    availability = normalize_video_availability(
-        video_id,
-        str(metadata.get("availability") or ""),
-        playability,
-    )
-    result = conn.execute(
-        """
-        UPDATE videos
-        SET is_playable = ?, availability = ?, last_checked_at = ?,
-            last_seen_available_at = CASE WHEN ? = 1 THEN ? ELSE last_seen_available_at END,
-            updated_at = ?
-        WHERE video_id = ?
-          AND (is_playable IS NOT ? OR availability <> ?)
-        """,
-        (
-            playability,
-            availability,
-            utc_now(),
-            playability,
-            utc_now(),
-            utc_now(),
-            video_id,
-            playability,
-            availability,
-        ),
-    )
-    return result.rowcount
-
-
 def playlist_zero_result_is_suspicious(
     parsed_count: int,
     ytdlp_error: str,
@@ -1102,15 +1055,6 @@ def playlist_scan_requires_exact_count(
         owner_channel_id = (known_owner_channel_id or "").strip()
         visibility = (known_visibility or "").strip()
     return not (owner_channel_id and not visibility)
-
-
-def reconciled_video_availability(
-    video_id: str,
-    current_availability: str = "",
-    recovered_status: str = "",
-    is_playable: bool | int | None = None,
-) -> str:
-    return normalize_video_availability(video_id, current_availability, is_playable, recovered_status)
 
 
 def youtube_channel_id_from_url(value: str) -> str:
@@ -1152,10 +1096,6 @@ def youtube_playlist_url(playlist_id: str) -> str:
     return f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}" if playlist_id else ""
 
 
-def archivarix_search_url(video_id: str) -> str:
-    return f"https://tube.archivarix.net/?q={urllib.parse.quote(video_id)}" if video_id else ""
-
-
 def archivarix_media_url(video_id: str) -> str:
     return (
         f"https://web.archive.org/web/2oe_/http://wayback-fakeurl.archive.org/yt/{video_id}"
@@ -1186,13 +1126,6 @@ def youtube_channel_ref_from_url(value: str) -> str:
     if parts[0] in {"c", "user"} and len(parts) > 1:
         return f"{parts[0]}/{parts[1]}"
     return ""
-
-
-def channel_title_for_id(conn: sqlite3.Connection, channel_id: str) -> str:
-    if not channel_id:
-        return ""
-    row = conn.execute("SELECT title FROM channels WHERE channel_id = ?", (channel_id,)).fetchone()
-    return row["title"] if row else ""
 
 
 def merge_channel_value(existing: str, incoming: str) -> str:
@@ -1453,10 +1386,6 @@ def normalize_utc_timestamp(value: str) -> str:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def current_iso_timestamp() -> str:
-    return utc_now()
 
 
 def valid_timezone_name(value: str) -> bool:
@@ -3220,19 +3149,6 @@ def takeout_watch_datetime(watched_at: str) -> str:
     return ""
 
 
-def takeout_watch_date(watched_at: str) -> str:
-    iso_value = takeout_watch_datetime(watched_at)
-    if iso_value:
-        return iso_value[:10]
-    cleaned = re.sub(r"\s+", " ", watched_at).strip()
-    for fmt in ("%b %d, %Y", "%B %d, %Y"):
-        try:
-            return datetime.strptime(cleaned, fmt).date().isoformat()
-        except ValueError:
-            continue
-    return ""
-
-
 def bounded_int(value: Any, minimum: int = 0, maximum: int = 100) -> int:
     try:
         number = int(float(value))
@@ -3303,23 +3219,6 @@ def extract_watch_status_from_card(card: dict[str, Any], video_id: str) -> tuple
             if isinstance(start, int) and start > 0:
                 resume_seconds = start
     return progress, resume_seconds
-
-
-def find_video_card_watch_status(initial_data: dict[str, Any], video_id: str) -> tuple[int, int]:
-    for node in walk(initial_data):
-        if not isinstance(node, dict):
-            continue
-        renderer = node.get("videoRenderer")
-        if isinstance(renderer, dict) and renderer.get("videoId") == video_id:
-            progress, resume_seconds = extract_watch_status_from_card(renderer, video_id)
-            if progress or resume_seconds:
-                return progress, resume_seconds
-        lockup = node.get("lockupViewModel")
-        if isinstance(lockup, dict) and lockup.get("contentId") == video_id:
-            progress, resume_seconds = extract_watch_status_from_card(lockup, video_id)
-            if progress or resume_seconds:
-                return progress, resume_seconds
-    return 0, 0
 
 
 def parse_history_lockup(lockup: dict[str, Any], normalized_date: str) -> dict[str, Any] | None:
@@ -4169,104 +4068,6 @@ def fetch_new_channel_metadata_if_needed(
         )
 
 
-def fetch_provided_metadata(
-    conn: sqlite3.Connection,
-    opener: urllib.request.OpenerDirector,
-    thumb_dir: Path,
-    target: str,
-    proxy_url: str = "",
-) -> dict[str, str]:
-    source, subject_id = resolve_metadata_target(opener, target)
-    if not source or not subject_id:
-        raise ValueError("Enter a YouTube watch URL, video ID, channel URL, channel ID, or @handle.")
-    now = utc_now()
-    if source == "channel":
-        metadata = fetch_channel_metadata(
-            opener,
-            subject_id,
-            thumb_dir,
-            proxy_url=proxy_url,
-        )
-        status = "ok" if (
-            metadata.get("channel")
-            or metadata.get("channel_url")
-            or metadata.get("channel_thumbnail_path")
-        ) else "no_metadata"
-        channel_id = store_channel_metadata(conn, metadata, status, updated_at=now)
-        return {
-            "source": source,
-            "subject_id": channel_id or subject_id,
-            "status": status,
-            "title": metadata.get("channel", "") or channel_id or subject_id,
-        }
-    metadata = fetch_watch_metadata(opener, subject_id, thumb_dir)
-    status = "ok" if useful_video_metadata(metadata) else "no_metadata"
-    if status != "ok":
-        try:
-            archivarix_opener = load_cookie_opener(ARCHIVARIX_COOKIE_FILE, proxy_url)
-            video, thumbnail_url, thumbnail_path, arch_status, arch_error = recover_archivarix_video(
-                subject_id,
-                thumb_dir,
-                archivarix_opener,
-                refresh_metadata=True,
-                channel_cache={},
-            )
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-            video = None
-            thumbnail_url = ""
-            thumbnail_path = ""
-            arch_status = "error"
-            arch_error = "Archivarix fallback failed"
-        if video:
-            channel_id = str(video.get("channelExternalId") or "")
-            enrich_archivarix_video_channel(video, channel_id, archivarix_opener)
-            if video.get("channelThumbnailUrl") and not video.get("channelThumbnailPath"):
-                video["channelThumbnailPath"] = cache_channel_thumbnail(
-                    archivarix_opener,
-                    channel_id or subject_id,
-                    str(video.get("channelThumbnailUrl") or ""),
-                    thumb_dir,
-                )
-            metadata = metadata_from_archivarix_video(subject_id, video, thumbnail_url, thumbnail_path)
-            status = "ok" if useful_video_metadata(metadata) else "no_metadata"
-            save_video_recovery(
-                conn,
-                subject_id,
-                video,
-                arch_status,
-                arch_error,
-            )
-    channel_metadata: dict[str, str] = {}
-    channel_status = ""
-    channel_error = ""
-    if status == "ok":
-        channel_metadata, channel_status, channel_error = fetch_new_channel_metadata_if_needed(
-            conn,
-            opener,
-            thumb_dir,
-            metadata,
-            proxy_url=proxy_url,
-        )
-    if channel_status:
-        store_channel_metadata(conn, channel_metadata, channel_status, channel_error, updated_at=now)
-    store_video_metadata(conn, metadata, status, updated_at=now)
-    return {
-        "source": source,
-        "subject_id": subject_id,
-        "status": status,
-        "title": metadata.get("title", "") or subject_id,
-    }
-
-
-def scan_playlist_videos_ytdlp(
-    playlist_id: str,
-    cookie_file: Path,
-    proxy_url: str = "",
-) -> list[dict[str, Any]]:
-    videos, _metadata = scan_playlist_ytdlp(playlist_id, cookie_file, proxy_url)
-    return videos
-
-
 def playlist_metadata_from_ytdlp_info(info: dict[str, Any], playlist_id: str) -> dict[str, Any]:
     title = str(info.get("title") or info.get("playlist_title") or "").strip()
     description = str(info.get("description") or "").strip()
@@ -4382,76 +4183,6 @@ def scan_playlist_ytdlp(
             }
         )
     return videos, metadata
-
-
-def fetch_youtube_history_ytdlp(
-    cookie_file: Path,
-    limit: int = 100,
-    start: int = 1,
-    proxy_url: str = "",
-) -> list[dict[str, Any]]:
-    try:
-        import yt_dlp  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError("yt-dlp is not installed. Run: pip install -r requirements.txt") from exc
-
-    class YtdlpLogger:
-        def debug(self, msg: str) -> None:
-            pass
-
-        def info(self, msg: str) -> None:
-            pass
-
-        def warning(self, msg: str) -> None:
-            pass
-
-        def error(self, msg: str) -> None:
-            pass
-
-    try:
-        with temporary_ytdlp_cookie_file(cookie_file) as working_cookie_file:
-            options = {
-                "quiet": True,
-                "no_warnings": True,
-                "skip_download": True,
-                "extract_flat": "in_playlist",
-                "playliststart": max(1, start),
-                "playlistend": max(1, start) + max(1, limit) - 1,
-                "cookiefile": str(working_cookie_file) if working_cookie_file else None,
-                "logger": YtdlpLogger(),
-                **ytdlp_proxy_options(proxy_url),
-            }
-            with request_paced_youtube_dl(yt_dlp, options) as ydl:
-                info = ydl.extract_info(":ythistory", download=False)
-    except Exception as exc:
-        proxy_error = proxy_unavailable_error(exc, proxy_url)
-        if proxy_error:
-            raise proxy_error from exc
-        raise
-    entries = (info or {}).get("entries") or []
-    rows: list[dict[str, Any]] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        video_id = entry.get("id") or extract_video_id(entry.get("url") or "")
-        if not video_id:
-            continue
-        url = entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
-        if url.startswith("http"):
-            watch_url = url
-        else:
-            watch_url = f"https://www.youtube.com/watch?v={video_id}"
-        rows.append(
-            {
-                "video_id": video_id,
-                "title": video_title_or_blank(entry.get("title"), video_id),
-                "url": watch_url,
-                "channel_id": entry.get("channel_id") or entry.get("uploader_id") or youtube_channel_id_from_url(entry.get("channel_url") or entry.get("uploader_url") or ""),
-                "channel": entry.get("channel") or entry.get("uploader") or "",
-                "channel_url": entry.get("channel_url") or entry.get("uploader_url") or "",
-            }
-        )
-    return rows
 
 
 def scan_playlist_videos(
@@ -5061,14 +4792,6 @@ def playlist_placeholder_recovery_rows(
             sql += " OFFSET ?"
             params.append(max(0, offset))
     return conn.execute(sql, params).fetchall()
-
-
-def playlist_placeholder_recovery_count(
-    conn: sqlite3.Connection,
-    force: bool = False,
-    playlist_id: str = "",
-) -> int:
-    return len(playlist_placeholder_recovery_rows(conn, limit=0, force=force, playlist_id=playlist_id))
 
 
 def placeholder_queue_subject_key(video_id: str) -> str:
@@ -7532,10 +7255,7 @@ def playlist_scan_queue_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
     offset: int = 0,
-    force: bool = False,
-    stale_days: int = 7,
 ) -> list[sqlite3.Row]:
-    del force, stale_days
     sql = f"""
         SELECT w.queue_id,
                w.subject_key,
@@ -7932,24 +7652,6 @@ def metadata_queue_candidate_rows(
     return conn.execute(sql, params).fetchall()
 
 
-def metadata_queue_candidate_count(
-    conn: sqlite3.Connection,
-    force: bool = False,
-    stale_days: int = 30,
-    metadata_kind: str = "all",
-    never_fetched_only: bool = False,
-) -> int:
-    return len(
-        metadata_queue_candidate_rows(
-            conn,
-            force=force,
-            stale_days=stale_days,
-            metadata_kind=metadata_kind,
-            never_fetched_only=never_fetched_only,
-        )
-    )
-
-
 def metadata_queue_subject_key(video_id: str, channel_id: str, metadata_source: str) -> str:
     metadata_source = (metadata_source or "").strip() or "history"
     channel_id = (channel_id or "").strip()
@@ -7967,11 +7669,8 @@ def metadata_queue_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
     offset: int = 0,
-    force: bool = False,
-    stale_days: int = 30,
     queue_id: int = 0,
 ) -> list[sqlite3.Row]:
-    del force, stale_days
     sql = f"""
         SELECT queue_id,
                subject_key,
@@ -8008,11 +7707,8 @@ def metadata_queue_rows(
 
 def metadata_queue_count(
     conn: sqlite3.Connection,
-    force: bool = False,
-    stale_days: int = 30,
     metadata_kind: str = "all",
 ) -> int:
-    del force, stale_days
     metadata_kind = (metadata_kind or "all").strip().lower()
     if metadata_kind == "all":
         return worker_queue_type_count(conn, "metadata")
@@ -8044,47 +7740,6 @@ def clear_metadata_queue(conn: sqlite3.Connection, metadata_kind: str = "all") -
         """
     )
     return count
-
-
-def remove_metadata_queue_entry(conn: sqlite3.Connection, queue_id: int) -> bool:
-    cursor = conn.execute(
-        "DELETE FROM worker_queue WHERE queue_id = ? AND worker_type = 'metadata'",
-        (queue_id,),
-    )
-    return cursor.rowcount > 0
-
-
-def normalize_metadata_queue_targets(conn: sqlite3.Connection) -> None:
-    if "worker_queue" not in {
-        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    }:
-        return
-    rows = conn.execute(
-        """
-        SELECT queue_id, video_id, channel_id, channel_title, metadata_source, priority, manual
-        FROM (
-          SELECT queue_id, video_id, channel_id, channel_title, task_type AS metadata_source, priority, manual
-          FROM worker_queue
-          WHERE worker_type = 'metadata'
-        )
-        WHERE metadata_source = 'channel'
-          AND (channel_id LIKE 'http://%' OR channel_id LIKE 'https://%')
-        """
-    ).fetchall()
-    for row in rows:
-        channel_ref = youtube_channel_ref_from_url(row["channel_id"])
-        if not channel_ref:
-            continue
-        conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (row["queue_id"],))
-        enqueue_metadata_item(
-            conn,
-            video_id=channel_ref,
-            channel_id=channel_ref,
-            channel_title=row["channel_title"] or row["channel_id"],
-            metadata_source="channel",
-            priority=int(row["priority"] or 0),
-            manual=bool(row["manual"]),
-        )
 
 
 def enqueue_metadata_item(
@@ -9109,13 +8764,6 @@ def strip_html_fragment(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
 
 
-def display_source_path(path: Path) -> str:
-    try:
-        return str(path.resolve().relative_to(ROOT)).replace("\\", "/")
-    except ValueError:
-        return str(path).replace("\\", "/")
-
-
 def extract_video_id(value: str) -> str:
     parsed = urllib.parse.urlparse(html.unescape(value))
     if parsed.netloc.endswith("youtube.com") and parsed.path == "/watch":
@@ -9188,10 +8836,6 @@ def parse_takeout_watch_history_text(text: str) -> list[dict[str, str]]:
             }
         )
     return rows
-
-
-def parse_takeout_watch_history(path: Path) -> list[dict[str, str]]:
-    return parse_takeout_watch_history_text(path.read_text(encoding="utf-8", errors="replace"))
 
 
 def takeout_key_from_path(path: Path) -> str:

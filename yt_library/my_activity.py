@@ -626,20 +626,6 @@ def _fetch_my_activity_page(opener: Any, *, timeout: float) -> str:
     return page_bytes.decode(charset, errors="replace")
 
 
-def fetch_my_activity_page(
-    cookie_path: Path,
-    *,
-    timeout: float = 30.0,
-    proxy_url: str = "",
-) -> str:
-    """Fetch the English YouTube My Activity page using a Netscape cookie export."""
-
-    return _fetch_my_activity_page(
-        _my_activity_opener(cookie_path, proxy_url).opener,
-        timeout=timeout,
-    )
-
-
 def _continuation_request(
     session: MyActivitySession,
     continuation_token: str,

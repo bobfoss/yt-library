@@ -81,6 +81,43 @@ Remove a vestigial candidate only when all are true:
 - No current-schema behavior test protects it.
 - No current local data operation needs it.
 
+## Current Cleanup Review (2026-08-02)
+
+The current-tree review found no release-blocking behavior regressions. The
+first implementation pass is intentionally limited to verified removal and
+deduplication work; broader performance and module-organization changes remain
+for review after live validation.
+
+### Verified Removal
+
+- Remove the retired whole-library `fetch_app_data` read model and move any
+  useful assertions to the active paginated read models.
+- Remove the superseded synchronous `fetch_provided_metadata` path; manual
+  targets already use the persistent worker queue.
+- Remove the unused `/api/admin/live-history/stop` endpoint; the Admin UI uses
+  the unified queue stop endpoint.
+- Remove unreferenced Python helpers, imports, constants, browser helpers, and
+  the stale tests that only preserve superseded APIs.
+- Remove queue accessor parameters that are no longer read after queue
+  persistence was unified.
+
+### Deduplication
+
+- Centralize repeated worker run/log persistence and interrupted-run handling
+  without changing the current schema or worker-specific behavior.
+- Reuse common video playlist-link and presentation hydration for History,
+  Search, collection, and detail read models.
+- Extract the repeated Admin transaction/enqueue/dispatcher-start sequence and
+  split the large HTTP route dispatchers into named route handlers where doing
+  so is behavior-preserving.
+
+### Recommendations After This Pass
+
+- Push more filtering, facet aggregation, sorting, and pagination into SQLite.
+- Split `core.py` and `test_core.py` along their existing subsystem boundaries.
+- Replace brittle template-source assertions with focused JavaScript or DOM
+  behavior tests and add development-only static analysis.
+
 ## Ranked Remaining Cleanup
 
 ### 1. Foreign Playlist Continuation Extraction

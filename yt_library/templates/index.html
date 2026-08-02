@@ -1460,10 +1460,6 @@
       return `<span class="channel-notification" title="${option.title}">${option.svg}<span>${option.label}</span></span>`;
     }
 
-    function isTerminatedChannel(channel) {
-      return ['terminated', 'deleted'].includes(String(channel.status || '').toLowerCase());
-    }
-
     function playlistVisibilityCategory(playlist) {
       const value = String(playlist.visibility || '').trim().toLowerCase();
       if (['private', 'public', 'unlisted'].includes(value)) return value;
@@ -1501,10 +1497,6 @@
         return '<svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24" fill="currentColor" focusable="false" aria-hidden="true"><path d="M9 18c.226 0 .448-.012.667-.037A8.001 8.001 0 018.07 16H7a4 4 0 110-8h2a4 4 0 014 4 2 2 0 001.668 1.973A5.999 5.999 0 009 6H7a6 6 0 100 12h2Zm8 0a6 6 0 100-12h-2c-.225 0-.448.012-.667.036A8 8 0 0115.93 8H17a4 4 0 110 8h-2a4 4 0 01-4-4 2 2 0 00-1.668-1.973A6 6 0 0015 18h2Z"></path></svg>';
       }
       return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>';
-    }
-
-    function includesQuery(value, query) {
-      return String(value || '').toLowerCase().includes(query);
     }
 
     function usefulMetadataTitle(video) {
@@ -1704,15 +1696,6 @@
     function pagedRows(rows) {
       const pageInfo = pageSlice(rows);
       renderPager(pageInfo);
-      return pageInfo;
-    }
-
-    function renderPagedGrid(rows, cardFn, emptyText) {
-      const pageInfo = pagedRows(rows);
-      grid.className = 'grid';
-      grid.replaceChildren(...pageInfo.pageRows.map(cardFn));
-      empty.hidden = pageInfo.pageRows.length !== 0;
-      empty.textContent = emptyText;
       return pageInfo;
     }
 
@@ -2321,10 +2304,6 @@
       { key: 'active', label: 'active' },
       terminatedChannelMetaFilterDefinition,
     ];
-    const channelMetaFilterDefinitions = [
-      ...channelSubscriptionMetaFilterDefinitions,
-      terminatedChannelMetaFilterDefinition,
-    ];
     const playlistVisibilityMetaFilterDefinitions = [
       { key: 'private', label: 'private', visibilityIcon: true },
       { key: 'public', label: 'public', visibilityIcon: true },
@@ -2670,14 +2649,6 @@
         return '<div class="video-availability unavailable">Unavailable</div>';
       }
       return '<div class="video-availability">Unknown</div>';
-    }
-
-    function recoveredAvailabilityLabel(video) {
-      if (video.availability) return availabilityLabel(video.availability);
-      const status = String(video.recovered_status || '');
-      if (status === 'LIVE') return status;
-      if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return 'unavailable';
-      return '';
     }
 
     function archivarixStatusLabel(video) {

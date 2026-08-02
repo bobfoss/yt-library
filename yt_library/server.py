@@ -433,7 +433,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 self.send_json(
                     {
-                        "displayTimezone": self.display_timezone_name(conn),
+                        "displayTimezone": self.display_timezone_name(),
                         **self.layout_settings(),
                     }
                 )
@@ -1168,8 +1168,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 with conn:
                     if metadata_queue_count(
                         conn,
-                        force=False,
-                        stale_days=stale_days,
                         metadata_kind=metadata_kind,
                     ) == 0:
                         queue_stats = rebuild_metadata_queue(
@@ -1184,8 +1182,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                             "inserted": 0,
                             "queued": metadata_queue_count(
                                 conn,
-                                force=False,
-                                stale_days=stale_days,
                                 metadata_kind=metadata_kind,
                             ),
                         }
@@ -1459,9 +1455,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             )
             self.send_json({"dispatcher": dispatcher})
             return
-        if parsed.path == "/api/admin/live-history/stop":
-            self.send_json(WORKER_QUEUE_DISPATCHER.stop())
-            return
         if parsed.path == "/api/admin/history/import-takeout":
             try:
                 ensure_directory(self.takeout_dir)
@@ -1565,11 +1558,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         self.send_json({"ok": True, "displayTimezone": value})
 
     def render_page(self, template: str) -> bytes:
-        conn = connect(self.db_path)
-        try:
-            timezone_name = self.display_timezone_name(conn)
-        finally:
-            conn.close()
+        timezone_name = self.display_timezone_name()
         config = json.dumps(
             {
                 "displayTimezone": timezone_name,
@@ -1585,7 +1574,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         )
         return template.replace("</head>", scripts + "</head>").encode("utf-8")
 
-    def display_timezone_name(self, conn: sqlite3.Connection) -> str:
+    def display_timezone_name(self) -> str:
         return configured_display_timezone(self.config_data)
 
     def layout_settings(self) -> dict[str, Any]:

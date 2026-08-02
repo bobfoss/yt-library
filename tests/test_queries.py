@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +7,6 @@ from pathlib import Path
 from yt_library import core
 from yt_library.queries import (
     channel_list_data,
-    fetch_app_data,
     history_activity_data,
     history_search_data,
     library_bootstrap_data,
@@ -1554,17 +1552,17 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.conn.commit()
 
-        rows = [row for row in fetch_app_data(self.conn)["playlistVideos"] if row["video_id"] == "same123"]
-        self.assertEqual(len(rows), 2)
+        video = video_detail_data(self.conn, "same123")
+        self.assertIsNotNone(video)
         self.assertEqual(
-            rows[0]["playlist_links"],
+            video["playlist_links"],
             [
                 {"playlist_id": "pl1", "title": "First Playlist", "removed": False},
                 {"playlist_id": "pl2", "title": "Second Playlist", "removed": True},
             ],
         )
 
-    def test_fetch_app_data_includes_standalone_history_video_metadata(self) -> None:
+    def test_video_detail_includes_standalone_history_video_metadata(self) -> None:
         self.add_video("historyonly1", "History Only Video", "UC_history")
         self.conn.execute(
             """
@@ -1575,27 +1573,25 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.conn.commit()
 
-        data = fetch_app_data(self.conn)
-        standalone = data["standaloneVideos"]
+        video = video_detail_data(self.conn, "historyonly1")
 
-        self.assertEqual([row["video_id"] for row in standalone], ["historyonly1"])
-        self.assertEqual(standalone[0]["metadata_title"], "History Only Video")
-        self.assertEqual(standalone[0]["watch_count"], 1)
-        self.assertEqual(standalone[0]["playlist_links"], [])
-        self.assertEqual(data["playlistVideos"], [])
+        self.assertIsNotNone(video)
+        self.assertEqual(video["metadata_title"], "History Only Video")
+        self.assertEqual(video["watch_count"], 1)
+        self.assertEqual(video["playlist_links"], [])
 
-    def test_fetch_app_data_marks_dominant_owner_and_generates_urls(self) -> None:
+    def test_playlist_list_marks_dominant_owner_and_generates_urls(self) -> None:
         core.upsert_channel(self.conn, "UC_owner", title="Library Owner")
         self.conn.executemany(
             "INSERT INTO playlists(playlist_id, title, owner_channel_id) VALUES (?, ?, 'UC_owner')",
             [(f"pl{i}", f"Playlist {i}") for i in range(6)],
         )
         self.conn.commit()
-        playlists = fetch_app_data(self.conn)["playlists"]
+        playlists = playlist_list_data(self.conn, limit=20)["results"]
         self.assertTrue(all(row["is_library_owner"] for row in playlists))
         self.assertTrue(all(row["url"].startswith("https://www.youtube.com/playlist?list=") for row in playlists))
 
-    def test_fetch_app_data_uses_library_playlist_evidence_for_visible_owners(self) -> None:
+    def test_playlist_list_uses_library_playlist_evidence_for_visible_owners(self) -> None:
         core.upsert_channel(self.conn, "UC_owner", title="Library Owner")
         core.upsert_channel(self.conn, "UC_other", title="Other Owner")
         self.conn.executemany(
@@ -1614,7 +1610,7 @@ class NormalizedReadModelTests(unittest.TestCase):
 
         playlists = {
             row["playlist_id"]: row
-            for row in fetch_app_data(self.conn)["playlists"]
+            for row in playlist_list_data(self.conn, limit=20)["results"]
         }
 
         self.assertEqual(playlists["PLmine"]["is_library_owner"], 1)

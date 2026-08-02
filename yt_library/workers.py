@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import argparse
 import random
 import sqlite3
 import threading
 import time
 import urllib.parse
+import uuid
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -28,6 +28,7 @@ from .config import (
 )
 from .core import *
 from .my_activity import MyActivityError, fetch_my_activity_pages
+from .network import ProxyUnavailableError, probe_socks5_proxy
 from .youtube_data_api import (
     YouTubeDataApiError,
     YouTubeDataApiNotConfigured,
@@ -299,8 +300,6 @@ class MetadataWorker(_ThreadWorkerLifecycle):
             while True:
                 rows = metadata_queue_rows(
                     conn,
-                    force=force,
-                    stale_days=stale_days,
                     queue_id=target_queue_id,
                 )
                 if not rows:

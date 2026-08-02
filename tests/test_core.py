@@ -740,43 +740,6 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(opener.calls[0][1], 30)
         self.assertIn("tube.archivarix.net/api/fts", opener.calls[0][0].full_url)
 
-    def test_provided_metadata_passes_general_proxy_to_channel_enrichment(self) -> None:
-        conn = object()
-        opener = object()
-        thumb_dir = Path("thumbs")
-        metadata = {
-            "video_id": "abc12345678",
-            "title": "Example video",
-            "channel_id": "UCexample",
-        }
-        with (
-            patch(
-                "yt_library.core.resolve_metadata_target",
-                return_value=("video", "abc12345678"),
-            ),
-            patch("yt_library.core.fetch_watch_metadata", return_value=metadata),
-            patch(
-                "yt_library.core.fetch_new_channel_metadata_if_needed",
-                return_value=({}, "", ""),
-            ) as fetch_channel,
-            patch("yt_library.core.store_video_metadata"),
-        ):
-            core.fetch_provided_metadata(
-                conn,
-                opener,
-                thumb_dir,
-                "abc12345678",
-                proxy_url="socks5h://proxy.test:1080",
-            )
-
-        fetch_channel.assert_called_once_with(
-            conn,
-            opener,
-            thumb_dir,
-            metadata,
-            proxy_url="socks5h://proxy.test:1080",
-        )
-
     def test_archivarix_timeout_errors_are_classified(self) -> None:
         self.assertTrue(core.archivarix_timeout_error(TimeoutError("read timed out")))
         self.assertTrue(
@@ -2025,7 +1988,7 @@ class CoreHelperTests(unittest.TestCase):
         self.assertNotIn("watch_progress_percent", result)
         self.assertNotIn("watch_resume_seconds", result)
 
-    def test_watch_playability_updates_canonical_video(self) -> None:
+    def test_store_video_metadata_updates_canonical_watch_playability(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "library.sqlite3"
             conn = migrated_connection(db_path)
@@ -2054,13 +2017,16 @@ class CoreHelperTests(unittest.TestCase):
                     "",
                 )
 
-                changed = core.apply_watch_playability_to_playlist_rows(
+                core.store_video_metadata(
                     conn,
-                    "jhtY3OsTuwk",
-                    {"playability_status": "OK"},
+                    {
+                        "video_id": "jhtY3OsTuwk",
+                        "title": "Members video",
+                        "playability_status": "OK",
+                    },
+                    "ok",
                 )
 
-                self.assertEqual(changed, 1)
                 row = conn.execute(
                     """
                     SELECT is_playable, availability
@@ -2259,13 +2225,16 @@ class CoreHelperTests(unittest.TestCase):
             "missing from current playable scan; hidden slot mapping is ambiguous",
         )
         self.assertEqual(
-            core.reconciled_video_availability("Ax8Yn8DPZe0", "", "LIVE"),
+            core.normalize_video_availability("Ax8Yn8DPZe0", "", None, "LIVE"),
             "public",
         )
-        self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "live", ""), "public")
-        self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "", "", 1), "public")
-        self.assertEqual(core.reconciled_video_availability("Ax8Yn8DPZe0", "subscriber_only", "", 0), "subscriber_only")
-        self.assertEqual(core.reconciled_video_availability("", "private", "LIVE"), "unknown")
+        self.assertEqual(core.normalize_video_availability("Ax8Yn8DPZe0", "live"), "public")
+        self.assertEqual(core.normalize_video_availability("Ax8Yn8DPZe0", "", 1), "public")
+        self.assertEqual(
+            core.normalize_video_availability("Ax8Yn8DPZe0", "subscriber_only", 0),
+            "subscriber_only",
+        )
+        self.assertEqual(core.normalize_video_availability("", "private", None, "LIVE"), "unknown")
 
     def test_history_reconciliation_labels_describe_current_fields(self) -> None:
         self.assertEqual(core.history_source_type_label("takeout_youtube"), "Takeout + YouTube")
@@ -5264,7 +5233,6 @@ class AdminServerTests(unittest.TestCase):
             "channel_status: metaFilterParamValue(searchMetaVisibility.channelStatus)",
             server.INDEX_HTML,
         )
-        self.assertIn("const channelMetaFilterDefinitions = [", server.INDEX_HTML)
         self.assertIn(
             "const channelSubscriptionMetaFilterDefinitions = [",
             server.INDEX_HTML,
