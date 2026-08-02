@@ -118,12 +118,31 @@ performance and module-organization changes remain for review.
 - Verified Search, History, and Admin in a browser with no console errors;
   rapid layout changes persisted the final choice across a reload.
 
-### Recommendations After This Pass
+### Completed Follow-up Work (2026-08-02)
 
-- Push more filtering, facet aggregation, sorting, and pagination into SQLite.
-- Split `core.py` and `test_core.py` along their existing subsystem boundaries.
-- Replace brittle template-source assertions with focused JavaScript or DOM
-  behavior tests and add development-only static analysis.
+- Moved playlist, channel, and video collection filtering, facet aggregation,
+  sorting, totals, and pagination into SQLite. The read models now hydrate only
+  the requested page while preserving stable facet counts and deduplication.
+- Split SQLite bootstrap and migrations from `core.py` into `database.py`, with
+  shared history identity and UTC helpers in focused modules. Preserved the
+  compatibility imports exposed by `core.py`.
+- Split the former `test_core.py` monolith into focused core, schema, config,
+  server, and worker suites with a shared temporary-database helper.
+- Replaced the large template-source assertion block with DOM contract tests
+  for controls, navigation, workstreams, advanced tabs, typed inputs, and
+  unique IDs. Added development-only Ruff checks for critical Python errors.
+
+### Follow-up Verification
+
+- Passed Python compilation, all 255 local unit tests, Ruff, and
+  `git diff --check`.
+- Restarted the configured service from PID 4348 to healthy PID 9092 with the
+  persistent queue stopped and empty before and after the restart.
+- Passed live Admin status, History search, and paginated playlist, video, and
+  channel API smoke checks.
+- Verified Search, History, and Admin in a browser: Search rendered 100 results,
+  History rendered 100 occurrences and 365 activity cells, Admin reported an
+  idle empty queue, and the browser console had no errors.
 
 ## Ranked Remaining Cleanup
 
