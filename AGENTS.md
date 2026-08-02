@@ -48,7 +48,8 @@ source for unfinished or deferred work.
 This repository is a Python web app for browsing, enriching, and reconciling a personal YouTube library.
 
 - `yt_library_manager.py` is the compatibility CLI shim; keep existing commands routed through it.
-- `yt_library/core.py` contains schema bootstrap, importers, parsers, metadata fetchers, and reconciliation logic.
+- `yt_library/core.py` contains importers, parsers, metadata fetchers, and reconciliation logic.
+- `yt_library/database.py` contains SQLite connection, schema bootstrap, and migrations.
 - `yt_library/server.py` contains HTTP routing and local API endpoints.
 - `yt_library/workers.py` contains background worker orchestration.
 - `yt_library/queries.py` contains paginated browser list/detail read models, unified omni-search, and history search.
@@ -66,7 +67,7 @@ Use the repository root as the working directory.
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
 .\.venv\Scripts\python.exe -m py_compile @files
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
@@ -135,10 +136,11 @@ The formal test suite uses Python's standard `unittest` runner. For each change,
 $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
 .\.venv\Scripts\python.exe -m py_compile @files
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m ruff check .
 git diff --check
 ```
 
-Current tests cover pure helpers, Takeout watch-history parsing, fresh temporary SQLite schema bootstrap, browser bootstrap/list/detail read models, and omni/history search read models. Keep tests local-only: do not require real cookies, network access, personal Takeout zips, or the live `yt_library.sqlite3`.
+Current tests cover pure helpers, Takeout watch-history parsing, fresh temporary SQLite schema bootstrap, server and worker behavior, static template DOM contracts, browser bootstrap/list/detail read models, and omni/history search read models. Keep tests local-only: do not require real cookies, network access, personal Takeout zips, or the live `yt_library.sqlite3`.
 
 For schema, import, or worker changes, also verify a fresh temporary database initializes from `schema.sql`; when using a local copy of `yt_library.sqlite3`, treat old-schema failures as rebuild/re-import work rather than migration bugs. Smoke test `/api/admin/status` and `/api/history/search?limit=1`.
 

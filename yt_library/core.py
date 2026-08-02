@@ -26,12 +26,12 @@ import urllib.parse
 import urllib.request
 import zipfile
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import (
@@ -58,6 +58,15 @@ from .database import (
 )
 from .history import history_match_type_for_identity, history_source_type_for_identity
 from .time_utils import utc_days_ago, utc_now
+
+if TYPE_CHECKING:
+    from .workers import (
+        LiveHistoryWorker,
+        MetadataWorker,
+        PlaceholderRecoveryWorker,
+        PlaylistScanWorker,
+        WorkerQueueDispatcher,
+    )
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)

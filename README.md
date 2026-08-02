@@ -17,16 +17,17 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 ## Project Layout
 
 - `yt_library_manager.py` is a compatibility CLI shim; keep using it for commands.
-- `yt_library/core.py` contains schema bootstrap, importers, parsers, metadata fetchers, and reconciliation logic.
+- `yt_library/core.py` contains importers, parsers, metadata fetchers, and reconciliation logic.
+- `yt_library/database.py` contains SQLite connection, schema bootstrap, and migrations.
 - `yt_library/server.py` contains HTTP routing and local API endpoints.
 - `yt_library/workers.py` contains background worker orchestration.
 - `yt_library/queries.py` contains read models for the library and history views.
 - `yt_library/schema.sql` is the SQLite schema, loaded by `yt_library/schema.py`.
 - `yt_library/templates/` contains the browser, history, and admin HTML.
-- `tests/` contains the basic `unittest` suite for pure helpers, schema bootstrap, and read models.
+- `tests/` contains focused `unittest` modules for helpers, schema, configuration, server routes, workers, templates, and read models.
 
 The browser loads a small navigation bootstrap, then requests playlists, videos, channels, details, search results, and history as separate server-paginated read models. It does not preload the complete video and channel catalog.
-- `requirements.txt` lists Python dependencies.
+- `requirements.txt` lists runtime dependencies; `requirements-dev.txt` adds development-only static analysis.
 - `yt_library.config.json` is the local runtime configuration file, generated on first setup or serve.
 - `AGENTS.md` contains contributor guidance.
 - Runtime data such as `yt_library.sqlite3`, cookie files, Takeout zip exports, thumbnail folders, and logs should stay local and uncommitted.
@@ -41,6 +42,14 @@ python -m venv .venv
 Run the application from this environment. The application imports the
 `yt_dlp` Python module, so a standalone `yt-dlp.exe` on `PATH` is not a
 substitute for installing `requirements.txt` into the active interpreter.
+
+For development, install the development requirements and run Ruff alongside
+the standard test suite:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m ruff check .
+```
 
 Keep a Netscape-format YouTube cookie file in the project directory or pass its path with `--cookies`.
 Authenticated yt-dlp calls use a temporary copy so yt-dlp cannot rewrite the
