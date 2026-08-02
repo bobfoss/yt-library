@@ -364,7 +364,7 @@ class AdminServerTests(unittest.TestCase):
             config_path = Path(temp_dir) / "yt_library.config.json"
             config = load_config(config_path)
             handler = object.__new__(server.LibraryHandler)
-            handler.path = "/api/admin/update-schedule?enabled=1&at=04%3A30"
+            handler.path = "/api/admin/update-schedule?frequency=hourly&at=04%3A30"
             handler.config_data = config
             handler.send_json = Mock()
 
@@ -377,15 +377,15 @@ class AdminServerTests(unittest.TestCase):
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             response = handler.send_json.call_args.args[0]
 
-        self.assertTrue(payload["update_daily"])
+        self.assertEqual(payload["update_frequency"], "hourly")
         self.assertEqual(payload["update_time"], "04:30")
-        self.assertTrue(response["settings"]["updateDaily"])
+        self.assertEqual(response["settings"]["updateFrequency"], "hourly")
         self.assertEqual(response["settings"]["updateTime"], "04:30")
         schedule_changed.assert_called_once_with(config)
 
     def test_update_schedule_endpoint_rejects_invalid_time(self) -> None:
         handler = object.__new__(server.LibraryHandler)
-        handler.path = "/api/admin/update-schedule?enabled=1&at=25%3A00"
+        handler.path = "/api/admin/update-schedule?frequency=daily&at=25%3A00"
         handler.config_data = load_config(Path("missing-test-config.json"))
         handler.send_json = Mock()
 
@@ -393,6 +393,18 @@ class AdminServerTests(unittest.TestCase):
 
         response = handler.send_json.call_args.args[0]
         self.assertIn("HH:MM", response["error"])
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
+    def test_update_schedule_endpoint_rejects_invalid_frequency(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = "/api/admin/update-schedule?frequency=weekly&at=04%3A30"
+        handler.config_data = load_config(Path("missing-test-config.json"))
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        response = handler.send_json.call_args.args[0]
+        self.assertIn("frequency", response["error"])
         self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
 
     def test_scheduled_update_queues_incremental_work_and_starts_dispatcher(self) -> None:

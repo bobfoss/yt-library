@@ -37,7 +37,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "page_size": 100,
     "partial_completion_min_percent": 1,
     "filter_preferences": {},
-    "update_daily": False,
+    "update_frequency": "off",
     "update_time": "03:00",
     "admin_advanced": False,
     "use_proxy": False,
@@ -90,6 +90,7 @@ FILTER_PREFERENCE_KEYS = frozenset(
     }
 )
 DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+UPDATE_FREQUENCIES = frozenset({"off", "hourly", "daily"})
 
 
 def configured_display_timezone(config: dict[str, Any]) -> str:
@@ -173,11 +174,9 @@ def configured_sort_preferences(config: dict[str, Any]) -> dict[str, str]:
     return preferences
 
 
-def configured_update_daily(config: dict[str, Any]) -> bool:
-    value = config.get("update_daily", DEFAULT_CONFIG["update_daily"])
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+def configured_update_frequency(config: dict[str, Any]) -> str:
+    value = str(config.get("update_frequency") or "").strip().lower()
+    return value if value in UPDATE_FREQUENCIES else str(DEFAULT_CONFIG["update_frequency"])
 
 
 def configured_admin_advanced(config: dict[str, Any]) -> bool:
@@ -191,6 +190,10 @@ def valid_update_time(value: str) -> bool:
     return bool(DAILY_TIME_PATTERN.fullmatch((value or "").strip()))
 
 
+def valid_update_frequency(value: str) -> bool:
+    return (value or "").strip().lower() in UPDATE_FREQUENCIES
+
+
 def configured_update_time(config: dict[str, Any]) -> str:
     value = str(config.get("update_time") or "").strip()
     return value if valid_update_time(value) else str(DEFAULT_CONFIG["update_time"])
@@ -201,6 +204,10 @@ def next_update_at(
     now: datetime | None = None,
 ) -> datetime:
     current_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if configured_update_frequency(config) == "hourly":
+        return current_utc.replace(minute=0, second=0, microsecond=0) + timedelta(
+            hours=1
+        )
     zone = ZoneInfo(effective_display_timezone(config))
     local_now = current_utc.astimezone(zone)
     hour, minute = (int(part) for part in configured_update_time(config).split(":"))
@@ -359,8 +366,21 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
                 if key in DEFAULT_CONFIG and value is not None
             }
         )
-        if "update_daily" not in loaded and "history_fetch_daily" in loaded:
-            config["update_daily"] = loaded["history_fetch_daily"]
+        if "update_frequency" not in loaded:
+            legacy_enabled = loaded.get(
+                "update_daily",
+                loaded.get("history_fetch_daily", False),
+            )
+            if isinstance(legacy_enabled, bool):
+                enabled = legacy_enabled
+            else:
+                enabled = str(legacy_enabled).strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+            config["update_frequency"] = "daily" if enabled else "off"
         if "update_time" not in loaded and "history_fetch_time" in loaded:
             config["update_time"] = loaded["history_fetch_time"]
         if "dispatch_mode" not in loaded:
@@ -435,7 +455,7 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
         configured_partial_completion_min_percent(config)
     )
     config["filter_preferences"] = configured_filter_preferences(config)
-    config["update_daily"] = configured_update_daily(config)
+    config["update_frequency"] = configured_update_frequency(config)
     config["update_time"] = configured_update_time(config)
     config["admin_advanced"] = configured_admin_advanced(config)
     configured_proxy_address(config)

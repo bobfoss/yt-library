@@ -38,7 +38,7 @@ from .config import (
     configured_request_delay_range,
     configured_search_card_layout,
     configured_sort_preferences,
-    configured_update_daily,
+    configured_update_frequency,
     configured_update_time,
     configured_use_proxy,
     configured_youtube_max_in_flight,
@@ -48,6 +48,7 @@ from .config import (
     ensure_directory,
     next_update_at,
     save_config,
+    valid_update_frequency,
     valid_update_time,
 )
 from .cookie_files import (
@@ -208,7 +209,7 @@ def enqueue_library_update(
     return {"queue": queue_stats, "dispatcher": dispatcher}
 
 
-class DailyUpdateScheduler:
+class UpdateScheduler:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -262,13 +263,15 @@ class DailyUpdateScheduler:
         self._wake.set()
 
     def status(self, config_data: dict[str, Any]) -> dict[str, Any]:
-        enabled = configured_update_daily(config_data)
+        frequency = configured_update_frequency(config_data)
+        enabled = frequency != "off"
         with self._lock:
             next_run_at = self._next_run_at
             if enabled and next_run_at is None:
                 next_run_at = next_update_at(config_data)
             return {
                 "enabled": enabled,
+                "frequency": frequency,
                 "time": configured_update_time(config_data),
                 "nextRunAt": utc_timestamp(next_run_at) if enabled and next_run_at else "",
                 "lastQueuedAt": self._last_queued_at,
@@ -277,7 +280,7 @@ class DailyUpdateScheduler:
 
     @staticmethod
     def _calculate_next_run(config_data: dict[str, Any]) -> datetime | None:
-        if not configured_update_daily(config_data):
+        if configured_update_frequency(config_data) == "off":
             return None
         return next_update_at(config_data)
 
@@ -291,7 +294,7 @@ class DailyUpdateScheduler:
                 video_thumbs = self._video_thumbs
             if (
                 not config_data
-                or not configured_update_daily(config_data)
+                or configured_update_frequency(config_data) == "off"
                 or not next_run_at
                 or not db_path
                 or not cookie_file
@@ -328,7 +331,7 @@ class DailyUpdateScheduler:
                 self._next_run_at = self._calculate_next_run(config_data)
 
 
-UPDATE_SCHEDULER = DailyUpdateScheduler()
+UPDATE_SCHEDULER = UpdateScheduler()
 
 
 class LibraryHandler(http.server.SimpleHTTPRequestHandler):
@@ -1024,18 +1027,20 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/admin/update-schedule":
-            enabled = (params.get("enabled") or ["0"])[0].strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
+            frequency = (params.get("frequency") or [""])[0].strip().lower()
+            if not valid_update_frequency(frequency):
+                self.send_json(
+                    {"error": "Update frequency must be off, hourly, or daily"},
+                    status=400,
+                )
+                return
             update_time = (params.get("at") or [""])[0].strip()
-            if not valid_update_time(update_time):
+            if frequency == "daily" and not valid_update_time(update_time):
                 self.send_json({"error": "Update time must use HH:MM"}, status=400)
                 return
-            self.config_data["update_daily"] = enabled
-            self.config_data["update_time"] = update_time
+            self.config_data["update_frequency"] = frequency
+            if valid_update_time(update_time):
+                self.config_data["update_time"] = update_time
             save_config(self.config_data)
             UPDATE_SCHEDULER.schedule_changed(self.config_data)
             self.send_json({"ok": True, "settings": self.admin_settings()})
@@ -1581,7 +1586,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "displayTimezone": configured_display_timezone(self.config_data),
             "useProxy": configured_use_proxy(self.config_data),
             "proxy": configured_proxy_address(self.config_data),
-            "updateDaily": configured_update_daily(self.config_data),
+            "updateFrequency": configured_update_frequency(self.config_data),
             "updateTime": configured_update_time(self.config_data),
             "updateSchedule": UPDATE_SCHEDULER.status(self.config_data),
             "adminAdvanced": configured_admin_advanced(self.config_data),

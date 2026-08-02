@@ -28,7 +28,7 @@ from yt_library.config import (
     configured_request_delay_range,
     configured_search_card_layout,
     configured_sort_preferences,
-    configured_update_daily,
+    configured_update_frequency,
     configured_update_time,
     configured_use_proxy,
     configured_youtube_max_in_flight,
@@ -38,6 +38,7 @@ from yt_library.config import (
     load_config,
     next_update_at,
     save_config,
+    valid_update_frequency,
     valid_update_time,
 )
 
@@ -222,12 +223,12 @@ class ConfigTests(unittest.TestCase):
     def test_daily_update_schedule_uses_display_timezone(self) -> None:
         config = {
             "display_timezone": "America/Los_Angeles",
-            "update_daily": True,
+            "update_frequency": "daily",
             "update_time": "09:30",
         }
         now = datetime(2026, 7, 31, 15, 0, tzinfo=timezone.utc)
 
-        self.assertTrue(configured_update_daily(config))
+        self.assertEqual(configured_update_frequency(config), "daily")
         self.assertEqual(configured_update_time(config), "09:30")
         self.assertTrue(valid_update_time("23:59"))
         self.assertFalse(valid_update_time("24:00"))
@@ -240,11 +241,24 @@ class ConfigTests(unittest.TestCase):
             next_update_at(config, now),
             datetime(2026, 8, 1, 14, 30, tzinfo=timezone.utc),
         )
-        self.assertFalse(configured_update_daily({}))
+        self.assertEqual(configured_update_frequency({}), "off")
         self.assertFalse(configured_admin_advanced({}))
         self.assertTrue(configured_admin_advanced({"admin_advanced": "yes"}))
         self.assertEqual(configured_update_time({}), "03:00")
         self.assertEqual(configured_update_time({"update_time": "later"}), "03:00")
+        self.assertTrue(valid_update_frequency("hourly"))
+        self.assertFalse(valid_update_frequency("weekly"))
+
+    def test_hourly_update_schedule_uses_next_top_of_hour(self) -> None:
+        config = {"update_frequency": "hourly"}
+
+        self.assertEqual(
+            next_update_at(
+                config,
+                datetime(2026, 7, 31, 15, 42, 30, tzinfo=timezone.utc),
+            ),
+            datetime(2026, 7, 31, 16, 0, tzinfo=timezone.utc),
+        )
 
     def test_load_config_rejects_invalid_proxy(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -310,15 +324,32 @@ class ConfigTests(unittest.TestCase):
             )
 
             config = load_config(config_path)
-            self.assertTrue(configured_update_daily(config))
+            self.assertEqual(configured_update_frequency(config), "daily")
             self.assertEqual(configured_update_time(config), "04:30")
 
             save_config(config)
             payload = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertTrue(payload["update_daily"])
+            self.assertEqual(payload["update_frequency"], "daily")
             self.assertEqual(payload["update_time"], "04:30")
             self.assertNotIn("history_fetch_daily", payload)
             self.assertNotIn("history_fetch_time", payload)
+
+    def test_load_config_migrates_daily_update_to_frequency(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config_path.write_text(
+                json.dumps({"update_daily": True, "update_time": "10:34"}),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+            self.assertEqual(configured_update_frequency(config), "daily")
+
+            save_config(config)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["update_frequency"], "daily")
+            self.assertEqual(payload["update_time"], "10:34")
+            self.assertNotIn("update_daily", payload)
 
     def test_migrate_creates_default_config_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -339,7 +370,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["page_size"], 100)
             self.assertEqual(payload["partial_completion_min_percent"], 1)
             self.assertEqual(payload["filter_preferences"], {})
-            self.assertFalse(payload["update_daily"])
+            self.assertEqual(payload["update_frequency"], "off")
             self.assertEqual(payload["update_time"], "03:00")
             self.assertFalse(payload["admin_advanced"])
             self.assertEqual(payload["host"], "127.0.0.1")
