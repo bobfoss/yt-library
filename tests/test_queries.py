@@ -558,6 +558,7 @@ class NormalizedReadModelTests(unittest.TestCase):
     def test_omni_search_applies_field_and_visibility_filters(self) -> None:
         self.add_video("description1", "Ordinary title", "UC_subscribed")
         self.add_video("unavailable1", "Needle unavailable")
+        self.add_video("private1", "Needle private")
         self.add_video("members1", "Needle members only")
         self.conn.execute(
             "UPDATE videos SET description = 'Needle in description', is_playable = 1 WHERE video_id = 'description1'"
@@ -566,10 +567,13 @@ class NormalizedReadModelTests(unittest.TestCase):
             "UPDATE videos SET is_playable = 0, availability = 'private' WHERE video_id = 'unavailable1'"
         )
         self.conn.execute(
+            "UPDATE videos SET is_playable = 1, availability = 'private' WHERE video_id = 'private1'"
+        )
+        self.conn.execute(
             "UPDATE videos SET is_playable = 0, availability = 'subscriber_only' WHERE video_id = 'members1'"
         )
         self.conn.execute(
-            "UPDATE videos SET description = '' WHERE video_id IN ('unavailable1', 'members1')"
+            "UPDATE videos SET description = '' WHERE video_id IN ('unavailable1', 'private1', 'members1')"
         )
         self.conn.execute(
             "UPDATE channels SET title = 'Needle subscribed', subscribed = 1 WHERE channel_id = 'UC_subscribed'"
@@ -639,6 +643,18 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.assertEqual(with_unavailable["results"][0]["item"]["video_id"], "unavailable1")
         self.assertEqual(available_only["metaCounts"], with_unavailable["metaCounts"])
+        private = omni_search_data(
+            self.conn,
+            "needle",
+            search_fields={"titles"},
+            video_meta_filters={"private"},
+            channel_subscription_filters=set(),
+            playlist_meta_filters=set(),
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in private["results"]],
+            ["private1"],
+        )
         members_only = omni_search_data(
             self.conn,
             "needle",
@@ -758,6 +774,7 @@ class NormalizedReadModelTests(unittest.TestCase):
                     "total": 5,
                     "public": 1,
                     "unlisted": 1,
+                    "private": 0,
                     "unavailable": 1,
                     "members_only": 1,
                     "unknown": 1,
@@ -1214,6 +1231,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             {
                 "public": 1,
                 "unlisted": 0,
+                "private": 0,
                 "unavailable": 1,
                 "members_only": 1,
                 "unknown": 0,
@@ -1281,6 +1299,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             {
                 "public": 1,
                 "unlisted": 0,
+                "private": 0,
                 "unavailable": 1,
                 "members_only": 1,
                 "unknown": 0,
@@ -1334,6 +1353,37 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(
             [row["video_id"] for row in members_only["results"]],
             ["members1"],
+        )
+
+    def test_video_collection_separates_playable_private_from_unavailable(self) -> None:
+        self.add_video("private1", "Accessible private")
+        self.add_video("unavailable1", "Inaccessible private")
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 1, availability = 'private', reaction = 'L' WHERE video_id = 'private1'"
+        )
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 0, availability = 'private', reaction = 'L' WHERE video_id = 'unavailable1'"
+        )
+        self.conn.commit()
+
+        all_rows = video_collection_data(self.conn, scope="liked")
+        self.assertEqual(all_rows["counts"]["private"], 1)
+        self.assertEqual(all_rows["counts"]["unavailable"], 1)
+
+        private = video_collection_data(
+            self.conn,
+            scope="liked",
+            include_public=False,
+            include_unlisted=False,
+            include_private=True,
+            include_unavailable=False,
+            include_members_only=False,
+            include_unknown=False,
+            include_removed=False,
+        )
+        self.assertEqual(
+            [row["video_id"] for row in private["results"]],
+            ["private1"],
         )
 
     def test_playlist_video_collection_filters_by_completion_with_stable_counts(self) -> None:

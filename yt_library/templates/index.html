@@ -459,7 +459,7 @@
     let children = new Map();
 
     let selected = '';
-    let playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
+    let playlistVisibility = { public: true, unlisted: true, private: true, members_only: true, unavailable: true, unknown: true, removed: true };
     let partialCompletionMinimumPercent = boundedPartialMinimumPercent(
       pageConfig.partialCompletionMinPercent
     );
@@ -479,6 +479,7 @@
       videos: {
         public: true,
         unlisted: true,
+        private: true,
         members_only: true,
         unavailable: filterPreferenceEnabled(filterPreferenceKeys.unavailableVideos),
         unknown: true,
@@ -1262,7 +1263,7 @@
     function resetPlaylistVisibilityFor(playlistId) {
       if (playlistVisibilityPlaylistId === playlistId) return;
       playlistVisibilityPlaylistId = playlistId;
-      playlistVisibility = { public: true, unlisted: true, members_only: true, unavailable: true, unknown: true, removed: true };
+      playlistVisibility = { public: true, unlisted: true, private: true, members_only: true, unavailable: true, unknown: true, removed: true };
       playlistCompletionVisibility = {
         complete: true,
         partial: true,
@@ -2245,6 +2246,7 @@
     const videoMetaFilterDefinitions = [
       { key: 'public', label: 'public', visibilityIcon: true },
       { key: 'unlisted', label: 'unlisted', visibilityIcon: true },
+      { key: 'private', label: 'private', visibilityIcon: true },
       {
         key: 'members_only',
         label: 'members only',
@@ -2255,9 +2257,12 @@
       { key: 'unknown', label: 'unknown' },
       { key: 'removed', label: 'removed', className: 'badge' },
     ];
-    const playlistVideoAvailabilityFilterDefinitions = videoMetaFilterDefinitions.filter(
-      ({ key }) => key !== 'removed'
-    );
+    function visibleVideoMetaFilterDefinitions(counts, { includeRemoved = true } = {}) {
+      return videoMetaFilterDefinitions.filter(({ key }) => (
+        (includeRemoved || key !== 'removed')
+        && (key !== 'private' || Number(counts?.private || 0) > 0)
+      ));
+    }
     const playlistVideoRemovedFilterDefinitions = videoMetaFilterDefinitions.filter(
       ({ key }) => key === 'removed'
     );
@@ -2394,7 +2399,7 @@
                 filterAttribute: 'playlist-filter',
                 visibility: playlistVisibility,
                 counts,
-                definitions: playlistVideoAvailabilityFilterDefinitions,
+                definitions: visibleVideoMetaFilterDefinitions(counts, { includeRemoved: false }),
               })}
               <span class="video-removed-filter">
                 <span class="video-filter-separator" aria-hidden="true">|</span>
@@ -2464,7 +2469,7 @@
       };
       return [
         kindHtml('Videos', 'videos', metaCounts?.videos?.total, [
-          facetHtml({ key: 'videos', visibility: searchMetaVisibility.videos, definitions: videoMetaFilterDefinitions, counts: metaCounts?.videos, allLabel: 'Availability', kind: 'videos' }),
+          facetHtml({ key: 'videos', visibility: searchMetaVisibility.videos, definitions: visibleVideoMetaFilterDefinitions(metaCounts?.videos), counts: metaCounts?.videos, allLabel: 'Availability', kind: 'videos' }),
           facetHtml({ key: 'reactions', visibility: searchMetaVisibility.reactions, definitions: reactionMetaFilterDefinitions, counts: reactionCounts, allLabel: 'Reactions', kind: 'videos' }),
           facetHtml({ key: 'completion', visibility: searchMetaVisibility.completion, definitions: completionMetaFilterDefinitions(partialCompletionMinimumPercent, 'search-completion-minimum'), counts: completionCounts, allLabel: 'Completion', kind: 'videos' }),
           facetHtml({ key: 'membership', visibility: searchMetaVisibility.membership, definitions: playlistMembershipMetaFilterDefinitions, counts: playlistMembershipCounts, allLabel: 'Playlist membership', kind: 'videos' }),
@@ -2622,6 +2627,7 @@
     function videoAvailabilityValue(video) {
       const availability = String(video.availability || '').trim().toLowerCase();
       if (availability === 'subscriber_only') return 'members_only';
+      if (availability === 'private' && Number(video.is_playable) === 1) return 'private';
       if (['public', 'unlisted', 'unknown'].includes(availability)) return availability;
       if (['private', 'deleted', 'removed', 'unavailable', 'needs_auth', 'premium_only'].includes(availability)) {
         return 'unavailable';
@@ -2641,8 +2647,8 @@
       if (availability === 'members_only') {
         return badgeRowsHtml([{ label: 'Members only' }]);
       }
-      if (availability === 'public' || availability === 'unlisted') {
-        const label = availability === 'public' ? 'Public' : 'Unlisted';
+      if (availability === 'public' || availability === 'unlisted' || availability === 'private') {
+        const label = availability.charAt(0).toUpperCase() + availability.slice(1);
         return `<div class="video-availability">${visibilityLabelHtml(availability, label)}</div>`;
       }
       if (availability === 'unavailable') {
@@ -2786,6 +2792,7 @@
         q: query,
         public: visibility.public === false ? '0' : '1',
         unlisted: visibility.unlisted === false ? '0' : '1',
+        private: visibility.private === false ? '0' : '1',
         members_only: visibility.members_only === false ? '0' : '1',
         unavailable: visibility.unavailable === false ? '0' : '1',
         unknown: visibility.unknown === false ? '0' : '1',

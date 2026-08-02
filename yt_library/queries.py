@@ -485,6 +485,7 @@ def _video_candidate_query(
 VIDEO_AVAILABILITY_CATEGORIES = (
     "public",
     "unlisted",
+    "private",
     "members_only",
     "unavailable",
     "unknown",
@@ -516,8 +517,13 @@ def _video_availability_category(item: dict[str, Any]) -> str:
         return "unavailable"
     if availability in {"public", "unlisted"}:
         return availability
+    if availability == "private":
+        return (
+            "private"
+            if item.get("is_playable") is True or item.get("is_playable") == 1
+            else "unavailable"
+        )
     if availability in {
-        "private",
         "deleted",
         "removed",
         "unavailable",
@@ -587,6 +593,7 @@ def video_collection_data(
     query: str = "",
     include_public: bool = True,
     include_unlisted: bool = True,
+    include_private: bool = True,
     include_unavailable: bool = True,
     include_members_only: bool | None = None,
     include_unknown: bool = True,
@@ -608,6 +615,7 @@ def video_collection_data(
         for category, enabled in {
             "public": include_public,
             "unlisted": include_unlisted,
+            "private": include_private,
             "unavailable": include_unavailable,
             "members_only": (
                 include_unavailable
@@ -634,6 +642,8 @@ def video_collection_data(
           WHEN lower(COALESCE(availability, '')) = 'subscriber_only' THEN 'members_only'
           WHEN lower(COALESCE(availability, '')) IN ('public', 'unlisted')
             THEN lower(availability)
+          WHEN lower(COALESCE(availability, '')) = 'private' AND is_playable = 1
+            THEN 'private'
           WHEN lower(COALESCE(availability, '')) IN (
             'private', 'deleted', 'removed', 'unavailable', 'needs_auth', 'premium_only'
           ) THEN 'unavailable'

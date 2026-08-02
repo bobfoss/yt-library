@@ -132,6 +132,7 @@ def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, Any]
     return {
         "include_public": query_bool_param(params, "public", legacy_name="videos"),
         "include_unlisted": query_bool_param(params, "unlisted"),
+        "include_private": query_bool_param(params, "private"),
         "include_members_only": query_bool_param(params, "members_only"),
         "include_unavailable": query_bool_param(params, "unavailable"),
         "include_unknown": query_bool_param(params, "unknown"),
