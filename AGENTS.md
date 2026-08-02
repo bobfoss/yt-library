@@ -65,15 +65,18 @@ This repository is a Python web app for browsing, enriching, and reconciling a p
 Use the repository root as the working directory.
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
-python -m py_compile @files
-python -m unittest discover -s tests -v
-python yt_library_manager.py
-python yt_library_manager.py migrate
-python yt_library_manager.py import-history
+.\.venv\Scripts\python.exe -m py_compile @files
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe yt_library_manager.py
+.\.venv\Scripts\python.exe yt_library_manager.py migrate
+.\.venv\Scripts\python.exe yt_library_manager.py import-history
 ```
 
+- Run the service from `.venv`; a standalone `yt-dlp.exe` on `PATH` does not
+  provide the `yt_dlp` Python module imported by the application.
 - `py_compile` catches syntax errors without running workers.
 - With no command, `yt_library_manager.py` creates `yt_library.config.json` if needed, initializes or migrates the configured database, and serves the local browser/admin UI.
 - `migrate` initializes or upgrades the configured schema from the migration path in `yt_library/core.py`.
@@ -87,7 +90,7 @@ This repo is normally operated from PowerShell. Avoid Bash-only syntax such as `
 Treat video IDs, titles, and URLs as shell-hostile strings. YouTube IDs can start with `-`, and titles or copied values can contain leading spaces. When passing a dash-leading value to argparse, use the equals form so it cannot be parsed as an option:
 
 ```powershell
-python yt_library_manager.py recover-missing-thumbnails --video-id=-R3PbSzyD9I
+.\.venv\Scripts\python.exe yt_library_manager.py recover-missing-thumbnails --video-id=-R3PbSzyD9I
 ```
 
 For ad hoc Python probes in PowerShell, avoid Bash here-doc syntax and prefer piping a PowerShell here-string into the bundled Python. When printing web/API payloads, force UTF-8 output to avoid Windows console encoding failures:
@@ -130,8 +133,8 @@ The formal test suite uses Python's standard `unittest` runner. For each change,
 
 ```powershell
 $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
-python -m py_compile @files
-python -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m py_compile @files
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 git diff --check
 ```
 

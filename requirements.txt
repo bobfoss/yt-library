@@ -2,3 +2,4 @@ yt-dlp[default]>=2026.7.4
 PySocks>=1.7.1
 google-api-python-client>=2.177.0
 google-auth-oauthlib>=1.2.2
+tzdata>=2025.2

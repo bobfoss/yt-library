@@ -34,8 +34,13 @@ The browser loads a small navigation bootstrap, then requests playlists, videos,
 ## Setup
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+Run the application from this environment. The application imports the
+`yt_dlp` Python module, so a standalone `yt-dlp.exe` on `PATH` is not a
+substitute for installing `requirements.txt` into the active interpreter.
 
 Keep a Netscape-format YouTube cookie file in the project directory or pass its path with `--cookies`.
 Authenticated yt-dlp calls use a temporary copy so yt-dlp cannot rewrite the
@@ -46,7 +51,7 @@ challenge scripts.
 ## Run Locally
 
 ```powershell
-python yt_library_manager.py
+.\.venv\Scripts\python.exe yt_library_manager.py
 ```
 
 With no command, the app creates `yt_library.config.json` if needed, initializes
