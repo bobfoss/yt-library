@@ -4674,6 +4674,32 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
     print(f"Wrote {db_path}")
 
 
+_WORKER_LOG_TARGETS = {
+    "metadata": ("metadata_worker_log", "video_id"),
+    "playlist": ("playlist_scan_worker_log", "playlist_id"),
+    "history": ("live_history_worker_log", "video_id"),
+    "placeholder": ("placeholder_recovery_worker_log", "video_id"),
+}
+
+
+def _log_typed_worker_event(
+    conn: sqlite3.Connection,
+    worker_type: str,
+    run_id: str,
+    level: str,
+    message: str,
+    subject_id: str = "",
+) -> None:
+    table, subject_column = _WORKER_LOG_TARGETS[worker_type]
+    conn.execute(
+        f"""
+        INSERT INTO {table}(run_id, created_at, level, {subject_column}, message)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (run_id, utc_now(), level, subject_id, message),
+    )
+
+
 def log_worker_event(
     conn: sqlite3.Connection,
     run_id: str,
@@ -4681,13 +4707,7 @@ def log_worker_event(
     message: str,
     video_id: str = "",
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO metadata_worker_log(run_id, created_at, level, video_id, message)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (run_id, utc_now(), level, video_id, message),
-    )
+    _log_typed_worker_event(conn, "metadata", run_id, level, message, video_id)
 
 
 def log_worker_queue_event(
@@ -4712,13 +4732,7 @@ def log_playlist_scan_event(
     message: str,
     playlist_id: str = "",
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO playlist_scan_worker_log(run_id, created_at, level, playlist_id, message)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (run_id, utc_now(), level, playlist_id, message),
-    )
+    _log_typed_worker_event(conn, "playlist", run_id, level, message, playlist_id)
 
 
 def log_live_history_event(
@@ -4728,13 +4742,7 @@ def log_live_history_event(
     message: str,
     video_id: str = "",
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO live_history_worker_log(run_id, created_at, level, video_id, message)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (run_id, utc_now(), level, video_id, message),
-    )
+    _log_typed_worker_event(conn, "history", run_id, level, message, video_id)
 
 
 def log_placeholder_recovery_event(
@@ -4744,13 +4752,7 @@ def log_placeholder_recovery_event(
     message: str,
     video_id: str = "",
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO placeholder_recovery_worker_log(run_id, created_at, level, video_id, message)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (run_id, utc_now(), level, video_id, message),
-    )
+    _log_typed_worker_event(conn, "placeholder", run_id, level, message, video_id)
 
 
 def playlist_placeholder_recovery_rows(
@@ -8442,6 +8444,38 @@ def admin_status(
         "liveHistoryLogs": live_history_logs,
         "placeholderRecoveryLogs": placeholder_recovery_logs,
     }
+
+
+_WORKER_RUN_TABLES = (
+    "metadata_worker_runs",
+    "playlist_scan_worker_runs",
+    "live_history_worker_runs",
+    "placeholder_recovery_worker_runs",
+)
+
+
+def _interrupt_running_worker_rows(
+    conn: sqlite3.Connection,
+    table: str,
+    finished_at: str,
+) -> None:
+    if table not in _WORKER_RUN_TABLES:
+        raise ValueError(f"Unknown worker run table: {table}")
+    conn.execute(
+        f"""
+        UPDATE {table}
+        SET status = 'interrupted',
+            finished_at = ?,
+            message = CASE
+              WHEN message = '' THEN 'Interrupted by server restart'
+              ELSE message || ' (interrupted by server restart)'
+            END
+        WHERE status = 'running'
+        """,
+        (finished_at,),
+    )
+
+
 def reconcile_worker_runs(
     db_path: Path,
     metadata_worker: "MetadataWorker | None" = None,
@@ -8449,72 +8483,26 @@ def reconcile_worker_runs(
     live_history_worker: "LiveHistoryWorker | None" = None,
     placeholder_recovery_worker: "PlaceholderRecoveryWorker | None" = None,
 ) -> None:
-    metadata_running = metadata_worker.is_running() if metadata_worker else False
-    playlist_running = playlist_worker.is_running() if playlist_worker else False
-    live_history_running = live_history_worker.is_running() if live_history_worker else False
-    placeholder_recovery_running = (
-        placeholder_recovery_worker.is_running() if placeholder_recovery_worker else False
+    worker_states = zip(
+        _WORKER_RUN_TABLES,
+        (
+            metadata_worker,
+            playlist_worker,
+            live_history_worker,
+            placeholder_recovery_worker,
+        ),
     )
+    inactive_run_tables = [
+        table
+        for table, worker in worker_states
+        if worker is None or not worker.is_running()
+    ]
     now = utc_now()
     conn = connect(db_path)
     try:
         with conn:
-            if not metadata_running:
-                conn.execute(
-                    """
-                    UPDATE metadata_worker_runs
-                    SET status = 'interrupted',
-                        finished_at = ?,
-                        message = CASE
-                          WHEN message = '' THEN 'Interrupted by server restart'
-                          ELSE message || ' (interrupted by server restart)'
-                        END
-                    WHERE status = 'running'
-                    """,
-                    (now,),
-                )
-            if not playlist_running:
-                conn.execute(
-                    """
-                    UPDATE playlist_scan_worker_runs
-                    SET status = 'interrupted',
-                        finished_at = ?,
-                        message = CASE
-                          WHEN message = '' THEN 'Interrupted by server restart'
-                          ELSE message || ' (interrupted by server restart)'
-                        END
-                    WHERE status = 'running'
-                    """,
-                    (now,),
-                )
-            if not live_history_running:
-                conn.execute(
-                    """
-                    UPDATE live_history_worker_runs
-                    SET status = 'interrupted',
-                        finished_at = ?,
-                        message = CASE
-                          WHEN message = '' THEN 'Interrupted by server restart'
-                          ELSE message || ' (interrupted by server restart)'
-                        END
-                    WHERE status = 'running'
-                    """,
-                    (now,),
-                )
-            if not placeholder_recovery_running:
-                conn.execute(
-                    """
-                    UPDATE placeholder_recovery_worker_runs
-                    SET status = 'interrupted',
-                        finished_at = ?,
-                        message = CASE
-                          WHEN message = '' THEN 'Interrupted by server restart'
-                          ELSE message || ' (interrupted by server restart)'
-                        END
-                    WHERE status = 'running'
-                    """,
-                    (now,),
-                )
+            for table in inactive_run_tables:
+                _interrupt_running_worker_rows(conn, table, now)
     finally:
         conn.close()
 

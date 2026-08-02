@@ -5941,6 +5941,58 @@ class AdminServerTests(unittest.TestCase):
 
 
 class WorkerQueueTests(unittest.TestCase):
+    def test_worker_log_wrappers_write_to_their_owned_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.log_worker_event(conn, "metadata-run", "info", "metadata", "video-1")
+                    core.log_worker_queue_event(conn, "warning", "queue", run_id="queue-run")
+                    core.log_playlist_scan_event(
+                        conn,
+                        "playlist-run",
+                        "info",
+                        "playlist",
+                        "playlist-1",
+                    )
+                    core.log_live_history_event(conn, "history-run", "info", "history", "video-2")
+                    core.log_placeholder_recovery_event(
+                        conn,
+                        "placeholder-run",
+                        "info",
+                        "placeholder",
+                        "video-3",
+                    )
+
+                metadata_rows = conn.execute(
+                    "SELECT run_id, level, video_id, message FROM metadata_worker_log ORDER BY id"
+                ).fetchall()
+                playlist_row = conn.execute(
+                    "SELECT run_id, level, playlist_id, message FROM playlist_scan_worker_log"
+                ).fetchone()
+                history_row = conn.execute(
+                    "SELECT run_id, level, video_id, message FROM live_history_worker_log"
+                ).fetchone()
+                placeholder_row = conn.execute(
+                    "SELECT run_id, level, video_id, message FROM placeholder_recovery_worker_log"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            [tuple(row) for row in metadata_rows],
+            [
+                ("metadata-run", "info", "video-1", "metadata"),
+                ("queue-run", "queue warning", "", "queue"),
+            ],
+        )
+        self.assertEqual(tuple(playlist_row), ("playlist-run", "info", "playlist-1", "playlist"))
+        self.assertEqual(tuple(history_row), ("history-run", "info", "video-2", "history"))
+        self.assertEqual(
+            tuple(placeholder_row),
+            ("placeholder-run", "info", "video-3", "placeholder"),
+        )
+
     def test_recent_history_uses_small_batch_and_stops_after_two_matching_days(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
@@ -8740,34 +8792,54 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_reconcile_worker_runs_interrupts_placeholder_recovery(self) -> None:
+    def test_reconcile_worker_runs_interrupts_only_inactive_worker_types(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
             conn = migrated_connection(db_path)
             try:
                 with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO placeholder_recovery_worker_runs(
-                          run_id, status, started_at, message
-                        )
-                        VALUES ('orphaned-placeholder', 'running', '2026-07-14T12:00:00Z', 'Started')
-                        """
+                    run_tables = (
+                        "metadata_worker_runs",
+                        "playlist_scan_worker_runs",
+                        "live_history_worker_runs",
+                        "placeholder_recovery_worker_runs",
                     )
+                    for table, run_id in zip(
+                        run_tables,
+                        (
+                            "active-metadata",
+                            "orphaned-playlist",
+                            "orphaned-history",
+                            "orphaned-placeholder",
+                        ),
+                    ):
+                        conn.execute(
+                            f"""
+                            INSERT INTO {table}(run_id, status, started_at, message)
+                            VALUES (?, 'running', '2026-07-14T12:00:00Z', 'Started')
+                            """,
+                            (run_id,),
+                        )
             finally:
                 conn.close()
 
-            core.reconcile_worker_runs(db_path)
+            active_metadata_worker = Mock()
+            active_metadata_worker.is_running.return_value = True
+            core.reconcile_worker_runs(db_path, metadata_worker=active_metadata_worker)
 
             conn = core.connect(db_path)
             try:
-                row = conn.execute(
-                    "SELECT status, finished_at, message FROM placeholder_recovery_worker_runs WHERE run_id = ?",
-                    ("orphaned-placeholder",),
+                metadata_row = conn.execute(
+                    "SELECT status, finished_at, message FROM metadata_worker_runs"
                 ).fetchone()
-                self.assertEqual(row["status"], "interrupted")
-                self.assertTrue(row["finished_at"])
-                self.assertIn("interrupted by server restart", row["message"])
+                self.assertEqual(tuple(metadata_row), ("running", None, "Started"))
+                for table in run_tables[1:]:
+                    row = conn.execute(
+                        f"SELECT status, finished_at, message FROM {table}"
+                    ).fetchone()
+                    self.assertEqual(row["status"], "interrupted")
+                    self.assertTrue(row["finished_at"])
+                    self.assertIn("interrupted by server restart", row["message"])
             finally:
                 conn.close()
 
