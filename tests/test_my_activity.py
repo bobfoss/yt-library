@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import tempfile
 import unittest
 import urllib.parse
@@ -105,6 +106,51 @@ class MyActivityTests(unittest.TestCase):
         self.assertTrue(events[0].event_id.startswith("my_activity:"))
         self.assertNotIn("first-token", events[0].event_id)
 
+    def test_parser_deduplicates_repeated_tokens_for_one_exact_watch(self) -> None:
+        first = activity_record(
+            1_785_376_234_140_162,
+            "first-representation",
+            "First video",
+            "Watched",
+            "https://www.youtube.com/watch?v=first",
+        )
+        duplicate = activity_record(
+            1_785_376_234_140_162,
+            "second-representation",
+            "First video",
+            "Watched",
+            "https://www.youtube.com/watch?v=first",
+        )
+
+        together = parse_my_activity_watch_events(activity_page(first, duplicate))
+        separately = parse_my_activity_watch_events(activity_page(duplicate))
+
+        self.assertEqual(len(together), 1)
+        self.assertEqual(together[0].event_id, separately[0].event_id)
+
+    def test_parser_keeps_repeat_watches_with_distinct_exact_times(self) -> None:
+        events = parse_my_activity_watch_events(
+            activity_page(
+                activity_record(
+                    1_785_376_234_140_162,
+                    "first-token",
+                    "First video",
+                    "Watched",
+                    "https://www.youtube.com/watch?v=first",
+                ),
+                activity_record(
+                    1_785_376_234_140_163,
+                    "second-token",
+                    "First video",
+                    "Watched",
+                    "https://www.youtube.com/watch?v=first",
+                ),
+            )
+        )
+
+        self.assertEqual(len(events), 2)
+        self.assertNotEqual(events[0].event_id, events[1].event_id)
+
     def test_database_collection_is_idempotent_and_reports_overlap(self) -> None:
         initial = parse_my_activity_watch_events(
             activity_page(
@@ -155,6 +201,180 @@ class MyActivityTests(unittest.TestCase):
             self.assertEqual(later_stats["overlap_events"], 1)
             self.assertEqual(repeat_stats["watch_inserted"], 0)
             self.assertEqual(stored, 2)
+
+    def test_database_reuses_legacy_event_id_for_same_exact_occurrence(self) -> None:
+        event = parse_my_activity_watch_events(
+            activity_page(
+                activity_record(
+                    1_785_376_234_140_162,
+                    "current-token",
+                    "First video",
+                    "Watched",
+                    "https://www.youtube.com/watch?v=first",
+                )
+            )
+        )[0]
+        legacy = type(event)(
+            event_id="my_activity:legacy-token-hash",
+            video_id=event.video_id,
+            watched_at=event.watched_at,
+            title=event.title,
+            url=event.url,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    first = core.save_my_activity_events(conn, [legacy], [], "UTC")
+                with conn:
+                    second = core.save_my_activity_events(conn, [event], [], "UTC")
+                source_rows = conn.execute(
+                    "SELECT * FROM my_activity_watch_events"
+                ).fetchall()
+                history_rows = conn.execute("SELECT * FROM history_events").fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(first["watch_inserted"], 1)
+        self.assertEqual(second["watch_inserted"], 0)
+        self.assertEqual(second["watch_existing"], 1)
+        self.assertEqual(second["overlap_events"], 1)
+        self.assertEqual(len(source_rows), 1)
+        self.assertEqual(source_rows[0]["event_id"], legacy.event_id)
+        self.assertEqual(len(history_rows), 1)
+        self.assertEqual(history_rows[0]["my_activity_event_id"], legacy.event_id)
+
+    def test_migration_collapses_duplicate_exact_occurrences_and_keeps_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            raw = sqlite3.connect(db_path)
+            try:
+                raw.executescript(
+                    """
+                    CREATE TABLE schema_migrations (
+                      version INTEGER PRIMARY KEY,
+                      applied_at TEXT NOT NULL
+                    );
+                    INSERT INTO schema_migrations(version, applied_at)
+                    VALUES (13, '2026-08-01T00:00:00Z');
+                    CREATE TABLE my_activity_watch_events (
+                      event_id TEXT PRIMARY KEY,
+                      video_id TEXT NOT NULL,
+                      watched_at TEXT NOT NULL,
+                      observed_title TEXT NOT NULL DEFAULT '',
+                      observed_url TEXT NOT NULL DEFAULT '',
+                      collected_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL
+                    );
+                    CREATE TABLE my_activity_subscription_events (
+                      event_id TEXT PRIMARY KEY,
+                      channel_id TEXT NOT NULL,
+                      subscribed_at TEXT NOT NULL,
+                      observed_title TEXT NOT NULL DEFAULT '',
+                      observed_url TEXT NOT NULL DEFAULT '',
+                      collected_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL
+                    );
+                    CREATE TABLE history_events (
+                      event_id TEXT PRIMARY KEY,
+                      video_id TEXT NOT NULL,
+                      watched_at TEXT,
+                      watch_date TEXT,
+                      time_precision TEXT NOT NULL,
+                      source_type TEXT NOT NULL DEFAULT '',
+                      match_type TEXT NOT NULL DEFAULT '',
+                      youtube_ordinal INTEGER,
+                      my_activity_event_id TEXT,
+                      takeout_history_key TEXT,
+                      takeout_row_key TEXT,
+                      watch_progress_percent INTEGER NOT NULL DEFAULT 0,
+                      watch_resume_seconds INTEGER NOT NULL DEFAULT 0,
+                      observed_at TEXT,
+                      imported_at TEXT NOT NULL DEFAULT '',
+                      updated_at TEXT NOT NULL DEFAULT ''
+                    );
+                    """
+                )
+                watched_at = "2026-08-01T16:56:04.538418Z"
+                for index in range(4):
+                    event_id = f"my_activity:representation-{index}"
+                    raw.execute(
+                        """
+                        INSERT INTO my_activity_watch_events(
+                          event_id, video_id, watched_at, observed_title,
+                          observed_url, collected_at, updated_at
+                        ) VALUES (?, 'duplicate-video', ?, 'Duplicate video',
+                                  'https://www.youtube.com/watch?v=duplicate-video',
+                                  ?, ?)
+                        """,
+                        (
+                            event_id,
+                            watched_at,
+                            f"2026-08-01T20:0{index}:00Z",
+                            f"2026-08-01T21:0{index}:00Z",
+                        ),
+                    )
+                    raw.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watched_at, watch_date,
+                          time_precision, source_type, match_type,
+                          youtube_ordinal, my_activity_event_id,
+                          watch_progress_percent, imported_at, updated_at
+                        ) VALUES (?, 'duplicate-video', ?, '2026-08-01',
+                                  'exact', ?, ?, ?, ?, ?,
+                                  '2026-08-01T20:00:00Z',
+                                  '2026-08-01T20:00:00Z')
+                        """,
+                        (
+                            event_id,
+                            watched_at,
+                            "my_activity_youtube" if index == 2 else "my_activity",
+                            "video_id_date" if index == 2 else "my_activity_only",
+                            9 if index == 2 else None,
+                            event_id,
+                            100 if index == 2 else 0,
+                        ),
+                    )
+                raw.commit()
+            finally:
+                raw.close()
+
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                source_rows = conn.execute(
+                    "SELECT * FROM my_activity_watch_events"
+                ).fetchall()
+                history_rows = conn.execute("SELECT * FROM history_events").fetchall()
+                schema_version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                with self.assertRaises(sqlite3.IntegrityError):
+                    with conn:
+                        conn.execute(
+                            """
+                            INSERT INTO my_activity_watch_events(
+                              event_id, video_id, watched_at, collected_at, updated_at
+                            ) VALUES ('my_activity:new-representation',
+                                      'duplicate-video', ?,
+                                      '2026-08-01T22:00:00Z',
+                                      '2026-08-01T22:00:00Z')
+                            """,
+                            (watched_at,),
+                        )
+            finally:
+                conn.close()
+
+        self.assertEqual(schema_version, core.SCHEMA_VERSION)
+        self.assertEqual(len(source_rows), 1)
+        self.assertEqual(source_rows[0]["event_id"], "my_activity:representation-2")
+        self.assertEqual(source_rows[0]["collected_at"], "2026-08-01T20:00:00Z")
+        self.assertEqual(len(history_rows), 1)
+        self.assertEqual(history_rows[0]["youtube_ordinal"], 9)
+        self.assertEqual(history_rows[0]["watch_progress_percent"], 100)
 
     def test_parser_replaces_invalid_json_surrogates_before_writing(self) -> None:
         events = parse_my_activity_watch_events(

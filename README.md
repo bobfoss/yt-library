@@ -164,9 +164,10 @@ Takeout times with live-history ordinals.
 `collect-my-activity` reads the structured bootstrap data behind the signed-in
 [YouTube My Activity page](https://myactivity.google.com/product/youtube). Unlike
 the visible page, which rounds times to the minute, the bootstrap records include
-an exact UTC timestamp and a distinct activity token for each watch event. The
-same stream includes timestamped `Subscribed to` events when Google exposes
-them.
+an exact UTC timestamp. Google can expose multiple opaque tokenized records for
+one occurrence, so the collector identifies a watch by video ID plus its exact
+timestamp. The same stream includes timestamped `Subscribed to` events when
+Google exposes them.
 
 Export a separate Netscape-format cookie file that includes `google.com` cookies
 to `my_activity_cookies.txt`, then run:
@@ -177,10 +178,11 @@ python yt_library_manager.py collect-my-activity
 
 The command writes normalized evidence directly to dedicated SQLite source
 tables and projects watch events into canonical history and subscription events
-onto channels. It hashes Google's opaque activity token before storing it and is
-idempotent. By default it fetches at most 25 pages and reports whether the
-collection overlaps stored events. A non-overlapping run is preserved but
-logged as a possible coverage gap.
+onto channels. It stores a hashed exact-occurrence identity and is idempotent,
+including when Google repeats the occurrence under different opaque tokens. By
+default it fetches at most 25 pages and reports whether the collection overlaps
+stored events. A non-overlapping run is preserved but logged as a possible
+coverage gap.
 
 For a bounded historical backfill, follow Google's structured continuation pages:
 
@@ -193,9 +195,9 @@ response and rejects token loops and pages that make no progress. It reports
 whether older activity is still available; increase the bound until it reports
 that it reached the end.
 Each invocation starts at the newest page, so progressively larger bounds refetch
-and deduplicate the already-seen prefix. The collector keeps the hashed My
-Activity event ID as source identity, replaces matching YouTube date-only
-occurrences with the exact event
+and deduplicate the already-seen prefix. The collector keeps the stable exact
+occurrence ID as source identity, replaces matching YouTube date-only occurrences
+with the exact event
 while retaining their ordinal and progress fields, and merges a matching Takeout
 event by video ID and UTC second. This prevents a later Takeout import from
 duplicating the same watch. Retain Takeout until the My Activity continuation

@@ -193,6 +193,12 @@ def _activity_timestamp(timestamp_us: int) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def _activity_event_id(kind: str, subject_id: str, occurred_at: str) -> str:
+    payload = f"{kind}\x1f{subject_id}\x1f{occurred_at}"
+    digest = hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()
+    return f"my_activity:{digest}"
+
+
 def _normalized_text(value: str) -> str:
     try:
         value.encode("utf-8")
@@ -241,11 +247,11 @@ def _watch_event_from_record(record: list[Any]) -> MyActivityWatchEvent | None:
         ),
         "",
     )
-    token_hash = hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
+    watched_at = _activity_timestamp(timestamp_us)
     return MyActivityWatchEvent(
-        event_id=f"my_activity:{token_hash}",
+        event_id=_activity_event_id("watch", video_id, watched_at),
         video_id=video_id,
-        watched_at=_activity_timestamp(timestamp_us),
+        watched_at=watched_at,
         title=_normalized_text(title),
         url=_normalized_text(url),
     )
@@ -301,11 +307,11 @@ def _subscription_event_from_record(
         ),
         "",
     )
-    token_hash = hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
+    subscribed_at = _activity_timestamp(timestamp_us)
     return MyActivitySubscriptionEvent(
-        event_id=f"my_activity:{token_hash}",
+        event_id=_activity_event_id("subscription", channel_id, subscribed_at),
         channel_id=channel_id,
-        subscribed_at=_activity_timestamp(timestamp_us),
+        subscribed_at=subscribed_at,
         title=_normalized_text(title),
         url=_normalized_text(url),
     )

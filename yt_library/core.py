@@ -221,7 +221,7 @@ CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 @dataclass(frozen=True)
@@ -281,6 +281,218 @@ def _bootstrap_database(conn: sqlite3.Connection) -> None:
     )
 
 
+def _detach_duplicate_my_activity_history(
+    conn: sqlite3.Connection,
+    history_row: sqlite3.Row,
+    updated_at: str,
+) -> None:
+    has_takeout = bool(history_row["takeout_history_key"])
+    has_youtube = history_row["youtube_ordinal"] is not None
+    if not has_takeout and not has_youtube:
+        conn.execute(
+            "DELETE FROM history_events WHERE event_id = ?",
+            (history_row["event_id"],),
+        )
+        return
+
+    source_type = history_source_type_for_identity(
+        None,
+        history_row["takeout_history_key"],
+        history_row["youtube_ordinal"],
+    )
+    match_type = history_match_type_for_identity(
+        None,
+        history_row["takeout_history_key"],
+        history_row["youtube_ordinal"],
+    )
+    conn.execute(
+        """
+        UPDATE history_events
+        SET my_activity_event_id=NULL,
+            watched_at=CASE WHEN takeout_history_key IS NULL THEN NULL ELSE watched_at END,
+            time_precision=CASE
+              WHEN takeout_history_key IS NOT NULL THEN 'exact'
+              WHEN watch_date IS NOT NULL THEN 'date_only'
+              ELSE 'unknown'
+            END,
+            source_type=?, match_type=?, updated_at=?
+        WHERE event_id=?
+        """,
+        (source_type, match_type, updated_at, history_row["event_id"]),
+    )
+
+
+def _deduplicate_my_activity_occurrences(conn: sqlite3.Connection) -> dict[str, int]:
+    """Collapse repeated Google representations of the same exact occurrence."""
+
+    now = utc_now()
+    watch_removed = 0
+    history_removed = 0
+    history_detached = 0
+    watch_groups = conn.execute(
+        """
+        SELECT video_id, watched_at
+        FROM my_activity_watch_events
+        GROUP BY video_id, watched_at
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    for group in watch_groups:
+        source_rows = conn.execute(
+            """
+            SELECT source.*,
+                   history.event_id AS history_event_id,
+                   history.youtube_ordinal,
+                   history.takeout_history_key,
+                   history.takeout_row_key,
+                   history.watch_progress_percent,
+                   history.watch_resume_seconds
+            FROM my_activity_watch_events source
+            LEFT JOIN history_events history
+              ON history.my_activity_event_id = source.event_id
+            WHERE source.video_id=? AND source.watched_at=?
+            ORDER BY
+              CASE
+                WHEN history.takeout_history_key IS NOT NULL
+                 AND history.youtube_ordinal IS NOT NULL THEN 3
+                WHEN history.takeout_history_key IS NOT NULL THEN 2
+                WHEN history.youtube_ordinal IS NOT NULL THEN 1
+                ELSE 0
+              END DESC,
+              COALESCE(history.watch_progress_percent, 0) DESC,
+              COALESCE(history.watch_resume_seconds, 0) DESC,
+              source.collected_at ASC,
+              source.event_id ASC
+            """,
+            (group["video_id"], group["watched_at"]),
+        ).fetchall()
+        canonical = source_rows[0]
+        observed_title = next(
+            (row["observed_title"] for row in source_rows if row["observed_title"]),
+            "",
+        )
+        observed_url = next(
+            (row["observed_url"] for row in source_rows if row["observed_url"]),
+            "",
+        )
+        collected_at = min(row["collected_at"] for row in source_rows)
+        updated_at = max(row["updated_at"] for row in source_rows)
+        conn.execute(
+            """
+            UPDATE my_activity_watch_events
+            SET observed_title=?, observed_url=?, collected_at=?, updated_at=?
+            WHERE event_id=?
+            """,
+            (
+                observed_title,
+                observed_url,
+                collected_at,
+                updated_at,
+                canonical["event_id"],
+            ),
+        )
+        for duplicate in source_rows[1:]:
+            history_row = conn.execute(
+                "SELECT * FROM history_events WHERE my_activity_event_id = ?",
+                (duplicate["event_id"],),
+            ).fetchone()
+            if history_row:
+                had_other_evidence = bool(history_row["takeout_history_key"]) or (
+                    history_row["youtube_ordinal"] is not None
+                )
+                _detach_duplicate_my_activity_history(conn, history_row, now)
+                if had_other_evidence:
+                    history_detached += 1
+                else:
+                    history_removed += 1
+            conn.execute(
+                "DELETE FROM my_activity_watch_events WHERE event_id = ?",
+                (duplicate["event_id"],),
+            )
+            watch_removed += 1
+
+    legacy_history_rows = conn.execute(
+        """
+        SELECT history.*
+        FROM history_events history
+        WHERE history.event_id LIKE 'my_activity:%'
+          AND history.my_activity_event_id IS NULL
+          AND COALESCE(history.watched_at, '') <> ''
+          AND EXISTS (
+            SELECT 1
+            FROM my_activity_watch_events source
+            WHERE source.video_id = history.video_id
+              AND source.watched_at = history.watched_at
+          )
+        """
+    ).fetchall()
+    for history_row in legacy_history_rows:
+        had_other_evidence = bool(history_row["takeout_history_key"]) or (
+            history_row["youtube_ordinal"] is not None
+        )
+        _detach_duplicate_my_activity_history(conn, history_row, now)
+        if had_other_evidence:
+            history_detached += 1
+        else:
+            history_removed += 1
+
+    subscription_removed = 0
+    subscription_groups = conn.execute(
+        """
+        SELECT channel_id, subscribed_at
+        FROM my_activity_subscription_events
+        GROUP BY channel_id, subscribed_at
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    for group in subscription_groups:
+        source_rows = conn.execute(
+            """
+            SELECT *
+            FROM my_activity_subscription_events
+            WHERE channel_id=? AND subscribed_at=?
+            ORDER BY collected_at ASC, event_id ASC
+            """,
+            (group["channel_id"], group["subscribed_at"]),
+        ).fetchall()
+        canonical = source_rows[0]
+        observed_title = next(
+            (row["observed_title"] for row in source_rows if row["observed_title"]),
+            "",
+        )
+        observed_url = next(
+            (row["observed_url"] for row in source_rows if row["observed_url"]),
+            "",
+        )
+        conn.execute(
+            """
+            UPDATE my_activity_subscription_events
+            SET observed_title=?, observed_url=?, collected_at=?, updated_at=?
+            WHERE event_id=?
+            """,
+            (
+                observed_title,
+                observed_url,
+                min(row["collected_at"] for row in source_rows),
+                max(row["updated_at"] for row in source_rows),
+                canonical["event_id"],
+            ),
+        )
+        for duplicate in source_rows[1:]:
+            conn.execute(
+                "DELETE FROM my_activity_subscription_events WHERE event_id = ?",
+                (duplicate["event_id"],),
+            )
+            subscription_removed += 1
+
+    return {
+        "watch_removed": watch_removed,
+        "subscription_removed": subscription_removed,
+        "history_removed": history_removed,
+        "history_detached": history_detached,
+    }
+
+
 def _migrate_database(conn: sqlite3.Connection) -> None:
     current_version = _schema_version(conn)
     if current_version > SCHEMA_VERSION:
@@ -289,6 +501,8 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         )
     if current_version == SCHEMA_VERSION:
         return
+    if current_version == 13:
+        _deduplicate_my_activity_occurrences(conn)
     if 0 < current_version < 13:
         existing_tables = {
             row["name"]
@@ -602,6 +816,11 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
             SET my_activity_event_id = event_id
             WHERE event_id LIKE 'my_activity:%'
               AND my_activity_event_id IS NULL
+              AND EXISTS (
+                SELECT 1
+                FROM my_activity_watch_events source
+                WHERE source.event_id = history_events.event_id
+              )
             """
         )
         conn.execute(
@@ -614,6 +833,24 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (13, utc_now()),
+        )
+    if current_version < 14:
+        _deduplicate_my_activity_occurrences(conn)
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_my_activity_watch_occurrence
+            ON my_activity_watch_events(video_id, watched_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_my_activity_subscription_occurrence
+            ON my_activity_subscription_events(channel_id, subscribed_at)
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (14, utc_now()),
         )
 
 
@@ -5175,18 +5412,26 @@ def save_my_activity_events(
     """Persist normalized My Activity evidence and refresh canonical projections."""
 
     now = utc_now()
-    incoming_ids = {
-        str(event.event_id)
-        for event in (*watch_events, *subscription_events)
+    incoming_occurrences = {
+        ("watch", str(event.video_id), str(event.watched_at))
+        for event in watch_events
+    } | {
+        (
+            "subscription",
+            str(event.channel_id),
+            str(event.subscribed_at),
+        )
+        for event in subscription_events
     }
-    known_ids = {
-        str(row["event_id"])
+    known_occurrences = {
+        ("watch", str(row["video_id"]), str(row["watched_at"]))
         for row in conn.execute(
-            """
-            SELECT event_id FROM my_activity_watch_events
-            UNION
-            SELECT event_id FROM my_activity_subscription_events
-            """
+            "SELECT video_id, watched_at FROM my_activity_watch_events"
+        )
+    } | {
+        ("subscription", str(row["channel_id"]), str(row["subscribed_at"]))
+        for row in conn.execute(
+            "SELECT channel_id, subscribed_at FROM my_activity_subscription_events"
         )
     }
     watch_inserted = 0
@@ -5195,7 +5440,7 @@ def save_my_activity_events(
     subscription_existing = 0
 
     for event in watch_events:
-        event_id = str(event.event_id)
+        incoming_event_id = str(event.event_id)
         video_id = str(event.video_id)
         watched_at = str(event.watched_at)
         observed_title = str(event.title or "")
@@ -5208,9 +5453,16 @@ def save_my_activity_events(
             updated_at=now,
         )
         stored_source = conn.execute(
-            "SELECT * FROM my_activity_watch_events WHERE event_id = ?",
-            (event_id,),
+            """
+            SELECT *
+            FROM my_activity_watch_events
+            WHERE event_id = ? OR (video_id = ? AND watched_at = ?)
+            ORDER BY event_id = ? DESC
+            LIMIT 1
+            """,
+            (incoming_event_id, video_id, watched_at, incoming_event_id),
         ).fetchone()
+        event_id = str(stored_source["event_id"]) if stored_source else incoming_event_id
         if stored_source and (
             stored_source["video_id"] != video_id
             or stored_source["watched_at"] != watched_at
@@ -5315,7 +5567,7 @@ def save_my_activity_events(
             watch_inserted += 1
 
     for event in subscription_events:
-        event_id = str(event.event_id)
+        incoming_event_id = str(event.event_id)
         channel_id = str(event.channel_id)
         subscribed_at = str(event.subscribed_at)
         observed_title = str(event.title or "")
@@ -5329,9 +5581,16 @@ def save_my_activity_events(
             updated_at=now,
         )
         stored_source = conn.execute(
-            "SELECT * FROM my_activity_subscription_events WHERE event_id = ?",
-            (event_id,),
+            """
+            SELECT *
+            FROM my_activity_subscription_events
+            WHERE event_id = ? OR (channel_id = ? AND subscribed_at = ?)
+            ORDER BY event_id = ? DESC
+            LIMIT 1
+            """,
+            (incoming_event_id, channel_id, subscribed_at, incoming_event_id),
         ).fetchone()
+        event_id = str(stored_source["event_id"]) if stored_source else incoming_event_id
         if stored_source and (
             stored_source["channel_id"] != channel_id
             or stored_source["subscribed_at"] != subscribed_at
@@ -5398,9 +5657,9 @@ def save_my_activity_events(
         "subscription_events": len(subscription_events),
         "subscription_inserted": subscription_inserted,
         "subscription_existing": subscription_existing,
-        "known_before": len(known_ids),
-        "overlap_events": len(known_ids & incoming_ids),
-        "first_collection": not known_ids,
+        "known_before": len(known_occurrences),
+        "overlap_events": len(known_occurrences & incoming_occurrences),
+        "first_collection": not known_occurrences,
         "merged_takeout_rows": merge_stats["merged"],
         "ambiguous_takeout_rows": merge_stats["ambiguous"],
         "history_rows": reconciliation["rows"],

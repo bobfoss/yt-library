@@ -343,6 +343,10 @@ CREATE INDEX IF NOT EXISTS idx_my_activity_watch_video_time
   ON my_activity_watch_events(video_id, watched_at);
 CREATE INDEX IF NOT EXISTS idx_my_activity_subscription_channel_time
   ON my_activity_subscription_events(channel_id, subscribed_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_my_activity_watch_occurrence
+  ON my_activity_watch_events(video_id, watched_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_my_activity_subscription_occurrence
+  ON my_activity_subscription_events(channel_id, subscribed_at);
 CREATE INDEX IF NOT EXISTS idx_playlist_items_state ON playlist_items(membership_state, playlist_id, position);
 CREATE INDEX IF NOT EXISTS idx_video_recovery_status ON video_recovery(search_status, searched_at);
 CREATE INDEX IF NOT EXISTS idx_history_events_video ON history_events(video_id);
