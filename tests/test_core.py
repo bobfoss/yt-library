@@ -1864,6 +1864,29 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_watch_metadata_classifies_accessible_private_visibility(self) -> None:
+        html = """
+        <html><body>
+        <script>
+        var ytInitialPlayerResponse = {
+          "playabilityStatus": {"status": "OK"},
+          "videoDetails": {
+            "title": "Private video",
+            "author": "Creator",
+            "isPrivate": true
+          },
+          "microformat": {"playerMicroformatRenderer": {"isUnlisted": false}}
+        };
+        var ytInitialData = {};
+        </script>
+        </body></html>
+        """
+
+        metadata = core.extract_watch_metadata(html, "private1234")
+
+        self.assertEqual(metadata["availability"], "private")
+        self.assertEqual(core.storable_watch_playability_value(metadata), 1)
+
     def test_watch_metadata_does_not_classify_bot_challenge_as_unavailable(self) -> None:
         playability = {
             "status": "LOGIN_REQUIRED",

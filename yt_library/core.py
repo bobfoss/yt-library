@@ -359,10 +359,12 @@ def storable_watch_playability_value(metadata: dict[str, Any]) -> int | None:
 def watch_playability_availability(
     playability: dict[str, Any],
     microformat: dict[str, Any] | None = None,
+    video_details: dict[str, Any] | None = None,
 ) -> str:
     if not isinstance(playability, dict):
         return ""
     microformat = microformat if isinstance(microformat, dict) else {}
+    video_details = video_details if isinstance(video_details, dict) else {}
     error_screen = playability.get("errorScreen")
     offer = (
         error_screen.get("playerLegacyDesktopYpcOfferRenderer", {})
@@ -391,6 +393,8 @@ def watch_playability_availability(
         return "subscriber_only"
     status = str(playability.get("status") or "").strip().upper()
     if status == "OK":
+        if video_details.get("isPrivate") is True:
+            return "private"
         return "unlisted" if microformat.get("isUnlisted") is True else "public"
     if any(
         marker in text
@@ -3076,7 +3080,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     reaction = extract_reaction_from_initial_data(initial_data)
     status = str(playability.get("status") or "").strip()
     reason = text_from_runs(playability.get("reason")).strip()
-    availability = watch_playability_availability(playability, microformat)
+    availability = watch_playability_availability(playability, microformat, details)
     playability_status = status
     if reason and status and reason not in status:
         status = f"{status}: {reason}"
