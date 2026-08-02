@@ -29,6 +29,7 @@ from yt_library.config import (
     configured_search_card_layout,
     configured_sort_preferences,
     configured_update_frequency,
+    configured_update_hour_minute,
     configured_update_time,
     configured_use_proxy,
     configured_youtube_max_in_flight,
@@ -39,6 +40,7 @@ from yt_library.config import (
     next_update_at,
     save_config,
     valid_update_frequency,
+    valid_update_hour_minute,
     valid_update_time,
 )
 
@@ -249,16 +251,27 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(valid_update_frequency("hourly"))
         self.assertFalse(valid_update_frequency("weekly"))
 
-    def test_hourly_update_schedule_uses_next_top_of_hour(self) -> None:
-        config = {"update_frequency": "hourly"}
+    def test_hourly_update_schedule_uses_configured_minute(self) -> None:
+        config = {"update_frequency": "hourly", "update_hour_minute": 17}
 
         self.assertEqual(
             next_update_at(
                 config,
                 datetime(2026, 7, 31, 15, 42, 30, tzinfo=timezone.utc),
             ),
-            datetime(2026, 7, 31, 16, 0, tzinfo=timezone.utc),
+            datetime(2026, 7, 31, 16, 17, tzinfo=timezone.utc),
         )
+        self.assertEqual(
+            next_update_at(
+                config,
+                datetime(2026, 7, 31, 15, 5, tzinfo=timezone.utc),
+            ),
+            datetime(2026, 7, 31, 15, 17, tzinfo=timezone.utc),
+        )
+        self.assertEqual(configured_update_hour_minute(config), 17)
+        self.assertEqual(configured_update_hour_minute({}), 0)
+        self.assertTrue(valid_update_hour_minute("59"))
+        self.assertFalse(valid_update_hour_minute("60"))
 
     def test_load_config_rejects_invalid_proxy(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -371,6 +384,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["partial_completion_min_percent"], 1)
             self.assertEqual(payload["filter_preferences"], {})
             self.assertEqual(payload["update_frequency"], "off")
+            self.assertEqual(payload["update_hour_minute"], 0)
             self.assertEqual(payload["update_time"], "03:00")
             self.assertFalse(payload["admin_advanced"])
             self.assertEqual(payload["host"], "127.0.0.1")

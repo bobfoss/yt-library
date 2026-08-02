@@ -55,6 +55,8 @@
     .update-schedule-select { width: 100px; }
     label.update-time-label { display: flex; align-items: center; gap: 6px; }
     .update-time-input { width: 110px; }
+    .update-minute-select { width: 72px; }
+    .update-time-label[hidden], .update-time-label [hidden] { display: none; }
     .header-settings { display: grid; justify-items: end; gap: 8px; }
     .header-settings-row { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: end; gap: 8px; }
     .header-settings label { text-align: left; }
@@ -241,7 +243,7 @@
         <div class="controls update-controls">
           <button id="updateLibrary" class="primary" type="button">Update</button>
           <label class="update-schedule-label">Schedule<select id="updateFrequency" class="update-schedule-select"><option value="off">Off</option><option value="hourly">Hourly</option><option value="daily">Daily</option></select></label>
-          <label id="updateTimeLabel" class="update-time-label" hidden>At<input id="updateTime" class="update-time-input" type="time" value="03:00"></label>
+          <label id="updateTimeLabel" class="update-time-label" hidden>At<input id="updateTime" class="update-time-input" type="time" value="03:00"><select id="updateHourMinute" class="update-minute-select" aria-label="Minute of each hour" hidden></select></label>
           <span id="updateStatus" class="metric" aria-live="polite"></span>
           <span id="updateScheduleStatus" class="metric" aria-live="polite"></span>
         </div>
@@ -482,6 +484,7 @@
       updateFrequency: document.getElementById('updateFrequency'),
       updateTimeLabel: document.getElementById('updateTimeLabel'),
       updateTime: document.getElementById('updateTime'),
+      updateHourMinute: document.getElementById('updateHourMinute'),
       updateStatus: document.getElementById('updateStatus'),
       updateScheduleStatus: document.getElementById('updateScheduleStatus'),
       playlistRows: document.getElementById('playlistRows'),
@@ -549,6 +552,20 @@
       archivarixCookieStatus: document.getElementById('archivarixCookieStatus'),
       archivarixCookieText: document.getElementById('archivarixCookieText'),
     };
+
+    for (let minute = 0; minute < 60; minute += 1) {
+      const option = document.createElement('option');
+      option.value = String(minute);
+      option.textContent = `:${String(minute).padStart(2, '0')}`;
+      fields.updateHourMinute.appendChild(option);
+    }
+
+    function syncUpdateScheduleControls() {
+      const frequency = fields.updateFrequency.value;
+      fields.updateTimeLabel.hidden = frequency === 'off';
+      fields.updateTime.hidden = frequency !== 'daily';
+      fields.updateHourMinute.hidden = frequency !== 'hourly';
+    }
     fields.displayTimezone.value = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
     fields.themeToggle.checked = window.YTLibraryTheme.current() === 'dark';
 
@@ -1075,7 +1092,8 @@
       if (!updateScheduleSaving && !updateScheduleDirty) {
         fields.updateFrequency.value = settings.updateFrequency || 'off';
         fields.updateTime.value = settings.updateTime || '03:00';
-        fields.updateTimeLabel.hidden = fields.updateFrequency.value !== 'daily';
+        fields.updateHourMinute.value = String(settings.updateHourMinute ?? 0);
+        syncUpdateScheduleControls();
         const updateSchedule = settings.updateSchedule || {};
         fields.updateScheduleStatus.textContent = updateSchedule.lastError
           ? `Error: ${updateSchedule.lastError}`
@@ -1496,6 +1514,7 @@
       const saveRevision = updateScheduleRevision;
       const frequency = fields.updateFrequency.value;
       const at = fields.updateTime.value;
+      const minute = fields.updateHourMinute.value;
       if (frequency === 'daily' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(at)) {
         fields.updateScheduleStatus.textContent = 'Choose a time';
         fields.updateScheduleStatus.className = 'metric warn';
@@ -1508,6 +1527,7 @@
         await requestJson('/api/admin/update-schedule', {
           frequency,
           at,
+          minute,
         });
         if (updateScheduleRevision === saveRevision) {
           updateScheduleDirty = false;
@@ -1639,10 +1659,11 @@
     });
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start').catch(error => alert(error.message)));
     fields.updateFrequency.addEventListener('change', () => {
-      fields.updateTimeLabel.hidden = fields.updateFrequency.value !== 'daily';
+      syncUpdateScheduleControls();
       scheduleUpdateScheduleSave();
     });
     fields.updateTime.addEventListener('change', scheduleUpdateScheduleSave);
+    fields.updateHourMinute.addEventListener('change', scheduleUpdateScheduleSave);
     document.getElementById('verifyLiveHistory').addEventListener('click', () => {
       if (!confirm('Verify the full YouTube history? This may run for a long time, but existing fetched history will be kept.')) return;
       post('/api/admin/live-history/verify').catch(error => alert(error.message));

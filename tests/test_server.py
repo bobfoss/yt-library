@@ -364,7 +364,9 @@ class AdminServerTests(unittest.TestCase):
             config_path = Path(temp_dir) / "yt_library.config.json"
             config = load_config(config_path)
             handler = object.__new__(server.LibraryHandler)
-            handler.path = "/api/admin/update-schedule?frequency=hourly&at=04%3A30"
+            handler.path = (
+                "/api/admin/update-schedule?frequency=hourly&at=04%3A30&minute=17"
+            )
             handler.config_data = config
             handler.send_json = Mock()
 
@@ -378,8 +380,10 @@ class AdminServerTests(unittest.TestCase):
             response = handler.send_json.call_args.args[0]
 
         self.assertEqual(payload["update_frequency"], "hourly")
+        self.assertEqual(payload["update_hour_minute"], 17)
         self.assertEqual(payload["update_time"], "04:30")
         self.assertEqual(response["settings"]["updateFrequency"], "hourly")
+        self.assertEqual(response["settings"]["updateHourMinute"], 17)
         self.assertEqual(response["settings"]["updateTime"], "04:30")
         schedule_changed.assert_called_once_with(config)
 
@@ -405,6 +409,18 @@ class AdminServerTests(unittest.TestCase):
 
         response = handler.send_json.call_args.args[0]
         self.assertIn("frequency", response["error"])
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
+    def test_update_schedule_endpoint_rejects_invalid_hour_minute(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = "/api/admin/update-schedule?frequency=hourly&minute=60"
+        handler.config_data = load_config(Path("missing-test-config.json"))
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        response = handler.send_json.call_args.args[0]
+        self.assertIn("between 0 and 59", response["error"])
         self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
 
     def test_scheduled_update_queues_incremental_work_and_starts_dispatcher(self) -> None:

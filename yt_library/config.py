@@ -38,6 +38,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "partial_completion_min_percent": 1,
     "filter_preferences": {},
     "update_frequency": "off",
+    "update_hour_minute": 0,
     "update_time": "03:00",
     "admin_advanced": False,
     "use_proxy": False,
@@ -176,7 +177,21 @@ def configured_sort_preferences(config: dict[str, Any]) -> dict[str, str]:
 
 def configured_update_frequency(config: dict[str, Any]) -> str:
     value = str(config.get("update_frequency") or "").strip().lower()
-    return value if value in UPDATE_FREQUENCIES else str(DEFAULT_CONFIG["update_frequency"])
+    return (
+        value
+        if value in UPDATE_FREQUENCIES
+        else str(DEFAULT_CONFIG["update_frequency"])
+    )
+
+
+def configured_update_hour_minute(config: dict[str, Any]) -> int:
+    try:
+        value = int(
+            config.get("update_hour_minute", DEFAULT_CONFIG["update_hour_minute"])
+        )
+    except (TypeError, ValueError):
+        return int(DEFAULT_CONFIG["update_hour_minute"])
+    return value if 0 <= value <= 59 else int(DEFAULT_CONFIG["update_hour_minute"])
 
 
 def configured_admin_advanced(config: dict[str, Any]) -> bool:
@@ -194,6 +209,14 @@ def valid_update_frequency(value: str) -> bool:
     return (value or "").strip().lower() in UPDATE_FREQUENCIES
 
 
+def valid_update_hour_minute(value: str) -> bool:
+    try:
+        minute = int((value or "").strip())
+    except (TypeError, ValueError):
+        return False
+    return 0 <= minute <= 59
+
+
 def configured_update_time(config: dict[str, Any]) -> str:
     value = str(config.get("update_time") or "").strip()
     return value if valid_update_time(value) else str(DEFAULT_CONFIG["update_time"])
@@ -205,9 +228,14 @@ def next_update_at(
 ) -> datetime:
     current_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     if configured_update_frequency(config) == "hourly":
-        return current_utc.replace(minute=0, second=0, microsecond=0) + timedelta(
-            hours=1
+        candidate = current_utc.replace(
+            minute=configured_update_hour_minute(config),
+            second=0,
+            microsecond=0,
         )
+        if candidate <= current_utc:
+            candidate += timedelta(hours=1)
+        return candidate
     zone = ZoneInfo(effective_display_timezone(config))
     local_now = current_utc.astimezone(zone)
     hour, minute = (int(part) for part in configured_update_time(config).split(":"))
@@ -456,6 +484,7 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
     )
     config["filter_preferences"] = configured_filter_preferences(config)
     config["update_frequency"] = configured_update_frequency(config)
+    config["update_hour_minute"] = configured_update_hour_minute(config)
     config["update_time"] = configured_update_time(config)
     config["admin_advanced"] = configured_admin_advanced(config)
     configured_proxy_address(config)

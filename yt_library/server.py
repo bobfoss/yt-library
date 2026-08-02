@@ -39,6 +39,7 @@ from .config import (
     configured_search_card_layout,
     configured_sort_preferences,
     configured_update_frequency,
+    configured_update_hour_minute,
     configured_update_time,
     configured_use_proxy,
     configured_youtube_max_in_flight,
@@ -49,6 +50,7 @@ from .config import (
     next_update_at,
     save_config,
     valid_update_frequency,
+    valid_update_hour_minute,
     valid_update_time,
 )
 from .cookie_files import (
@@ -272,6 +274,7 @@ class UpdateScheduler:
             return {
                 "enabled": enabled,
                 "frequency": frequency,
+                "hourMinute": configured_update_hour_minute(config_data),
                 "time": configured_update_time(config_data),
                 "nextRunAt": utc_timestamp(next_run_at) if enabled and next_run_at else "",
                 "lastQueuedAt": self._last_queued_at,
@@ -1035,12 +1038,21 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 )
                 return
             update_time = (params.get("at") or [""])[0].strip()
+            hour_minute = (params.get("minute") or [""])[0].strip()
             if frequency == "daily" and not valid_update_time(update_time):
                 self.send_json({"error": "Update time must use HH:MM"}, status=400)
+                return
+            if frequency == "hourly" and not valid_update_hour_minute(hour_minute):
+                self.send_json(
+                    {"error": "Hourly update minute must be between 0 and 59"},
+                    status=400,
+                )
                 return
             self.config_data["update_frequency"] = frequency
             if valid_update_time(update_time):
                 self.config_data["update_time"] = update_time
+            if valid_update_hour_minute(hour_minute):
+                self.config_data["update_hour_minute"] = int(hour_minute)
             save_config(self.config_data)
             UPDATE_SCHEDULER.schedule_changed(self.config_data)
             self.send_json({"ok": True, "settings": self.admin_settings()})
@@ -1587,6 +1599,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "useProxy": configured_use_proxy(self.config_data),
             "proxy": configured_proxy_address(self.config_data),
             "updateFrequency": configured_update_frequency(self.config_data),
+            "updateHourMinute": configured_update_hour_minute(self.config_data),
             "updateTime": configured_update_time(self.config_data),
             "updateSchedule": UPDATE_SCHEDULER.status(self.config_data),
             "adminAdvanced": configured_admin_advanced(self.config_data),
