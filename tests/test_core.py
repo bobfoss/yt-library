@@ -4891,7 +4891,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertIn("'/api/admin/advanced'", server.ADMIN_HTML)
         self.assertEqual(
             server.ADMIN_HTML.count('<section class="workstream advanced-only">'),
-            3,
+            4,
         )
         self.assertIn('<fieldset class="dispatch-settings advanced-only">', server.ADMIN_HTML)
         self.assertIn('<div class="controls capacity-controls advanced-only">', server.ADMIN_HTML)
@@ -4935,13 +4935,15 @@ class AdminServerTests(unittest.TestCase):
         self.assertNotIn('data-advanced-tab="controls"', server.ADMIN_HTML)
         self.assertEqual(server.ADMIN_HTML.count('data-advanced-tab="'), 3)
         self.assertLess(
-            server.ADMIN_HTML.index('class="header-settings-row advanced-only"'),
-            server.ADMIN_HTML.index('class="advanced-tabs"'),
+            server.ADMIN_HTML.index("<h2>Update</h2>"),
+            server.ADMIN_HTML.index("<h2>Cookies</h2>"),
         )
         self.assertLess(
-            server.ADMIN_HTML.index('id="syncAccountDates"'),
-            server.ADMIN_HTML.index('class="advanced-tabs"'),
+            server.ADMIN_HTML.index("<h2>Cookies</h2>"),
+            server.ADMIN_HTML.index("<h2>Videos</h2>"),
         )
+        self.assertNotIn('id="syncAccountDates"', server.ADMIN_HTML)
+        self.assertNotIn("'/api/admin/account/start'", server.ADMIN_HTML)
         self.assertIn(
             'class="advanced-tab-pane cookie-editor" data-advanced-pane="youtube">',
             server.ADMIN_HTML,
@@ -5894,6 +5896,53 @@ class AdminServerTests(unittest.TestCase):
         self.assertFalse(response["queue"]["had_data"])
         self.assertEqual(response["queue"]["inserted"], 3)
         self.assertEqual(subjects, {"account:sync", "history:verify", "playlist:scan:LL"})
+        start_dispatcher.assert_called_once_with(
+            db_path,
+            handler.cookie_file,
+            handler.video_thumbs,
+            handler.config_data,
+        )
+
+    def test_fetch_history_also_queues_personal_activity_collection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/admin/live-history/start"
+            handler.db_path = db_path
+            handler.cookie_file = Path(temp_dir) / "cookies.txt"
+            handler.video_thumbs = Path(temp_dir) / "video_thumbs"
+            handler.config_data = {}
+            handler.send_json = Mock()
+
+            with patch.object(
+                server.WORKER_QUEUE_DISPATCHER,
+                "start",
+                return_value={"started": True},
+            ) as start_dispatcher:
+                handler.do_POST()
+
+            conn = core.connect(db_path)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT subject_key, current_title
+                    FROM worker_queue
+                    ORDER BY subject_key
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            {(row["subject_key"], row["current_title"]) for row in rows},
+            {
+                ("account:sync", "Collect personal activity"),
+                ("history:recent", "Fetch history"),
+            },
+        )
         start_dispatcher.assert_called_once_with(
             db_path,
             handler.cookie_file,

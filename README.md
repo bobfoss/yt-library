@@ -159,7 +159,7 @@ git diff --check
 watch events, imports current playlists and subscriptions, then reconciles exact
 Takeout times with live-history ordinals.
 
-### Account dates without repeated Takeout exports
+### Personal activity and library dates
 
 `collect-my-activity` reads the structured bootstrap data behind the signed-in
 [YouTube My Activity page](https://myactivity.google.com/product/youtube). Unlike

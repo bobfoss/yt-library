@@ -7425,11 +7425,11 @@ def enqueue_account_sync_task(
           channel_title, current_title, source_key, playlist_count, priority,
           manual, created_at, updated_at
         )
-        VALUES (?, 'account', 'sync', '', '', '', '', 'Sync account dates', '', 0,
+        VALUES (?, 'account', 'sync', '', '', '', '', 'Collect personal activity', '', 0,
                 ?, ?, ?, ?)
         ON CONFLICT(subject_key) DO UPDATE SET
           worker_type='account', task_type='sync',
-          current_title='Sync account dates',
+          current_title='Collect personal activity',
           priority=MIN(worker_queue.priority, excluded.priority),
           manual=MAX(worker_queue.manual, excluded.manual),
           updated_at=excluded.updated_at

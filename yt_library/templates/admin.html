@@ -76,7 +76,7 @@
     .proxy-input { width: 320px; }
     .delay-input { width: 150px; }
     .settings-status { align-self: center; min-width: 64px; }
-    .advanced-panel { margin: 0 0 18px; }
+    .advanced-panel { margin: 0; }
     .advanced-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
     .advanced-tab { border: 0; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; color: var(--muted); }
     .advanced-tab.active { border-bottom-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
@@ -227,33 +227,6 @@
       </div>
     </header>
 
-    <section class="panel advanced-panel advanced-only">
-      <div class="controls">
-        <button id="syncAccountDates" class="primary" type="button">Sync account dates</button>
-        <span class="metric">Collect My Activity watch/subscription events and YouTube Data API playlist dates when configured.</span>
-      </div>
-      <div class="advanced-tabs" role="tablist" aria-label="Cookie files">
-        <button class="advanced-tab active" type="button" role="tab" aria-selected="true" data-advanced-tab="youtube">YouTube cookies</button>
-        <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="google">Google cookies</button>
-        <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="archivarix">Archivarix cookies</button>
-      </div>
-      <div class="advanced-tab-pane cookie-editor" data-advanced-pane="youtube">
-        <div id="youtubeCookieStatus" class="metric cookie-status" aria-live="polite">Checking cookie file</div>
-        <textarea id="youtubeCookieText" spellcheck="false" autocomplete="off" placeholder="Paste a Netscape HTTP Cookie File export. Saved cookie values are never displayed here."></textarea>
-        <div class="controls"><button class="primary save-cookie" type="button" data-cookie-kind="youtube">Replace YouTube cookie file</button></div>
-      </div>
-      <div class="advanced-tab-pane cookie-editor" data-advanced-pane="google" hidden>
-        <div id="googleCookieStatus" class="metric cookie-status" aria-live="polite">Checking cookie file</div>
-        <textarea id="googleCookieText" spellcheck="false" autocomplete="off" placeholder="Paste a Netscape HTTP Cookie File export. Saved cookie values are never displayed here."></textarea>
-        <div class="controls"><button class="primary save-cookie" type="button" data-cookie-kind="google">Replace Google cookie file</button></div>
-      </div>
-      <div class="advanced-tab-pane cookie-editor" data-advanced-pane="archivarix" hidden>
-        <div id="archivarixCookieStatus" class="metric cookie-status" aria-live="polite">Checking cookie file</div>
-        <textarea id="archivarixCookieText" spellcheck="false" autocomplete="off" placeholder="Paste a Netscape HTTP Cookie File export. Saved cookie values are never displayed here."></textarea>
-        <div class="controls"><button class="primary save-cookie" type="button" data-cookie-kind="archivarix">Replace Archivarix cookie file</button></div>
-      </div>
-    </section>
-
     <div id="initializeControls" class="controls initialize-controls">
       <button id="initializeLibrary" type="button">Initialize</button>
       <span id="initializeStatus" class="metric" aria-live="polite"></span>
@@ -270,6 +243,34 @@
           <label class="update-time-label">At<input id="updateTime" class="update-time-input" type="time" value="03:00" disabled></label>
           <span id="updateStatus" class="metric" aria-live="polite"></span>
           <span id="updateScheduleStatus" class="metric" aria-live="polite"></span>
+        </div>
+      </section>
+
+      <section class="workstream advanced-only">
+        <div class="workstream-header">
+          <h2>Cookies</h2>
+        </div>
+        <div class="panel advanced-panel">
+          <div class="advanced-tabs" role="tablist" aria-label="Cookie files">
+            <button class="advanced-tab active" type="button" role="tab" aria-selected="true" data-advanced-tab="youtube">YouTube cookies</button>
+            <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="google">Google cookies</button>
+            <button class="advanced-tab" type="button" role="tab" aria-selected="false" data-advanced-tab="archivarix">Archivarix cookies</button>
+          </div>
+          <div class="advanced-tab-pane cookie-editor" data-advanced-pane="youtube">
+            <div id="youtubeCookieStatus" class="metric cookie-status" aria-live="polite">Checking cookie file</div>
+            <textarea id="youtubeCookieText" spellcheck="false" autocomplete="off" placeholder="Paste a Netscape HTTP Cookie File export. Saved cookie values are never displayed here."></textarea>
+            <div class="controls"><button class="primary save-cookie" type="button" data-cookie-kind="youtube">Replace YouTube cookie file</button></div>
+          </div>
+          <div class="advanced-tab-pane cookie-editor" data-advanced-pane="google" hidden>
+            <div id="googleCookieStatus" class="metric cookie-status" aria-live="polite">Checking cookie file</div>
+            <textarea id="googleCookieText" spellcheck="false" autocomplete="off" placeholder="Paste a Netscape HTTP Cookie File export. Saved cookie values are never displayed here."></textarea>
+            <div class="controls"><button class="primary save-cookie" type="button" data-cookie-kind="google">Replace Google cookie file</button></div>
+          </div>
+          <div class="advanced-tab-pane cookie-editor" data-advanced-pane="archivarix" hidden>
+            <div id="archivarixCookieStatus" class="metric cookie-status" aria-live="polite">Checking cookie file</div>
+            <textarea id="archivarixCookieText" spellcheck="false" autocomplete="off" placeholder="Paste a Netscape HTTP Cookie File export. Saved cookie values are never displayed here."></textarea>
+            <div class="controls"><button class="primary save-cookie" type="button" data-cookie-kind="archivarix">Replace Archivarix cookie file</button></div>
+          </div>
         </div>
       </section>
 
@@ -1535,7 +1536,7 @@
     }
 
     fields.initializeLibrary.addEventListener('click', async () => {
-      const warning = 'Initialize the library? This queues a full YouTube history verification, account-date sync, scans Liked videos and every known playlist, and fetches missing or stale video and channel metadata. This will usually take a significant amount of time.';
+      const warning = 'Initialize the library? This queues a full YouTube history verification, collects personal activity and YouTube library dates, scans Liked videos and every known playlist, and fetches missing or stale video and channel metadata. This will usually take a significant amount of time.';
       if (!confirm(warning)) return;
       fields.initializeLibrary.disabled = true;
       fields.initializeStatus.textContent = 'Queueing';
@@ -1635,7 +1636,6 @@
       post('/api/admin/queue/remove', { queue_id: queueId }).catch(error => alert(error.message));
     });
     document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start').catch(error => alert(error.message)));
-    document.getElementById('syncAccountDates').addEventListener('click', () => post('/api/admin/account/start').catch(error => alert(error.message)));
     fields.updateDaily.addEventListener('change', () => {
       fields.updateTime.disabled = !fields.updateDaily.checked;
       scheduleUpdateScheduleSave();

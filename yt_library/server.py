@@ -1459,21 +1459,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             )
             self.send_json({"dispatcher": dispatcher})
             return
-        if parsed.path == "/api/admin/account/start":
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    enqueue_account_sync_task(conn, priority=0, manual=True)
-            finally:
-                conn.close()
-            dispatcher = WORKER_QUEUE_DISPATCHER.start(
-                self.db_path,
-                self.cookie_file,
-                self.video_thumbs,
-                self.config_data,
-            )
-            self.send_json({"dispatcher": dispatcher})
-            return
         if parsed.path == "/api/admin/live-history/stop":
             self.send_json(WORKER_QUEUE_DISPATCHER.stop())
             return
