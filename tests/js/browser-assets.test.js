@@ -43,6 +43,15 @@ test('detail navigation retains the active search state', () => {
   );
 });
 
+test('admin status polling clears stale running state on request failures', () => {
+  const adminSource = source('admin.js');
+
+  assert.match(adminSource, /const statusRequestTimeoutMs = 5000;/);
+  assert.match(adminSource, /function renderServiceUnavailable\(error\)/);
+  assert.match(adminSource, /fields\.serviceStatus\.textContent = 'Unavailable';/);
+  assert.match(adminSource, /renderServiceUnavailable\(statusError\);/);
+});
+
 test('theme selection normalizes, persists, and publishes changes', () => {
   const stored = new Map([['yt-library-theme', 'light']]);
   const events = [];

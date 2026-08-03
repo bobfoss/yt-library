@@ -101,6 +101,7 @@ const queueState = {
 const queueRowHeight = 72;
 const queueOverscan = 10;
 const statusPollMs = 30000;
+const statusRequestTimeoutMs = 5000;
 let dispatchSettingsSaving = false;
 let dispatchSettingsDirty = false;
 let dispatchSettingsRevision = 0;
@@ -754,6 +755,15 @@ function render(data) {
 
 }
 
+function renderServiceUnavailable(error) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  currentServicePid = 0;
+  fields.serviceStatus.textContent = 'Unavailable';
+  fields.serviceStatus.className = 'advanced-only warn';
+  fields.serviceStatus.title = message;
+  fields.restartService.disabled = true;
+}
+
 let statusRequest = null;
 
 let operationPollTimer = null;
@@ -788,9 +798,24 @@ async function loadStatus(options = {}) {
   }
   statusRequest = (async () => {
     const endpoint = '/api/admin/status?queue_limit=0&include_logs=0';
-    const response = await fetch(endpoint, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`Status failed: ${response.status}`);
-    render(await response.json());
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), statusRequestTimeoutMs);
+    try {
+      const response = await fetch(endpoint, {
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`Status failed: ${response.status}`);
+      render(await response.json());
+    } catch (error) {
+      const statusError = error?.name === 'AbortError'
+        ? new Error('Status request timed out')
+        : error;
+      renderServiceUnavailable(statusError);
+      throw statusError;
+    } finally {
+      window.clearTimeout(timeout);
+    }
   })();
   try {
     await statusRequest;
@@ -1310,10 +1335,10 @@ fields.workerQueuePanel.addEventListener('scroll', scheduleQueueRender, { passiv
 fields.logPanel.addEventListener('scroll', loadMoreLogsIfNeeded, { passive: true });
 new ResizeObserver(scheduleQueueRender).observe(fields.workerQueuePanel);
 loadStatus({ force: true })
-  .catch(error => { fields.playlistRunStatus.textContent = error.message; });
+  .catch(() => {});
 loadCookieStatuses()
   .catch(error => { fields.googleCookieStatus.textContent = error.message; });
 setInterval(() => {
-  loadStatus().catch(error => { fields.playlistRunStatus.textContent = error.message; });
+  loadStatus().catch(() => {});
 }, statusPollMs);
 setInterval(updateQueueTimingDisplay, 1000);
