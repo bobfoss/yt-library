@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 from yt_library import cli
 from yt_library.config import (
+    CONFIG_NORMALIZERS,
+    DEFAULT_CONFIG,
     configured_admin_advanced,
     configured_archivarix_max_in_flight,
     configured_archivarix_request_timeout,
@@ -39,6 +41,7 @@ from yt_library.config import (
     ensure_directory,
     load_config,
     next_update_at,
+    normalize_config,
     save_config,
     valid_update_frequency,
     valid_update_hour_minute,
@@ -47,6 +50,47 @@ from yt_library.config import (
 
 
 class ConfigTests(unittest.TestCase):
+    def test_declarative_normalizers_cover_typed_runtime_settings(self) -> None:
+        self.assertLessEqual(set(CONFIG_NORMALIZERS), set(DEFAULT_CONFIG))
+        normalized = normalize_config(dict(DEFAULT_CONFIG))
+
+        for key in CONFIG_NORMALIZERS:
+            with self.subTest(key=key):
+                self.assertEqual(normalized[key], DEFAULT_CONFIG[key])
+                self.assertIs(type(normalized[key]), type(DEFAULT_CONFIG[key]))
+
+    def test_load_config_defaults_invalid_numeric_runtime_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "job_dispatch_delay_seconds": "invalid",
+                        "request_delay_min_seconds": "NaN",
+                        "request_delay_max_seconds": "invalid",
+                        "youtube_max_in_flight": "invalid",
+                        "archivarix_max_in_flight": 500,
+                        "archivarix_request_timeout_seconds": "Infinity",
+                        "archivarix_stream_timeout_seconds": 0,
+                        "archivarix_retry_attempts": "invalid",
+                        "archivarix_retry_backoff_seconds": -5,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertEqual(config["job_dispatch_delay_seconds"], 5.0)
+            self.assertEqual(config["request_delay_min_seconds"], 6.0)
+            self.assertEqual(config["request_delay_max_seconds"], 10.0)
+            self.assertEqual(config["youtube_max_in_flight"], 10)
+            self.assertEqual(config["archivarix_max_in_flight"], 20)
+            self.assertEqual(config["archivarix_request_timeout_seconds"], 15.0)
+            self.assertEqual(config["archivarix_stream_timeout_seconds"], 1.0)
+            self.assertEqual(config["archivarix_retry_attempts"], 3)
+            self.assertEqual(config["archivarix_retry_backoff_seconds"], 0.0)
+
     def test_cli_help_describes_supported_schema_upgrades(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"

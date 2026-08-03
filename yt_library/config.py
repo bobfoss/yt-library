@@ -7,7 +7,7 @@ import math
 import re
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .network import validated_socks5_proxy_url
@@ -94,6 +94,39 @@ DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 UPDATE_FREQUENCIES = frozenset({"off", "hourly", "daily"})
 
 
+def _configured_float(
+    config: dict[str, Any],
+    key: str,
+    *,
+    minimum: float,
+    maximum: float | None = None,
+) -> float:
+    default = float(DEFAULT_CONFIG[key])
+    try:
+        value = float(config.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    if not math.isfinite(value):
+        value = default
+    value = max(minimum, value)
+    return min(maximum, value) if maximum is not None else value
+
+
+def _configured_int(
+    config: dict[str, Any],
+    key: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    default = int(DEFAULT_CONFIG[key])
+    try:
+        value = int(config.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 def configured_display_timezone(config: dict[str, Any]) -> str:
     value = str(config.get("display_timezone") or "").strip()
     if not value:
@@ -139,16 +172,12 @@ def configured_page_size(config: dict[str, Any]) -> int:
 
 
 def configured_partial_completion_min_percent(config: dict[str, Any]) -> int:
-    try:
-        value = int(
-            config.get(
-                "partial_completion_min_percent",
-                DEFAULT_CONFIG["partial_completion_min_percent"],
-            )
-        )
-    except (TypeError, ValueError):
-        return int(DEFAULT_CONFIG["partial_completion_min_percent"])
-    return max(1, min(99, value))
+    return _configured_int(
+        config,
+        "partial_completion_min_percent",
+        minimum=1,
+        maximum=99,
+    )
 
 
 def configured_filter_preferences(config: dict[str, Any]) -> dict[str, bool]:
@@ -264,14 +293,10 @@ def configured_dispatch_mode(config: dict[str, Any]) -> str:
 
 
 def configured_job_dispatch_delay(config: dict[str, Any]) -> float:
-    return max(
-        0.0,
-        float(
-            config.get(
-                "job_dispatch_delay_seconds",
-                DEFAULT_CONFIG["job_dispatch_delay_seconds"],
-            )
-        ),
+    return _configured_float(
+        config,
+        "job_dispatch_delay_seconds",
+        minimum=0.0,
     )
 
 
@@ -296,88 +321,107 @@ def configured_proxy(config: dict[str, Any]) -> str:
 
 
 def configured_request_delay_range(config: dict[str, Any]) -> tuple[float, float]:
-    minimum = max(
-        0.0,
-        float(
-            config.get(
-                "request_delay_min_seconds",
-                DEFAULT_CONFIG["request_delay_min_seconds"],
-            )
-        ),
+    minimum = _configured_float(
+        config,
+        "request_delay_min_seconds",
+        minimum=0.0,
     )
-    maximum = max(
-        minimum,
-        float(
-            config.get(
-                "request_delay_max_seconds",
-                DEFAULT_CONFIG["request_delay_max_seconds"],
-            )
-        ),
+    maximum = _configured_float(
+        config,
+        "request_delay_max_seconds",
+        minimum=minimum,
     )
     return minimum, maximum
 
 
 def configured_youtube_max_in_flight(config: dict[str, Any]) -> int:
-    return max(1, min(100, int(config.get("youtube_max_in_flight", DEFAULT_CONFIG["youtube_max_in_flight"]))))
+    return _configured_int(
+        config,
+        "youtube_max_in_flight",
+        minimum=1,
+        maximum=100,
+    )
 
 
 def configured_archivarix_max_in_flight(config: dict[str, Any]) -> int:
-    return max(1, min(20, int(config.get("archivarix_max_in_flight", DEFAULT_CONFIG["archivarix_max_in_flight"]))))
+    return _configured_int(
+        config,
+        "archivarix_max_in_flight",
+        minimum=1,
+        maximum=20,
+    )
 
 
 def configured_archivarix_request_timeout(config: dict[str, Any]) -> float:
-    return max(
-        1.0,
-        min(
-            120.0,
-            float(
-                config.get(
-                    "archivarix_request_timeout_seconds",
-                    DEFAULT_CONFIG["archivarix_request_timeout_seconds"],
-                )
-            ),
-        ),
+    return _configured_float(
+        config,
+        "archivarix_request_timeout_seconds",
+        minimum=1.0,
+        maximum=120.0,
     )
 
 
 def configured_archivarix_stream_timeout(config: dict[str, Any]) -> float:
-    return max(
-        1.0,
-        min(
-            300.0,
-            float(
-                config.get(
-                    "archivarix_stream_timeout_seconds",
-                    DEFAULT_CONFIG["archivarix_stream_timeout_seconds"],
-                )
-            ),
-        ),
+    return _configured_float(
+        config,
+        "archivarix_stream_timeout_seconds",
+        minimum=1.0,
+        maximum=300.0,
     )
 
 
 def configured_archivarix_retry_attempts(config: dict[str, Any]) -> int:
-    return max(
-        1,
-        min(
-            10,
-            int(config.get("archivarix_retry_attempts", DEFAULT_CONFIG["archivarix_retry_attempts"])),
-        ),
+    return _configured_int(
+        config,
+        "archivarix_retry_attempts",
+        minimum=1,
+        maximum=10,
     )
 
 
 def configured_archivarix_retry_backoff(config: dict[str, Any]) -> float:
-    return max(
-        0.0,
-        min(
-            60.0,
-            float(
-                config.get(
-                    "archivarix_retry_backoff_seconds",
-                    DEFAULT_CONFIG["archivarix_retry_backoff_seconds"],
-                )
-            ),
-        ),
+    return _configured_float(
+        config,
+        "archivarix_retry_backoff_seconds",
+        minimum=0.0,
+        maximum=60.0,
     )
+
+
+CONFIG_NORMALIZERS: dict[str, Callable[[dict[str, Any]], Any]] = {
+    "display_timezone": configured_display_timezone,
+    "search_card_layout": configured_search_card_layout,
+    "playlist_card_layout": configured_playlist_card_layout,
+    "history_card_layout": configured_history_card_layout,
+    "sort_preferences": configured_sort_preferences,
+    "page_size": configured_page_size,
+    "partial_completion_min_percent": configured_partial_completion_min_percent,
+    "filter_preferences": configured_filter_preferences,
+    "update_frequency": configured_update_frequency,
+    "update_hour_minute": configured_update_hour_minute,
+    "update_time": configured_update_time,
+    "admin_advanced": configured_admin_advanced,
+    "dispatch_mode": configured_dispatch_mode,
+    "job_dispatch_delay_seconds": configured_job_dispatch_delay,
+    "request_delay_min_seconds": lambda config: configured_request_delay_range(config)[0],
+    "request_delay_max_seconds": lambda config: configured_request_delay_range(config)[1],
+    "youtube_max_in_flight": configured_youtube_max_in_flight,
+    "archivarix_max_in_flight": configured_archivarix_max_in_flight,
+    "archivarix_request_timeout_seconds": configured_archivarix_request_timeout,
+    "archivarix_stream_timeout_seconds": configured_archivarix_stream_timeout,
+    "archivarix_retry_attempts": configured_archivarix_retry_attempts,
+    "archivarix_retry_backoff_seconds": configured_archivarix_retry_backoff,
+    "proxy": configured_proxy_address,
+    "use_proxy": configured_use_proxy,
+}
+
+
+def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Normalize every registered runtime setting in dependency order."""
+
+    for key, normalizer in CONFIG_NORMALIZERS.items():
+        config[key] = normalizer(config)
+    return config
 
 
 def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
@@ -467,27 +511,7 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
                 config["request_delay_max_seconds"] = max(legacy_maximums)
         if "use_proxy" not in loaded and str(loaded.get("proxy") or "").strip():
             config["use_proxy"] = True
-    config["dispatch_mode"] = configured_dispatch_mode(config)
-    config["job_dispatch_delay_seconds"] = configured_job_dispatch_delay(config)
-    request_delay_min, request_delay_max = configured_request_delay_range(config)
-    config["request_delay_min_seconds"] = request_delay_min
-    config["request_delay_max_seconds"] = request_delay_max
-    config["youtube_max_in_flight"] = configured_youtube_max_in_flight(config)
-    config["archivarix_max_in_flight"] = configured_archivarix_max_in_flight(config)
-    config["search_card_layout"] = configured_search_card_layout(config)
-    config["playlist_card_layout"] = configured_playlist_card_layout(config)
-    config["history_card_layout"] = configured_history_card_layout(config)
-    config["sort_preferences"] = configured_sort_preferences(config)
-    config["page_size"] = configured_page_size(config)
-    config["partial_completion_min_percent"] = (
-        configured_partial_completion_min_percent(config)
-    )
-    config["filter_preferences"] = configured_filter_preferences(config)
-    config["update_frequency"] = configured_update_frequency(config)
-    config["update_hour_minute"] = configured_update_hour_minute(config)
-    config["update_time"] = configured_update_time(config)
-    config["admin_advanced"] = configured_admin_advanced(config)
-    configured_proxy_address(config)
+    normalize_config(config)
     config["_config_path"] = str(path)
     return config
 
