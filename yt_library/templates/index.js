@@ -268,12 +268,17 @@ let pageBoundaryTouchDistance = 0;
 let pageBoundaryTouchDirection = 0;
 let pageBoundaryTouchTargetAllowed = false;
 let pageSize = String(pageConfig.pageSize || 100);
-let historyPageState = { key: '', loading: false, data: null };
-let historyActivityState = { key: '', loading: false, data: null };
+const adjacentPageCacheLimit = 6;
+const historyActivityCacheLimit = 4;
+const viewDataCacheLimit = 24;
+let historyPageCache = new Map();
+let historyActivityCache = new Map();
 let historyActivityYearOffset = 0;
 let historyActivitySyncEnabled = true;
-let omniSearchState = { key: '', data: null, promise: null };
+let omniSearchCache = new Map();
 let viewDataCache = new Map();
+let adjacentPagePrefetchCancel = null;
+let adjacentPagePrefetchGeneration = 0;
 let videoMetaCountsCache = new Map();
 let videoCompletionCountsCache = new Map();
 let omniMetaCountsCache = new Map();
@@ -315,15 +320,16 @@ const viewContext = document.getElementById('view-context');
 const searchProgressStatus = document.getElementById('search-progress-status');
 
 async function loadData({ preserveSearchContent = false } = {}) {
+  cancelAdjacentPagePrefetch();
   refresh.disabled = true;
   refresh.textContent = 'Refreshing';
   const response = await fetch('/api/bootstrap', { cache: 'no-store' });
   if (!response.ok) throw new Error(`Data refresh failed: ${response.status}`);
   data = await response.json();
   await loadBrowserPlugins(data.plugins || []);
-  historyPageState = { key: '', loading: false, data: null };
-  historyActivityState = { key: '', loading: false, data: null };
-  omniSearchState = { key: '', data: null, promise: null };
+  historyPageCache = new Map();
+  historyActivityCache = new Map();
+  omniSearchCache = new Map();
   if (!preserveSearchContent) {
     renderedOmniSearchQuery = '';
     searchResultsRendered = false;
@@ -354,33 +360,58 @@ async function loadData({ preserveSearchContent = false } = {}) {
   refresh.textContent = 'Refresh';
 }
 
-async function fetchViewData(path) {
-  const cached = viewDataCache.get(path);
-  if (cached?.data) return cached.data;
+function trimRequestCache(cache, maxEntries) {
+  if (cache.size <= maxEntries) return;
+  for (const [key, entry] of cache) {
+    if (cache.size <= maxEntries) break;
+    if (!entry?.promise) cache.delete(key);
+  }
+}
+
+function cachedRequest(cache, key, load, maxEntries) {
+  const cached = cache.get(key);
+  if (cached?.data) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return Promise.resolve(cached.data);
+  }
   if (cached?.promise) return cached.promise;
-  const promise = fetch(path, { cache: 'no-store' }).then(async response => {
+  const promise = Promise.resolve().then(load).then(payload => {
+    const current = cache.get(key);
+    if (!current || current.promise === promise) {
+      cache.delete(key);
+      cache.set(key, { data: payload, promise: null });
+      trimRequestCache(cache, maxEntries);
+    }
+    return payload;
+  }).catch(error => {
+    if (cache.get(key)?.promise === promise) cache.delete(key);
+    throw error;
+  });
+  cache.set(key, { data: null, promise });
+  trimRequestCache(cache, maxEntries);
+  return promise;
+}
+
+async function fetchViewData(path) {
+  return cachedRequest(viewDataCache, path, async () => {
+    const response = await fetch(path, { cache: 'no-store' });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || `View fetch failed: ${response.status}`);
     }
-    const payload = await response.json();
-    viewDataCache.set(path, { data: payload, promise: null });
-    return payload;
-  }).catch(error => {
-    viewDataCache.delete(path);
-    throw error;
-  });
-  viewDataCache.set(path, { data: null, promise });
-  return promise;
+    return response.json();
+  }, viewDataCacheLimit);
 }
 
-function remoteListPath(path, params = {}) {
+function remoteListPath(path, params = {}, page = currentPage) {
   const size = pageSizeNumber();
   const limit = Number.isFinite(size) ? size : 500;
+  const requestedPage = Math.max(1, Number(page) || 1);
   const queryParams = new URLSearchParams({
     ...params,
     limit: String(limit),
-    offset: String((currentPage - 1) * limit),
+    offset: String((requestedPage - 1) * limit),
   });
   return `${path}?${queryParams}`;
 }
@@ -1676,28 +1707,60 @@ function remotePayloadPageInfo(payload, rowsLength) {
   return remotePageInfo(Number(payload.total || 0), rowsLength, limit);
 }
 
-async function fetchHistoryPage(channelId = '') {
+function cancelAdjacentPagePrefetch() {
+  adjacentPagePrefetchGeneration += 1;
+  if (adjacentPagePrefetchCancel) adjacentPagePrefetchCancel();
+  adjacentPagePrefetchCancel = null;
+}
+
+function scheduleAdjacentPagePrefetch(pageInfo, fetchPage, additionalRequests = []) {
+  cancelAdjacentPagePrefetch();
+  const page = Number(pageInfo.page || 1);
+  const pageCount = Number(pageInfo.pageCount || 1);
+  const pages = [page + 1, page - 1].filter(candidate => (
+    candidate >= 1 && candidate <= pageCount
+  ));
+  const requests = [
+    ...pages.map(candidate => () => fetchPage(candidate)),
+    ...additionalRequests,
+  ];
+  if (!requests.length) return;
+  const generation = adjacentPagePrefetchGeneration;
+  const run = async () => {
+    adjacentPagePrefetchCancel = null;
+    for (const request of requests) {
+      if (generation !== adjacentPagePrefetchGeneration) return;
+      try {
+        await request();
+      } catch (_error) {
+        // A speculative request must not affect normal page loading.
+      }
+    }
+  };
+  const handle = window.setTimeout(() => void run(), 150);
+  adjacentPagePrefetchCancel = () => window.clearTimeout(handle);
+}
+
+async function fetchHistoryPage(channelId = '', page = currentPage) {
   const size = pageSizeNumber();
   const limit = Number.isFinite(size) ? size : 1000;
-  const offset = (currentPage - 1) * limit;
+  const requestedPage = Math.max(1, Number(page) || 1);
+  const offset = (requestedPage - 1) * limit;
   const key = `${channelId}:${limit}:${offset}`;
-  if (historyPageState.key === key && historyPageState.data) return historyPageState.data;
-  historyPageState = { key, loading: true, data: historyPageState.key === key ? historyPageState.data : null };
-  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  if (channelId) params.set('channel_id', channelId);
-  const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
-  if (!response.ok) throw new Error(`History fetch failed: ${response.status}`);
-  const payload = await response.json();
-  if (channelId) {
-    channelHistoryCounts.set(
-      channelId,
-      Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? 0),
-    );
-  }
-  if (historyPageState.key === key) {
-    historyPageState = { key, loading: false, data: payload };
-  }
-  return payload;
+  return cachedRequest(historyPageCache, key, async () => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (channelId) params.set('channel_id', channelId);
+    const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`History fetch failed: ${response.status}`);
+    const payload = await response.json();
+    if (channelId) {
+      channelHistoryCounts.set(
+        channelId,
+        Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? 0),
+      );
+    }
+    return payload;
+  }, adjacentPageCacheLimit);
 }
 
 function cachedChannelHistoryCount(channelId) {
@@ -1801,32 +1864,41 @@ function historyActivityDayNear(payload, dateKey) {
     || null;
 }
 
-async function fetchHistoryActivity(channelId = '') {
-  const range = historyActivityRange();
+async function fetchHistoryActivity(channelId = '', yearOffset = historyActivityYearOffset) {
+  const range = historyActivityRange(yearOffset);
   const key = `${channelId}:${range.startKey}:${range.endKey}`;
-  if (historyActivityState.key === key && historyActivityState.data) return historyActivityState.data;
-  if (historyActivityState.key === key && historyActivityState.loading) return historyActivityState.loading;
-  const params = new URLSearchParams({ start: range.startKey, end: range.endKey });
-  if (channelId) params.set('channel_id', channelId);
-  const request = fetch(`/api/history/activity?${params}`, { cache: 'no-store' })
-    .then(response => {
-      if (!response.ok) throw new Error(`History activity fetch failed: ${response.status}`);
-      return response.json();
-    })
-    .then(payload => {
-      if (historyActivityState.key === key) {
-        historyActivityState = { key, loading: false, data: payload };
-      }
-      return payload;
-    })
-    .catch(error => {
-      if (historyActivityState.key === key) {
-        historyActivityState = { key: '', loading: false, data: null };
-      }
-      throw error;
-    });
-  historyActivityState = { key, loading: request, data: null };
-  return request;
+  return cachedRequest(historyActivityCache, key, async () => {
+    const params = new URLSearchParams({ start: range.startKey, end: range.endKey });
+    if (channelId) params.set('channel_id', channelId);
+    const response = await fetch(`/api/history/activity?${params}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`History activity fetch failed: ${response.status}`);
+    return response.json();
+  }, historyActivityCacheLimit);
+}
+
+function historyPageNumberForOffset(offset) {
+  const size = pageSizeNumber();
+  const effectiveSize = Number.isFinite(size) ? size : 1000;
+  return Math.floor(Math.max(0, offset) / effectiveSize) + 1;
+}
+
+function historyYearPagePrefetches(channelId, rows) {
+  const anchorDate = (rows || []).map(historyRowDateKey).find(Boolean)
+    || localDateKey(historyActivityRange().displayEnd);
+  const shifts = historyActivityYearOffset > 0 ? [1, -1] : [1];
+  return shifts.map(delta => {
+    const yearOffset = historyActivityYearOffset + delta;
+    return async () => {
+      const activity = await fetchHistoryActivity(channelId, yearOffset);
+      if (!historyActivitySyncEnabled) return;
+      const targetDate = shiftedHistoryDateKey(anchorDate, delta)
+        || localDateKey(historyActivityRange(yearOffset).displayEnd);
+      const targetDay = historyActivityDayNear(activity, targetDate);
+      if (!targetDay) return;
+      const page = historyPageNumberForOffset(Number(targetDay.offset || 0));
+      await fetchHistoryPage(channelId, page);
+    };
+  });
 }
 
 function heatmapLevel(count, sortedCounts) {
@@ -2046,9 +2118,7 @@ function scrollToPendingHistoryDate() {
 }
 
 function setHistoryPageFromOffset(date, offset) {
-  const size = pageSizeNumber();
-  const effectiveSize = Number.isFinite(size) ? size : 1000;
-  currentPage = Math.floor(Math.max(0, offset) / effectiveSize) + 1;
+  currentPage = historyPageNumberForOffset(offset);
   pendingHistoryDate = date;
   historyNavigationDate = date;
 }
@@ -2103,6 +2173,11 @@ async function renderHistoryView() {
   empty.hidden = rows.length !== 0;
   empty.textContent = 'No history rows match.';
   scrollToPendingHistoryDate();
+  scheduleAdjacentPagePrefetch(
+    pageInfo,
+    page => fetchHistoryPage('', page),
+    historyYearPagePrefetches('', rows),
+  );
 }
 
 function scrollResultsToTop() {
@@ -2708,10 +2783,11 @@ async function decorateCoreSearchResults(results, errors) {
   }
 }
 
-async function fetchOmniSearch(query) {
+async function fetchOmniSearch(query, page = currentPage) {
   const size = pageSizeNumber();
   const limit = Number.isFinite(size) ? size : 5000;
-  const offset = (currentPage - 1) * limit;
+  const requestedPage = Math.max(1, Number(page) || 1);
+  const offset = (requestedPage - 1) * limit;
   const searchFieldsValue = searchFieldParamValue() || '__none__';
   const kindsValue = selectedSearchResultKinds().join(',') || '__none__';
   const sourceScopes = activeSearchSourceScopes();
@@ -2755,9 +2831,7 @@ async function fetchOmniSearch(query) {
     .map(plugin => plugin.id)
     .join(',');
   const key = `${coreParams.toString()}&plugins=${encodeURIComponent(pluginKey)}&limit=${limit}&offset=${offset}`;
-  if (omniSearchState.key === key && omniSearchState.data) return omniSearchState.data;
-  if (omniSearchState.key === key && omniSearchState.promise) return omniSearchState.promise;
-  const promise = (async () => {
+  return cachedRequest(omniSearchCache, key, async () => {
     const pluginPayload = await fetchBrowserPluginSearches(query, limit, offset);
     const requestParams = new URLSearchParams(coreParams);
     requestParams.set('limit', String(Math.max(1, pluginPayload.remaining)));
@@ -2808,13 +2882,8 @@ async function fetchOmniSearch(query) {
       completionCounts: completionCountsCache.get(metaCountsKey),
       playlistMembershipCounts: playlistMembershipCountsCache.get(metaCountsKey),
     };
-    if (omniSearchState.key === key) {
-      omniSearchState = { key, data: stablePayload, promise: null };
-    }
     return stablePayload;
-  })();
-  omniSearchState = { key, data: null, promise };
-  return promise;
+  }, adjacentPageCacheLimit);
 }
 
 async function fetchVideoCollection({
@@ -2827,6 +2896,7 @@ async function fetchVideoCollection({
   completion = null,
   partialMinimumPercent = 1,
   duplicatesOnly = false,
+  page = currentPage,
 } = {}) {
   const base = playlistId
     ? `/api/playlists/${encodeURIComponent(playlistId)}/videos`
@@ -2856,7 +2926,7 @@ async function fetchVideoCollection({
   };
   if (completion) params.completion = metaFilterParamValue(completion);
   if (completion) params.completion_min_percent = String(partialMinimumPercent);
-  const path = remoteListPath(base, params);
+  const path = remoteListPath(base, params, page);
   const payload = await fetchViewData(path);
   if (!metaCountsCache.has(metaCountsKey)) {
     metaCountsCache.set(metaCountsKey, { ...(payload.counts || {}) });
@@ -3100,6 +3170,7 @@ function channelTabsFor(activeTab, playlistCount, historyCount) {
 
 async function render() {
   const generation = ++renderGeneration;
+  cancelAdjacentPagePrefetch();
   setDocumentTitle();
   if (selected !== '__search__') {
     searchResultsRendered = false;
@@ -3124,7 +3195,7 @@ async function render() {
     || (selected.startsWith('__channel__:') && channelDetailTab === 'history')
   );
   const preserveRemotePager = !bottomPager.hidden && (
-    (selected === '__search__' && Boolean(omniSearchState.data))
+    (selected === '__search__' && omniSearchCache.size > 0)
     || (selected !== '__search__' && viewDataCache.size > 0)
   );
   if (!preserveHistoryChrome && !preserveRemotePager) {
@@ -3223,6 +3294,11 @@ async function render() {
       empty.hidden = rows.length !== 0;
       empty.textContent = 'No history rows match this channel.';
       scrollToPendingHistoryDate();
+      scheduleAdjacentPagePrefetch(
+        pageInfo,
+        page => fetchHistoryPage(channelId, page),
+        historyYearPagePrefetches(channelId, rows),
+      );
     } else {
       const payload = await fetchVideoCollection({ channelId, sort: 'title' });
       if (generation !== renderGeneration) return;
@@ -3233,6 +3309,9 @@ async function render() {
       grid.replaceChildren(...rows.map(playlistVideoCardFor));
       empty.hidden = rows.length !== 0;
       empty.textContent = 'No playlist videos match this channel.';
+      scheduleAdjacentPagePrefetch(pageInfo, page => (
+        fetchVideoCollection({ channelId, sort: 'title', page })
+      ));
       if (historyCount === null) {
         void fetchChannelHistoryCount(channelId).then(() => {
           if (selected === channelSelection(channelId) && channelDetailTab === 'playlists') render();
@@ -3294,11 +3373,13 @@ async function render() {
       meta.append(warning);
     }
     renderSearchMetaFilters(payload);
-    renderPager(remotePageInfo(total, rows.length, remoteLimit));
+    const pageInfo = remotePageInfo(total, rows.length, remoteLimit);
+    renderPager(pageInfo);
     applySearchCardLayout();
     grid.replaceChildren(...rows.map(searchResultCardFor));
     empty.hidden = rows.length !== 0;
     empty.textContent = 'No results match.';
+    scheduleAdjacentPagePrefetch(pageInfo, page => fetchOmniSearch(query, page));
     return;
   }
   if (selected.startsWith('__playlist__:')) {
@@ -3371,11 +3452,21 @@ async function render() {
     `;
     syncMetaFilterGroup('playlist-videos');
     syncMetaFilterGroup('playlist-completion');
-    renderPager(remotePayloadPageInfo(payload, rows.length));
+    const pageInfo = remotePayloadPageInfo(payload, rows.length);
+    renderPager(pageInfo);
     applyPlaylistCardLayout();
     grid.replaceChildren(...rows.map(video => playlistVideoCardFor(video, { showPosition: true })));
     empty.hidden = rows.length !== 0;
     empty.textContent = playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.';
+    scheduleAdjacentPagePrefetch(pageInfo, page => fetchVideoCollection({
+      playlistId,
+      sort: playlistViewSort,
+      query: playlistPageSearch.trim(),
+      completion: playlistCompletionVisibility,
+      partialMinimumPercent: partialCompletionMinimumPercent,
+      duplicatesOnly: playlistDuplicatesOnly,
+      page,
+    }));
     return;
   }
   if (selected === '__history__') {

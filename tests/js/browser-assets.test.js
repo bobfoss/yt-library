@@ -85,6 +85,20 @@ test('numbered browser pages navigate across scroll boundaries', () => {
   assert.match(indexSource, /window\.addEventListener\('touchend', handlePageBoundaryTouchEnd, \{ passive: true \}\)/);
 });
 
+test('numbered browser pages cache and prefetch adjacent payloads', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /function cachedRequest\(cache, key, load, maxEntries\)/);
+  assert.match(indexSource, /function scheduleAdjacentPagePrefetch\(pageInfo, fetchPage, additionalRequests = \[\]\)/);
+  assert.match(indexSource, /const pages = \[page \+ 1, page - 1\]/);
+  assert.match(indexSource, /window\.setTimeout\(\(\) => void run\(\), 150\)/);
+  assert.match(indexSource, /async function fetchHistoryPage\(channelId = '', page = currentPage\)/);
+  assert.match(indexSource, /function historyYearPagePrefetches\(channelId, rows\)/);
+  assert.match(indexSource, /const shifts = historyActivityYearOffset > 0 \? \[1, -1\] : \[1\]/);
+  assert.match(indexSource, /async function fetchOmniSearch\(query, page = currentPage\)/);
+  assert.match(indexSource, /fetchVideoCollection\(\{[\s\S]*page = currentPage,/);
+});
+
 test('history document title includes the active page or date', () => {
   const indexSource = source('index.js');
 
