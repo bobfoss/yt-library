@@ -16,6 +16,42 @@ from tests.support import migrated_connection
 
 
 class AdminServerTests(unittest.TestCase):
+    def test_channel_alias_route_resolves_before_loading_videos(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.send_json = Mock()
+        connection = Mock()
+        channel = {"channel_id": "UCcanonical", "preferred_reference": "@alias"}
+        videos = {"results": [], "total": 0}
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch(
+                "yt_library.server.channel_detail_data",
+                return_value=channel,
+            ) as detail_data,
+            patch(
+                "yt_library.server.video_collection_data",
+                return_value=videos,
+            ) as collection_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/channels/@alias/videos?limit=1&offset=0&sort=title"
+                )
+            )
+
+        detail_data.assert_called_once_with(connection, "@alias")
+        collection_data.assert_called_once_with(
+            connection,
+            channel_id="UCcanonical",
+            sort="title",
+            limit=1,
+            offset=0,
+        )
+        connection.close.assert_called_once_with()
+        handler.send_json.assert_called_once_with(videos)
+
     def test_plugin_browser_assets_are_namespaced_and_delegated(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.plugin_manager = Mock()

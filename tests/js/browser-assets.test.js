@@ -43,6 +43,17 @@ test('detail navigation retains the active search state', () => {
   );
 });
 
+test('internal channel links prefer aliases while channel queries use canonical ids', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /video\.metadata_channel_reference \|\| channelId/);
+  assert.match(indexSource, /playlist\.owner_channel_reference \|\| playlist\.owner_channel_id/);
+  assert.match(indexSource, /channel\.preferred_reference \|\| channel\.channel_id/);
+  assert.match(indexSource, /replace\(\/%40\/gi, '@'\)/);
+  assert.match(indexSource, /fetchViewData\(`\/api\/channels\/\$\{encodeChannelReference\(channelReference\)\}`\)/);
+  assert.match(indexSource, /const channelId = channel\.channel_id \|\| channelReference/);
+});
+
 test('admin status polling clears stale running state on request failures', () => {
   const adminSource = source('admin.js');
 

@@ -900,9 +900,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path.startswith("/api/channels/"):
             suffix = parsed.path[len("/api/channels/") :]
             is_videos = suffix.endswith("/videos")
-            channel_id = urllib.parse.unquote(suffix[: -len("/videos")] if is_videos else suffix)
+            channel_reference = urllib.parse.unquote(
+                suffix[: -len("/videos")] if is_videos else suffix
+            )
             conn = connect(self.db_path)
             try:
+                channel = channel_detail_data(conn, channel_reference)
                 if is_videos:
                     params = urllib.parse.parse_qs(parsed.query)
                     try:
@@ -910,15 +913,19 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
                     except ValueError:
                         limit, offset = 100, 0
-                    data = video_collection_data(
-                        conn,
-                        channel_id=channel_id,
-                        sort=(params.get("sort") or ["title"])[0],
-                        limit=limit,
-                        offset=offset,
+                    data = (
+                        video_collection_data(
+                            conn,
+                            channel_id=channel["channel_id"],
+                            sort=(params.get("sort") or ["title"])[0],
+                            limit=limit,
+                            offset=offset,
+                        )
+                        if channel is not None
+                        else None
                     )
                 else:
-                    data = channel_detail_data(conn, channel_id)
+                    data = channel
             finally:
                 conn.close()
             if data is None:

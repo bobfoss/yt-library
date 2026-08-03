@@ -15,8 +15,10 @@ from .core import (
     history_time_quality_note,
     playlist_match_type_label,
     playlist_match_type_note,
+    preferred_youtube_channel_reference,
     preferred_youtube_channel_url,
     wayback_video_url,
+    youtube_channel_ref_from_url,
     youtube_playlist_url,
     youtube_video_url,
 )
@@ -143,6 +145,10 @@ def _playlist_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
     for playlist in rows:
         playlist["url"] = youtube_playlist_url(playlist.get("playlist_id", ""))
+        playlist["owner_channel_reference"] = preferred_youtube_channel_reference(
+            playlist.get("owner_channel_id", ""),
+            playlist.get("owner_channel_aliases", ""),
+        )
         playlist["owner_channel_url"] = preferred_youtube_channel_url(
             playlist.get("owner_channel_id", ""),
             playlist.get("owner_channel_aliases", ""),
@@ -392,6 +398,10 @@ def playlist_list_data(
     for playlist in rows:
         playlist.pop("list_category", None)
         playlist["url"] = youtube_playlist_url(playlist.get("playlist_id", ""))
+        playlist["owner_channel_reference"] = preferred_youtube_channel_reference(
+            playlist.get("owner_channel_id", ""),
+            playlist.get("owner_channel_aliases", ""),
+        )
         playlist["owner_channel_url"] = preferred_youtube_channel_url(
             playlist.get("owner_channel_id", ""),
             playlist.get("owner_channel_aliases", ""),
@@ -987,6 +997,10 @@ def channel_list_data(
     ]
     for row in rows:
         row.pop("list_category", None)
+        row["preferred_reference"] = preferred_youtube_channel_reference(
+            row.get("channel_id") or "",
+            row.get("aliases") or "",
+        )
         row["url"] = preferred_youtube_channel_url(
             row.get("channel_id") or "",
             row.get("aliases") or "",
@@ -1000,11 +1014,37 @@ def channel_list_data(
     }
 
 
-def channel_detail_data(conn: sqlite3.Connection, channel_id: str) -> dict[str, Any] | None:
+def resolve_channel_id(conn: sqlite3.Connection, channel_reference: str) -> str:
+    channel_reference = (channel_reference or "").strip()
+    if not channel_reference:
+        return ""
+    direct = conn.execute(
+        "SELECT channel_id FROM channels WHERE channel_id = ?",
+        (channel_reference,),
+    ).fetchone()
+    if direct is not None:
+        return str(direct["channel_id"])
+    wanted = youtube_channel_ref_from_url(channel_reference) or channel_reference
+    for row in conn.execute(
+        "SELECT channel_id, aliases FROM channels WHERE trim(aliases) <> ''"
+    ):
+        if preferred_youtube_channel_reference("", row["aliases"]).casefold() == wanted.casefold():
+            return str(row["channel_id"])
+    return ""
+
+
+def channel_detail_data(conn: sqlite3.Connection, channel_reference: str) -> dict[str, Any] | None:
+    channel_id = resolve_channel_id(conn, channel_reference)
+    if not channel_id:
+        return None
     row = conn.execute("SELECT * FROM channels WHERE channel_id = ?", (channel_id,)).fetchone()
     if row is None:
         return None
     item = dict(row)
+    item["preferred_reference"] = preferred_youtube_channel_reference(
+        channel_id,
+        item.get("aliases") or "",
+    )
     item["url"] = preferred_youtube_channel_url(channel_id, item.get("aliases") or "")
     return item
 
@@ -1337,6 +1377,10 @@ def _add_omni_video_links(conn: sqlite3.Connection, results: list[dict[str, Any]
 def _hydrate_video_identity(item: dict[str, Any], playlist_id: str = "") -> None:
     video_id = item.get("video_id") or ""
     item["url"] = youtube_video_url(video_id, playlist_id)
+    item["metadata_channel_reference"] = preferred_youtube_channel_reference(
+        item.get("metadata_channel_id") or "",
+        item.get("metadata_channel_aliases") or "",
+    )
     item["metadata_channel_url"] = preferred_youtube_channel_url(
         item.get("metadata_channel_id") or "",
         item.get("metadata_channel_aliases") or "",
@@ -1562,6 +1606,10 @@ def omni_search_data(
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
             item["url"] = youtube_playlist_url(item.get("playlist_id") or "")
+            item["owner_channel_reference"] = preferred_youtube_channel_reference(
+                item.get("owner_channel_id") or "",
+                item.get("owner_channel_aliases") or "",
+            )
             item["owner_channel_url"] = preferred_youtube_channel_url(
                 item.get("owner_channel_id") or "",
                 item.get("owner_channel_aliases") or "",
@@ -1604,6 +1652,10 @@ def omni_search_data(
         ):
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
+            item["preferred_reference"] = preferred_youtube_channel_reference(
+                item.get("channel_id") or "",
+                item.get("aliases") or "",
+            )
             item["url"] = preferred_youtube_channel_url(
                 item.get("channel_id") or "",
                 item.get("aliases") or "",

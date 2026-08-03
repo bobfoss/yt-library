@@ -516,8 +516,12 @@ function localVideoHref(videoId, includePagination = false) {
   return includePagination ? appendHashParams(base, paginationParams()) : base;
 }
 
+function encodeChannelReference(channelReference) {
+  return encodeURIComponent(channelReference).replace(/%40/gi, '@');
+}
+
 function localChannelHref(channelId, includePagination = false) {
-  const base = `#channel=${encodeURIComponent(channelId)}`;
+  const base = `#channel=${encodeChannelReference(channelId)}`;
   return includePagination ? appendHashParams(base, paginationParams()) : base;
 }
 
@@ -1347,7 +1351,8 @@ function displayVideoChannelUrl(video) {
 
 function displayVideoChannelLocalUrl(video) {
   const channelId = video.metadata_channel_id || video.channel_id || video.recovered_channel_id || '';
-  return channelId ? localChannelHref(channelId) : displayVideoChannelUrl(video);
+  const channelReference = video.metadata_channel_reference || channelId;
+  return channelReference ? localChannelHref(channelReference) : displayVideoChannelUrl(video);
 }
 
 function displayVideoDuration(video) {
@@ -2085,7 +2090,7 @@ async function shiftHistoryActivityYear(delta) {
     const activity = await fetchHistoryActivity(channelId);
     const channelHeatmapActive = Boolean(
       channelId
-      && selected === channelSelection(channelId)
+      && selected.startsWith('__channel__:')
       && channelDetailTab === 'history'
     );
     if ((selected === '__history__' || channelHeatmapActive) && heatmap.isConnected) {
@@ -3353,26 +3358,27 @@ async function render() {
     return;
   }
   if (selected.startsWith('__channel__:')) {
-    const channelId = selected.slice('__channel__:'.length);
+    const channelReference = selected.slice('__channel__:'.length);
     title.textContent = 'Channel';
     let channel;
     let playlistSummary;
     try {
       [channel, playlistSummary] = await Promise.all([
-        fetchViewData(`/api/channels/${encodeURIComponent(channelId)}`),
-        fetchViewData(`/api/videos?channel_id=${encodeURIComponent(channelId)}&limit=1&offset=0&sort=title`),
+        fetchViewData(`/api/channels/${encodeChannelReference(channelReference)}`),
+        fetchViewData(`/api/channels/${encodeChannelReference(channelReference)}/videos?limit=1&offset=0&sort=title`),
       ]);
     } catch (error) {
       if (generation !== renderGeneration) return;
       title.textContent = 'Channel not found';
-      meta.textContent = channelId;
+      meta.textContent = channelReference;
       grid.replaceChildren();
       empty.hidden = false;
       empty.textContent = error.message;
       return;
     }
     if (generation !== renderGeneration) return;
-    setDocumentTitle(channel.title || channelId);
+    const channelId = channel.channel_id || channelReference;
+    setDocumentTitle(channel.title || channelReference);
     const playlistCount = Number(playlistSummary.total || 0);
     const historyCount = cachedChannelHistoryCount(channelId);
     const currentHeatmap = channelDetailTab === 'history'
@@ -3429,7 +3435,7 @@ async function render() {
       ));
       if (historyCount === null) {
         void fetchChannelHistoryCount(channelId).then(() => {
-          if (selected === channelSelection(channelId) && channelDetailTab === 'playlists') render();
+          if (selected === channelSelection(channelReference) && channelDetailTab === 'playlists') render();
         }).catch(() => {});
       }
     }
@@ -3644,8 +3650,8 @@ function playlistOwnerHtml(playlist) {
   const owner = playlistOwnerForDisplay(playlist);
   const name = cleanPlaylistOwnerName(owner.title || '');
   if (!name) return '';
-  const href = owner.channel_id
-    ? localChannelHref(owner.channel_id)
+  const href = owner.reference
+    ? localChannelHref(owner.reference)
     : (owner.url || '');
   return creatorHtml(owner.thumbnail_path || '', name, href);
 }
@@ -3656,6 +3662,7 @@ function playlistOwnerForDisplay(playlist) {
     return {
       title,
       channel_id: playlist.owner_channel_id || '',
+      reference: playlist.owner_channel_reference || playlist.owner_channel_id || '',
       url: playlist.owner_channel_url || '',
       thumbnail_path: playlist.owner_channel_thumbnail_path || '',
     };
@@ -3819,10 +3826,11 @@ function channelCardFor(channel, options = {}) {
   const status = String(channel.status || '').toLowerCase();
   const subscribedLabel = isSubscribedChannel(channel) ? 'Subscribed' : 'Non-subscribed';
   const titleText = channel.title || channel.channel_id;
+  const channelReference = channel.preferred_reference || channel.channel_id || '';
   const titleHtml = creatorHtml(
     channel.thumbnail_path || '',
     titleText,
-    channel.channel_id ? localChannelHref(channel.channel_id) : ''
+    channelReference ? localChannelHref(channelReference) : ''
   );
   return CollectionCard.create({
     resultKind: options.resultKind,

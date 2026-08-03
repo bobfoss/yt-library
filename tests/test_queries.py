@@ -77,23 +77,42 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.conn.commit()
         expected = "https://www.youtube.com/@first_alias"
+        reference = "@first_alias"
 
-        self.assertEqual(channel_detail_data(self.conn, channel_id)["url"], expected)
-        self.assertEqual(channel_list_data(self.conn)["results"][0]["url"], expected)
-        self.assertEqual(playlist_detail_data(self.conn, "PLalias")["owner_channel_url"], expected)
+        channel_detail = channel_detail_data(self.conn, reference)
+        self.assertEqual(channel_detail["channel_id"], channel_id)
+        self.assertEqual(channel_detail["preferred_reference"], reference)
+        self.assertEqual(channel_detail["url"], expected)
+        channel_list = channel_list_data(self.conn)["results"][0]
+        self.assertEqual(channel_list["preferred_reference"], reference)
+        self.assertEqual(channel_list["url"], expected)
+        playlist_detail = playlist_detail_data(self.conn, "PLalias")
+        self.assertEqual(playlist_detail["owner_channel_reference"], reference)
+        self.assertEqual(playlist_detail["owner_channel_url"], expected)
         self.assertEqual(
             playlist_list_data(self.conn)["results"][0]["owner_channel_url"],
             expected,
         )
-        self.assertEqual(video_detail_data(self.conn, "alias-video")["metadata_channel_url"], expected)
         self.assertEqual(
-            history_search_data(self.conn, "alias-video")["watch"][0]["metadata_channel_url"],
+            playlist_list_data(self.conn)["results"][0]["owner_channel_reference"],
+            reference,
+        )
+        video_detail = video_detail_data(self.conn, "alias-video")
+        self.assertEqual(video_detail["metadata_channel_reference"], reference)
+        self.assertEqual(video_detail["metadata_channel_url"], expected)
+        history_item = history_search_data(self.conn, "alias-video")["watch"][0]
+        self.assertEqual(history_item["metadata_channel_reference"], reference)
+        self.assertEqual(
+            history_item["metadata_channel_url"],
             expected,
         )
         results = omni_search_data(self.conn, "Alias", sort="type")["results"]
         by_kind = {result["kind"]: result["item"] for result in results}
+        self.assertEqual(by_kind["channel"]["preferred_reference"], reference)
         self.assertEqual(by_kind["channel"]["url"], expected)
+        self.assertEqual(by_kind["playlist"]["owner_channel_reference"], reference)
         self.assertEqual(by_kind["playlist"]["owner_channel_url"], expected)
+        self.assertEqual(by_kind["video"]["metadata_channel_reference"], reference)
         self.assertEqual(by_kind["video"]["metadata_channel_url"], expected)
 
     def test_omni_search_deduplicates_sources_counts_and_pages_globally(self) -> None:

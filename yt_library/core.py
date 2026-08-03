@@ -382,16 +382,32 @@ def youtube_channel_url(channel_id: str) -> str:
     return f"https://www.youtube.com/channel/{channel_id}"
 
 
-def preferred_youtube_channel_url(channel_id: str, aliases: str = "") -> str:
-    first_alias = next(
+def first_channel_alias(aliases: str) -> str:
+    alias = next(
         (value.strip() for value in (aliases or "").split(",") if value.strip()),
         "",
     )
-    for prefix in ("youtube.com/", "www.youtube.com/"):
-        if first_alias.startswith(prefix):
-            first_alias = first_alias[len(prefix) :]
+    lower_alias = alias.casefold()
+    for prefix in (
+        "https://www.youtube.com/",
+        "http://www.youtube.com/",
+        "https://youtube.com/",
+        "http://youtube.com/",
+        "www.youtube.com/",
+        "youtube.com/",
+    ):
+        if lower_alias.startswith(prefix):
+            alias = alias[len(prefix) :]
             break
-    return youtube_channel_url(first_alias or channel_id)
+    return alias
+
+
+def preferred_youtube_channel_reference(channel_id: str, aliases: str = "") -> str:
+    return first_channel_alias(aliases) or (channel_id or "").strip()
+
+
+def preferred_youtube_channel_url(channel_id: str, aliases: str = "") -> str:
+    return youtube_channel_url(preferred_youtube_channel_reference(channel_id, aliases))
 
 
 def youtube_video_url(video_id: str, playlist_id: str = "") -> str:
