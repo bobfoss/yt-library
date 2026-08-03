@@ -75,6 +75,23 @@ test('histogram navigation uses a restorable date URL', () => {
   assert.match(indexSource, /const direction = target\.dataset\.page[\s\S]{0,200}historyNavigationDate = '';/);
 });
 
+test('numbered browser pages navigate across scroll boundaries', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /let renderedPageInfo = \{ page: 1, pageCount: 1, total: 0 \}/);
+  assert.match(indexSource, /function navigateAcrossPageBoundary\(direction\)/);
+  assert.match(indexSource, /pendingPageBoundaryLanding = direction > 0 \? 'top' : 'bottom'/);
+  assert.match(indexSource, /window\.addEventListener\('wheel', handlePageBoundaryWheel, \{ passive: false \}\)/);
+  assert.match(indexSource, /window\.addEventListener\('touchend', handlePageBoundaryTouchEnd, \{ passive: true \}\)/);
+});
+
+test('history document title includes the active page or date', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /historyNavigationDate[\s\S]{0,120}historyDayLabel\(\{ watch_date: historyNavigationDate \}\)/);
+  assert.match(indexSource, /setDocumentTitle\(`History \$\{historyTitleLocation\}`\)/);
+});
+
 test('theme selection normalizes, persists, and publishes changes', () => {
   const stored = new Map([['yt-library-theme', 'light']]);
   const events = [];

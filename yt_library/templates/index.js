@@ -173,6 +173,16 @@ let playlistViewSort = playlistVideoSortOptions.has(sortPreferences.playlist)
   : 'playlist_order';
 let playlistPageSearch = '';
 let currentPage = 1;
+let renderedPageInfo = { page: 1, pageCount: 1, total: 0 };
+let pageBoundaryNavigationPending = false;
+let pendingPageBoundaryLanding = '';
+let pageBoundaryInputArmed = true;
+let pageBoundaryInputTimer = null;
+let pageBoundaryFallbackTimer = null;
+let pageBoundaryTouchY = null;
+let pageBoundaryTouchDistance = 0;
+let pageBoundaryTouchDirection = 0;
+let pageBoundaryTouchTargetAllowed = false;
 let pageSize = String(pageConfig.pageSize || 100);
 let historyPageState = { key: '', loading: false, data: null };
 let historyActivityState = { key: '', loading: false, data: null };
@@ -1306,13 +1316,109 @@ function pagerHtml(pageInfo, includePageSize = false) {
   `;
 }
 
+function usesDocumentPageScrolling() {
+  return window.matchMedia('(max-width: 760px)').matches;
+}
+
+function pageScrollBoundaryState() {
+  if (usesDocumentPageScrolling()) {
+    const scrolling = document.scrollingElement || document.documentElement;
+    const top = Number(scrolling.scrollTop || window.scrollY || 0);
+    const maximum = Math.max(0, scrolling.scrollHeight - window.innerHeight);
+    return { atTop: top <= 1, atBottom: top >= maximum - 1 };
+  }
+  if (!(resultsScroll instanceof HTMLElement)) return { atTop: false, atBottom: false };
+  const maximum = Math.max(0, resultsScroll.scrollHeight - resultsScroll.clientHeight);
+  return {
+    atTop: resultsScroll.scrollTop <= 1,
+    atBottom: resultsScroll.scrollTop >= maximum - 1,
+  };
+}
+
+function pageBoundaryTargetAllowed(target) {
+  if (!(target instanceof Element)) return false;
+  if (target.closest('input, select, textarea')) return false;
+  return Boolean(resultsScroll?.contains(target) || bottomPager.contains(target));
+}
+
+function armPageBoundaryInputAfterIdle(delay = 260) {
+  if (pageBoundaryInputTimer !== null) window.clearTimeout(pageBoundaryInputTimer);
+  pageBoundaryInputTimer = window.setTimeout(() => {
+    pageBoundaryInputTimer = null;
+    pageBoundaryInputArmed = true;
+  }, delay);
+}
+
+function finishPageBoundaryLanding() {
+  const landing = pendingPageBoundaryLanding;
+  if (!landing) return;
+  pendingPageBoundaryLanding = '';
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      if (usesDocumentPageScrolling()) {
+        if (landing === 'top') {
+          const top = window.scrollY + grid.getBoundingClientRect().top;
+          window.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+        } else {
+          const scrolling = document.scrollingElement || document.documentElement;
+          window.scrollTo({
+            top: Math.max(0, scrolling.scrollHeight - window.innerHeight),
+            behavior: 'auto',
+          });
+        }
+      } else if (resultsScroll instanceof HTMLElement) {
+        resultsScroll.scrollTop = landing === 'top'
+          ? 0
+          : Math.max(0, resultsScroll.scrollHeight - resultsScroll.clientHeight);
+      }
+      pageBoundaryNavigationPending = false;
+      pageBoundaryInputArmed = false;
+      armPageBoundaryInputAfterIdle(350);
+      if (pageBoundaryFallbackTimer !== null) {
+        window.clearTimeout(pageBoundaryFallbackTimer);
+        pageBoundaryFallbackTimer = null;
+      }
+    });
+  });
+}
+
+function navigateAcrossPageBoundary(direction) {
+  if (pageBoundaryNavigationPending || !pageBoundaryInputArmed) return false;
+  const nextPage = Number(renderedPageInfo.page || currentPage) + direction;
+  const pageCount = Number(renderedPageInfo.pageCount || 1);
+  if (nextPage < 1 || nextPage > pageCount) return false;
+  pageBoundaryNavigationPending = true;
+  pageBoundaryInputArmed = false;
+  pendingPageBoundaryLanding = direction > 0 ? 'top' : 'bottom';
+  currentPage = nextPage;
+  historyNavigationDate = '';
+  pendingHistoryDate = '';
+  if (pageBoundaryFallbackTimer !== null) window.clearTimeout(pageBoundaryFallbackTimer);
+  pageBoundaryFallbackTimer = window.setTimeout(() => {
+    pageBoundaryFallbackTimer = null;
+    pageBoundaryNavigationPending = false;
+    pendingPageBoundaryLanding = '';
+    pageBoundaryInputArmed = false;
+    armPageBoundaryInputAfterIdle();
+  }, 10000);
+  if (!updateCurrentHash(false)) void render();
+  return true;
+}
+
 function renderPager(pageInfo) {
+  renderedPageInfo = {
+    page: Number(pageInfo.page || 1),
+    pageCount: Number(pageInfo.pageCount || 1),
+    total: Number(pageInfo.total || 0),
+  };
   bottomPager.hidden = !pageInfo.total;
   bottomPager.innerHTML = pagerHtml(pageInfo, true);
   if (currentHashHasPaginationParams()) updateCurrentHash(true);
+  finishPageBoundaryLanding();
 }
 
 function hidePager() {
+  renderedPageInfo = { page: 1, pageCount: 1, total: 0 };
   bottomPager.hidden = true;
   bottomPager.replaceChildren();
 }
@@ -1851,6 +1957,10 @@ async function renderHistoryView() {
     : initialActivity;
   const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
   const pageInfo = remotePageInfo(total, rows.length);
+  const historyTitleLocation = historyNavigationDate
+    ? historyDayLabel({ watch_date: historyNavigationDate })
+    : pageInfo.page;
+  setDocumentTitle(`History ${historyTitleLocation}`);
   meta.innerHTML = rightPanelListMetaHtml(`${total} watches`, {
     showLayout: true,
     layout: historyCardLayout,
@@ -3669,9 +3779,61 @@ function handlePagerSubmit(event) {
   if (updateCurrentHash(false)) return;
   render();
 }
+
+function handlePageBoundaryWheel(event) {
+  armPageBoundaryInputAfterIdle();
+  if (!pageBoundaryTargetAllowed(event.target) || !pageBoundaryInputArmed) return;
+  const direction = Math.sign(event.deltaY);
+  if (!direction) return;
+  const boundary = pageScrollBoundaryState();
+  if ((direction > 0 && !boundary.atBottom) || (direction < 0 && !boundary.atTop)) return;
+  if (navigateAcrossPageBoundary(direction)) event.preventDefault();
+}
+
+function handlePageBoundaryTouchStart(event) {
+  const touch = event.touches?.[0];
+  pageBoundaryTouchTargetAllowed = Boolean(touch && pageBoundaryTargetAllowed(event.target));
+  pageBoundaryTouchY = touch ? touch.clientY : null;
+  pageBoundaryTouchDistance = 0;
+  pageBoundaryTouchDirection = 0;
+}
+
+function handlePageBoundaryTouchMove(event) {
+  const touch = event.touches?.[0];
+  if (!touch || pageBoundaryTouchY === null || !pageBoundaryTouchTargetAllowed) return;
+  const distance = pageBoundaryTouchY - touch.clientY;
+  pageBoundaryTouchY = touch.clientY;
+  const direction = Math.sign(distance);
+  if (!direction) return;
+  const boundary = pageScrollBoundaryState();
+  const beyondBoundary = direction > 0 ? boundary.atBottom : boundary.atTop;
+  if (!beyondBoundary) {
+    pageBoundaryTouchDistance = 0;
+    pageBoundaryTouchDirection = 0;
+    return;
+  }
+  if (pageBoundaryTouchDirection !== direction) pageBoundaryTouchDistance = 0;
+  pageBoundaryTouchDirection = direction;
+  pageBoundaryTouchDistance += Math.abs(distance);
+}
+
+function handlePageBoundaryTouchEnd() {
+  if (pageBoundaryTouchTargetAllowed && pageBoundaryTouchDistance >= 48) {
+    navigateAcrossPageBoundary(pageBoundaryTouchDirection);
+  }
+  pageBoundaryTouchY = null;
+  pageBoundaryTouchDistance = 0;
+  pageBoundaryTouchDirection = 0;
+  pageBoundaryTouchTargetAllowed = false;
+}
+
 bottomPager.addEventListener('click', handlePagerClick);
 bottomPager.addEventListener('change', handlePagerChange);
 bottomPager.addEventListener('submit', handlePagerSubmit);
+window.addEventListener('wheel', handlePageBoundaryWheel, { passive: false });
+window.addEventListener('touchstart', handlePageBoundaryTouchStart, { passive: true });
+window.addEventListener('touchmove', handlePageBoundaryTouchMove, { passive: true });
+window.addEventListener('touchend', handlePageBoundaryTouchEnd, { passive: true });
 for (const input of searchFields) {
   input.addEventListener('change', () => {
     const activatedFromHistory = activateSearchFromHistory({ resetMetaVisibility: true });
