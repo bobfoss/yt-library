@@ -18,12 +18,15 @@ source for unfinished or deferred work.
 - Before restarting, record whether the persistent queue is running and its
   count. Stop it cleanly, restart to a new healthy PID, and resume it only if it
   was running before. Never clear queued work just to restart the service.
-- On Windows, prefer `POST /api/admin/service/restart` for a running service.
-  If a shell launch is required, start `.venv\Scripts\python.exe` directly with
+- For Codex-operated Windows restarts, stop the existing service and launch
+  `.venv\Scripts\python.exe` directly with
   `Start-Process -WindowStyle Hidden -PassThru`, set the repository working
-  directory, and redirect stdout/stderr to `.codex\service-logs`. Do not launch
-  the background service through `cmd.exe`, `powershell.exe`, or `pwsh.exe`, and
-  do not omit `-WindowStyle Hidden`; either can leave a visible empty console.
+  directory, and redirect stdout/stderr to `.codex\service-logs`. Do not use
+  the admin restart endpoint as a substitute for this procedure because it
+  inherits the current service interpreter. Do not launch the background
+  service through `cmd.exe`, `powershell.exe`, or `pwsh.exe`, and do not omit
+  `-WindowStyle Hidden`; either can leave a visible empty console. Verify the
+  replacement PID and project-venv launch after every restart.
 - Restart after server, worker, served HTML/JS, schema/bootstrap, or source
   config changes. Database-only updates normally do not require a restart.
 - Run the full local checks below for code changes. UI and settings changes also

@@ -817,6 +817,8 @@ class AdminServerTests(unittest.TestCase):
                 Path(kwargs["stderr"].name),
                 root / ".codex" / "service-logs" / "yt-library.err.log",
             )
+            if server.os.name == "nt":
+                self.assertEqual(kwargs["creationflags"], server.subprocess.CREATE_NO_WINDOW)
             self.assertTrue(kwargs["stdout"].closed)
             self.assertTrue(kwargs["stderr"].closed)
 

@@ -220,7 +220,7 @@ def service_restart_command() -> list[str]:
 def launch_service_replacement() -> None:
     creationflags = 0
     if os.name == "nt":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        creationflags = subprocess.CREATE_NO_WINDOW
     log_dir = ROOT / ".codex" / "service-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     with (
