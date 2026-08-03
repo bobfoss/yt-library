@@ -1026,6 +1026,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     metadata_queued = 0
                     placeholder_queued = 0
                     liked_partial_note = ""
+                    duplicate_note = ""
                     if status in {"removed", "unavailable"}:
                         video_count, unavailable_count = save_playlist_missing_status(
                             conn,
@@ -1067,6 +1068,16 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                             error,
                             playlist_metadata=playlist_metadata,
                         )
+                        duplicate_video_count, duplicate_occurrence_count = (
+                            playlist_duplicate_counts(videos)
+                        )
+                        if duplicate_occurrence_count:
+                            duplicate_note = (
+                                f"; {duplicate_occurrence_count} duplicate "
+                                f"occurrence{'s' if duplicate_occurrence_count != 1 else ''} "
+                                f"across {duplicate_video_count} "
+                                f"video{'s' if duplicate_video_count != 1 else ''}"
+                            )
                         if bool(row["manual"]) and video_count:
                             metadata_result = enqueue_playlist_metadata_targets(conn, playlist_id)
                             metadata_queued = int(metadata_result["queued_count"])
@@ -1124,6 +1135,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 f"{title}: {video_count} videos, {unavailable_count} unavailable"
                                 + reported_note
                                 + count_change_note
+                                + duplicate_note
                                 + liked_partial_note
                                 + (f"; queued {metadata_queued} metadata items" if metadata_queued else "")
                                 + (f"; queued {placeholder_queued} placeholder recoveries" if placeholder_queued else "")

@@ -2437,6 +2437,37 @@ def parse_video_lockup(
     }
 
 
+def append_playlist_occurrence(
+    videos: list[dict[str, Any]],
+    seen_positions: set[int],
+    seen_entries: set[tuple[int, str]],
+    video: dict[str, Any],
+) -> bool:
+    position = max(1, int(video.get("position") or len(videos) + 1))
+    video_id = str(video.get("video_id") or "").strip()
+    entry_key = (position, video_id)
+    if entry_key in seen_entries:
+        return False
+    seen_entries.add(entry_key)
+    while position in seen_positions:
+        position += 1
+    cleaned = dict(video)
+    cleaned["position"] = position
+    seen_positions.add(position)
+    videos.append(cleaned)
+    return True
+
+
+def playlist_duplicate_counts(videos: list[dict[str, Any]]) -> tuple[int, int]:
+    counts = Counter(
+        str(video.get("video_id") or "").strip()
+        for video in videos
+        if str(video.get("video_id") or "").strip()
+    )
+    duplicate_counts = [count for count in counts.values() if count > 1]
+    return len(duplicate_counts), sum(count - 1 for count in duplicate_counts)
+
+
 def history_date_from_label(label: str, today: date | None = None) -> str:
     today = today or date.today()
     cleaned = re.sub(r"\s+", " ", label).strip()
@@ -3610,18 +3641,10 @@ def scan_playlist_videos(
 
     videos: list[dict[str, Any]] = []
     seen_positions: set[int] = set()
-    seen_video_ids: set[str] = set()
+    seen_entries: set[tuple[int, str]] = set()
 
     def add_video(video: dict[str, Any]) -> None:
-        video_id = video.get("video_id") or ""
-        if video_id and video_id in seen_video_ids:
-            return
-        while video["position"] in seen_positions:
-            video["position"] += 1
-        seen_positions.add(video["position"])
-        if video_id:
-            seen_video_ids.add(video_id)
-        videos.append(video)
+        append_playlist_occurrence(videos, seen_positions, seen_entries, video)
 
     hidden_alerts = 0
     for page_data in pages:
@@ -3648,26 +3671,22 @@ def scan_playlist_videos(
             watch_data = extract_json_assignment(watch_page, "ytInitialData")
             panel_videos: list[dict[str, Any]] = []
             panel_positions: set[int] = set()
-            panel_ids: set[str] = set()
+            panel_entries: set[tuple[int, str]] = set()
             for renderer in playlist_panel_video_renderers(watch_data):
                 video = parse_panel_video_renderer(
                     playlist_id,
                     renderer,
                     len(panel_videos) + 1,
                 )
-                video_id = video.get("video_id") or ""
-                if video_id and video_id in panel_ids:
-                    continue
-                while video["position"] in panel_positions:
-                    video["position"] += 1
-                panel_positions.add(video["position"])
-                if video_id:
-                    panel_ids.add(video_id)
-                panel_videos.append(video)
+                append_playlist_occurrence(
+                    panel_videos,
+                    panel_positions,
+                    panel_entries,
+                    video,
+                )
             if len(panel_videos) > len(videos):
                 videos = panel_videos
                 seen_positions = panel_positions
-                seen_video_ids = panel_ids
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
             pass
 
@@ -5550,20 +5569,12 @@ def save_playlist_scan(
     error: str,
     playlist_metadata: dict[str, Any] | None = None,
 ) -> tuple[int, int]:
-    deduped_videos: list[dict[str, Any]] = []
-    seen_video_ids: set[str] = set()
-    next_position = 1
-    for video in videos:
-        video_id = video.get("video_id") or ""
-        if video_id:
-            if video_id in seen_video_ids:
-                continue
-            seen_video_ids.add(video_id)
+    normalized_videos: list[dict[str, Any]] = []
+    for next_position, video in enumerate(videos, start=1):
         cleaned = dict(video)
         cleaned["position"] = next_position
-        deduped_videos.append(cleaned)
-        next_position += 1
-    videos = deduped_videos
+        normalized_videos.append(cleaned)
+    videos = normalized_videos
     unavailable_count = sum(1 for video in videos if not video["is_playable"])
     now = utc_now()
     _ensure_playlist_parent(

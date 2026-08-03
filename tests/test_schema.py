@@ -1292,6 +1292,82 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(item["video_id"], "newscanvid1")
         self.assertEqual(foreign_key_errors, [])
 
+    def test_playlist_scan_preserves_duplicate_video_occurrences(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                duplicate_video = {
+                    "playlist_id": "PLduplicates",
+                    "video_id": "duplicate01",
+                    "title": "Repeated video",
+                    "channel_id": "",
+                    "channel": "",
+                    "duration_text": "1:00",
+                    "is_playable": 1,
+                    "availability": "public",
+                    "url": "https://www.youtube.com/watch?v=duplicate01",
+                }
+                with conn:
+                    video_count, unavailable_count = core.save_playlist_scan(
+                        conn,
+                        "PLduplicates",
+                        [
+                            {**duplicate_video, "position": 4},
+                            {**duplicate_video, "position": 9},
+                        ],
+                        "ok",
+                        "",
+                        playlist_metadata={"title": "Duplicates", "video_count": 2},
+                    )
+                    queue_result = core.enqueue_playlist_metadata_targets(
+                        conn,
+                        "PLduplicates",
+                    )
+                items = conn.execute(
+                    """
+                    SELECT position, video_id
+                    FROM playlist_items
+                    WHERE playlist_id = 'PLduplicates'
+                    ORDER BY position
+                    """
+                ).fetchall()
+                scan = conn.execute(
+                    "SELECT video_count FROM playlist_scans WHERE playlist_id = 'PLduplicates'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(video_count, 2)
+        self.assertEqual(unavailable_count, 0)
+        self.assertEqual(
+            [(row["position"], row["video_id"]) for row in items],
+            [(1, "duplicate01"), (2, "duplicate01")],
+        )
+        self.assertEqual(scan["video_count"], 2)
+        self.assertEqual(queue_result["queued_count"], "1")
+        self.assertEqual(
+            core.playlist_duplicate_counts([duplicate_video, duplicate_video]),
+            (1, 1),
+        )
+
+    def test_playlist_occurrence_identity_uses_position_and_video_id(self) -> None:
+        videos: list[dict[str, object]] = []
+        positions: set[int] = set()
+        entries: set[tuple[int, str]] = set()
+        first = {"position": 1, "video_id": "duplicate01"}
+
+        self.assertTrue(core.append_playlist_occurrence(videos, positions, entries, first))
+        self.assertFalse(core.append_playlist_occurrence(videos, positions, entries, first))
+        self.assertTrue(
+            core.append_playlist_occurrence(
+                videos,
+                positions,
+                entries,
+                {"position": 2, "video_id": "duplicate01"},
+            )
+        )
+        self.assertEqual([video["position"] for video in videos], [1, 2])
+
     def test_liked_video_sync_replaces_likes_without_creating_playlist_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
