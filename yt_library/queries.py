@@ -1995,6 +1995,31 @@ def history_search_data(
         dict(row)
         for row in conn.execute(
             f"""
+            WITH page_events AS MATERIALIZED (
+              SELECT he.event_id, he.video_id
+              FROM history_events he
+              JOIN videos v ON v.video_id = he.video_id
+              LEFT JOIN channels ch ON ch.channel_id = v.channel_id
+              {where}
+              ORDER BY COALESCE(he.watched_at, he.watch_date || 'T23:59:59Z') DESC,
+                       CASE WHEN he.youtube_ordinal IS NULL THEN 1 ELSE 0 END,
+                       he.youtube_ordinal
+              LIMIT ? OFFSET ?
+            ),
+            page_video_ids AS MATERIALIZED (
+              SELECT DISTINCT video_id FROM page_events
+            ),
+            counts AS MATERIALIZED (
+              SELECT history.video_id,
+                     COUNT(*) AS watch_count,
+                     GROUP_CONCAT(
+                       COALESCE(history.watch_date, substr(history.watched_at, 1, 10)),
+                       '|'
+                     ) AS watch_dates
+              FROM history_events history
+              JOIN page_video_ids page_video ON page_video.video_id = history.video_id
+              GROUP BY history.video_id
+            )
             SELECT he.event_id AS reconciled_id,
                    COALESCE(he.takeout_history_key, 'youtube') AS history_key,
                    COALESCE(he.youtube_ordinal, 0) AS position,
@@ -2027,19 +2052,14 @@ def history_search_data(
                    counts.watch_count,
                    counts.watch_dates AS watch_dates_text,
                    v.fetch_status AS metadata_fetch_status
-            FROM history_events he
+            FROM page_events page
+            JOIN history_events he ON he.event_id = page.event_id
             JOIN videos v ON v.video_id = he.video_id
             LEFT JOIN channels ch ON ch.channel_id = v.channel_id
-            JOIN (
-              SELECT video_id, COUNT(*) AS watch_count,
-                     GROUP_CONCAT(COALESCE(watch_date, substr(watched_at, 1, 10)), '|') AS watch_dates
-              FROM history_events GROUP BY video_id
-            ) counts ON counts.video_id = he.video_id
-            {where}
+            JOIN counts ON counts.video_id = he.video_id
             ORDER BY COALESCE(he.watched_at, he.watch_date || 'T23:59:59Z') DESC,
                      CASE WHEN he.youtube_ordinal IS NULL THEN 1 ELSE 0 END,
                      he.youtube_ordinal
-            LIMIT ? OFFSET ?
             """,
             [*params, limit, offset],
         )

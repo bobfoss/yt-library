@@ -1791,14 +1791,10 @@ function scheduleAdjacentPagePrefetch(pageInfo, fetchPage, additionalRequests = 
   const pages = [page + 1, page - 1].filter(candidate => (
     candidate >= 1 && candidate <= pageCount
   ));
-  const requests = [
-    ...pages.map(candidate => () => fetchPage(candidate)),
-    ...additionalRequests,
-  ];
-  if (!requests.length) return;
+  const pageRequests = pages.map(candidate => () => fetchPage(candidate));
+  if (!pageRequests.length && !additionalRequests.length) return;
   const generation = adjacentPagePrefetchGeneration;
-  const run = async () => {
-    adjacentPagePrefetchCancel = null;
+  const runRequests = async requests => {
     for (const request of requests) {
       if (generation !== adjacentPagePrefetchGeneration) return;
       try {
@@ -1807,6 +1803,13 @@ function scheduleAdjacentPagePrefetch(pageInfo, fetchPage, additionalRequests = 
         // A speculative request must not affect normal page loading.
       }
     }
+  };
+  const run = async () => {
+    adjacentPagePrefetchCancel = null;
+    await Promise.all([
+      runRequests(additionalRequests),
+      runRequests(pageRequests),
+    ]);
   };
   const handle = window.setTimeout(() => void run(), 150);
   adjacentPagePrefetchCancel = () => window.clearTimeout(handle);

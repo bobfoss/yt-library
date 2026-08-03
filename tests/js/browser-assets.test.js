@@ -112,6 +112,7 @@ test('numbered browser pages cache and prefetch adjacent payloads', () => {
   assert.match(indexSource, /function cachedRequest\(cache, key, load, maxEntries\)/);
   assert.match(indexSource, /function scheduleAdjacentPagePrefetch\(pageInfo, fetchPage, additionalRequests = \[\]\)/);
   assert.match(indexSource, /const pages = \[page \+ 1, page - 1\]/);
+  assert.match(indexSource, /Promise\.all\(\[[\s\S]*runRequests\(additionalRequests\)[\s\S]*runRequests\(pageRequests\)/);
   assert.match(indexSource, /window\.setTimeout\(\(\) => void run\(\), 150\)/);
   assert.match(indexSource, /async function fetchHistoryPage\(channelId = '', page = currentPage\)/);
   assert.match(indexSource, /function historyYearPagePrefetches\(channelId, rows\)/);

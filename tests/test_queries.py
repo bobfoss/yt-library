@@ -1743,6 +1743,39 @@ class NormalizedReadModelTests(unittest.TestCase):
             ],
         )
 
+    def test_history_search_pages_events_before_hydrating_watch_aggregates(self) -> None:
+        self.add_video("repeated-history", "Repeated History Video")
+        self.add_video("middle-history", "Middle History Video")
+        self.conn.executemany(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watched_at, watch_date, time_precision
+            ) VALUES (?, ?, ?, ?, 'exact')
+            """,
+            [
+                ("repeat-new", "repeated-history", "2026-07-05T12:00:00Z", "2026-07-05"),
+                ("middle", "middle-history", "2026-07-04T12:00:00Z", "2026-07-04"),
+                ("repeat-old", "repeated-history", "2026-07-03T12:00:00Z", "2026-07-03"),
+            ],
+        )
+        self.conn.commit()
+        statements: list[str] = []
+        self.conn.set_trace_callback(statements.append)
+        try:
+            data = history_search_data(self.conn, "", limit=1, offset=2)
+        finally:
+            self.conn.set_trace_callback(None)
+
+        self.assertEqual([row["reconciled_id"] for row in data["watch"]], ["repeat-old"])
+        self.assertEqual(data["watch"][0]["watch_count"], 2)
+        self.assertEqual(
+            set(data["watch"][0]["watch_dates"]),
+            {"2026-07-03", "2026-07-05"},
+        )
+        self.assertTrue(
+            any("WITH page_events AS MATERIALIZED" in statement for statement in statements)
+        )
+
     def test_history_search_preserves_date_only_without_fabricating_time(self) -> None:
         self.add_video("date123", "Date Only")
         self.conn.execute(
