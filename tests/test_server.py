@@ -16,6 +16,77 @@ from tests.support import migrated_connection
 
 
 class AdminServerTests(unittest.TestCase):
+    def test_get_dispatches_page_admin_and_library_routes(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler._handle_page_get = Mock(return_value=False)
+        handler._handle_admin_get = Mock()
+        handler._handle_library_get = Mock()
+
+        handler.path = "/api/admin/status?include_logs=0"
+        handler.do_GET()
+
+        handler._handle_page_get.assert_called_once_with("/api/admin/status")
+        admin_request = handler._handle_admin_get.call_args.args[0]
+        self.assertEqual(admin_request.path, "/api/admin/status")
+        self.assertEqual(admin_request.query, "include_logs=0")
+        handler._handle_library_get.assert_not_called()
+
+        handler._handle_page_get.reset_mock()
+        handler._handle_admin_get.reset_mock()
+        handler.path = "/api/videos?limit=1"
+        handler.do_GET()
+
+        library_request = handler._handle_library_get.call_args.args[0]
+        self.assertEqual(library_request.path, "/api/videos")
+        handler._handle_admin_get.assert_not_called()
+
+    def test_get_page_route_stops_api_dispatch(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = "/theme.js"
+        handler._handle_page_get = Mock(return_value=True)
+        handler._handle_admin_get = Mock()
+        handler._handle_library_get = Mock()
+
+        handler.do_GET()
+
+        handler._handle_admin_get.assert_not_called()
+        handler._handle_library_get.assert_not_called()
+
+    def test_post_dispatches_to_explicit_route_groups(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler._handle_cookie_post = Mock()
+        handler._handle_preference_post = Mock()
+        handler._handle_admin_configuration_post = Mock()
+        handler._handle_admin_action_post = Mock()
+        handler.send_error = Mock()
+
+        cases = (
+            ("/api/admin/cookies/youtube", "_handle_cookie_post"),
+            ("/api/settings/page-size?value=250", "_handle_preference_post"),
+            ("/api/admin/update-schedule?frequency=off", "_handle_admin_configuration_post"),
+            ("/api/admin/queue/start", "_handle_admin_action_post"),
+        )
+        for path, expected_handler in cases:
+            with self.subTest(path=path):
+                for name in (
+                    "_handle_cookie_post",
+                    "_handle_preference_post",
+                    "_handle_admin_configuration_post",
+                    "_handle_admin_action_post",
+                ):
+                    getattr(handler, name).reset_mock()
+                handler.send_error.reset_mock()
+                handler.path = path
+
+                handler.do_POST()
+
+                getattr(handler, expected_handler).assert_called_once()
+                handler.send_error.assert_not_called()
+
+        handler.path = "/api/unknown"
+        handler.do_POST()
+        handler.send_error.assert_called_once_with(404, "Not found")
+
     def test_sort_preference_saves_without_restarting(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "yt_library.config.json"

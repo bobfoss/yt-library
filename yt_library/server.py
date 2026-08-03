@@ -132,6 +132,26 @@ VIDEO_CARD_JS = load_template("video-card.js")
 COLLECTION_CARD_JS = load_template("collection-card.js")
 FAVICON_SVG = load_template("favicon.svg")
 
+PREFERENCE_POST_PATHS = frozenset(
+    {
+        "/api/settings/layout",
+        "/api/settings/sort",
+        "/api/settings/page-size",
+        "/api/settings/partial-completion-minimum",
+        "/api/settings/filter-preference",
+    }
+)
+ADMIN_CONFIGURATION_POST_PATHS = frozenset(
+    {
+        "/api/admin/update-schedule",
+        "/api/admin/advanced",
+        "/api/admin/settings",
+        "/api/admin/service/restart",
+        "/api/settings/timezone",
+        "/api/admin/dispatch-settings",
+    }
+)
+
 
 def query_set_param(
     params: dict[str, list[str]],
@@ -502,77 +522,180 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         _, dispatcher = self._enqueue_and_start(enqueue)
         self.send_json({"dispatcher": dispatcher})
 
-    def do_GET(self) -> None:
-        parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/favicon.svg":
-            body = FAVICON_SVG.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "image/svg+xml")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if parsed.path == "/timezone.js":
-            body = TIMEZONE_JS.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/javascript; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if parsed.path == "/theme.js":
-            body = THEME_JS.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/javascript; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if parsed.path == "/video-card.js":
-            body = VIDEO_CARD_JS.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/javascript; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if parsed.path == "/collection-card.js":
-            body = COLLECTION_CARD_JS.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/javascript; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if parsed.path in {"/", "/index.html"}:
-            body = self.render_page(INDEX_HTML)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if parsed.path == "/admin":
-            body = self.render_page(ADMIN_HTML)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if parsed.path == "/history":
+    def _send_bytes(
+        self,
+        body: bytes,
+        content_type: str,
+        *,
+        cache_control: str,
+    ) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_page_get(self, path: str) -> bool:
+        static_assets = {
+            "/favicon.svg": (FAVICON_SVG, "image/svg+xml"),
+            "/timezone.js": (TIMEZONE_JS, "text/javascript; charset=utf-8"),
+            "/theme.js": (THEME_JS, "text/javascript; charset=utf-8"),
+            "/video-card.js": (VIDEO_CARD_JS, "text/javascript; charset=utf-8"),
+            "/collection-card.js": (
+                COLLECTION_CARD_JS,
+                "text/javascript; charset=utf-8",
+            ),
+        }
+        asset = static_assets.get(path)
+        if asset is not None:
+            text, content_type = asset
+            self._send_bytes(
+                text.encode("utf-8"),
+                content_type,
+                cache_control="no-cache",
+            )
+            return True
+        if path in {"/", "/index.html"}:
+            self._send_bytes(
+                self.render_page(INDEX_HTML),
+                "text/html; charset=utf-8",
+                cache_control="no-store",
+            )
+            return True
+        if path == "/admin":
+            self._send_bytes(
+                self.render_page(ADMIN_HTML),
+                "text/html; charset=utf-8",
+                cache_control="no-store",
+            )
+            return True
+        if path == "/history":
             self.send_response(302)
             self.send_header("Location", "/#view=history")
             self.send_header("Content-Length", "0")
             self.end_headers()
+            return True
+        return False
+
+    def _handle_admin_get(self, parsed: urllib.parse.ParseResult) -> None:
+        if parsed.path == "/api/admin/service/status":
+            self.send_json({"service": self.service_status()})
             return
+        if parsed.path == "/api/admin/status":
+            params = urllib.parse.parse_qs(parsed.query)
+            include_logs = (params.get("include_logs") or ["1"])[0].strip().lower() not in {"0", "false", "no"}
+            try:
+                worker_queue_limit = max(0, min(10000, int((params.get("queue_limit") or ["500"])[0] or 500)))
+            except ValueError:
+                worker_queue_limit = 500
+            data = admin_status(
+                self.db_path,
+                METADATA_WORKER,
+                PLAYLIST_SCAN_WORKER,
+                LIVE_HISTORY_WORKER,
+                WORKER_QUEUE_DISPATCHER,
+                include_logs,
+                worker_queue_limit,
+            )
+            data["dispatchSettings"] = self.dispatch_settings()
+            data["settings"] = self.admin_settings()
+            data["service"] = self.service_status()
+            self.send_json(data)
+            return
+        if parsed.path == "/api/admin/cookies/status":
+            self.send_json(
+                {
+                    "cookies": {
+                        kind: cookie_file_status(
+                            config_path(self.config_data, config_key),
+                            expected_domains,
+                        )
+                        for kind, (config_key, expected_domains) in COOKIE_CONFIG.items()
+                    }
+                }
+            )
+            return
+        if parsed.path == "/api/admin/queue/events":
+            self.stream_worker_queue_events()
+            return
+        if parsed.path == "/api/admin/logs/events":
+            self.stream_worker_log_events()
+            return
+        if parsed.path == "/api/admin/logs":
+            params = urllib.parse.parse_qs(parsed.query)
+            source = (params.get("source") or [""])[0].strip().lower()
+            severity = (params.get("level") or [""])[0].strip().lower()
+            if source == "all":
+                source = ""
+            if severity == "all":
+                severity = ""
+            try:
+                limit = max(1, min(200, int((params.get("limit") or ["100"])[0] or 100)))
+                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+            except ValueError:
+                self.send_json({"error": "Invalid log pagination"}, status=400)
+                return
+            conn = connect(self.db_path)
+            try:
+                try:
+                    rows, total = worker_log_page(
+                        conn,
+                        limit=limit,
+                        offset=offset,
+                        source=source,
+                        severity=severity,
+                    )
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, status=400)
+                    return
+                self.send_json(
+                    {
+                        "limit": limit,
+                        "offset": offset,
+                        "total": total,
+                        "rows": rows,
+                    }
+                )
+            finally:
+                conn.close()
+            return
+        if parsed.path == "/api/admin/queue":
+            params = urllib.parse.parse_qs(parsed.query)
+            queue_type = (params.get("type") or [""])[0]
+            try:
+                limit = max(1, min(100, int((params.get("limit") or ["20"])[0] or 20)))
+            except ValueError:
+                limit = 20
+            try:
+                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
+            except ValueError:
+                offset = 0
+            include_total = (params.get("include_total") or ["1"])[0] not in {"0", "false", "no"}
+            conn = connect(self.db_path)
+            try:
+                if queue_type == "worker":
+                    total = worker_queue_count(conn) if include_total else 0
+                    rows = worker_queue_rows(conn, limit=limit, offset=offset)
+                else:
+                    self.send_json({"error": "Unknown queue type"}, status=400)
+                    return
+                self.send_json(
+                    {
+                        "type": queue_type,
+                        "limit": limit,
+                        "offset": offset,
+                        "total": total,
+                        "rows": [dict(row) for row in rows],
+                    }
+                )
+            finally:
+                conn.close()
+            return
+
+        return super().do_GET()
+
+    def _handle_library_get(self, parsed: urllib.parse.ParseResult) -> None:
         if parsed.path == "/api/settings":
             conn = connect(self.db_path)
             try:
@@ -832,124 +955,19 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 conn.close()
             self.send_json(data)
             return
-        if parsed.path == "/api/admin/service/status":
-            self.send_json({"service": self.service_status()})
-            return
-        if parsed.path == "/api/admin/status":
-            params = urllib.parse.parse_qs(parsed.query)
-            include_logs = (params.get("include_logs") or ["1"])[0].strip().lower() not in {"0", "false", "no"}
-            try:
-                worker_queue_limit = max(0, min(10000, int((params.get("queue_limit") or ["500"])[0] or 500)))
-            except ValueError:
-                worker_queue_limit = 500
-            data = admin_status(
-                self.db_path,
-                METADATA_WORKER,
-                PLAYLIST_SCAN_WORKER,
-                LIVE_HISTORY_WORKER,
-                WORKER_QUEUE_DISPATCHER,
-                include_logs,
-                worker_queue_limit,
-            )
-            data["dispatchSettings"] = self.dispatch_settings()
-            data["settings"] = self.admin_settings()
-            data["service"] = self.service_status()
-            self.send_json(data)
-            return
-        if parsed.path == "/api/admin/cookies/status":
-            self.send_json(
-                {
-                    "cookies": {
-                        kind: cookie_file_status(
-                            config_path(self.config_data, config_key),
-                            expected_domains,
-                        )
-                        for kind, (config_key, expected_domains) in COOKIE_CONFIG.items()
-                    }
-                }
-            )
-            return
-        if parsed.path == "/api/admin/queue/events":
-            self.stream_worker_queue_events()
-            return
-        if parsed.path == "/api/admin/logs/events":
-            self.stream_worker_log_events()
-            return
-        if parsed.path == "/api/admin/logs":
-            params = urllib.parse.parse_qs(parsed.query)
-            source = (params.get("source") or [""])[0].strip().lower()
-            severity = (params.get("level") or [""])[0].strip().lower()
-            if source == "all":
-                source = ""
-            if severity == "all":
-                severity = ""
-            try:
-                limit = max(1, min(200, int((params.get("limit") or ["100"])[0] or 100)))
-                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
-            except ValueError:
-                self.send_json({"error": "Invalid log pagination"}, status=400)
-                return
-            conn = connect(self.db_path)
-            try:
-                try:
-                    rows, total = worker_log_page(
-                        conn,
-                        limit=limit,
-                        offset=offset,
-                        source=source,
-                        severity=severity,
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=400)
-                    return
-                self.send_json(
-                    {
-                        "limit": limit,
-                        "offset": offset,
-                        "total": total,
-                        "rows": rows,
-                    }
-                )
-            finally:
-                conn.close()
-            return
-        if parsed.path == "/api/admin/queue":
-            params = urllib.parse.parse_qs(parsed.query)
-            queue_type = (params.get("type") or [""])[0]
-            try:
-                limit = max(1, min(100, int((params.get("limit") or ["20"])[0] or 20)))
-            except ValueError:
-                limit = 20
-            try:
-                offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
-            except ValueError:
-                offset = 0
-            include_total = (params.get("include_total") or ["1"])[0] not in {"0", "false", "no"}
-            conn = connect(self.db_path)
-            try:
-                if queue_type == "worker":
-                    total = worker_queue_count(conn) if include_total else 0
-                    rows = worker_queue_rows(conn, limit=limit, offset=offset)
-                else:
-                    self.send_json({"error": "Unknown queue type"}, status=400)
-                    return
-                self.send_json(
-                    {
-                        "type": queue_type,
-                        "limit": limit,
-                        "offset": offset,
-                        "total": total,
-                        "rows": [dict(row) for row in rows],
-                    }
-                )
-            finally:
-                conn.close()
-            return
+
         return super().do_GET()
 
-    def do_POST(self) -> None:
+    def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if self._handle_page_get(parsed.path):
+            return
+        if parsed.path.startswith("/api/admin/"):
+            self._handle_admin_get(parsed)
+            return
+        self._handle_library_get(parsed)
+
+    def _handle_cookie_post(self, parsed: urllib.parse.ParseResult) -> None:
         if parsed.path.startswith("/api/admin/cookies/"):
             kind = parsed.path.rsplit("/", 1)[-1]
             cookie_config = COOKIE_CONFIG.get(kind)
@@ -986,6 +1004,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 return
             self.send_json({"ok": True, "kind": kind, "status": status})
             return
+
+    def _handle_preference_post(
+        self,
+        parsed: urllib.parse.ParseResult,
+        params: dict[str, list[str]],
+    ) -> None:
         if parsed.path == "/api/settings/layout":
             context = (params.get("context") or [""])[0].strip().lower()
             layout = (params.get("value") or [""])[0].strip().lower()
@@ -1071,6 +1095,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 }
             )
             return
+
+    def _handle_admin_configuration_post(
+        self,
+        parsed: urllib.parse.ParseResult,
+        params: dict[str, list[str]],
+    ) -> None:
         if parsed.path == "/api/admin/update-schedule":
             frequency = (params.get("frequency") or [""])[0].strip().lower()
             if not valid_update_frequency(frequency):
@@ -1285,6 +1315,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 }
             )
             return
+
+    def _handle_admin_action_post(
+        self,
+        parsed: urllib.parse.ParseResult,
+        params: dict[str, list[str]],
+    ) -> None:
         if parsed.path == "/api/admin/initialize":
             self._handle_initialize()
             return
@@ -1567,6 +1603,23 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             finally:
                 conn.close()
             self.send_json({"ok": True, **stats})
+            return
+        self.send_error(404, "Not found")
+
+    def do_POST(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if parsed.path.startswith("/api/admin/cookies/"):
+            self._handle_cookie_post(parsed)
+            return
+        if parsed.path in PREFERENCE_POST_PATHS:
+            self._handle_preference_post(parsed, params)
+            return
+        if parsed.path in ADMIN_CONFIGURATION_POST_PATHS:
+            self._handle_admin_configuration_post(parsed, params)
+            return
+        if parsed.path.startswith("/api/admin/"):
+            self._handle_admin_action_post(parsed, params)
             return
         self.send_error(404, "Not found")
 
