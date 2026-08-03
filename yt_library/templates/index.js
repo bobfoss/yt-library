@@ -2871,7 +2871,7 @@ async function fetchBrowserPluginSearches(query, limit, offset) {
   let localOffset = offset;
   for (const plugin of browserSearchPlugins().filter(item => searchKindEnabled(item.id))) {
     let payload = { total: 0, totalIsExact: true, results: [] };
-    if (query) {
+    if (query || plugin.search.fetchEmptyQuery === true) {
       try {
         payload = await plugin.search.fetch(
           { query, limit: Math.max(1, remaining), offset: localOffset },
