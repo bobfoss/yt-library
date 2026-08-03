@@ -13,7 +13,6 @@ import importlib.metadata
 import io
 import json
 import mimetypes
-import random
 import re
 import shutil
 import sqlite3
@@ -35,9 +34,7 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import (
-    configured_dispatch_mode,
     configured_proxy,
-    configured_request_delay_range,
     effective_display_timezone,
 )
 from .network import (
@@ -57,6 +54,16 @@ from .database import (
     worker_queue_order_sql,
 )
 from .history import history_match_type_for_identity, history_source_type_for_identity
+from .request_pacing import (
+    RequestPacer as RequestPacer,
+    configure_request_pacing as configure_request_pacing,
+    is_archivarix_request_url as is_archivarix_request_url,
+    is_youtube_request_url as is_youtube_request_url,
+    open_with_request_pacing as open_with_request_pacing,
+    pace_outbound_request as pace_outbound_request,
+    request_paced_youtube_dl as request_paced_youtube_dl,
+    request_url_matches_hosts as request_url_matches_hosts,
+)
 from .time_utils import utc_days_ago, utc_now
 
 if TYPE_CHECKING:
@@ -85,96 +92,6 @@ HISTORY_BATCH_DELAY_SECONDS = 10.0
 RECENT_HISTORY_OVERLAP_DAYS = 2
 DEFAULT_DISPLAY_TIMEZONE = "UTC"
 
-
-class RequestPacer:
-    """Coordinate randomized request spacing across concurrent workers."""
-
-    def __init__(
-        self,
-        minimum_delay: float = 0.0,
-        maximum_delay: float = 0.0,
-        *,
-        monotonic=time.monotonic,
-        sleep=time.sleep,
-        uniform=random.uniform,
-    ) -> None:
-        self.minimum_delay = max(0.0, minimum_delay)
-        self.maximum_delay = max(self.minimum_delay, maximum_delay)
-        self._monotonic = monotonic
-        self._sleep = sleep
-        self._uniform = uniform
-        self._lock = threading.Lock()
-        self._next_request_at: float | None = None
-
-    def wait(self) -> None:
-        if self.maximum_delay <= 0.0:
-            return
-        with self._lock:
-            now = self._monotonic()
-            if self._next_request_at is not None and now < self._next_request_at:
-                self._sleep(self._next_request_at - now)
-                now = self._monotonic()
-            self._next_request_at = now + self._uniform(
-                self.minimum_delay,
-                self.maximum_delay,
-            )
-
-
-_YOUTUBE_REQUEST_HOSTS = (
-    "youtube.com",
-    "youtube-nocookie.com",
-    "youtu.be",
-    "ytimg.com",
-    "googlevideo.com",
-    "yt3.ggpht.com",
-    "yt3.googleusercontent.com",
-)
-_ARCHIVARIX_REQUEST_HOSTS = (
-    "archivarix.net",
-    "web.archive.org",
-)
-_request_pacer = RequestPacer()
-
-
-def configure_request_pacing(config: dict[str, Any]) -> None:
-    global _request_pacer
-    throttle_requests = configured_dispatch_mode(config) == "throttle"
-    request_range = configured_request_delay_range(config)
-    if not throttle_requests:
-        request_range = (0.0, 0.0)
-    _request_pacer = RequestPacer(*request_range)
-
-
-def pace_outbound_request() -> None:
-    """Apply the configured global request gate to a non-urllib client."""
-
-    _request_pacer.wait()
-
-
-def request_url_matches_hosts(url: str, hosts: tuple[str, ...]) -> bool:
-    hostname = (urllib.parse.urlparse(url).hostname or "").lower().rstrip(".")
-    return any(hostname == host or hostname.endswith(f".{host}") for host in hosts)
-
-
-def is_youtube_request_url(url: str) -> bool:
-    return request_url_matches_hosts(url, _YOUTUBE_REQUEST_HOSTS)
-
-
-def is_archivarix_request_url(url: str) -> bool:
-    return request_url_matches_hosts(url, _ARCHIVARIX_REQUEST_HOSTS)
-
-
-def open_with_request_pacing(
-    opener: urllib.request.OpenerDirector,
-    request: urllib.request.Request,
-    *,
-    timeout: float,
-) -> Any:
-    if is_youtube_request_url(request.full_url) or is_archivarix_request_url(
-        request.full_url
-    ):
-        _request_pacer.wait()
-    return opener.open(request, timeout=timeout)
 
 PLAYLIST_MATCH_TYPE_NOTES = {
     "ambiguous_hidden_candidate": "missing from current playable scan; hidden slot mapping is ambiguous",
@@ -889,18 +806,6 @@ def temporary_ytdlp_cookie_file(cookie_file: Path) -> Iterator[Path | None]:
         working_cookie_file = Path(temp_dir) / "cookies.txt"
         shutil.copy2(cookie_file, working_cookie_file)
         yield working_cookie_file
-
-
-def request_paced_youtube_dl(
-    yt_dlp_module: Any,
-    options: dict[str, Any],
-) -> Any:
-    class RequestPacedYoutubeDL(yt_dlp_module.YoutubeDL):
-        def urlopen(self, req: Any) -> Any:
-            _request_pacer.wait()
-            return super().urlopen(req)
-
-    return RequestPacedYoutubeDL(options)
 
 
 def youtube_ytdlp_probe_diagnostics(

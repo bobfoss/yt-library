@@ -15,7 +15,7 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from yt_library import core, network
+from yt_library import core, network, request_pacing
 from yt_library.config import load_config
 from yt_library.workers import (
     MetadataWorker,
@@ -506,7 +506,7 @@ class CoreHelperTests(unittest.TestCase):
     def test_request_pacing_routes_both_sites_to_one_global_pacer(self) -> None:
         opener = Mock()
         request_pacer = Mock()
-        with patch.object(core, "_request_pacer", request_pacer):
+        with patch.object(request_pacing, "_request_pacer", request_pacer):
             core.open_with_request_pacing(
                 opener,
                 urllib.request.Request("https://yt3.ggpht.com/avatar"),
@@ -538,7 +538,7 @@ class CoreHelperTests(unittest.TestCase):
             YoutubeDL = BaseYoutubeDL
 
         request_pacer = Mock()
-        with patch.object(core, "_request_pacer", request_pacer):
+        with patch.object(request_pacing, "_request_pacer", request_pacer):
             ydl = core.request_paced_youtube_dl(
                 FakeYtdlpModule,
                 {"quiet": True},

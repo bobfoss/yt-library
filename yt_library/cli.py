@@ -16,19 +16,18 @@ from .config import (
 )
 from .core import (
     connect,
-    configure_request_pacing,
     discover_current_playlists,
     import_history,
     import_playlists,
     import_takeout_playlists,
     migrate_database,
-    pace_outbound_request,
     recover_archivarix_thumbnails,
     recover_unavailable_videos,
     save_youtube_data_api_snapshot,
     scan_hidden,
 )
 from .my_activity import collect_my_activity
+from .request_pacing import configure_request_pacing, pace_outbound_request
 from .server import serve
 from .youtube_data_api import (
     YouTubeDataApiError,

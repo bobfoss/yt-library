@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import random
 import sqlite3
 import threading
 import time
+import urllib.error
 import urllib.parse
 import uuid
 from collections import Counter
@@ -26,9 +28,93 @@ from .config import (
     configured_proxy,
     effective_display_timezone,
 )
-from .core import *
+from .core import (
+    DEFAULT_DISPLAY_TIMEZONE,
+    DEFAULT_THUMB_DIR,
+    DEFAULT_VIDEO_THUMB_DIR,
+    HISTORY_BATCH_DELAY_SECONDS,
+    HISTORY_BATCH_SIZE,
+    HistoryOccurrenceKey,
+    HistoryOccurrenceSnapshot,
+    LIKED_VIDEOS_PLAYLIST_ID,
+    RECENT_HISTORY_BATCH_SIZE,
+    RECENT_HISTORY_OVERLAP_DAYS,
+    HistoryDayOverlapTracker,
+    YouTubeAuthenticationError,
+    archivarix_session_status,
+    archivarix_timeout_error,
+    cache_channel_thumbnail,
+    cache_thumbnail,
+    clear_external_service_block,
+    connect,
+    enqueue_new_history_metadata_targets,
+    enqueue_placeholder_recovery_item,
+    enqueue_placeholder_recovery_targets,
+    enqueue_playlist_metadata_targets,
+    enqueue_playlist_scan_item,
+    external_service_block,
+    extract_playlist_metadata,
+    fetch_channel_metadata,
+    fetch_current_youtube_playlists,
+    fetch_new_channel_metadata_if_needed,
+    fetch_watch_metadata,
+    fetch_youtube_history_web,
+    is_system_playlist,
+    load_cookie_opener,
+    log_live_history_event,
+    log_placeholder_recovery_event,
+    log_playlist_scan_event,
+    log_worker_event,
+    log_worker_queue_event,
+    metadata_queue_rows,
+    placeholder_worker_queue_rows,
+    playlist_duplicate_counts,
+    playlist_missing_status,
+    playlist_scan_is_incomplete,
+    playlist_scan_queue_rows,
+    playlist_scan_requires_exact_count,
+    playlist_zero_result_is_suspicious,
+    probe_youtube_authentication_ytdlp,
+    rebuild_history_reconciliation,
+    rebuild_playlist_reconciliation,
+    recover_archivarix_video,
+    remove_worker_queue_entry,
+    request_text,
+    save_discovered_playlists,
+    save_liked_video_reactions,
+    save_my_activity_events,
+    save_playlist_missing_status,
+    save_playlist_scan,
+    save_playlist_scan_error,
+    save_video_recovery,
+    save_youtube_data_api_snapshot,
+    save_youtube_history_events,
+    scan_playlist_videos,
+    scan_playlist_ytdlp,
+    set_external_service_block,
+    store_channel_metadata,
+    store_video_metadata,
+    synchronize_youtube_history_order,
+    useful_video_metadata,
+    utc_now,
+    video_metadata_channel_id,
+    worker_queue_count,
+    worker_queue_order_sql,
+    worker_queue_type_count,
+    youtube_cookie_diagnostics,
+    youtube_history_day_counts,
+    youtube_history_occurrence_snapshot,
+    youtube_history_order_shift,
+    youtube_page_diagnostics,
+    youtube_page_requires_login,
+    youtube_playlist_is_missing,
+    youtube_request_error_diagnostics,
+    youtube_session_status,
+    youtube_takeout_match_count,
+)
 from .my_activity import MyActivityError, fetch_my_activity_pages
 from .network import ProxyUnavailableError, probe_socks5_proxy
+from .request_pacing import pace_outbound_request
 from .youtube_data_api import (
     YouTubeDataApiError,
     YouTubeDataApiNotConfigured,
