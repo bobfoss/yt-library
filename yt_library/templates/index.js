@@ -17,6 +17,8 @@ const pageConfig = window.YT_LIBRARY_CONFIG || {};
 const filterPreferenceKeys = {
   unavailableVideos: 'videos.unavailable',
   lowPartialCompletion: 'completion.partial_below_minimum',
+  unavailablePlaylistVideos: 'playlist_videos.unavailable',
+  removedPlaylistVideos: 'playlist_videos.removed',
   removedPlaylists: 'playlists.removed',
   terminatedChannels: 'channels.terminated',
 };
@@ -124,7 +126,18 @@ async function loadBrowserPlugins(statuses) {
 }
 
 let selected = '';
-let playlistVisibility = { public: true, unlisted: true, private: true, members_only: true, unavailable: true, unknown: true, removed: true };
+function defaultPlaylistVideoVisibility() {
+  return {
+    public: true,
+    unlisted: true,
+    private: true,
+    members_only: true,
+    unavailable: filterPreferenceEnabled(filterPreferenceKeys.unavailablePlaylistVideos),
+    unknown: true,
+    removed: filterPreferenceEnabled(filterPreferenceKeys.removedPlaylistVideos),
+  };
+}
+let playlistVisibility = defaultPlaylistVideoVisibility();
 let partialCompletionMinimumPercent = boundedPartialMinimumPercent(
   pageConfig.partialCompletionMinPercent
 );
@@ -204,6 +217,16 @@ const searchOptInMetaFilters = [
   {
     groupName: 'channelStatus', key: 'terminated', paramName: 'terminated',
     preferenceKey: filterPreferenceKeys.terminatedChannels,
+  },
+];
+const playlistVideoOptInFilters = [
+  {
+    key: 'unavailable',
+    preferenceKey: filterPreferenceKeys.unavailablePlaylistVideos,
+  },
+  {
+    key: 'removed',
+    preferenceKey: filterPreferenceKeys.removedPlaylistVideos,
   },
 ];
 const searchSortOptions = new Set([
@@ -597,6 +620,10 @@ function setLocalFilterPreference(preferenceKey, enabled) {
     item => item.search.preferenceKey === preferenceKey
   );
   if (plugin) pluginSearchVisibility.set(plugin.id, enabled);
+  const playlistFilter = playlistVideoOptInFilters.find(
+    item => item.preferenceKey === preferenceKey
+  );
+  if (playlistFilter) playlistVisibility[playlistFilter.key] = enabled;
   const filter = searchOptInMetaFilters.find(
     item => item.preferenceKey === preferenceKey
   );
@@ -638,6 +665,12 @@ function saveSearchOptInPreferences(groupNames) {
       filter.preferenceKey,
       Boolean(searchMetaVisibility[filter.groupName][filter.key]),
     );
+  }
+}
+
+function savePlaylistVideoOptInPreferences() {
+  for (const filter of playlistVideoOptInFilters) {
+    saveFilterPreference(filter.preferenceKey, Boolean(playlistVisibility[filter.key]));
   }
 }
 
@@ -1081,7 +1114,7 @@ function setSelected(value) {
 function resetPlaylistVisibilityFor(playlistId) {
   if (playlistVisibilityPlaylistId === playlistId) return;
   playlistVisibilityPlaylistId = playlistId;
-  playlistVisibility = { public: true, unlisted: true, private: true, members_only: true, unavailable: true, unknown: true, removed: true };
+  playlistVisibility = defaultPlaylistVideoVisibility();
   playlistCompletionVisibility = {
     complete: true,
     partial: true,
@@ -4056,6 +4089,8 @@ function handleMetaChange(event) {
           filterPreferenceKeys.lowPartialCompletion,
           playlistCompletionVisibility.partial_below_minimum,
         );
+      } else if (metaAllFilter === 'playlist-videos') {
+        savePlaylistVideoOptInPreferences();
       }
       render();
     }
@@ -4098,7 +4133,12 @@ function handleMetaChange(event) {
   }
   const filter = target.dataset.playlistFilter;
   if (!filter) return;
-  playlistVisibility[filter] = target.checked;
+  const playlistFilter = playlistVideoOptInFilters.find(item => item.key === filter);
+  if (playlistFilter) {
+    saveFilterPreference(playlistFilter.preferenceKey, target.checked);
+  } else {
+    playlistVisibility[filter] = target.checked;
+  }
   currentPage = 1;
   render();
 }

@@ -54,6 +54,16 @@ test('internal channel links prefer aliases while channel queries use canonical 
   assert.match(indexSource, /const channelId = channel\.channel_id \|\| channelReference/);
 });
 
+test('playlist unavailable and removed filters are persisted opt-ins', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /unavailable: filterPreferenceEnabled\(filterPreferenceKeys\.unavailablePlaylistVideos\)/);
+  assert.match(indexSource, /removed: filterPreferenceEnabled\(filterPreferenceKeys\.removedPlaylistVideos\)/);
+  assert.match(indexSource, /playlistVideoOptInFilters\.find\(item => item\.key === filter\)/);
+  assert.match(indexSource, /saveFilterPreference\(playlistFilter\.preferenceKey, target\.checked\)/);
+  assert.match(indexSource, /metaAllFilter === 'playlist-videos'[\s\S]{0,100}savePlaylistVideoOptInPreferences\(\)/);
+});
+
 test('admin status polling clears stale running state on request failures', () => {
   const adminSource = source('admin.js');
 
