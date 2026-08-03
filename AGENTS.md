@@ -18,6 +18,12 @@ source for unfinished or deferred work.
 - Before restarting, record whether the persistent queue is running and its
   count. Stop it cleanly, restart to a new healthy PID, and resume it only if it
   was running before. Never clear queued work just to restart the service.
+- On Windows, prefer `POST /api/admin/service/restart` for a running service.
+  If a shell launch is required, start `.venv\Scripts\python.exe` directly with
+  `Start-Process -WindowStyle Hidden -PassThru`, set the repository working
+  directory, and redirect stdout/stderr to `.codex\service-logs`. Do not launch
+  the background service through `cmd.exe`, `powershell.exe`, or `pwsh.exe`, and
+  do not omit `-WindowStyle Hidden`; either can leave a visible empty console.
 - Restart after server, worker, served HTML/JS, schema/bootstrap, or source
   config changes. Database-only updates normally do not require a restart.
 - Run the full local checks below for code changes. UI and settings changes also
@@ -107,7 +113,12 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 $code | & "C:\Users\michael.keenan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -B -
 ```
 
-When using `Start-Process`, pass a single quoted argument string or otherwise verify that any paths containing spaces remain intact and are not split into separate arguments.
+When using `Start-Process`, pass a single quoted argument string or otherwise
+verify that paths containing spaces remain intact. For the background service,
+also use `-WindowStyle Hidden`, launch the Python executable directly, redirect
+both output streams to `.codex\service-logs`, and retain the `-PassThru` PID for
+the health check. A successful restart has a new healthy PID and no visible
+console window.
 
 SQLite can be held open by long-running ad hoc probes. If schema initialization or imports fail with `database is locked`, inspect local `python.exe`/`pwsh.exe` processes for stale diagnostic scripts before changing application code. Stop only the stale probe, not the active server, unless a server restart is needed.
 
