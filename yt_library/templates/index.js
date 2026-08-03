@@ -1943,6 +1943,19 @@ function heatmapLevel(count, sortedCounts) {
   return 4;
 }
 
+function restoreHistoryNavigationButtons(container) {
+  for (const button of container.querySelectorAll('.history-heatmap-nav button')) {
+    button.disabled = (
+      (button.dataset.historyYearShift === '-1' && historyActivityYearOffset === 0)
+      || (
+        button.dataset.historyCurrent !== undefined
+        && historyActivityYearOffset === 0
+        && currentPage === 1
+      )
+    );
+  }
+}
+
 function historyHeatmapFor(payload) {
   const range = historyActivityRange();
   const activity = new Map((payload.activity || []).map(day => [day.watch_date, day]));
@@ -1991,6 +2004,7 @@ function historyHeatmapFor(payload) {
   current.title = 'Current year/day';
   current.setAttribute('aria-label', 'Current year/day');
   current.textContent = '>|';
+  current.disabled = historyActivityYearOffset === 0 && currentPage === 1;
   nav.append(syncLabel, previous, rangeLabel, next, current);
   header.append(heading, nav);
   const scroll = document.createElement('div');
@@ -2095,9 +2109,7 @@ async function shiftHistoryActivityYear(delta) {
     currentPage = previousPage;
     pendingHistoryDate = previousPendingDate;
     heatmap.removeAttribute('aria-busy');
-    for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
-      button.disabled = button.dataset.historyYearShift === '-1' && historyActivityYearOffset === 0;
-    }
+    restoreHistoryNavigationButtons(heatmap);
     throw error;
   }
 }
@@ -2134,9 +2146,7 @@ async function jumpToCurrentHistoryActivity() {
     currentPage = previousPage;
     pendingHistoryDate = previousPendingDate;
     heatmap.removeAttribute('aria-busy');
-    for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
-      button.disabled = button.dataset.historyYearShift === '-1' && historyActivityYearOffset === 0;
-    }
+    restoreHistoryNavigationButtons(heatmap);
     throw error;
   }
 }
@@ -2171,9 +2181,7 @@ async function setHistoryActivitySync(enabled) {
   } finally {
     if (heatmap.isConnected) {
       heatmap.removeAttribute('aria-busy');
-      for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
-        button.disabled = button.dataset.historyYearShift === '-1' && historyActivityYearOffset === 0;
-      }
+      restoreHistoryNavigationButtons(heatmap);
     }
   }
 }

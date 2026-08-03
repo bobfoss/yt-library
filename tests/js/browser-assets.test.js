@@ -107,6 +107,8 @@ test('history heatmap can return to the current year and day', () => {
   assert.match(indexSource, /async function jumpToCurrentHistoryActivity\(\)/);
   assert.match(indexSource, /historyActivityYearOffset = 0/);
   assert.match(indexSource, /historyActivityDayNear\(activity, localDateKey\(new Date\(\)\)\)/);
+  assert.match(indexSource, /current\.disabled = historyActivityYearOffset === 0 && currentPage === 1/);
+  assert.match(indexSource, /function restoreHistoryNavigationButtons\(container\)/);
 });
 
 test('history document title includes the active page or date', () => {
