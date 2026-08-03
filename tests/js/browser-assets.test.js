@@ -52,6 +52,29 @@ test('admin status polling clears stale running state on request failures', () =
   assert.match(adminSource, /renderServiceUnavailable\(statusError\);/);
 });
 
+test('history views render shared day dividers', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+
+  assert.match(indexSource, /function historyDayLabel\(video\)/);
+  assert.match(indexSource, /const options = \{ weekday: 'short' \}/);
+  assert.match(indexSource, /return `\$\{weekday\}, \$\{dateLabel\}`/);
+  assert.match(indexSource, /function historyRowsWithDayDividers\(rows, options = \{\}\)/);
+  assert.equal((indexSource.match(/historyRowsWithDayDividers\(rows/g) || []).length, 3);
+  assert.match(indexSource, /divider\.dataset\.historyDate = date/);
+  assert.match(indexSource, /const target = divider instanceof HTMLElement \? divider : row/);
+  assert.match(indexHtml, /\.history-day-divider/);
+});
+
+test('histogram navigation uses a restorable date URL', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /params\.set\('date', historyNavigationDate\)/);
+  assert.match(indexSource, /async function fetchHistoryLocation\(channelId = ''\)/);
+  assert.match(indexSource, /day => day\.watch_date === historyNavigationDate/);
+  assert.match(indexSource, /const direction = target\.dataset\.page[\s\S]{0,200}historyNavigationDate = '';/);
+});
+
 test('theme selection normalizes, persists, and publishes changes', () => {
   const stored = new Map([['yt-library-theme', 'light']]);
   const events = [];

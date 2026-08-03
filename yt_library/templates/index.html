@@ -311,6 +311,20 @@
     .filter.grandchild { margin-left: 36px; font-size: 13px; }
     .history-list { display: grid; gap: 8px; }
     .history-list.layout-grid { gap: 14px; }
+    .history-day-divider {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: minmax(12px, 1fr) auto minmax(12px, 1fr);
+      align-items: center;
+      gap: 10px;
+      margin: 8px 0 2px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1;
+    }
+    .history-day-divider:first-child { margin-top: 0; }
+    .history-day-divider::before,
+    .history-day-divider::after { content: ''; height: 1px; background: var(--line); }
     .history-row { display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: stretch; }
     .history-row .thumb-wrap,
     .history-row .thumb { height: 84px; min-height: 84px; }

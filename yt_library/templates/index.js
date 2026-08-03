@@ -187,6 +187,7 @@ let omniReactionCountsCache = new Map();
 let omniCompletionCountsCache = new Map();
 let omniPlaylistMembershipCountsCache = new Map();
 let pendingHistoryDate = '';
+let historyNavigationDate = '';
 let channelHistoryCounts = new Map();
 let channelDetailTab = 'playlists';
 let renderGeneration = 0;
@@ -303,7 +304,11 @@ function channelSelection(channelId) {
 
 function paginationParams() {
   const params = new URLSearchParams();
-  if (currentPage > 1) params.set('page', String(currentPage));
+  if (historyNavigationDate && historyDateNavigationIsActive()) {
+    params.set('date', historyNavigationDate);
+  } else if (currentPage > 1) {
+    params.set('page', String(currentPage));
+  }
   return params;
 }
 
@@ -320,7 +325,24 @@ function hashParts(hash) {
   };
 }
 
-function applyPaginationParams(params) {
+function historyDateParam(value) {
+  const date = String(value || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : '';
+}
+
+function historyDateNavigationIsActive() {
+  return selected === '__history__'
+    || (selected.startsWith('__channel__:') && channelDetailTab === 'history');
+}
+
+function applyPaginationParams(params, allowHistoryDate = false) {
+  historyNavigationDate = allowHistoryDate ? historyDateParam(params.get('date')) : '';
+  if (historyNavigationDate) {
+    currentPage = 1;
+    pendingHistoryDate = historyNavigationDate;
+    historyActivityYearOffset = historyActivityYearOffsetForDate(historyNavigationDate);
+    return;
+  }
   const page = Number(params.get('page') || 1);
   currentPage = Number.isFinite(page) && page > 0 ? page : 1;
 }
@@ -625,6 +647,8 @@ function searchHash() {
 
 function applySearchHash(hash) {
   retainedSearchHash = hash;
+  historyNavigationDate = '';
+  pendingHistoryDate = '';
   const queryIndex = hash.indexOf('?');
   const params = new URLSearchParams(queryIndex >= 0 ? hash.slice(queryIndex + 1) : '');
   search.value = params.get('q') || '';
@@ -735,7 +759,8 @@ function selectionFromHash() {
     return '__search__';
   }
   const { base, params } = hashParts(hash);
-  applyPaginationParams(params);
+  const historyLocation = base === '#view=history' || base.startsWith('#channel=');
+  applyPaginationParams(params, historyLocation);
   if (base.startsWith('#playlist=')) {
     const playlistId = decodeURIComponent(base.slice('#playlist='.length));
     if (playlistId) return playlistSelection(playlistId);
@@ -746,7 +771,10 @@ function selectionFromHash() {
   }
   if (base.startsWith('#channel=')) {
     const channelId = decodeURIComponent(base.slice('#channel='.length));
-    if (channelId) return channelSelection(channelId);
+    if (channelId) {
+      if (historyNavigationDate) channelDetailTab = 'history';
+      return channelSelection(channelId);
+    }
   }
   if (base.startsWith('#view=')) {
     const view = decodeURIComponent(base.slice('#view='.length));
@@ -1769,11 +1797,15 @@ function scrollToPendingHistoryDate() {
   const date = pendingHistoryDate;
   pendingHistoryDate = '';
   requestAnimationFrame(() => {
+    const divider = grid.querySelector(`[data-history-date="${CSS.escape(date)}"]`);
     const row = grid.querySelector(`[data-watch-date="${CSS.escape(date)}"]`);
-    if (!(row instanceof HTMLElement)) return;
-    row.classList.add('history-jump-target');
-    row.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    window.setTimeout(() => row.classList.remove('history-jump-target'), 1800);
+    const target = divider instanceof HTMLElement ? divider : row;
+    if (!(target instanceof HTMLElement)) return;
+    if (row instanceof HTMLElement) {
+      row.classList.add('history-jump-target');
+      window.setTimeout(() => row.classList.remove('history-jump-target'), 1800);
+    }
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 }
 
@@ -1782,6 +1814,7 @@ function setHistoryPageFromOffset(date, offset) {
   const effectiveSize = Number.isFinite(size) ? size : 1000;
   currentPage = Math.floor(Math.max(0, offset) / effectiveSize) + 1;
   pendingHistoryDate = date;
+  historyNavigationDate = date;
 }
 
 async function jumpToHistoryDate(date, offset) {
@@ -1790,12 +1823,27 @@ async function jumpToHistoryDate(date, offset) {
   await render();
 }
 
+async function fetchHistoryLocation(channelId = '') {
+  const activityRequest = fetchHistoryActivity(channelId);
+  if (!historyNavigationDate) {
+    return Promise.all([fetchHistoryPage(channelId), activityRequest]);
+  }
+  const activity = await activityRequest;
+  const targetDay = (activity.activity || []).find(
+    day => day.watch_date === historyNavigationDate
+  );
+  if (targetDay) {
+    setHistoryPageFromOffset(targetDay.watch_date, Number(targetDay.offset || 0));
+  }
+  return [await fetchHistoryPage(channelId), activity];
+}
+
 async function renderHistoryView() {
   title.textContent = 'History';
   meta.textContent = 'Loading history...';
   applyHistoryCardLayout();
   empty.hidden = true;
-  const [payload, initialActivity] = await Promise.all([fetchHistoryPage(), fetchHistoryActivity()]);
+  const [payload, initialActivity] = await fetchHistoryLocation();
   const rows = payload.watch || [];
   const activity = historyActivitySyncEnabled
     && syncHistoryActivityYearWithRows(rows, pendingHistoryDate)
@@ -1811,7 +1859,7 @@ async function renderHistoryView() {
   viewContext.hidden = false;
   viewContext.replaceChildren(historyHeatmapFor(activity));
   renderPager(pageInfo);
-  grid.replaceChildren(...rows.map(row => historyRowCardFor(row, { layout: historyCardLayout })));
+  grid.replaceChildren(...historyRowsWithDayDividers(rows, { layout: historyCardLayout }));
   empty.hidden = rows.length !== 0;
   empty.textContent = 'No history rows match.';
   scrollToPendingHistoryDate();
@@ -2744,10 +2792,7 @@ async function render() {
       meta.textContent = 'Loading channel history...';
       grid.replaceChildren();
       empty.hidden = true;
-      const [payload, initialActivity] = await Promise.all([
-        fetchHistoryPage(channelId),
-        fetchHistoryActivity(channelId),
-      ]);
+      const [payload, initialActivity] = await fetchHistoryLocation(channelId);
       const rows = payload.watch || [];
       const activity = historyActivitySyncEnabled
         && syncHistoryActivityYearWithRows(rows, pendingHistoryDate)
@@ -2763,7 +2808,7 @@ async function render() {
       const pageInfo = remotePageInfo(total, rows.length);
       meta.textContent = '';
       renderPager(pageInfo);
-      grid.replaceChildren(...rows.map(historyRowCardFor));
+      grid.replaceChildren(...historyRowsWithDayDividers(rows));
       empty.hidden = rows.length !== 0;
       empty.textContent = 'No history rows match this channel.';
       scrollToPendingHistoryDate();
@@ -3045,6 +3090,51 @@ function historyWatchedAtLabel(video) {
   return video.watch_date || '';
 }
 
+function historyDayLabel(video) {
+  const value = video.time_quality === 'exact' && video.watched_at
+    ? video.watched_at
+    : video.watch_date || '';
+  const dateLabel = window.YTLibraryTime.formatDate(value);
+  if (!dateLabel) return '';
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  const parsed = dateOnly
+    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+    : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return dateLabel;
+  const options = { weekday: 'short' };
+  if (!dateOnly) {
+    options.timeZone = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
+  }
+  const weekday = new Intl.DateTimeFormat(undefined, options).format(parsed);
+  return `${weekday}, ${dateLabel}`;
+}
+
+function historyDayDividerFor(label, date) {
+  const divider = document.createElement('div');
+  divider.className = 'history-day-divider';
+  divider.dataset.historyDate = date;
+  divider.setAttribute('role', 'separator');
+  divider.setAttribute('aria-label', label);
+  const text = document.createElement('span');
+  text.textContent = label;
+  divider.append(text);
+  return divider;
+}
+
+function historyRowsWithDayDividers(rows, options = {}) {
+  const elements = [];
+  let previousLabel = '';
+  for (const row of rows) {
+    const label = historyDayLabel(row);
+    if (label && label !== previousLabel) {
+      elements.push(historyDayDividerFor(label, historyRowDateKey(row)));
+    }
+    elements.push(historyRowCardFor(row, options));
+    previousLabel = label;
+  }
+  return elements;
+}
+
 function historyRowCardFor(video, { layout = 'detailed' } = {}) {
   const watched = historyWatchedAtLabel(video);
   const article = playlistVideoCardFor(video, {
@@ -3166,7 +3256,10 @@ viewContext.addEventListener('click', event => {
   const target = event.target.closest('[data-channel-tab]');
   if (!(target instanceof HTMLButtonElement)) return;
   channelDetailTab = target.dataset.channelTab || 'playlists';
+  historyNavigationDate = '';
+  pendingHistoryDate = '';
   currentPage = 1;
+  updateCurrentHash(true);
   scrollResultsToTop();
   render();
 });
@@ -3531,6 +3624,8 @@ function handlePagerClick(event) {
   if (!direction) return;
   const page = Number(direction);
   if (Number.isFinite(page) && page > 0) currentPage = page;
+  historyNavigationDate = '';
+  pendingHistoryDate = '';
   scrollResultsToTop();
   if (updateCurrentHash(false)) return;
   render();
@@ -3568,6 +3663,8 @@ function handlePagerSubmit(event) {
   const maxPage = Number(input.max || 0);
   if (!Number.isFinite(page) || page < 1) return;
   currentPage = maxPage > 0 ? Math.min(page, maxPage) : page;
+  historyNavigationDate = '';
+  pendingHistoryDate = '';
   scrollResultsToTop();
   if (updateCurrentHash(false)) return;
   render();
@@ -3588,7 +3685,9 @@ window.addEventListener('hashchange', () => {
   const previousSelection = selected;
   selected = selectionFromHash();
   if (selected !== previousSelection || !selected.startsWith('__channel__:')) {
-    channelDetailTab = 'playlists';
+    channelDetailTab = selected.startsWith('__channel__:') && historyNavigationDate
+      ? 'history'
+      : 'playlists';
   }
   if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
   if (selected === '__history__') search.value = '';
