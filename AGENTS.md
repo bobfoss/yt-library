@@ -54,7 +54,8 @@ This repository is a Python web app for browsing, enriching, and reconciling a p
 - `yt_library/workers.py` contains background worker orchestration.
 - `yt_library/queries.py` contains paginated browser list/detail read models, unified omni-search, and history search.
 - `yt_library/schema.sql` is the SQLite schema, loaded by `yt_library/schema.py`.
-- `yt_library/templates/` contains the main browser and admin HTML.
+- `yt_library/templates/` contains the browser and admin HTML plus their served
+  JavaScript assets.
 - `tests/` contains the standard-library `unittest` suite for helpers, schema bootstrap, and read models.
 - `TODO.md` is the canonical project TODO and deferred-decisions list. Treat references to the TODO, TODO list, cleanup findings, or future work as references to this file.
 - `requirements.txt` lists Python dependencies, including `yt-dlp`.
@@ -140,9 +141,9 @@ $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | F
 git diff --check
 ```
 
-Current tests cover pure helpers, Takeout watch-history parsing, fresh temporary SQLite schema bootstrap, server and worker behavior, static template DOM contracts, browser bootstrap/list/detail read models, and omni/history search read models. Keep tests local-only: do not require real cookies, network access, personal Takeout zips, or the live `yt_library.sqlite3`.
+Current tests cover pure helpers, Takeout watch-history parsing, fresh temporary SQLite schema bootstrap, server and worker behavior, static template DOM contracts, browser JavaScript syntax and behavior, browser bootstrap/list/detail read models, and omni/history search read models. Keep tests local-only: do not require real cookies, network access, personal Takeout zips, or the live `yt_library.sqlite3`.
 
-For schema, import, or worker changes, also verify a fresh temporary database initializes from `schema.sql`; when using a local copy of `yt_library.sqlite3`, treat old-schema failures as rebuild/re-import work rather than migration bugs. Smoke test `/api/admin/status` and `/api/history/search?limit=1`.
+For schema, import, or worker changes, also verify a fresh temporary database initializes from `schema.sql` and every supported prior schema upgrades in place without data loss. Treat failures against supported older schemas as migration bugs; do not require a rebuild or re-import as a workaround. Smoke test `/api/admin/status` and `/api/history/search?limit=1`.
 
 Restart the local service when necessary, not automatically after every action. Restart after server code, served HTML/JS, config, schema/bootstrap, or worker behavior changes so the running app picks them up. A database-only update usually does not need a restart because API requests read SQLite fresh; verify with an endpoint instead.
 

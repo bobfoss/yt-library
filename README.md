@@ -23,8 +23,8 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 - `yt_library/workers.py` contains background worker orchestration.
 - `yt_library/queries.py` contains read models for the library and history views.
 - `yt_library/schema.sql` is the SQLite schema, loaded by `yt_library/schema.py`.
-- `yt_library/templates/` contains the browser, history, and admin HTML.
-- `tests/` contains focused `unittest` modules for helpers, schema, configuration, server routes, workers, templates, and read models.
+- `yt_library/templates/` contains the browser and admin HTML plus their served JavaScript assets.
+- `tests/` contains focused `unittest` modules for helpers, schema, configuration, server routes, workers, templates, JavaScript behavior, and read models.
 
 The browser loads a small navigation bootstrap, then requests playlists, videos, channels, details, search results, and history as separate server-paginated read models. It does not preload the complete video and channel catalog.
 - `requirements.txt` lists runtime dependencies; `requirements-dev.txt` adds development-only static analysis.
@@ -163,13 +163,13 @@ Open:
 
 ```powershell
 $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | ForEach-Object { $_.FullName }) + (Get-ChildItem tests -Filter *.py | ForEach-Object { $_.FullName })
-python -m py_compile @files
-python -m unittest discover -s tests -v
-python yt_library_manager.py migrate
-python yt_library_manager.py import-history
-python yt_library_manager.py collect-my-activity
-python yt_library_manager.py authorize-youtube-data-api
-python yt_library_manager.py collect-youtube-data-api
+.\.venv\Scripts\python.exe -m py_compile @files
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe yt_library_manager.py migrate
+.\.venv\Scripts\python.exe yt_library_manager.py import-history
+.\.venv\Scripts\python.exe yt_library_manager.py collect-my-activity
+.\.venv\Scripts\python.exe yt_library_manager.py authorize-youtube-data-api
+.\.venv\Scripts\python.exe yt_library_manager.py collect-youtube-data-api
 git diff --check
 ```
 

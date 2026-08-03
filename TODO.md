@@ -88,8 +88,9 @@ Remove a vestigial candidate only when all are true:
 ## Cleanup Review (2026-08-02)
 
 The current-tree review found no release-blocking behavior regressions. The
-verified removal and deduplication pass is complete and live-validated. Broader
-performance and module-organization changes remain for review.
+verified removal, deduplication, performance, and module-organization work is
+complete and live-validated. The remaining items require fixtures or product
+decisions rather than another general cleanup pass.
 
 ### Completed Removal
 
@@ -148,6 +149,39 @@ performance and module-organization changes remain for review.
   History rendered 100 occurrences and 365 activity cells, Admin reported an
   idle empty queue, and the browser console had no errors.
 
+### Completed Maintainability Recommendations (2026-08-02)
+
+- Made versioned migrations the explicit upgrade policy across contributor
+  guidance, project documentation, CLI help, and regression tests. Supported
+  databases must upgrade in place without requiring a rebuild or re-import.
+- Replaced wildcard coupling between `server.py`, `workers.py`, and `core.py`
+  with explicit imports, and moved shared request pacing into
+  `request_pacing.py`.
+- Decomposed the HTTP request dispatcher into page, public API, Admin read,
+  settings, cookie, and action handlers. Centralized repeated static-byte
+  responses while preserving the compatibility handler surface.
+- Extracted the browser and Admin JavaScript from their HTML templates into
+  separately served assets. Added local Node syntax checks and behavior tests
+  for theme persistence and shared video-card helpers.
+- Centralized runtime configuration coercion in an ordered normalizer registry,
+  including safe handling of malformed numeric Archivarix values.
+- Expanded Ruff from fatal syntax checks to the full Pyflakes family and added
+  a query-plan regression test proving playlist-scoped pagination uses the
+  playlist item key index.
+
+### Maintainability Verification
+
+- Passed Python compilation, all 273 local tests (including the Node-backed
+  browser asset tests), full configured Ruff checks, and `git diff --check`.
+- Restarted the configured service from PID 33324 to healthy PID 26504 with the
+  persistent queue stopped and empty before and after the restart.
+- Passed live Admin status, History search, paginated playlist/video/channel,
+  browser HTML, Admin HTML, and JavaScript asset smoke checks.
+- Verified Search, History, and Admin in a browser: Search rendered 100 results,
+  History rendered 100 occurrences and 371 activity cells, rapid layout changes
+  persisted the final grid choice across reload, Admin showed an idle empty
+  queue, and the browser console had no errors.
+
 ## Ranked Remaining Cleanup
 
 ### 1. Foreign Playlist Continuation Extraction
@@ -182,5 +216,6 @@ The left-navigation library lists are named omni-search presets. Search returns 
 ## Suggested Order
 
 1. Investigate foreign playlist continuation extraction when a reproducible fixture is available.
-2. Define the preset/search specification and migrate the parity-safe playlist and channel list views.
-3. Add the missing liked, unavailable-playlist, playlist-group, and page-specific sort semantics before migrating the remaining list views.
+2. Define the History layout extension and the saved-search preset specification.
+3. Persist scheduled Update last-run and failure status across service restarts.
+4. Improve the visual hierarchy and partial-selection states of nested filters.
