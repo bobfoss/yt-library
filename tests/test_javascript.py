@@ -28,7 +28,14 @@ class JavaScriptAssetTests(unittest.TestCase):
     @unittest.skipUnless(node_binary(), "Node.js is required for browser asset tests")
     def test_browser_assets_parse_and_shared_helpers_behave(self) -> None:
         result = subprocess.run(
-            [node_binary(), "--test", "tests/js/browser-assets.test.js"],
+            [
+                node_binary(),
+                "--test",
+                *[
+                    str(path.relative_to(ROOT))
+                    for path in sorted((ROOT / "tests" / "js").glob("*.test.js"))
+                ],
+            ],
             cwd=ROOT,
             check=False,
             capture_output=True,

@@ -16,6 +16,59 @@ from tests.support import migrated_connection
 
 
 class AdminServerTests(unittest.TestCase):
+    def test_plugin_browser_assets_are_namespaced_and_delegated(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.handle_browser_asset.return_value = (
+            200,
+            "text/css; charset=utf-8",
+            b".example {}",
+        )
+        handler._send_bytes = Mock()
+
+        handler._handle_library_get(
+            urllib.parse.urlparse("/plugins/example/assets/browser.css")
+        )
+
+        handler.plugin_manager.handle_browser_asset.assert_called_once_with(
+            "example", "browser.css"
+        )
+        handler._send_bytes.assert_called_once_with(
+            b".example {}",
+            "text/css; charset=utf-8",
+            cache_control="no-cache",
+            status=200,
+        )
+
+    def test_bootstrap_includes_generic_plugin_statuses(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.statuses.return_value = [
+            {"id": "example", "enabled": True, "state": "ready"}
+        ]
+        handler.send_json = Mock()
+        connection = Mock()
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch(
+                "yt_library.server.library_bootstrap_data",
+                return_value={"groups": [], "memberships": {}, "counts": {}},
+            ),
+        ):
+            handler._handle_library_get(urllib.parse.urlparse("/api/bootstrap"))
+
+        connection.close.assert_called_once_with()
+        handler.send_json.assert_called_once_with(
+            {
+                "groups": [],
+                "memberships": {},
+                "counts": {},
+                "plugins": [{"id": "example", "enabled": True, "state": "ready"}],
+            }
+        )
+
     def test_plugin_routes_are_namespaced_and_delegated(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.plugin_manager = Mock()
@@ -253,6 +306,29 @@ class AdminServerTests(unittest.TestCase):
             self.assertEqual(config["filter_preferences"], {})
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["filter_preferences"], {})
+
+    def test_subtitle_search_preference_is_saved_as_an_opt_in_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.config_data = config
+            handler.send_json = Mock()
+            handler.path = (
+                "/api/settings/filter-preference?key=plugins.subtitles.search&enabled=1"
+            )
+
+            handler.do_POST()
+
+            self.assertEqual(
+                config["filter_preferences"],
+                {"plugins.subtitles.search": True},
+            )
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["filter_preferences"],
+                {"plugins.subtitles.search": True},
+            )
 
     def test_filter_preference_rejects_unknown_key(self) -> None:
         config = load_config(Path("missing-test-config.json"))

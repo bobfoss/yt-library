@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any, Iterable
 PLUGIN_API_VERSION = 1
 PLUGIN_ENTRY_POINT_GROUP = "yt_library.plugins"
 PLUGIN_ID = re.compile(r"^[a-z][a-z0-9_-]*$")
+PLUGIN_BROWSER_ASSET_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+PLUGIN_BROWSER_ASSET_TYPES = {"script", "style"}
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,29 @@ def _installed_entry_points() -> list[Any]:
     if hasattr(discovered, "select"):
         return list(discovered.select(group=PLUGIN_ENTRY_POINT_GROUP))
     return list(discovered.get(PLUGIN_ENTRY_POINT_GROUP, ()))
+
+
+def _browser_assets(instance: Any) -> list[dict[str, str]]:
+    assets: list[dict[str, str]] = []
+    for value in getattr(instance, "browser_assets", ()):
+        if not isinstance(value, dict):
+            raise TypeError("Plugin browser assets must be objects")
+        path = str(value.get("path") or "")
+        asset_type = str(value.get("type") or "")
+        if (
+            not PLUGIN_BROWSER_ASSET_PATH.fullmatch(path)
+            or ".." in path.split("/")
+            or asset_type not in PLUGIN_BROWSER_ASSET_TYPES
+        ):
+            raise ValueError(f"Invalid plugin browser asset: {path or '<missing>'}")
+        assets.append({"path": path, "type": asset_type})
+    if assets and not callable(getattr(instance, "handle_browser_asset", None)):
+        raise TypeError("Plugin browser assets require handle_browser_asset")
+    return assets
+
+
+def _asset_error(message: str) -> bytes:
+    return json.dumps({"error": message}, ensure_ascii=False).encode("utf-8")
 
 
 class PluginManager:
@@ -104,6 +130,7 @@ class PluginManager:
                     f"Plugin API {api_version} is incompatible with host API {PLUGIN_API_VERSION}"
                 )
                 return
+            _browser_assets(instance)
             context = PluginContext(
                 root=Path(__file__).resolve().parent.parent,
                 config_path=Path(
@@ -138,6 +165,9 @@ class PluginManager:
                 "capabilities": sorted(str(value) for value in getattr(instance, "capabilities", ())),
             }
         )
+        browser_assets = _browser_assets(instance)
+        if browser_assets:
+            payload["browserAssets"] = browser_assets
         try:
             plugin_status = instance.status()
             if not isinstance(plugin_status, dict):
@@ -181,6 +211,36 @@ class PluginManager:
                 "error": f"Plugin request failed: {plugin_id}",
                 "message": f"{type(exc).__name__}: {exc}",
             }
+
+    def handle_browser_asset(self, plugin_id: str, path: str) -> tuple[int, str, bytes]:
+        record = self._records.get(plugin_id)
+        if record is None:
+            return 404, "application/json; charset=utf-8", _asset_error(
+                f"Plugin is not enabled: {plugin_id}"
+            )
+        if record.instance is None:
+            return 503, "application/json; charset=utf-8", _asset_error(
+                f"Plugin is unavailable: {plugin_id}"
+            )
+        assets = {asset["path"]: asset for asset in _browser_assets(record.instance)}
+        if path not in assets:
+            return 404, "application/json; charset=utf-8", _asset_error(
+                f"Unknown plugin browser asset: {plugin_id}/{path}"
+            )
+        try:
+            response = record.instance.handle_browser_asset(path)
+            if not isinstance(response, tuple) or len(response) != 2:
+                raise TypeError("Plugin browser asset response must be (content_type, body)")
+            content_type, body = response
+            if isinstance(body, str):
+                body = body.encode("utf-8")
+            if not isinstance(body, bytes):
+                raise TypeError("Plugin browser asset body must be bytes or text")
+            return 200, str(content_type), body
+        except Exception as exc:
+            return 503, "application/json; charset=utf-8", _asset_error(
+                f"Plugin browser asset failed: {type(exc).__name__}: {exc}"
+            )
 
     def shutdown(self) -> None:
         for record in reversed(list(self._records.values())):

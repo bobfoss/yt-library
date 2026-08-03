@@ -91,6 +91,9 @@ FILTER_PREFERENCE_KEYS = frozenset(
         "channels.terminated",
     }
 )
+PLUGIN_FILTER_PREFERENCE_PATTERN = re.compile(
+    r"^plugins\.[a-z][a-z0-9_-]*\.search$"
+)
 DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 UPDATE_FREQUENCIES = frozenset({"off", "hourly", "daily"})
 
@@ -188,8 +191,14 @@ def configured_filter_preferences(config: dict[str, Any]) -> dict[str, bool]:
     return {
         str(raw_key): True
         for raw_key, raw_value in raw_preferences.items()
-        if str(raw_key) in FILTER_PREFERENCE_KEYS and raw_value is True
+        if valid_filter_preference_key(str(raw_key)) and raw_value is True
     }
+
+
+def valid_filter_preference_key(value: str) -> bool:
+    return value in FILTER_PREFERENCE_KEYS or bool(
+        PLUGIN_FILTER_PREFERENCE_PATTERN.fullmatch(value)
+    )
 
 
 def configured_sort_preferences(config: dict[str, Any]) -> dict[str, str]:

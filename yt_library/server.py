@@ -21,7 +21,6 @@ from typing import Any, Callable
 
 from .config import (
     CARD_LAYOUTS,
-    FILTER_PREFERENCE_KEYS,
     PAGE_SIZES,
     SORT_PREFERENCE_VALUES,
     configured_archivarix_max_in_flight,
@@ -50,6 +49,7 @@ from .config import (
     next_update_at,
     save_config,
     valid_update_frequency,
+    valid_filter_preference_key,
     valid_update_hour_minute,
     valid_update_time,
 )
@@ -533,8 +533,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         content_type: str,
         *,
         cache_control: str,
+        status: int = 200,
     ) -> None:
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", cache_control)
         self.send_header("Content-Length", str(len(body)))
@@ -704,6 +705,23 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def _handle_library_get(self, parsed: urllib.parse.ParseResult) -> None:
+        if parsed.path.startswith("/plugins/"):
+            suffix = parsed.path[len("/plugins/") :]
+            plugin_id, separator, asset_path = suffix.partition("/assets/")
+            if not separator or not plugin_id or not asset_path:
+                self.send_json({"error": "Plugin browser asset is required"}, status=404)
+                return
+            status, content_type, body = self.plugin_manager.handle_browser_asset(
+                plugin_id,
+                urllib.parse.unquote(asset_path),
+            )
+            self._send_bytes(
+                body,
+                content_type,
+                cache_control="no-cache",
+                status=status,
+            )
+            return
         if parsed.path == "/api/plugins":
             self.send_json({"plugins": self.plugin_manager.statuses()})
             return
@@ -739,6 +757,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 data = library_bootstrap_data(conn)
             finally:
                 conn.close()
+            data["plugins"] = self.plugin_manager.statuses()
             self.send_json(data)
             return
         if parsed.path == "/api/playlists":
@@ -1097,7 +1116,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/settings/filter-preference":
             preference_key = (params.get("key") or [""])[0].strip()
             enabled_value = (params.get("enabled") or [""])[0].strip().lower()
-            if preference_key not in FILTER_PREFERENCE_KEYS:
+            if not valid_filter_preference_key(preference_key):
                 self.send_json({"error": "Invalid filter preference"}, status=400)
                 return
             if enabled_value not in {"0", "1", "false", "true"}:

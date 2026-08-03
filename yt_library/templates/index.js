@@ -38,6 +38,90 @@ function setDocumentTitle(itemTitle = '') {
 let data = null;
 let memberships = new Map();
 let children = new Map();
+const browserPlugins = new Map();
+const loadedBrowserPluginAssets = new Set();
+const pluginSearchVisibility = new Map();
+
+function registerBrowserPlugin(plugin) {
+  if (!plugin || typeof plugin !== 'object') throw new TypeError('Plugin registration is required');
+  const pluginId = String(plugin.id || '');
+  if (!/^[a-z][a-z0-9_-]*$/.test(pluginId)) throw new TypeError('Plugin id is invalid');
+  if (browserPlugins.has(pluginId)) throw new Error(`Plugin is already registered: ${pluginId}`);
+  browserPlugins.set(pluginId, plugin);
+  if (plugin.search) {
+    pluginSearchVisibility.set(
+      pluginId,
+      filterPreferenceEnabled(String(plugin.search.preferenceKey || '')),
+    );
+  }
+}
+
+window.YTLibraryBrowserPlugins = Object.freeze({
+  apiVersion: 1,
+  register: registerBrowserPlugin,
+});
+
+function browserPluginStatus(pluginId) {
+  return (data?.plugins || []).find(plugin => plugin.id === pluginId) || null;
+}
+
+function browserPluginSupports(pluginId, capability) {
+  const status = browserPluginStatus(pluginId);
+  return Boolean(
+    status
+    && status.enabled
+    && status.state === 'ready'
+    && (!capability || (status.capabilities || []).includes(capability))
+  );
+}
+
+function browserSearchPlugins() {
+  return [...browserPlugins.values()].filter(plugin => (
+    plugin.search
+    && browserPluginSupports(plugin.id, plugin.search.capability)
+  ));
+}
+
+function browserSearchPlugin(pluginId) {
+  return browserSearchPlugins().find(plugin => plugin.id === pluginId) || null;
+}
+
+function browserPluginAssetUrl(pluginId, path) {
+  const encodedPath = String(path || '').split('/').map(encodeURIComponent).join('/');
+  return `/plugins/${encodeURIComponent(pluginId)}/assets/${encodedPath}`;
+}
+
+async function loadBrowserPluginAsset(pluginId, asset) {
+  const path = String(asset?.path || '');
+  const type = String(asset?.type || '');
+  if (!path || !['script', 'style'].includes(type)) return;
+  const url = browserPluginAssetUrl(pluginId, path);
+  if (loadedBrowserPluginAssets.has(url)) return;
+  const element = type === 'style'
+    ? document.createElement('link')
+    : document.createElement('script');
+  if (type === 'style') {
+    element.rel = 'stylesheet';
+    element.href = url;
+  } else {
+    element.src = url;
+  }
+  await new Promise((resolve, reject) => {
+    element.addEventListener('load', resolve, { once: true });
+    element.addEventListener('error', () => reject(new Error(`Plugin asset failed: ${url}`)), { once: true });
+    document.head.append(element);
+  });
+  loadedBrowserPluginAssets.add(url);
+}
+
+async function loadBrowserPlugins(statuses) {
+  for (const status of statuses || []) {
+    if (!status.enabled || status.state !== 'ready') continue;
+    for (const asset of status.browserAssets || []) {
+      await loadBrowserPluginAsset(status.id, asset);
+    }
+  }
+}
 
 let selected = '';
 let playlistVisibility = { public: true, unlisted: true, private: true, members_only: true, unavailable: true, unknown: true, removed: true };
@@ -236,6 +320,7 @@ async function loadData({ preserveSearchContent = false } = {}) {
   const response = await fetch('/api/bootstrap', { cache: 'no-store' });
   if (!response.ok) throw new Error(`Data refresh failed: ${response.status}`);
   data = await response.json();
+  await loadBrowserPlugins(data.plugins || []);
   historyPageState = { key: '', loading: false, data: null };
   historyActivityState = { key: '', loading: false, data: null };
   omniSearchState = { key: '', data: null, promise: null };
@@ -445,6 +530,10 @@ function setLocalFilterPreference(preferenceKey, enabled) {
   } else {
     delete filterPreferences[preferenceKey];
   }
+  const plugin = browserSearchPlugins().find(
+    item => item.search.preferenceKey === preferenceKey
+  );
+  if (plugin) pluginSearchVisibility.set(plugin.id, enabled);
   const filter = searchOptInMetaFilters.find(
     item => item.preferenceKey === preferenceKey
   );
@@ -493,12 +582,19 @@ function resetSearchMetaVisibility() {
   for (const [groupName, defaults] of Object.entries(defaultSearchMetaVisibility)) {
     Object.assign(searchMetaVisibility[groupName], defaults);
   }
+  for (const plugin of browserSearchPlugins()) {
+    pluginSearchVisibility.set(
+      plugin.id,
+      filterPreferenceEnabled(String(plugin.search.preferenceKey || '')),
+    );
+  }
 }
 
 function clearSearchMetaVisibility() {
   for (const visibility of Object.values(searchMetaVisibility)) {
     for (const key of Object.keys(visibility)) visibility[key] = false;
   }
+  for (const plugin of browserSearchPlugins()) pluginSearchVisibility.set(plugin.id, false);
 }
 
 function enableDefaultSearchKind(kind) {
@@ -560,13 +656,20 @@ function preferredSearchResultsSort(
 }
 
 function searchKindEnabled(kind) {
+  const plugin = browserSearchPlugin(kind);
+  if (plugin) return pluginSearchVisibility.get(plugin.id) === true;
   return searchKindFacetKeys(kind).every(
     key => Object.values(searchMetaVisibility[key]).some(Boolean)
   );
 }
 
 function selectedSearchKinds() {
-  return ['videos', 'playlists', 'channels'].filter(searchKindEnabled);
+  return [
+    'videos',
+    'playlists',
+    'channels',
+    ...browserSearchPlugins().map(plugin => plugin.id),
+  ].filter(searchKindEnabled);
 }
 
 function selectedSearchResultKinds() {
@@ -575,7 +678,7 @@ function selectedSearchResultKinds() {
     playlists: 'playlist',
     channels: 'channel',
   };
-  return selectedSearchKinds().map(kind => resultKindByFilterKind[kind]);
+  return selectedSearchKinds().map(kind => resultKindByFilterKind[kind]).filter(Boolean);
 }
 
 function activeSearchSourceScopes() {
@@ -648,6 +751,11 @@ function searchHash() {
   for (const { groupName, key, paramName } of searchOptInMetaFilters) {
     if (searchMetaVisibility[groupName][key]) params.set(paramName, '1');
   }
+  for (const plugin of browserSearchPlugins()) {
+    if (searchKindEnabled(plugin.id)) {
+      params.set(plugin.search.hashParam || `plugin-${plugin.id}`, '1');
+    }
+  }
   if (searchSortExplicit || searchResultsSort !== preferredSearchResultsSort(query)) {
     params.set('sort', searchResultsSort);
   }
@@ -707,11 +815,21 @@ function applySearchHash(hash) {
       searchMetaVisibility[groupName][key] = true;
     }
   }
+  for (const plugin of browserSearchPlugins()) {
+    const hashParam = plugin.search.hashParam || `plugin-${plugin.id}`;
+    if (params.get(hashParam) === '1') pluginSearchVisibility.set(plugin.id, true);
+  }
   const requestedSort = params.get('sort') || '';
   searchSortExplicit = searchSortOptions.has(requestedSort);
   searchResultsSort = searchSortExplicit
     ? requestedSort
     : preferredSearchResultsSort(search.value.trim());
+  if (browserSearchPlugins().some(plugin => (
+    searchKindEnabled(plugin.id) && plugin.search.forceRelevance
+  ))) {
+    searchResultsSort = 'relevance';
+    searchSortExplicit = false;
+  }
   const page = Number(params.get('page') || 1);
   currentPage = Number.isFinite(page) && page > 0 ? page : 1;
 }
@@ -989,10 +1107,16 @@ function searchKindFacetKeys(kind) {
   if (kind === 'videos') return searchVideoFacetKeys;
   if (kind === 'playlists') return searchPlaylistFacetKeys;
   if (kind === 'channels') return searchChannelFacetKeys;
-  return [kind];
+  return [];
 }
 
 function setSearchKindFilter(kind, checked) {
+  const plugin = browserSearchPlugin(kind);
+  if (plugin) {
+    pluginSearchVisibility.set(plugin.id, checked);
+    syncSearchKindFilter(kind);
+    return true;
+  }
   const facetKeys = searchKindFacetKeys(kind);
   if (!facetKeys.every(key => searchMetaVisibility[key])) return false;
   for (const facetKey of facetKeys) {
@@ -1011,6 +1135,12 @@ function setSearchKindFilter(kind, checked) {
 function syncSearchKindFilter(kind) {
   const parent = searchForFilters.querySelector(`[data-search-kind-filter="${kind}"]`);
   if (!(parent instanceof HTMLInputElement)) return;
+  if (browserSearchPlugin(kind)) {
+    parent.checked = searchKindEnabled(kind);
+    parent.indeterminate = false;
+    parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !parent.checked);
+    return;
+  }
   const facetKeys = searchKindFacetKeys(kind);
   if (facetKeys.length > 1) {
     const facetSelections = facetKeys.map(
@@ -2210,6 +2340,7 @@ function searchMetaFiltersHtml(
   reactionCounts,
   completionCounts,
   playlistMembershipCounts,
+  resultCounts,
 ) {
   const facetHtml = ({ key, visibility, definitions, counts, allLabel = 'All', kind, showAll = true }) => `
     <div class="search-meta-facet${showAll ? '' : ' flat'}" data-search-kind-facet="${kind}">
@@ -2257,7 +2388,14 @@ function searchMetaFiltersHtml(
       facetHtml({ key: 'channelSubscription', visibility: searchMetaVisibility.channelSubscription, definitions: channelSubscriptionMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Subscription', kind: 'channels' }),
       facetHtml({ key: 'channelStatus', visibility: searchMetaVisibility.channelStatus, definitions: channelStatusMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Status', kind: 'channels' }),
     ].join('')),
-  ].join('');
+    ...browserSearchPlugins().map(plugin => kindHtml(
+      escapeHtml(plugin.search.label || plugin.id),
+      plugin.id,
+      resultCounts?.plugins?.[plugin.id]
+        ?? Number(plugin.search.catalogCount?.(browserPluginStatus(plugin.id)) || 0),
+      '',
+    )),
+  ].filter(Boolean).join('');
 }
 
 function renderSearchMetaFilters({
@@ -2265,17 +2403,24 @@ function renderSearchMetaFilters({
   reactionCounts = null,
   completionCounts = null,
   playlistMembershipCounts = null,
+  counts = null,
 } = {}) {
   searchForFilters.innerHTML = searchMetaFiltersHtml(
     metaCounts,
     reactionCounts,
     completionCounts,
     playlistMembershipCounts,
+    counts,
   );
   for (const key of ['videos', 'reactions', 'completion', 'membership', 'playlistVisibility', 'playlistOwnership', 'playlistStatus', 'channelSubscription', 'channelStatus']) {
     syncMetaFilterGroup(`search-${key}`);
   }
-  for (const kind of ['videos', 'playlists', 'channels']) {
+  for (const kind of [
+    'videos',
+    'playlists',
+    'channels',
+    ...browserSearchPlugins().map(plugin => plugin.id),
+  ]) {
     syncSearchKindFilter(kind);
   }
   updateSearchMetaProgress();
@@ -2291,7 +2436,12 @@ function syncSearchFiltersForSelection() {
 }
 
 function searchResultsSortHtml() {
-  const options = [
+  const forceRelevance = browserSearchPlugins().some(plugin => (
+    searchKindEnabled(plugin.id) && plugin.search.forceRelevance
+  ));
+  const options = forceRelevance ? [
+    ['relevance', 'Relevance'],
+  ] : [
     ['relevance', 'Relevance'],
     ['title', 'Title A-Z'],
     ['newest', 'Newest'],
@@ -2457,6 +2607,107 @@ function archivarixLinkHtml(video) {
   return `<a class="playlist-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Archivarix</a>`;
 }
 
+function browserPluginRequestUrl(pluginId, path, params = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    for (const item of (Array.isArray(value) ? value : [value])) {
+      if (item !== null && item !== undefined) query.append(key, String(item));
+    }
+  }
+  const suffix = query.toString();
+  return `/api/plugins/${encodeURIComponent(pluginId)}/${path}${suffix ? `?${suffix}` : ''}`;
+}
+
+function browserPluginHost(pluginId) {
+  return {
+    pluginId,
+    status: browserPluginStatus(pluginId),
+    supports: capability => browserPluginSupports(pluginId, capability),
+    requestJson: async (path, params = {}) => {
+      const response = await fetch(
+        browserPluginRequestUrl(pluginId, path, params),
+        { cache: 'no-store' },
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || `Plugin request failed (${response.status})`);
+      }
+      return payload;
+    },
+    ui: {
+      createVideoCard: videoCardFor,
+      escapeHtml,
+      localVideoHref,
+    },
+  };
+}
+
+async function fetchBrowserPluginSearches(query, limit, offset) {
+  const counts = {};
+  const errors = [];
+  const results = [];
+  let total = 0;
+  let totalIsExact = true;
+  let remaining = limit;
+  let localOffset = offset;
+  for (const plugin of browserSearchPlugins().filter(item => searchKindEnabled(item.id))) {
+    let payload = { total: 0, totalIsExact: true, results: [] };
+    if (query) {
+      try {
+        payload = await plugin.search.fetch(
+          { query, limit: Math.max(1, remaining), offset: localOffset },
+          browserPluginHost(plugin.id),
+        );
+      } catch (error) {
+        errors.push({
+          id: plugin.id,
+          label: plugin.search.label || plugin.id,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    const pluginTotal = Math.max(0, Number(payload.total || 0));
+    const rows = Array.isArray(payload.results) ? payload.results : [];
+    counts[plugin.id] = pluginTotal;
+    total += pluginTotal;
+    totalIsExact = totalIsExact && payload.totalIsExact !== false;
+    if (remaining > 0 && localOffset < pluginTotal) {
+      const visibleRows = rows.slice(0, remaining);
+      results.push(...visibleRows.map(item => ({
+        kind: 'plugin',
+        pluginId: plugin.id,
+        item,
+      })));
+      remaining -= visibleRows.length;
+    }
+    localOffset = Math.max(0, localOffset - pluginTotal);
+  }
+  return {
+    counts,
+    coreOffset: localOffset,
+    errors,
+    remaining,
+    results,
+    total,
+    totalIsExact,
+  };
+}
+
+async function decorateCoreSearchResults(results, errors) {
+  for (const plugin of browserSearchPlugins().filter(item => searchKindEnabled(item.id))) {
+    if (typeof plugin.search.decorateCoreResults !== 'function') continue;
+    try {
+      await plugin.search.decorateCoreResults(results, browserPluginHost(plugin.id));
+    } catch (error) {
+      errors.push({
+        id: plugin.id,
+        label: plugin.search.label || plugin.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 async function fetchOmniSearch(query) {
   const size = pageSizeNumber();
   const limit = Number.isFinite(size) ? size : 5000;
@@ -2472,12 +2723,15 @@ async function fetchOmniSearch(query) {
     sourceScopes.video,
     sourceScopes.channel,
     partialCompletionMinimumPercent,
+    browserSearchPlugins()
+      .filter(plugin => searchKindEnabled(plugin.id))
+      .map(plugin => plugin.id),
   ]);
   const metaCountsCache = omniMetaCountsCache;
   const reactionCountsCache = omniReactionCountsCache;
   const completionCountsCache = omniCompletionCountsCache;
   const playlistMembershipCountsCache = omniPlaylistMembershipCountsCache;
-  const params = new URLSearchParams({
+  const coreParams = new URLSearchParams({
     q: query,
     search_fields: searchFieldsValue,
     kinds: kindsValue,
@@ -2495,15 +2749,40 @@ async function fetchOmniSearch(query) {
     playlist_ownership: metaFilterParamValue(searchMetaVisibility.playlistOwnership),
     playlist_status: metaFilterParamValue(searchMetaVisibility.playlistStatus),
     sort: searchResultsSort,
-    limit: String(limit),
-    offset: String(offset),
   });
-  const key = params.toString();
+  const pluginKey = browserSearchPlugins()
+    .filter(plugin => searchKindEnabled(plugin.id))
+    .map(plugin => plugin.id)
+    .join(',');
+  const key = `${coreParams.toString()}&plugins=${encodeURIComponent(pluginKey)}&limit=${limit}&offset=${offset}`;
   if (omniSearchState.key === key && omniSearchState.data) return omniSearchState.data;
   if (omniSearchState.key === key && omniSearchState.promise) return omniSearchState.promise;
-  const promise = fetch(`/api/search?${params}`, { cache: 'no-store' }).then(async response => {
+  const promise = (async () => {
+    const pluginPayload = await fetchBrowserPluginSearches(query, limit, offset);
+    const requestParams = new URLSearchParams(coreParams);
+    requestParams.set('limit', String(Math.max(1, pluginPayload.remaining)));
+    requestParams.set('offset', String(pluginPayload.coreOffset));
+    const response = await fetch(`/api/search?${requestParams}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`Search failed: ${response.status}`);
-    const payload = await response.json();
+    const corePayload = await response.json();
+    const coreRows = pluginPayload.remaining
+      ? (corePayload.results || []).slice(0, pluginPayload.remaining)
+      : [];
+    await decorateCoreSearchResults(coreRows, pluginPayload.errors);
+    const payload = {
+      ...corePayload,
+      query,
+      limit,
+      offset,
+      total: pluginPayload.total + Number(corePayload.total || 0),
+      totalIsExact: pluginPayload.totalIsExact && corePayload.totalIsExact !== false,
+      counts: {
+        ...(corePayload.counts || {}),
+        plugins: pluginPayload.counts,
+      },
+      pluginErrors: pluginPayload.errors,
+      results: [...pluginPayload.results, ...coreRows],
+    };
     if (!metaCountsCache.has(metaCountsKey)) {
       const stableMetaCounts = Object.fromEntries(
         Object.entries(payload.metaCounts || {}).map(([group, counts]) => [group, { ...counts }])
@@ -2533,7 +2812,7 @@ async function fetchOmniSearch(query) {
       omniSearchState = { key, data: stablePayload, promise: null };
     }
     return stablePayload;
-  });
+  })();
   omniSearchState = { key, data: null, promise };
   return promise;
 }
@@ -2670,6 +2949,21 @@ function renderGroups() {
   channelSection.appendChild(presetButton('subscribed-channels', 'Subscribed channels', counts.subscribed_channels || 0));
   channelSection.appendChild(presetButton('terminated-channels', 'Terminated channels', counts.terminated_channels || 0));
   syncSidebarSelection();
+}
+
+async function renderBrowserPluginVideoPanels(videoId) {
+  const panels = [];
+  for (const plugin of browserPlugins.values()) {
+    const extension = plugin.videoDetail;
+    if (!extension || !browserPluginSupports(plugin.id, extension.capability)) continue;
+    try {
+      const panel = await extension.render(videoId, browserPluginHost(plugin.id));
+      if (panel instanceof HTMLElement) panels.push(panel);
+    } catch (_error) {
+      // Optional plugin failures must not prevent the core video detail from rendering.
+    }
+  }
+  return panels;
 }
 
 function videoDetailCardFor(video) {
@@ -2846,8 +3140,12 @@ async function render() {
     title.textContent = 'Video';
     meta.textContent = '';
     let video;
+    let pluginPanels = [];
     try {
-      video = await fetchViewData(`/api/videos/${encodeURIComponent(videoId)}`);
+      [video, pluginPanels] = await Promise.all([
+        fetchViewData(`/api/videos/${encodeURIComponent(videoId)}`),
+        renderBrowserPluginVideoPanels(videoId),
+      ]);
     } catch (error) {
       if (generation !== renderGeneration) return;
       title.textContent = 'Video not found';
@@ -2861,7 +3159,10 @@ async function render() {
     setDocumentTitle(displayVideoTitle(video) || videoId);
     hidePager();
     grid.className = 'grid';
-    grid.replaceChildren(videoDetailCardFor(video));
+    grid.replaceChildren(
+      videoDetailCardFor(video),
+      ...pluginPanels,
+    );
     empty.hidden = true;
     return;
   }
@@ -2981,10 +3282,17 @@ async function render() {
     renderedOmniSearchQuery = query;
     searchResultsRendered = true;
     title.textContent = '';
-    meta.innerHTML = rightPanelListMetaHtml(`${total} results`, {
+    const totalLabel = `${total.toLocaleString()}${payload.totalIsExact === false ? '+' : ''} results`;
+    meta.innerHTML = rightPanelListMetaHtml(totalLabel, {
       showLayout: true,
       sortHtml: searchResultsSortHtml(),
     });
+    for (const pluginError of payload.pluginErrors || []) {
+      const warning = document.createElement('div');
+      warning.className = 'status plugin-search-warning';
+      warning.textContent = `${pluginError.label} unavailable: ${pluginError.message}`;
+      meta.append(warning);
+    }
     renderSearchMetaFilters(payload);
     renderPager(remotePageInfo(total, rows.length, remoteLimit));
     applySearchCardLayout();
@@ -3173,6 +3481,7 @@ function playlistVideoCardFor(video, options = {}) {
     badges: [
       { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
       { label: matchTypeLabel(video), title: video.match_note },
+      ...(options.badges || []),
     ],
     details: [
       displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : '',
@@ -3265,6 +3574,14 @@ function historyRowCardFor(video, { layout = 'detailed' } = {}) {
 }
 
 function searchResultCardFor(result) {
+  if (result.kind === 'plugin') {
+    const plugin = browserSearchPlugin(result.pluginId);
+    const card = plugin?.search?.renderResult?.(
+      result.item,
+      browserPluginHost(result.pluginId),
+    );
+    if (card instanceof HTMLElement) return card;
+  }
   if (result.kind === 'playlist') {
     return cardFor(result.item, { resultKind: 'Playlist' });
   }
@@ -3275,6 +3592,7 @@ function searchResultCardFor(result) {
   return playlistVideoCardFor(video, {
     resultKind: 'Video',
     latestWatchDateHtml: latestWatchDateHtml(video),
+    badges: Array.isArray(video.plugin_badges) ? video.plugin_badges : [],
   });
 }
 
@@ -3471,7 +3789,16 @@ function handleMetaChange(event) {
   }
   const searchKindFilter = target.dataset.searchKindFilter;
   if (searchKindFilter && setSearchKindFilter(searchKindFilter, target.checked)) {
-    saveSearchOptInPreferences(searchKindFacetKeys(searchKindFilter));
+    const plugin = browserSearchPlugin(searchKindFilter);
+    if (plugin) {
+      saveFilterPreference(plugin.search.preferenceKey, target.checked);
+    } else {
+      saveSearchOptInPreferences(searchKindFacetKeys(searchKindFilter));
+    }
+    if (plugin?.search.forceRelevance && target.checked) {
+      searchResultsSort = 'relevance';
+      searchSortExplicit = false;
+    }
     currentPage = 1;
     reconcileSearchPreset();
     showSearchMetaProgress(searchKindFilter);

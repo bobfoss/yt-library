@@ -45,6 +45,7 @@ from yt_library.config import (
     normalize_config,
     save_config,
     valid_update_frequency,
+    valid_filter_preference_key,
     valid_update_hour_minute,
     valid_update_time,
 )
@@ -215,6 +216,8 @@ class ConfigTests(unittest.TestCase):
             99,
         )
         self.assertEqual(configured_filter_preferences({}), {})
+        self.assertTrue(valid_filter_preference_key("plugins.subtitles.search"))
+        self.assertFalse(valid_filter_preference_key("plugins.bad id.search"))
         self.assertEqual(
             configured_filter_preferences(
                 {
@@ -222,11 +225,12 @@ class ConfigTests(unittest.TestCase):
                         "videos.unavailable": True,
                         "completion.partial_below_minimum": False,
                         "channels.terminated": 1,
+                        "plugins.subtitles.search": True,
                         "unknown.filter": True,
                     }
                 }
             ),
-            {"videos.unavailable": True},
+            {"plugins.subtitles.search": True, "videos.unavailable": True},
         )
         self.assertEqual(configured_sort_preferences({}), {})
         self.assertEqual(
