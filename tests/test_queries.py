@@ -6,11 +6,13 @@ from pathlib import Path
 
 from yt_library import core
 from yt_library.queries import (
+    channel_detail_data,
     channel_list_data,
     history_activity_data,
     history_search_data,
     library_bootstrap_data,
     omni_search_data,
+    playlist_detail_data,
     playlist_list_data,
     video_collection_data,
     video_detail_data,
@@ -58,6 +60,41 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(data["videos"][0]["metadata_title"], "First")
         self.assertEqual(data["videos"][0]["metadata_channel"], "Channel UC_first")
         self.assertIn("playlist_links", data["videos"][0])
+
+    def test_channel_aliases_drive_all_external_channel_links(self) -> None:
+        channel_id = "UC_alias_owner"
+        self.add_video("alias-video", "Alias Video", channel_id)
+        self.conn.execute(
+            "UPDATE channels SET title = 'Alias Channel', aliases = '@first_alias, @second_alias' WHERE channel_id = ?",
+            (channel_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title, owner_channel_id) VALUES ('PLalias', 'Alias Playlist', ?)",
+            (channel_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO history_events(event_id, video_id, watch_date, time_precision) VALUES ('alias-history', 'alias-video', '2026-08-01', 'date_only')"
+        )
+        self.conn.commit()
+        expected = "https://www.youtube.com/@first_alias"
+
+        self.assertEqual(channel_detail_data(self.conn, channel_id)["url"], expected)
+        self.assertEqual(channel_list_data(self.conn)["results"][0]["url"], expected)
+        self.assertEqual(playlist_detail_data(self.conn, "PLalias")["owner_channel_url"], expected)
+        self.assertEqual(
+            playlist_list_data(self.conn)["results"][0]["owner_channel_url"],
+            expected,
+        )
+        self.assertEqual(video_detail_data(self.conn, "alias-video")["metadata_channel_url"], expected)
+        self.assertEqual(
+            history_search_data(self.conn, "alias-video")["watch"][0]["metadata_channel_url"],
+            expected,
+        )
+        results = omni_search_data(self.conn, "Alias", sort="type")["results"]
+        by_kind = {result["kind"]: result["item"] for result in results}
+        self.assertEqual(by_kind["channel"]["url"], expected)
+        self.assertEqual(by_kind["playlist"]["owner_channel_url"], expected)
+        self.assertEqual(by_kind["video"]["metadata_channel_url"], expected)
 
     def test_omni_search_deduplicates_sources_counts_and_pages_globally(self) -> None:
         self.add_video("shared123", "Needle Shared Video", "UC_needle")

@@ -921,6 +921,17 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(core.youtube_channel_url("@ESSIGI"), "https://www.youtube.com/@ESSIGI")
         self.assertEqual(core.youtube_channel_url("c/Example"), "https://www.youtube.com/c/Example")
         self.assertEqual(
+            core.preferred_youtube_channel_url(
+                "UCvmGOqGlxOgpZDoszBbWxmA",
+                "youtube.com/@first, @second",
+            ),
+            "https://www.youtube.com/@first",
+        )
+        self.assertEqual(
+            core.preferred_youtube_channel_url("UCvmGOqGlxOgpZDoszBbWxmA"),
+            "https://www.youtube.com/channel/UCvmGOqGlxOgpZDoszBbWxmA",
+        )
+        self.assertEqual(
             core.local_queue_target_from_url("http://127.0.0.1:8765/#playlist=PLexample"),
             ("playlist", "PLexample"),
         )

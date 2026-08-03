@@ -15,8 +15,8 @@ from .core import (
     history_time_quality_note,
     playlist_match_type_label,
     playlist_match_type_note,
+    preferred_youtube_channel_url,
     wayback_video_url,
-    youtube_channel_url,
     youtube_playlist_url,
     youtube_video_url,
 )
@@ -131,6 +131,7 @@ def _playlist_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                    s.scanned_at,
                    COALESCE(s.scan_status, '') AS scan_status,
                    COALESCE(ch.title, '') AS owner_channel_title,
+                   COALESCE(ch.aliases, '') AS owner_channel_aliases,
                    COALESCE(ch.thumbnail_path, '') AS owner_channel_thumbnail_path,
                    COALESCE(ch.status, '') AS owner_channel_status
             FROM playlists p
@@ -142,7 +143,10 @@ def _playlist_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
     for playlist in rows:
         playlist["url"] = youtube_playlist_url(playlist.get("playlist_id", ""))
-        playlist["owner_channel_url"] = youtube_channel_url(playlist.get("owner_channel_id", ""))
+        playlist["owner_channel_url"] = preferred_youtube_channel_url(
+            playlist.get("owner_channel_id", ""),
+            playlist.get("owner_channel_aliases", ""),
+        )
     mark_library_owner_playlists(rows)
     return rows
 
@@ -260,6 +264,7 @@ def playlist_list_data(
                      THEN trim(substr(trim(ch.title), 4))
                    ELSE trim(COALESCE(ch.title, ''))
                  END AS owner_channel_title,
+                 COALESCE(ch.aliases, '') AS owner_channel_aliases,
                  COALESCE(ch.thumbnail_path, '') AS owner_channel_thumbnail_path,
                  COALESCE(ch.status, '') AS owner_channel_status,
                  CASE
@@ -387,8 +392,9 @@ def playlist_list_data(
     for playlist in rows:
         playlist.pop("list_category", None)
         playlist["url"] = youtube_playlist_url(playlist.get("playlist_id", ""))
-        playlist["owner_channel_url"] = youtube_channel_url(
-            playlist.get("owner_channel_id", "")
+        playlist["owner_channel_url"] = preferred_youtube_channel_url(
+            playlist.get("owner_channel_id", ""),
+            playlist.get("owner_channel_aliases", ""),
         )
     return {
         "results": rows,
@@ -981,7 +987,10 @@ def channel_list_data(
     ]
     for row in rows:
         row.pop("list_category", None)
-        row["url"] = youtube_channel_url(row.get("channel_id") or "")
+        row["url"] = preferred_youtube_channel_url(
+            row.get("channel_id") or "",
+            row.get("aliases") or "",
+        )
     return {
         "results": rows,
         "total": total,
@@ -996,7 +1005,7 @@ def channel_detail_data(conn: sqlite3.Connection, channel_id: str) -> dict[str, 
     if row is None:
         return None
     item = dict(row)
-    item["url"] = youtube_channel_url(channel_id)
+    item["url"] = preferred_youtube_channel_url(channel_id, item.get("aliases") or "")
     return item
 
 
@@ -1328,7 +1337,10 @@ def _add_omni_video_links(conn: sqlite3.Connection, results: list[dict[str, Any]
 def _hydrate_video_identity(item: dict[str, Any], playlist_id: str = "") -> None:
     video_id = item.get("video_id") or ""
     item["url"] = youtube_video_url(video_id, playlist_id)
-    item["metadata_channel_url"] = youtube_channel_url(item.get("metadata_channel_id") or "")
+    item["metadata_channel_url"] = preferred_youtube_channel_url(
+        item.get("metadata_channel_id") or "",
+        item.get("metadata_channel_aliases") or "",
+    )
     item["watch_dates"] = [
         value for value in (item.pop("watch_dates_text", "") or "").split("|") if value
     ]
@@ -1391,6 +1403,7 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
                v.description AS metadata_description,
                COALESCE(v.channel_id, '') AS metadata_channel_id,
                COALESCE(ch.title, '') AS metadata_channel,
+               COALESCE(ch.aliases, '') AS metadata_channel_aliases,
                v.duration_text AS metadata_duration,
                v.upload_date AS metadata_upload_date,
                v.thumbnail_path AS metadata_thumbnail_path,
@@ -1511,6 +1524,7 @@ def omni_search_data(
                    ps.scanned_at,
                    COALESCE(ps.scan_status, '') AS scan_status,
                    COALESCE(owner.title, '') AS owner_channel_title,
+                   COALESCE(owner.aliases, '') AS owner_channel_aliases,
                    COALESCE(owner.thumbnail_path, '') AS owner_channel_thumbnail_path,
                    COALESCE(owner.status, '') AS owner_channel_status,
                    COALESCE(playlist_dates.newest_video_upload_date, '') AS newest_video_upload_date,
@@ -1548,7 +1562,10 @@ def omni_search_data(
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
             item["url"] = youtube_playlist_url(item.get("playlist_id") or "")
-            item["owner_channel_url"] = youtube_channel_url(item.get("owner_channel_id") or "")
+            item["owner_channel_url"] = preferred_youtube_channel_url(
+                item.get("owner_channel_id") or "",
+                item.get("owner_channel_aliases") or "",
+            )
             results.append(_omni_result("playlist", 2 if title_hit else 5, item, matched_description=not title_hit))
 
     if "channel" in active_result_kinds and (not query or search_titles or search_descriptions):
@@ -1587,7 +1604,10 @@ def omni_search_data(
         ):
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
-            item["url"] = youtube_channel_url(item.get("channel_id") or "")
+            item["url"] = preferred_youtube_channel_url(
+                item.get("channel_id") or "",
+                item.get("aliases") or "",
+            )
             results.append(_omni_result("channel", 1 if title_hit else 4, item, matched_description=not title_hit))
 
     if "video" in active_result_kinds and (not query or search_titles or search_descriptions):
@@ -1943,6 +1963,7 @@ def history_search_data(
                    v.description AS metadata_description,
                    COALESCE(v.channel_id, '') AS metadata_channel_id,
                    COALESCE(ch.title, '') AS metadata_channel,
+                   COALESCE(ch.aliases, '') AS metadata_channel_aliases,
                    v.duration_text AS metadata_duration,
                    v.thumbnail_path AS metadata_thumbnail_path,
                    COALESCE(ch.thumbnail_path, '') AS metadata_channel_thumbnail_path,
