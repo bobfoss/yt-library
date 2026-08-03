@@ -29,6 +29,9 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 The browser loads a small navigation bootstrap, then requests playlists, videos, channels, details, search results, and history as separate server-paginated read models. It does not preload the complete video and channel catalog.
 - `requirements.txt` lists runtime dependencies; `requirements-dev.txt` adds development-only static analysis.
 - `yt_library.config.json` is the local runtime configuration file, generated on first setup or serve.
+- Optional plugins are installed separately and activated explicitly through
+  the `plugins` object in `yt_library.config.json`; disabled or missing plugins
+  must not prevent the base service from starting.
 - `AGENTS.md` contains contributor guidance.
 - Runtime data such as `yt_library.sqlite3`, cookie files, Takeout zip exports, thumbnail folders, and logs should stay local and uncommitted.
 
@@ -259,6 +262,30 @@ mistaken for watch time.
 Recent history fetches use 200-entry batches and stop after two consecutive complete days have the same per-video occurrence counts as the prior YouTube observation. Full history verification retains 1,000-entry batches and scans to the end. A live watch occurrence is reused by video ID, local watch date, and occurrence number within that video/day group; `youtube_ordinal` records current display order and is not event identity.
 
 The database stores canonical video metadata once in `videos`; playlist membership and history events link to that entity. Metadata revisions are intentionally discarded, except that the last useful state is retained when a video becomes unavailable. Exact timestamps use ISO 8601 UTC. The configured display timezone lives in `yt_library.config.json`; the UI can update it from Admin.
+
+## Optional plugins
+
+YT Library discovers separately installed plugins through the
+`yt_library.plugins` Python entry-point group, but loads only plugins explicitly
+enabled in local configuration. Plugin API routes are namespaced below
+`/api/plugins/{plugin_id}/`; discovery, startup, status, and request failures are
+contained so the base application remains usable.
+
+The first plugin is the sibling YT Subtitles project. A local activation uses:
+
+```json
+{
+  "plugins": {
+    "subtitles": {
+      "enabled": true,
+      "config": "../YT Subtitles/yt_subtitles.config.json"
+    }
+  }
+}
+```
+
+YT Subtitles owns and migrates its separate database. YT Library never writes
+that database and joins plugin results to canonical videos only by video ID.
 
 ## Security
 

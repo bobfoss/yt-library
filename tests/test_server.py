@@ -16,6 +16,24 @@ from tests.support import migrated_connection
 
 
 class AdminServerTests(unittest.TestCase):
+    def test_plugin_routes_are_namespaced_and_delegated(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.handle_api.return_value = (200, {"hits": []})
+        handler.send_json = Mock()
+
+        handler._handle_library_get(
+            urllib.parse.urlparse("/api/plugins/subtitles/search?q=history")
+        )
+
+        handler.plugin_manager.handle_api.assert_called_once_with(
+            "subtitles",
+            "GET",
+            "search",
+            {"q": ["history"]},
+        )
+        handler.send_json.assert_called_once_with({"hits": []}, status=200)
+
     def test_get_dispatches_page_admin_and_library_routes(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler._handle_page_get = Mock(return_value=False)

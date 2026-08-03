@@ -41,6 +41,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "update_hour_minute": 0,
     "update_time": "03:00",
     "admin_advanced": False,
+    "plugins": {},
     "use_proxy": False,
     "proxy": "",
     "dispatch_mode": "delay",
@@ -230,6 +231,29 @@ def configured_admin_advanced(config: dict[str, Any]) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def configured_plugins(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_plugins = config.get("plugins")
+    if not isinstance(raw_plugins, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_plugin_id, raw_settings in raw_plugins.items():
+        plugin_id = str(raw_plugin_id).strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", plugin_id):
+            continue
+        if isinstance(raw_settings, bool):
+            settings: dict[str, Any] = {"enabled": raw_settings}
+        elif isinstance(raw_settings, dict):
+            settings = dict(raw_settings)
+        else:
+            continue
+        enabled = settings.get("enabled", False)
+        if not isinstance(enabled, bool):
+            enabled = str(enabled).strip().lower() in {"1", "true", "yes", "on"}
+        settings["enabled"] = enabled
+        normalized[plugin_id] = settings
+    return dict(sorted(normalized.items()))
+
+
 def valid_update_time(value: str) -> bool:
     return bool(DAILY_TIME_PATTERN.fullmatch((value or "").strip()))
 
@@ -401,6 +425,7 @@ CONFIG_NORMALIZERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "update_hour_minute": configured_update_hour_minute,
     "update_time": configured_update_time,
     "admin_advanced": configured_admin_advanced,
+    "plugins": configured_plugins,
     "dispatch_mode": configured_dispatch_mode,
     "job_dispatch_delay_seconds": configured_job_dispatch_delay,
     "request_delay_min_seconds": lambda config: configured_request_delay_range(config)[0],

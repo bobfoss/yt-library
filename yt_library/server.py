@@ -102,6 +102,7 @@ from .core import (
 )
 from .network import validated_socks5_proxy_url
 from .request_pacing import configure_request_pacing
+from .plugins import PluginManager
 from .queries import (
     channel_detail_data,
     channel_list_data,
@@ -412,6 +413,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         video_thumbs: Path,
         takeout_dir: Path,
         config_data: dict[str, Any],
+        plugin_manager: PluginManager,
         service_started_at: str,
         restart_pending: Callable[[], bool],
         request_restart: Callable[[], bool],
@@ -423,6 +425,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         self.video_thumbs = video_thumbs
         self.takeout_dir = takeout_dir
         self.config_data = config_data
+        self.plugin_manager = plugin_manager
         self.service_started_at = service_started_at
         self.restart_pending = restart_pending
         self.request_restart = request_restart
@@ -605,6 +608,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             data["dispatchSettings"] = self.dispatch_settings()
             data["settings"] = self.admin_settings()
             data["service"] = self.service_status()
+            data["plugins"] = self.plugin_manager.statuses()
             self.send_json(data)
             return
         if parsed.path == "/api/admin/cookies/status":
@@ -700,6 +704,23 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def _handle_library_get(self, parsed: urllib.parse.ParseResult) -> None:
+        if parsed.path == "/api/plugins":
+            self.send_json({"plugins": self.plugin_manager.statuses()})
+            return
+        if parsed.path.startswith("/api/plugins/"):
+            suffix = parsed.path[len("/api/plugins/") :]
+            plugin_id, separator, plugin_path = suffix.partition("/")
+            if not separator or not plugin_path:
+                self.send_json({"error": "Plugin route is required"}, status=404)
+                return
+            status, payload = self.plugin_manager.handle_api(
+                plugin_id,
+                "GET",
+                plugin_path,
+                urllib.parse.parse_qs(parsed.query),
+            )
+            self.send_json(payload, status=status)
+            return
         if parsed.path == "/api/settings":
             conn = connect(self.db_path)
             try:
@@ -1871,6 +1892,7 @@ def serve(args: argparse.Namespace) -> None:
         LIVE_HISTORY_WORKER,
         PLACEHOLDER_RECOVERY_WORKER,
     )
+    plugin_manager = PluginManager(args.config_data)
     service_started_at = utc_now()
     restart_requested = threading.Event()
     server: http.server.ThreadingHTTPServer | None = None
@@ -1899,6 +1921,7 @@ def serve(args: argparse.Namespace) -> None:
             video_thumbs=Path(args.video_thumbs),
             takeout_dir=Path(args.takeout),
             config_data=args.config_data,
+            plugin_manager=plugin_manager,
             service_started_at=service_started_at,
             restart_pending=restart_pending,
             request_restart=request_restart,
@@ -1920,6 +1943,7 @@ def serve(args: argparse.Namespace) -> None:
         print("\nStopped")
     finally:
         UPDATE_SCHEDULER.stop()
+        plugin_manager.shutdown()
         server.server_close()
     if restart_requested.is_set():
         print("Restarting service")

@@ -26,6 +26,7 @@ from yt_library.config import (
     configured_page_size,
     configured_partial_completion_min_percent,
     configured_playlist_card_layout,
+    configured_plugins,
     configured_proxy,
     configured_proxy_address,
     configured_request_delay_range,
@@ -50,6 +51,30 @@ from yt_library.config import (
 
 
 class ConfigTests(unittest.TestCase):
+    def test_plugin_configuration_is_explicit_and_preserves_plugin_settings(self) -> None:
+        normalized = configured_plugins(
+            {
+                "plugins": {
+                    " Subtitles ": {
+                        "enabled": "yes",
+                        "config": "../YT Subtitles/yt_subtitles.config.json",
+                    },
+                    "bad id": {"enabled": True},
+                    "ignored": "invalid",
+                }
+            }
+        )
+
+        self.assertEqual(
+            normalized,
+            {
+                "subtitles": {
+                    "enabled": True,
+                    "config": "../YT Subtitles/yt_subtitles.config.json",
+                }
+            },
+        )
+
     def test_declarative_normalizers_cover_typed_runtime_settings(self) -> None:
         self.assertLessEqual(set(CONFIG_NORMALIZERS), set(DEFAULT_CONFIG))
         normalized = normalize_config(dict(DEFAULT_CONFIG))
