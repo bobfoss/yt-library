@@ -598,6 +598,7 @@ def video_collection_data(
     include_members_only: bool | None = None,
     include_unknown: bool = True,
     include_removed: bool = True,
+    duplicates_only: bool = False,
     completion_filters: set[str] | None = None,
     partial_min_percent: int = 1,
     sort: str = "newest_added",
@@ -668,17 +669,44 @@ def video_collection_data(
         WITH raw_candidates AS MATERIALIZED (
           {candidate_sql}
         ),
-        categorized AS (
+        candidate_occurrences AS (
           SELECT raw_candidates.*,
+                 CASE
+                   WHEN COALESCE(video_id, '') = '' THEN 1
+                   ELSE COUNT(*) OVER (PARTITION BY playlist_id, video_id)
+                 END AS playlist_occurrence_count
+          FROM raw_candidates
+        ),
+        categorized AS (
+          SELECT candidate_occurrences.*,
                  {collection_category_sql} AS collection_category,
                  {completion_category_sql} AS completion_category,
                  CASE
                    WHEN COALESCE(video_id, '') <> '' THEN 'video:' || video_id
                    ELSE 'slot:' || playlist_id || ':' || position
                  END AS count_key
-          FROM raw_candidates
+          FROM candidate_occurrences
         )
     """
+    duplicate_count = 0
+    if playlist_id:
+        duplicate_count = int(
+            conn.execute(
+                """
+                SELECT COALESCE(SUM(occurrence_count), 0)
+                FROM (
+                  SELECT COUNT(*) AS occurrence_count
+                  FROM playlist_items
+                  WHERE playlist_id = ?
+                    AND video_id IS NOT NULL
+                  GROUP BY video_id
+                  HAVING COUNT(*) > 1
+                )
+                """,
+                (playlist_id,),
+            ).fetchone()[0]
+            or 0
+        )
     count_rows = conn.execute(
         categorized_cte
         + """
@@ -728,6 +756,11 @@ def video_collection_data(
         if selected_completion_filters
         else "0"
     )
+    duplicate_clause = (
+        "playlist_occurrence_count > 1"
+        if playlist_id and duplicates_only
+        else "1"
+    )
     rank_partition = (
         "count_key, playlist_id, position"
         if playlist_id
@@ -737,7 +770,7 @@ def video_collection_data(
         filtered AS (
           SELECT *
           FROM categorized
-          WHERE {selected_clause} AND {completion_clause}
+          WHERE {selected_clause} AND {completion_clause} AND {duplicate_clause}
         ),
         ranked AS (
           SELECT filtered.*,
@@ -821,6 +854,7 @@ def video_collection_data(
         item.pop("completeness_score", None)
         item.pop("completion_category", None)
         item.pop("count_key", None)
+        item.pop("playlist_occurrence_count", None)
         item.pop("candidate_rank", None)
         results.append(item)
     return {
@@ -828,6 +862,7 @@ def video_collection_data(
         "total": total,
         "counts": counts,
         "completionCounts": completion_counts,
+        "duplicateCount": duplicate_count,
         "limit": limit,
         "offset": offset,
     }
@@ -1365,9 +1400,10 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
         if result["kind"] != "video":
             continue
         video_id = result["item"].get("video_id") or ""
-        item = hydrated.get(video_id)
-        if not item:
+        hydrated_item = hydrated.get(video_id)
+        if not hydrated_item:
             continue
+        item = dict(hydrated_item)
         if "collection_category" in result["item"]:
             item["collection_category"] = result["item"]["collection_category"]
         _hydrate_video_identity(item, item.get("playlist_id") or "")

@@ -1450,6 +1450,56 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(filtered["total"], 2)
         self.assertEqual(filtered["completionCounts"], expected_counts)
 
+    def test_playlist_video_collection_filters_duplicate_occurrences(self) -> None:
+        self.add_video("duplicate1", "Repeated")
+        self.add_video("single1", "Single")
+        self.conn.executemany(
+            "UPDATE videos SET is_playable = 1, availability = 'public' WHERE video_id = ?",
+            [("duplicate1",), ("single1",)],
+        )
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLduplicates', 'Duplicates')"
+        )
+        self.conn.executemany(
+            "INSERT INTO playlist_items(playlist_id, position, video_id) VALUES ('PLduplicates', ?, ?)",
+            [(1, "duplicate1"), (2, "single1"), (3, "duplicate1")],
+        )
+        self.conn.commit()
+
+        unfiltered = video_collection_data(
+            self.conn,
+            playlist_id="PLduplicates",
+            sort="playlist_order",
+        )
+        self.assertEqual(unfiltered["total"], 3)
+        self.assertEqual(unfiltered["duplicateCount"], 2)
+        self.assertEqual(
+            [(row["video_id"], row["position"]) for row in unfiltered["results"]],
+            [("duplicate1", 1), ("single1", 2), ("duplicate1", 3)],
+        )
+
+        duplicates = video_collection_data(
+            self.conn,
+            playlist_id="PLduplicates",
+            duplicates_only=True,
+            sort="playlist_order",
+        )
+        self.assertEqual(duplicates["total"], 2)
+        self.assertEqual(duplicates["duplicateCount"], 2)
+        self.assertEqual(
+            [(row["video_id"], row["position"]) for row in duplicates["results"]],
+            [("duplicate1", 1), ("duplicate1", 3)],
+        )
+
+        no_matching_duplicates = video_collection_data(
+            self.conn,
+            playlist_id="PLduplicates",
+            query="Single",
+            duplicates_only=True,
+        )
+        self.assertEqual(no_matching_duplicates["total"], 0)
+        self.assertEqual(no_matching_duplicates["duplicateCount"], 2)
+
     def test_playlist_collection_filters_partial_completion_by_minimum_percentage(self) -> None:
         for video_id, title in (
             ("partial-low", "Partial low"),

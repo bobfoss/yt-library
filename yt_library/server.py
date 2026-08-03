@@ -137,6 +137,7 @@ def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, Any]
         "include_unavailable": query_bool_param(params, "unavailable"),
         "include_unknown": query_bool_param(params, "unknown"),
         "include_removed": query_bool_param(params, "removed"),
+        "duplicates_only": query_bool_param(params, "duplicates", default=False),
         "completion_filters": query_set_param(params, "completion"),
         "partial_min_percent": query_partial_min_percent(
             params,

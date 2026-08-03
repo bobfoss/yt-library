@@ -474,6 +474,7 @@
       unknown: true,
       never_watched: true,
     };
+    let playlistDuplicatesOnly = false;
     let completionMinimumInputTimer = null;
     const defaultSearchMetaVisibility = {
       videos: {
@@ -1271,6 +1272,7 @@
         unknown: true,
         never_watched: true,
       };
+      playlistDuplicatesOnly = false;
       playlistPageSearch = '';
     }
 
@@ -2266,6 +2268,9 @@
     const playlistVideoRemovedFilterDefinitions = videoMetaFilterDefinitions.filter(
       ({ key }) => key === 'removed'
     );
+    const playlistDuplicateFilterDefinitions = [
+      { key: 'duplicates', label: 'show duplicates', className: 'badge' },
+    ];
     const reactionMetaFilterDefinitions = [
       { key: 'none', label: 'no reaction' },
       { key: 'liked', label: 'liked', decoratorHtml: thumbIconHtml('like', false) },
@@ -2388,7 +2393,12 @@
       });
     }
 
-    function playlistVideoFiltersHtml(counts, completionCounts, searchHtml = '') {
+    function playlistVideoFiltersHtml(
+      counts,
+      completionCounts,
+      duplicateCount,
+      searchHtml = '',
+    ) {
       return `
         <span class="video-filter-groups${searchHtml ? ' has-search' : ''}">
           ${searchHtml ? `<span class="video-filter-search">${searchHtml}</span>` : ''}
@@ -2411,6 +2421,19 @@
                   definitions: playlistVideoRemovedFilterDefinitions,
                   showAll: false,
                 })}
+                ${Number(duplicateCount || 0) > 0 ? `
+                  <span class="video-duplicates-filter">
+                    <span class="video-filter-separator" aria-hidden="true">|</span>
+                    ${metaFilterControlsHtml({
+                      groupName: 'playlist-duplicates',
+                      filterAttribute: 'playlist-duplicates-filter',
+                      visibility: { duplicates: playlistDuplicatesOnly },
+                      counts: { duplicates: Number(duplicateCount || 0) },
+                      definitions: playlistDuplicateFilterDefinitions,
+                      showAll: false,
+                    })}
+                  </span>
+                ` : ''}
               </span>
             </span>
             <span class="video-filter-facet video-filter-completion">
@@ -2773,6 +2796,7 @@
       visibility = playlistVisibility,
       completion = null,
       partialMinimumPercent = 1,
+      duplicatesOnly = false,
     } = {}) {
       const base = playlistId
         ? `/api/playlists/${encodeURIComponent(playlistId)}/videos`
@@ -2797,6 +2821,7 @@
         unavailable: visibility.unavailable === false ? '0' : '1',
         unknown: visibility.unknown === false ? '0' : '1',
         removed: visibility.removed === false ? '0' : '1',
+        duplicates: duplicatesOnly ? '1' : '0',
         sort,
       };
       if (completion) params.completion = metaFilterParamValue(completion);
@@ -3234,6 +3259,7 @@
               query: playlistPageSearch.trim(),
               completion: playlistCompletionVisibility,
               partialMinimumPercent: partialCompletionMinimumPercent,
+              duplicatesOnly: playlistDuplicatesOnly,
             }),
           ]);
         } catch (error) {
@@ -3246,6 +3272,18 @@
           return;
         }
         if (generation !== renderGeneration) return;
+        if (playlistDuplicatesOnly && Number(payload.duplicateCount || 0) === 0) {
+          playlistDuplicatesOnly = false;
+          payload = await fetchVideoCollection({
+            playlistId,
+            sort: playlistViewSort,
+            query: playlistPageSearch.trim(),
+            completion: playlistCompletionVisibility,
+            partialMinimumPercent: partialCompletionMinimumPercent,
+            duplicatesOnly: false,
+          });
+          if (generation !== renderGeneration) return;
+        }
         setDocumentTitle(playlist.title || playlistId);
         const rows = payload.results || [];
         const playlistCount = playlistVideoCountLabel(playlist);
@@ -3267,6 +3305,7 @@
           ${playlistVideoFiltersHtml(
             payload.counts,
             payload.completionCounts,
+            payload.duplicateCount,
             `<input class="playlist-search" type="search" data-playlist-page-search placeholder="Search this playlist" autocomplete="off" value="${escapeHtml(playlistPageSearch)}">`,
           )}
           <span class="result-view-controls video-collection-view-controls">
@@ -3694,6 +3733,12 @@
         if (playlistCompletionFilter === 'partial_below_minimum') {
           saveFilterPreference(filterPreferenceKeys.lowPartialCompletion, target.checked);
         }
+        currentPage = 1;
+        render();
+        return;
+      }
+      if (target.dataset.playlistDuplicatesFilter) {
+        playlistDuplicatesOnly = target.checked;
         currentPage = 1;
         render();
         return;
