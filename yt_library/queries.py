@@ -1010,6 +1010,26 @@ def video_detail_data(conn: sqlite3.Connection, video_id: str) -> dict[str, Any]
     return wrappers[0]["item"]
 
 
+def video_summaries_data(
+    conn: sqlite3.Connection,
+    video_ids: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    normalized_ids = list(dict.fromkeys(video_id for video_id in video_ids if video_id))
+    wrappers = [
+        _omni_result("video", 0, {"video_id": video_id}, matched_description=False)
+        for video_id in normalized_ids
+    ]
+    _hydrate_omni_videos(conn, wrappers)
+    _add_omni_video_links(conn, wrappers)
+    return {
+        "videos": [
+            wrapper["item"]
+            for wrapper in wrappers
+            if "metadata_title" in wrapper["item"]
+        ]
+    }
+
+
 OMNI_SEARCH_FIELDS = {"titles", "descriptions"}
 OMNI_SEARCH_SORTS = {"relevance", "title", "newest", "oldest", "most_watched", "type"}
 OMNI_SEARCH_KIND_ORDER = ("video", "playlist", "channel")

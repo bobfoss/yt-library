@@ -12,6 +12,10 @@ test('browser plugins are loaded through a generic registration contract', () =>
   assert.match(indexSource, /register: registerBrowserPlugin/);
   assert.match(indexSource, /status\.browserAssets \|\| \[\]/);
   assert.match(indexSource, /\/plugins\/\$\{encodeURIComponent\(pluginId\)\}\/assets\//);
+  assert.match(indexSource, /libraryVideos,/);
+  assert.match(indexSource, /createSearchVideoCard: searchVideoCardFor/);
+  assert.match(indexSource, /browserSearchPresets\('videos'\)/);
+  assert.match(indexSource, /searchPresetDefinition\(preset\)/);
 });
 
 test('plugin-specific browser presentation stays outside core templates', () => {

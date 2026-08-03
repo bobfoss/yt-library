@@ -111,6 +111,27 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(library_request.path, "/api/videos")
         handler._handle_admin_get.assert_not_called()
 
+    def test_video_batch_route_hydrates_requested_library_videos(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.send_json = Mock()
+        connection = Mock()
+        payload = {"videos": [{"video_id": "first123"}]}
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch("yt_library.server.video_summaries_data", return_value=payload) as summaries,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/videos/batch?id=first123&id=second123&id=first123"
+                )
+            )
+
+        summaries.assert_called_once_with(connection, ["first123", "second123"])
+        connection.close.assert_called_once_with()
+        handler.send_json.assert_called_once_with(payload)
+
     def test_get_page_route_stops_api_dispatch(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.path = "/theme.js"

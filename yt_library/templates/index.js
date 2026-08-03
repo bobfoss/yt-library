@@ -251,6 +251,34 @@ const searchPresetDefinitions = {
   'terminated-channels': { kind: 'channels', sort: 'title' },
   'playlist-group': { kind: 'playlists', sort: 'title' },
 };
+
+function browserSearchPresets(section = '') {
+  return browserSearchPlugins().flatMap(plugin => {
+    const preset = plugin.search.preset;
+    const presetId = String(preset?.id || '');
+    if (!preset || !/^[a-z][a-z0-9_-]*$/.test(presetId)) return [];
+    if (section && String(preset.section || '') !== section) return [];
+    return [{ plugin, preset, presetId }];
+  });
+}
+
+function searchPresetDefinition(presetId) {
+  if (searchPresetDefinitions[presetId]) return searchPresetDefinitions[presetId];
+  const entry = browserSearchPresets().find(item => item.presetId === presetId);
+  if (!entry) return null;
+  return {
+    emptyMessage: entry.preset.emptyMessage,
+    kind: entry.plugin.id,
+    preserveQuery: entry.preset.preserveQuery === true,
+    sort: entry.preset.sort || 'relevance',
+  };
+}
+
+function searchPresetEmptyMessage(query) {
+  const configured = searchPresetDefinition(activeSearchPreset)?.emptyMessage;
+  if (typeof configured === 'function') return String(configured({ query }) || '');
+  return String(configured || '');
+}
 let playlistVisibilityPlaylistId = '';
 let playlistViewSort = playlistVideoSortOptions.has(sortPreferences.playlist)
   ? sortPreferences.playlist
@@ -629,6 +657,11 @@ function clearSearchMetaVisibility() {
 }
 
 function enableDefaultSearchKind(kind) {
+  const plugin = browserSearchPlugin(kind);
+  if (plugin) {
+    pluginSearchVisibility.set(plugin.id, true);
+    return;
+  }
   for (const facetKey of searchKindFacetKeys(kind)) {
     Object.assign(searchMetaVisibility[facetKey], defaultSearchMetaVisibility[facetKey]);
   }
@@ -642,7 +675,7 @@ function setSearchFacetSelection(groupName, selectedKeys) {
 }
 
 function applySearchPresetState(preset, groupKey = '') {
-  const definition = searchPresetDefinitions[preset];
+  const definition = searchPresetDefinition(preset);
   if (!definition || (preset === 'playlist-group' && !groupKey)) {
     activeSearchPreset = '';
     searchPlaylistGroupKey = '';
@@ -669,7 +702,7 @@ function defaultSearchResultsSort(
   preset = activeSearchPreset,
 ) {
   if (query) return 'relevance';
-  return searchPresetDefinitions[preset]?.sort || 'newest';
+  return searchPresetDefinition(preset)?.sort || 'newest';
 }
 
 function searchSortPreferenceContext(preset = activeSearchPreset) {
@@ -745,7 +778,7 @@ function presetDefiningFiltersMatch() {
 }
 
 function reconcileSearchPreset() {
-  const definition = searchPresetDefinitions[activeSearchPreset];
+  const definition = searchPresetDefinition(activeSearchPreset);
   if (!definition) return;
   const kinds = selectedSearchKinds();
   if (kinds.length === 1 && kinds[0] === definition.kind && presetDefiningFiltersMatch()) return;
@@ -943,11 +976,11 @@ function selectionFromHash() {
 }
 
 function activateSearchPreset(preset, groupKey = '') {
-  const definition = searchPresetDefinitions[preset];
+  const definition = searchPresetDefinition(preset);
   if (!definition) return;
   const progressToken = beginSidebarNavigationProgress();
   selected = '__search__';
-  search.value = '';
+  if (!definition.preserveQuery) search.value = '';
   for (const input of searchFields) input.checked = true;
   applySearchPresetState(preset, groupKey);
   searchResultsSort = preferredSearchResultsSort('', preset);
@@ -2693,11 +2726,30 @@ function browserPluginRequestUrl(pluginId, path, params = {}) {
   return `/api/plugins/${encodeURIComponent(pluginId)}/${path}${suffix ? `?${suffix}` : ''}`;
 }
 
+async function libraryVideos(videoIds) {
+  const ids = [...new Set((videoIds || []).map(String).filter(Boolean))];
+  const videos = new Map();
+  for (let start = 0; start < ids.length; start += 100) {
+    const query = new URLSearchParams();
+    for (const videoId of ids.slice(start, start + 100)) query.append('id', videoId);
+    const response = await fetch(`/api/videos/batch?${query}`, { cache: 'no-store' });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `Library video request failed (${response.status})`);
+    }
+    for (const video of payload.videos || []) {
+      if (video?.video_id) videos.set(video.video_id, video);
+    }
+  }
+  return videos;
+}
+
 function browserPluginHost(pluginId) {
   return {
     pluginId,
     status: browserPluginStatus(pluginId),
     supports: capability => browserPluginSupports(pluginId, capability),
+    libraryVideos,
     requestJson: async (path, params = {}) => {
       const response = await fetch(
         browserPluginRequestUrl(pluginId, path, params),
@@ -2710,6 +2762,7 @@ function browserPluginHost(pluginId) {
       return payload;
     },
     ui: {
+      createSearchVideoCard: searchVideoCardFor,
       createVideoCard: videoCardFor,
       escapeHtml,
       localVideoHref,
@@ -3004,6 +3057,15 @@ function renderGroups() {
   videoSection.appendChild(presetButton('videos', 'Videos', counts.videos || 0));
   videoSection.appendChild(presetButton('playlist-videos', 'Playlist videos', counts.playlist_videos || 0));
   videoSection.appendChild(presetButton('liked-videos', 'Liked videos', counts.liked_videos || 0));
+  for (const { plugin, preset, presetId } of browserSearchPresets('videos')) {
+    const status = browserPluginStatus(plugin.id);
+    const count = Number(
+      preset.count?.(status)
+      ?? plugin.search.catalogCount?.(status)
+      ?? 0
+    );
+    videoSection.appendChild(presetButton(presetId, preset.label || plugin.search.label || plugin.id, count));
+  }
 
   const playlistSection = sectionFor('Playlists');
   playlistSection.appendChild(presetButton('all-playlists', 'Playlists', counts.playlists || 0));
@@ -3378,7 +3440,7 @@ async function render() {
     applySearchCardLayout();
     grid.replaceChildren(...rows.map(searchResultCardFor));
     empty.hidden = rows.length !== 0;
-    empty.textContent = 'No results match.';
+    empty.textContent = searchPresetEmptyMessage(query) || 'No results match.';
     scheduleAdjacentPagePrefetch(pageInfo, page => fetchOmniSearch(query, page));
     return;
   }
@@ -3568,13 +3630,14 @@ function playlistVideoCardFor(video, options = {}) {
     position: options.showPosition ? video.position : '',
     title: displayVideoTitle(video),
     localUrl: video.video_id ? localVideoHref(video.video_id) : '',
-    externalUrl: watchUrl,
+    externalUrl: options.externalUrl === undefined ? watchUrl : options.externalUrl,
     badges: [
       { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
       { label: matchTypeLabel(video), title: video.match_note },
       ...(options.badges || []),
     ],
     details: [
+      ...(options.details || []),
       displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : '',
       video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
       archivarixLinkHtml(video),
@@ -3589,7 +3652,21 @@ function playlistVideoCardFor(video, options = {}) {
     watchedHtml: watchedLineHtml(video),
     sparklineHtml: watchSparklineHtml(video),
     reactionHtml: reactionIconsHtml(video),
-    description: video.metadata_description,
+    description: options.description === undefined ? video.metadata_description : options.description,
+  });
+}
+
+function searchVideoCardFor(video, options = {}) {
+  return playlistVideoCardFor(video, {
+    ...options,
+    resultKind: options.resultKind || 'Video',
+    latestWatchDateHtml: options.latestWatchDateHtml === undefined
+      ? latestWatchDateHtml(video)
+      : options.latestWatchDateHtml,
+    badges: [
+      ...(Array.isArray(video.plugin_badges) ? video.plugin_badges : []),
+      ...(options.badges || []),
+    ],
   });
 }
 
@@ -3680,11 +3757,7 @@ function searchResultCardFor(result) {
     return channelCardFor(result.item, { resultKind: 'Channel' });
   }
   const video = result.item;
-  return playlistVideoCardFor(video, {
-    resultKind: 'Video',
-    latestWatchDateHtml: latestWatchDateHtml(video),
-    badges: Array.isArray(video.plugin_badges) ? video.plugin_badges : [],
-  });
+  return searchVideoCardFor(video);
 }
 
 function channelCardFor(channel, options = {}) {

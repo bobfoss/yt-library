@@ -14,6 +14,7 @@ from yt_library.queries import (
     playlist_list_data,
     video_collection_data,
     video_detail_data,
+    video_summaries_data,
 )
 
 
@@ -39,6 +40,24 @@ class NormalizedReadModelTests(unittest.TestCase):
             channel_id=channel_id or "",
             source="metadata",
         )
+
+    def test_video_summaries_batch_hydrates_known_ids_in_request_order(self) -> None:
+        self.add_video("second123", "Second", "UC_second")
+        self.add_video("first123", "First", "UC_first")
+        self.conn.commit()
+
+        data = video_summaries_data(
+            self.conn,
+            ["first123", "missing123", "second123", "first123"],
+        )
+
+        self.assertEqual(
+            [video["video_id"] for video in data["videos"]],
+            ["first123", "second123"],
+        )
+        self.assertEqual(data["videos"][0]["metadata_title"], "First")
+        self.assertEqual(data["videos"][0]["metadata_channel"], "Channel UC_first")
+        self.assertIn("playlist_links", data["videos"][0])
 
     def test_omni_search_deduplicates_sources_counts_and_pages_globally(self) -> None:
         self.add_video("shared123", "Needle Shared Video", "UC_needle")

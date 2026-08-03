@@ -114,6 +114,7 @@ from .queries import (
     playlist_list_data,
     video_collection_data,
     video_detail_data,
+    video_summaries_data,
 )
 from .templates import load_template
 from .workers import (
@@ -840,6 +841,22 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     limit=limit,
                     offset=offset,
                 )
+            finally:
+                conn.close()
+            self.send_json(data)
+            return
+        if parsed.path == "/api/videos/batch":
+            params = urllib.parse.parse_qs(parsed.query)
+            video_ids = list(dict.fromkeys(params.get("id") or []))
+            if not video_ids:
+                self.send_json({"error": "At least one video id is required"}, status=400)
+                return
+            if len(video_ids) > 100:
+                self.send_json({"error": "At most 100 video ids are allowed"}, status=400)
+                return
+            conn = connect(self.db_path)
+            try:
+                data = video_summaries_data(conn, video_ids)
             finally:
                 conn.close()
             self.send_json(data)
