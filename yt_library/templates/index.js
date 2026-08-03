@@ -1985,7 +1985,13 @@ function historyHeatmapFor(payload) {
   next.setAttribute('aria-label', 'Next year');
   next.textContent = '>';
   next.disabled = historyActivityYearOffset === 0;
-  nav.append(syncLabel, previous, rangeLabel, next);
+  const current = document.createElement('button');
+  current.type = 'button';
+  current.dataset.historyCurrent = '';
+  current.title = 'Current year/day';
+  current.setAttribute('aria-label', 'Current year/day');
+  current.textContent = '>|';
+  nav.append(syncLabel, previous, rangeLabel, next, current);
   header.append(heading, nav);
   const scroll = document.createElement('div');
   scroll.className = 'history-heatmap-scroll';
@@ -2083,6 +2089,45 @@ async function shiftHistoryActivityYear(delta) {
       } else {
         heatmap.replaceWith(historyHeatmapFor(activity));
       }
+    }
+  } catch (error) {
+    historyActivityYearOffset = previousOffset;
+    currentPage = previousPage;
+    pendingHistoryDate = previousPendingDate;
+    heatmap.removeAttribute('aria-busy');
+    for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
+      button.disabled = button.dataset.historyYearShift === '-1' && historyActivityYearOffset === 0;
+    }
+    throw error;
+  }
+}
+
+async function jumpToCurrentHistoryActivity() {
+  const heatmap = viewContext.querySelector('.history-heatmap');
+  if (!(heatmap instanceof HTMLElement)) return;
+  const previousOffset = historyActivityYearOffset;
+  const previousPage = currentPage;
+  const previousPendingDate = pendingHistoryDate;
+  const channelId = heatmap.dataset.historyChannelId || '';
+  historyActivityYearOffset = 0;
+  heatmap.setAttribute('aria-busy', 'true');
+  for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
+    button.disabled = true;
+  }
+  try {
+    const activity = await fetchHistoryActivity(channelId, 0);
+    if (!heatmap.isConnected) return;
+    if (!historyActivitySyncEnabled) {
+      heatmap.replaceWith(historyHeatmapFor(activity));
+      return;
+    }
+    const targetDay = historyActivityDayNear(activity, localDateKey(new Date()));
+    if (targetDay) {
+      setHistoryPageFromOffset(targetDay.watch_date, Number(targetDay.offset || 0));
+      if (updateCurrentHash(false)) return;
+      await render();
+    } else {
+      heatmap.replaceWith(historyHeatmapFor(activity));
     }
   } catch (error) {
     historyActivityYearOffset = previousOffset;
@@ -3832,6 +3877,11 @@ viewContext.addEventListener('change', event => {
   }
 });
 viewContext.addEventListener('click', event => {
+  const currentHistory = event.target.closest('[data-history-current]');
+  if (currentHistory instanceof HTMLButtonElement && !currentHistory.disabled) {
+    void jumpToCurrentHistoryActivity();
+    return;
+  }
   const yearShift = event.target.closest('[data-history-year-shift]');
   if (yearShift instanceof HTMLButtonElement && !yearShift.disabled) {
     const delta = Number(yearShift.dataset.historyYearShift || 0);

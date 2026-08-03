@@ -99,6 +99,16 @@ test('numbered browser pages cache and prefetch adjacent payloads', () => {
   assert.match(indexSource, /fetchVideoCollection\(\{[\s\S]*page = currentPage,/);
 });
 
+test('history heatmap can return to the current year and day', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /current\.dataset\.historyCurrent = ''/);
+  assert.match(indexSource, /current\.textContent = '>\|'/);
+  assert.match(indexSource, /async function jumpToCurrentHistoryActivity\(\)/);
+  assert.match(indexSource, /historyActivityYearOffset = 0/);
+  assert.match(indexSource, /historyActivityDayNear\(activity, localDateKey\(new Date\(\)\)\)/);
+});
+
 test('history document title includes the active page or date', () => {
   const indexSource = source('index.js');
 
