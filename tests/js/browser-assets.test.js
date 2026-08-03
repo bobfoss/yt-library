@@ -27,6 +27,22 @@ test('all served browser assets have valid JavaScript syntax', () => {
   }
 });
 
+test('detail navigation retains the active search state', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /let retainedSearchHash = '#search';/);
+  assert.match(indexSource, /retainedSearchHash = hash;/);
+  assert.match(indexSource, /window\.location\.hash = retainedSearchHash;/);
+  assert.match(
+    indexSource,
+    /searchNav\?\.addEventListener\('click', activateSearchNavigation\);/,
+  );
+  assert.doesNotMatch(
+    indexSource,
+    /if \(selected !== '__search__'\) search\.value = '';/,
+  );
+});
+
 test('theme selection normalizes, persists, and publishes changes', () => {
   const stored = new Map([['yt-library-theme', 'light']]);
   const events = [];

@@ -192,6 +192,7 @@ let channelDetailTab = 'playlists';
 let renderGeneration = 0;
 let renderedOmniSearchQuery = '';
 let searchResultsRendered = false;
+let retainedSearchHash = '#search';
 let searchMetaProgressTimer = null;
 let searchHeaderProgressTimer = null;
 let searchHeaderProgressToken = 0;
@@ -623,6 +624,7 @@ function searchHash() {
 }
 
 function applySearchHash(hash) {
+  retainedSearchHash = hash;
   const queryIndex = hash.indexOf('?');
   const params = new URLSearchParams(queryIndex >= 0 ? hash.slice(queryIndex + 1) : '');
   search.value = params.get('q') || '';
@@ -682,6 +684,7 @@ function applySearchHash(hash) {
 
 function updateSearchHash(replace = false) {
   const href = searchHash();
+  retainedSearchHash = href;
   if (window.location.hash === href) return false;
   if (replace) {
     history.replaceState(null, '', href);
@@ -807,10 +810,19 @@ function activateUnscopedSearch() {
   void render().finally(() => finishSidebarNavigationProgress(progressToken));
 }
 
+function activateSearchNavigation() {
+  if (selected === '__search__') {
+    activateUnscopedSearch();
+    return;
+  }
+  beginSidebarNavigationProgress();
+  window.location.hash = retainedSearchHash;
+}
+
 function setSelected(value) {
   const progressToken = beginSidebarNavigationProgress();
   selected = value;
-  if (value !== '__search__') search.value = '';
+  if (value === '__history__') search.value = '';
   currentPage = 1;
   if (value.startsWith('__playlist__:')) {
     const playlistId = value.slice('__playlist__:'.length);
@@ -3130,7 +3142,7 @@ search.addEventListener('input', () => {
   }, 250);
 });
 historyNav?.addEventListener('click', () => setSelected('__history__'));
-searchNav?.addEventListener('click', activateUnscopedSearch);
+searchNav?.addEventListener('click', activateSearchNavigation);
 viewContext.addEventListener('change', event => {
   const syncToggle = event.target.closest('[data-history-sync]');
   if (syncToggle instanceof HTMLInputElement) {
@@ -3579,7 +3591,7 @@ window.addEventListener('hashchange', () => {
     channelDetailTab = 'playlists';
   }
   if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
-  if (selected !== '__search__') search.value = '';
+  if (selected === '__history__') search.value = '';
   renderGroups();
   void render().finally(() => {
     if (progressToken !== null) {
