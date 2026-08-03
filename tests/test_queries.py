@@ -1206,6 +1206,51 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(len(paged_queries), 3)
         self.assertTrue(all("LIMIT 1 OFFSET 1" in query for query in paged_queries))
 
+    def test_playlist_collection_plan_uses_playlist_key_before_paging(self) -> None:
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLindexed', 'Indexed')"
+        )
+        for position, video_id in enumerate(("indexed-a", "indexed-b", "indexed-c")):
+            self.add_video(video_id, video_id)
+            self.conn.execute(
+                """
+                INSERT INTO playlist_items(playlist_id, position, video_id)
+                VALUES ('PLindexed', ?, ?)
+                """,
+                (position, video_id),
+            )
+        self.conn.commit()
+
+        statements: list[str] = []
+        self.conn.set_trace_callback(statements.append)
+        try:
+            page = video_collection_data(
+                self.conn,
+                playlist_id="PLindexed",
+                sort="playlist_order",
+                limit=1,
+                offset=1,
+            )
+        finally:
+            self.conn.set_trace_callback(None)
+
+        self.assertEqual([row["video_id"] for row in page["results"]], ["indexed-b"])
+        paged_query = next(
+            statement
+            for statement in statements
+            if "WITH raw_candidates AS MATERIALIZED" in statement
+            and "LIMIT 1 OFFSET 1" in " ".join(statement.upper().split())
+        )
+        plan = [
+            str(row["detail"]).upper()
+            for row in self.conn.execute(f"EXPLAIN QUERY PLAN {paged_query}")
+        ]
+        self.assertTrue(
+            any("SEARCH PI USING" in detail and "PLAYLIST_ID=?" in detail for detail in plan),
+            plan,
+        )
+        self.assertFalse(any(detail.startswith("SCAN PI") for detail in plan), plan)
+
     def test_video_and_channel_collections_hydrate_only_requested_page(self) -> None:
         self.add_video("available1", "Alpha", "UC_subscribed")
         self.add_video("unavailable1", "Beta", "UC_other")

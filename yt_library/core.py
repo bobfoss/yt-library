@@ -43,14 +43,14 @@ from .network import (
     ytdlp_proxy_options,
 )
 from .database import (
-    CHANNEL_NOTIFICATION_CAPTURE_START,
-    CHANNEL_SUBSCRIPTION_CAPTURE_START,
-    PLAYLIST_METADATA_CAPTURE_START,
-    SCHEMA,
-    SCHEMA_VERSION,
-    VIDEO_VISIBILITY_CAPTURE_START,
+    CHANNEL_NOTIFICATION_CAPTURE_START as CHANNEL_NOTIFICATION_CAPTURE_START,
+    CHANNEL_SUBSCRIPTION_CAPTURE_START as CHANNEL_SUBSCRIPTION_CAPTURE_START,
+    PLAYLIST_METADATA_CAPTURE_START as PLAYLIST_METADATA_CAPTURE_START,
+    SCHEMA as SCHEMA,
+    SCHEMA_VERSION as SCHEMA_VERSION,
+    VIDEO_VISIBILITY_CAPTURE_START as VIDEO_VISIBILITY_CAPTURE_START,
     connect,
-    migrate_database,
+    migrate_database as migrate_database,
     worker_queue_order_sql,
 )
 from .history import history_match_type_for_identity, history_source_type_for_identity
@@ -7808,7 +7808,6 @@ def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
     total_candidates = 0
     total_cached = 0
     for index, row in enumerate(rows, start=1):
-        playlist_id = row["playlist_id"]
         query = row["title"]
         try:
             videos = archivarix_search_deleted(
