@@ -17,6 +17,7 @@ test('browser plugins are loaded through a generic registration contract', () =>
   assert.match(indexSource, /browserSearchPresets\('videos'\)/);
   assert.match(indexSource, /searchPresetDefinition\(preset\)/);
   assert.match(indexSource, /query \|\| plugin\.search\.fetchEmptyQuery === true/);
+  assert.match(indexSource, /plugin\.search\.decorateCoreResultCard\(card, result,/);
 });
 
 test('plugin-specific browser presentation stays outside core templates', () => {

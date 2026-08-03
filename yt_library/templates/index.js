@@ -3853,7 +3853,16 @@ function searchResultCardFor(result) {
     return channelCardFor(result.item, { resultKind: 'Channel' });
   }
   const video = result.item;
-  return searchVideoCardFor(video);
+  const card = searchVideoCardFor(video);
+  for (const plugin of browserSearchPlugins().filter(item => searchKindEnabled(item.id))) {
+    if (typeof plugin.search.decorateCoreResultCard !== 'function') continue;
+    try {
+      plugin.search.decorateCoreResultCard(card, result, browserPluginHost(plugin.id));
+    } catch (error) {
+      console.error(`Plugin card decoration failed: ${plugin.id}`, error);
+    }
+  }
+  return card;
 }
 
 function channelCardFor(channel, options = {}) {
