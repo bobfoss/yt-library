@@ -130,6 +130,8 @@ THEME_JS = load_template("theme.js")
 TIMEZONE_JS = load_template("timezone.js")
 VIDEO_CARD_JS = load_template("video-card.js")
 COLLECTION_CARD_JS = load_template("collection-card.js")
+INDEX_JS = load_template("index.js")
+ADMIN_JS = load_template("admin.js")
 FAVICON_SVG = load_template("favicon.svg")
 
 PREFERENCE_POST_PATHS = frozenset(
@@ -546,6 +548,8 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 COLLECTION_CARD_JS,
                 "text/javascript; charset=utf-8",
             ),
+            "/index.js": (INDEX_JS, "text/javascript; charset=utf-8"),
+            "/admin.js": (ADMIN_JS, "text/javascript; charset=utf-8"),
         }
         asset = static_assets.get(path)
         if asset is not None:

@@ -52,6 +52,25 @@ class AdminServerTests(unittest.TestCase):
         handler._handle_admin_get.assert_not_called()
         handler._handle_library_get.assert_not_called()
 
+    def test_page_routes_serve_extracted_browser_scripts(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler._send_bytes = Mock()
+
+        self.assertTrue(handler._handle_page_get("/index.js"))
+        handler._send_bytes.assert_called_once_with(
+            server.INDEX_JS.encode("utf-8"),
+            "text/javascript; charset=utf-8",
+            cache_control="no-cache",
+        )
+
+        handler._send_bytes.reset_mock()
+        self.assertTrue(handler._handle_page_get("/admin.js"))
+        handler._send_bytes.assert_called_once_with(
+            server.ADMIN_JS.encode("utf-8"),
+            "text/javascript; charset=utf-8",
+            cache_control="no-cache",
+        )
+
     def test_post_dispatches_to_explicit_route_groups(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler._handle_cookie_post = Mock()

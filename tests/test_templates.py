@@ -196,7 +196,14 @@ class TemplateDomTests(unittest.TestCase):
             attributes.get("src")
             for _tag, attributes in self.index.matching(tag="script")
         }
-        self.assertIn("/theme.js", script_sources)
+        self.assertEqual(script_sources, {"/theme.js", "/index.js"})
+
+        admin_script_sources = {
+            attributes.get("src")
+            for _tag, attributes in self.admin.matching(tag="script")
+        }
+        self.assertEqual(admin_script_sources, {"/theme.js", "/admin.js"})
+        self.assertNotIn(None, script_sources | admin_script_sources)
 
 
 if __name__ == "__main__":
