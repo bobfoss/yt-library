@@ -1,13 +1,17 @@
 # Project TODO
 
-This review uses the current code as truth and ranks remaining cleanup by duplication risk. The project supports only a fresh current schema; historical database upgrade code is intentionally excluded.
+This review uses the current code as truth and ranks remaining cleanup by
+duplication risk. The project supports upgrading existing databases through
+versioned migrations as well as creating a fresh current schema.
 
 ## Completed Cleanup
 
-### Fresh Schema Bootstrap
+### Schema Bootstrap And Migrations
 
-- `migrate` initializes only `yt_library/schema.sql`.
-- Historical table rebuilds, legacy column conversions, and upgrade-only tests are removed.
+- `migrate` initializes fresh databases from `yt_library/schema.sql` and upgrades
+  supported older schema versions through `yt_library/database.py`.
+- Migration tests preserve user data and verify each supported schema transition;
+  future schema changes must add a versioned migration and regression coverage.
 - The newest selected Takeout is imported as current input rather than accumulated as metadata history.
 
 ### Canonical Current-State Model

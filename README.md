@@ -105,6 +105,10 @@ in the generated config file:
 Existing command-line options still work as one-off overrides, and `migrate`
 remains available for explicit setup or upgrade runs.
 
+Existing databases are supported through versioned migrations in
+`yt_library/database.py`. Schema changes must preserve the fresh-install shape
+in `schema.sql` and provide an upgrade path for supported prior versions.
+
 The default host binds only to the local loopback interface. To expose the app
 through Tailscale without binding other interfaces, set `host` to the machine's
 Tailscale IPv4 address.

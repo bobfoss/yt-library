@@ -220,7 +220,10 @@ def main(argv: list[str] | None = None) -> int:
     recover_missing_parser.add_argument("--refresh-metadata", action="store_true", help="Use Archivarix API even when a thumbnail is already cached")
     recover_missing_parser.set_defaults(func=recover_unavailable_videos)
 
-    migrate_parser = subparsers.add_parser("migrate", help="Initialize the current database schema")
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Initialize or upgrade the configured database schema",
+    )
     migrate_parser.add_argument("--db", default=str(config_path(config, "database")))
     migrate_parser.set_defaults(func=migrate)
 

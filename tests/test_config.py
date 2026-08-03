@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -46,6 +47,19 @@ from yt_library.config import (
 
 
 class ConfigTests(unittest.TestCase):
+    def test_cli_help_describes_supported_schema_upgrades(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main(["--config", str(config_path), "--help"])
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn(
+            "Initialize or upgrade the configured database schema",
+            stdout.getvalue(),
+        )
+
     def test_config_resolves_paths_relative_to_config_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "settings" / "yt_library.config.json"

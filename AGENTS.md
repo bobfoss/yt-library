@@ -80,7 +80,7 @@ $files = @("yt_library_manager.py") + (Get-ChildItem yt_library -Filter *.py | F
   provide the `yt_dlp` Python module imported by the application.
 - `py_compile` catches syntax errors without running workers.
 - With no command, `yt_library_manager.py` creates `yt_library.config.json` if needed, initializes or migrates the configured database, and serves the local browser/admin UI.
-- `migrate` initializes or upgrades the configured schema from the migration path in `yt_library/core.py`.
+- `migrate` initializes or upgrades the configured schema from the migration path in `yt_library/database.py`.
 - `serve` starts the local browser/admin UI and initializes or migrates the configured database before listening.
 - `import-history` imports Takeout watch history zips from the selected path and rebuilds reconciliation.
 
