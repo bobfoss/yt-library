@@ -140,12 +140,30 @@ class PluginManagerTests(unittest.TestCase):
         entry_point = FakeEntryPoint(FakePlugin)
 
         manager = PluginManager(
-            {"plugins": {"subtitles": {"enabled": False}}},
+            {
+                "plugins": {
+                    "subtitles": {
+                        "enabled": False,
+                        "name": "YT Subtitles",
+                    }
+                }
+            },
             entry_points=[entry_point],
         )
 
         self.assertEqual(entry_point.load_count, 0)
-        self.assertEqual(manager.statuses(), [])
+        self.assertEqual(
+            manager.statuses(),
+            [
+                {
+                    "id": "subtitles",
+                    "name": "YT Subtitles",
+                    "enabled": False,
+                    "state": "disabled",
+                    "message": "Plugin is disabled",
+                }
+            ],
+        )
 
     def test_enabled_plugin_loads_with_versioned_context_and_routes_requests(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

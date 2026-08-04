@@ -483,7 +483,7 @@ def _normalize_worker_result(value: Any) -> dict[str, Any]:
 
 
 class PluginManager:
-    """Load only explicitly enabled plugins and contain plugin failures."""
+    """Track configured plugins, load enabled ones, and contain failures."""
 
     def __init__(
         self,
@@ -498,25 +498,34 @@ class PluginManager:
         configured = config.get("plugins")
         if not isinstance(configured, dict):
             return
-        enabled = {
+        configured_plugins = {
             plugin_id: dict(plugin_config)
             for plugin_id, plugin_config in configured.items()
             if (
                 isinstance(plugin_id, str)
                 and PLUGIN_ID.fullmatch(plugin_id)
                 and isinstance(plugin_config, dict)
-                and plugin_config.get("enabled") is True
             )
         }
-        if not enabled:
+        if not configured_plugins:
             return
-        available = list(entry_points) if entry_points is not None else _installed_entry_points()
+        has_enabled_plugin = any(
+            plugin_config.get("enabled") is True
+            for plugin_config in configured_plugins.values()
+        )
+        available = (
+            list(entry_points) if entry_points is not None else _installed_entry_points()
+        ) if has_enabled_plugin else []
         by_name: dict[str, list[Any]] = {}
         for entry_point in available:
             by_name.setdefault(str(entry_point.name), []).append(entry_point)
-        for plugin_id, plugin_config in enabled.items():
+        for plugin_id, plugin_config in configured_plugins.items():
             record = _PluginRecord(plugin_id=plugin_id, configured=plugin_config)
             self._records[plugin_id] = record
+            if plugin_config.get("enabled") is not True:
+                record.state = "disabled"
+                record.message = "Plugin is disabled"
+                continue
             matches = by_name.get(plugin_id, [])
             if not matches:
                 record.state = "missing"
@@ -565,7 +574,8 @@ class PluginManager:
         instance = record.instance
         payload: dict[str, Any] = {
             "id": record.plugin_id,
-            "enabled": True,
+            "name": str(record.configured.get("name") or record.plugin_id),
+            "enabled": record.configured.get("enabled") is True,
             "state": record.state,
         }
         if record.message:

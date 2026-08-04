@@ -1518,6 +1518,77 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         parsed: urllib.parse.ParseResult,
         params: dict[str, list[str]],
     ) -> None:
+        plugin_enabled_match = re.fullmatch(
+            r"/api/admin/plugins/([a-z][a-z0-9_-]*)/enabled",
+            parsed.path,
+        )
+        if plugin_enabled_match:
+            plugin_id = plugin_enabled_match.group(1)
+            plugins = self.config_data.get("plugins")
+            plugin_config = plugins.get(plugin_id) if isinstance(plugins, dict) else None
+            if not isinstance(plugin_config, dict):
+                self.send_json(
+                    {"error": f"Plugin is not configured: {plugin_id}"},
+                    status=404,
+                )
+                return
+            enabled = (params.get("enabled") or [""])[0].strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            previous_enabled = plugin_config.get("enabled") is True
+            if previous_enabled == enabled:
+                self.send_json(
+                    {
+                        "ok": True,
+                        "pluginId": plugin_id,
+                        "enabled": enabled,
+                        "restartScheduled": False,
+                        "service": self.service_status(),
+                    }
+                )
+                return
+            if any(
+                worker.is_alive()
+                for worker in (
+                    WORKER_QUEUE_DISPATCHER,
+                    METADATA_WORKER,
+                    PLAYLIST_SCAN_WORKER,
+                    LIVE_HISTORY_WORKER,
+                    PLACEHOLDER_RECOVERY_WORKER,
+                )
+            ):
+                self.send_json(
+                    {"error": "Stop active workers before changing plugin state"},
+                    status=409,
+                )
+                return
+            current_status = next(
+                (
+                    status
+                    for status in self.plugin_manager.statuses()
+                    if status.get("id") == plugin_id
+                ),
+                {},
+            )
+            display_name = str(current_status.get("name") or "").strip()
+            if display_name:
+                plugin_config["name"] = display_name
+            plugin_config["enabled"] = enabled
+            save_config(self.config_data)
+            scheduled = self.request_restart()
+            self.send_json(
+                {
+                    "ok": True,
+                    "pluginId": plugin_id,
+                    "enabled": enabled,
+                    "restartScheduled": bool(scheduled or self.restart_pending()),
+                    "service": self.service_status(),
+                }
+            )
+            return
         plugin_process_match = re.fullmatch(
             r"/api/admin/plugins/([a-z][a-z0-9_-]*)/processes/"
             r"([a-z][a-z0-9_-]*)/enqueue",

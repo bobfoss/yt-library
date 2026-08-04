@@ -114,6 +114,69 @@ class AdminServerTests(unittest.TestCase):
                 }
             )
 
+    def test_plugin_enabled_endpoint_saves_display_name_and_restarts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            config["plugins"] = {
+                "subtitles": {
+                    "enabled": True,
+                    "config": "../YT Subtitles/yt_subtitles.config.json",
+                }
+            }
+            handler = object.__new__(server.LibraryHandler)
+            handler.config_data = config
+            handler.plugin_manager = Mock()
+            handler.plugin_manager.statuses.return_value = [
+                {
+                    "id": "subtitles",
+                    "name": "YT Subtitles",
+                    "enabled": True,
+                    "state": "ready",
+                }
+            ]
+            handler.request_restart = Mock(return_value=True)
+            handler.restart_pending = lambda: handler.request_restart.called
+            handler.service_started_at = "2026-08-04T08:00:00Z"
+            handler.send_json = Mock()
+
+            handler._handle_admin_action_post(
+                urllib.parse.urlparse("/api/admin/plugins/subtitles/enabled"),
+                {"enabled": ["0"]},
+            )
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            response = handler.send_json.call_args.args[0]
+
+        self.assertFalse(saved["plugins"]["subtitles"]["enabled"])
+        self.assertEqual(saved["plugins"]["subtitles"]["name"], "YT Subtitles")
+        handler.request_restart.assert_called_once_with()
+        self.assertTrue(response["restartScheduled"])
+        self.assertFalse(response["enabled"])
+        self.assertEqual(response["service"]["status"], "restarting")
+
+    def test_plugin_enabled_endpoint_requires_idle_workers(self) -> None:
+        config = load_config(Path("missing-test-config.json"))
+        config["plugins"] = {"subtitles": {"enabled": True}}
+        handler = object.__new__(server.LibraryHandler)
+        handler.config_data = config
+        handler.request_restart = Mock()
+        handler.send_json = Mock()
+
+        with patch.object(
+            server.WORKER_QUEUE_DISPATCHER,
+            "is_alive",
+            return_value=True,
+        ):
+            handler._handle_admin_action_post(
+                urllib.parse.urlparse("/api/admin/plugins/subtitles/enabled"),
+                {"enabled": ["0"]},
+            )
+
+        self.assertTrue(config["plugins"]["subtitles"]["enabled"])
+        handler.request_restart.assert_not_called()
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 409)
+
     def test_channel_alias_route_resolves_before_loading_videos(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.db_path = Path("library.sqlite3")

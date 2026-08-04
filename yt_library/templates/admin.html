@@ -46,6 +46,10 @@
     .plugin-process-slot:empty { display: none; }
     .plugin-process-slot .controls { margin-top: 0; }
     .plugin-process-input { width: 220px; }
+    .plugin-enabled-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
+    .plugin-enabled-status:empty { display: none; }
+    .plugin-enabled-toggle:disabled + .theme-track { cursor: not-allowed; opacity: 0.55; }
+    .plugin-process-block + .plugin-process-block { margin-top: 14px; }
     .workstream { border-top: 1px solid var(--line); padding-top: 18px; }
     .workstream-header { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin-bottom: 12px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 12px; }

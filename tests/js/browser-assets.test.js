@@ -112,6 +112,19 @@ test('admin renders generic placed plugin process inputs', () => {
   assert.match(adminSource, /videoPluginProcesses\.addEventListener\('submit', enqueuePluginProcess\)/);
 });
 
+test('advanced admin renders a generic persisted plugin enabled slider', () => {
+  const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
+
+  assert.match(adminHtml, /\.plugin-enabled-control/);
+  assert.match(adminSource, /function pluginEnabledControlHtml\(plugin\)/);
+  assert.match(adminSource, /<span>Enabled<\/span>/);
+  assert.match(adminSource, /class="plugin-enabled-toggle" type="checkbox"/);
+  assert.match(adminSource, /\$\{plugin\.enabled \? 'checked' : ''\}/);
+  assert.match(adminSource, /\/api\/admin\/plugins\/\$\{encodeURIComponent\(pluginId\)\}\/enabled/);
+  assert.match(adminSource, /pluginWorkstreams\.addEventListener\('change', savePluginEnabled\)/);
+});
+
 test('history views render shared day dividers', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');

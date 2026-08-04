@@ -658,11 +658,30 @@ function pluginProcessActionHtml(plugin, process, action, { includeSurface = fal
   `;
 }
 
+function pluginEnabledControlHtml(plugin) {
+  const name = plugin.name || plugin.id;
+  return `
+    <div class="plugin-enabled-control advanced-only">
+      <span>Enabled</span>
+      <label class="theme-switch">
+        <input class="plugin-enabled-toggle" type="checkbox"
+               data-plugin-id="${escapeHtml(plugin.id)}"
+               aria-label="Enable ${escapeHtml(name)}"
+               ${plugin.enabled ? 'checked' : ''}>
+        <span class="theme-track" aria-hidden="true"><span class="theme-thumb"></span></span>
+      </label>
+      <span class="metric plugin-enabled-status" aria-live="polite"></span>
+    </div>
+  `;
+}
+
 function renderPluginWorkstreams(plugins) {
   syncPluginLogSources(plugins);
   const sections = [];
   const videoActions = [];
   for (const plugin of plugins) {
+    const pluginBlocks = [];
+    let hasBasicAction = false;
     for (const process of plugin.workerProcesses || []) {
       for (const action of process.adminActions || []) {
         if (action.placement === 'videos') {
@@ -670,20 +689,26 @@ function renderPluginWorkstreams(plugins) {
           continue;
         }
         if (action.placement !== 'plugin') continue;
-        sections.push(`
-          <section class="workstream plugin-workstream ${action.surface === 'advanced' ? 'advanced-only' : ''}"
-                   data-plugin-id="${escapeHtml(plugin.id)}"
-                   data-plugin-worker-id="${escapeHtml(process.id)}">
-            <div class="workstream-header">
-              <h2>${escapeHtml(plugin.name || plugin.id)}</h2>
-              <span class="metric">${escapeHtml(process.name || process.id)}</span>
-            </div>
+        hasBasicAction ||= action.surface !== 'advanced';
+        pluginBlocks.push(`
+          <div class="plugin-process-block ${action.surface === 'advanced' ? 'advanced-only' : ''}"
+               data-plugin-worker-id="${escapeHtml(process.id)}">
             ${action.description ? `<p class="message">${escapeHtml(action.description)}</p>` : ''}
             ${pluginProcessActionHtml(plugin, process, action)}
-          </section>
+          </div>
         `);
       }
     }
+    sections.push(`
+      <section class="workstream plugin-workstream ${hasBasicAction ? '' : 'advanced-only'}"
+               data-plugin-id="${escapeHtml(plugin.id)}">
+        <div class="workstream-header">
+          <h2>${escapeHtml(plugin.name || plugin.id)}</h2>
+          ${pluginEnabledControlHtml(plugin)}
+        </div>
+        ${pluginBlocks.join('') || `<p class="message">${escapeHtml(plugin.message || plugin.state || 'Unavailable')}</p>`}
+      </section>
+    `);
   }
   fields.pluginWorkstreams.innerHTML = sections.join('');
   fields.videoPluginProcesses.innerHTML = videoActions.join('');
@@ -1359,7 +1384,37 @@ async function enqueuePluginProcess(event) {
     button.disabled = false;
   }
 }
+async function savePluginEnabled(event) {
+  const toggle = event.target.closest('.plugin-enabled-toggle');
+  if (!toggle) return;
+  const pluginId = toggle.dataset.pluginId || '';
+  if (!pluginId) return;
+  const enabled = toggle.checked;
+  const status = toggle.closest('.plugin-enabled-control')?.querySelector('.plugin-enabled-status');
+  const previousPid = currentServicePid;
+  toggle.disabled = true;
+  if (status) status.textContent = 'Saving';
+  try {
+    const payload = await requestJson(
+      `/api/admin/plugins/${encodeURIComponent(pluginId)}/enabled`,
+      { enabled: enabled ? '1' : '0' },
+    );
+    if (payload.restartScheduled) {
+      if (status) status.textContent = 'Restarting';
+      await waitForServiceRestart(payload.service?.pid || previousPid);
+    } else {
+      await loadStatus({ force: true });
+    }
+  } catch (error) {
+    toggle.checked = !enabled;
+    if (status) status.textContent = 'Save failed';
+    alert(error.message);
+  } finally {
+    toggle.disabled = false;
+  }
+}
 fields.pluginWorkstreams.addEventListener('submit', enqueuePluginProcess);
+fields.pluginWorkstreams.addEventListener('change', savePluginEnabled);
 fields.videoPluginProcesses.addEventListener('submit', enqueuePluginProcess);
 document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start').catch(error => alert(error.message)));
 fields.updateFrequency.addEventListener('change', () => {
