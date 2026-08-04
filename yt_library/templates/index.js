@@ -2764,7 +2764,7 @@ function parentFilterCheckboxHtml(dataAttribute, value) {
     <span class="filter-parent-checkbox">
       <input type="checkbox" ${dataAttribute}="${escapeHtml(value)}">
       <span class="filter-parent-checkbox-indicator" aria-hidden="true">
-        <svg viewBox="0 0 13 13"><path d="M3.25 6.5h6.5M6.5 3.25v6.5"></path></svg>
+        <svg viewBox="0 0 13 13"><path d="M2.75 6.5h7.5M6.5 2.75v7.5"></path></svg>
       </span>
     </span>
   `;
