@@ -182,6 +182,7 @@ test('history document title includes the active page or date', () => {
   const indexSource = source('index.js');
 
   assert.match(indexSource, /historyNavigationDate[\s\S]{0,120}historyDayLabel\(\{ watch_date: historyNavigationDate \}\)/);
+  assert.match(indexSource, /`page \$\{pageInfo\.page\}`/);
   assert.match(indexSource, /setDocumentTitle\(`History \$\{historyTitleLocation\}`\)/);
 });
 

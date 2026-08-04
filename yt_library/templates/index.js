@@ -2513,7 +2513,7 @@ async function renderHistoryView() {
   const pageInfo = remotePageInfo(total, rows.length);
   const historyTitleLocation = historyNavigationDate
     ? historyDayLabel({ watch_date: historyNavigationDate })
-    : pageInfo.page;
+    : `page ${pageInfo.page}`;
   setDocumentTitle(`History ${historyTitleLocation}`);
   meta.innerHTML = rightPanelListMetaHtml(`${total} watches`, {
     showLayout: true,
