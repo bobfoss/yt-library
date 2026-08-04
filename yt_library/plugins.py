@@ -728,6 +728,7 @@ class PluginManager:
         inserted = 0
         already_queued = 0
         planned_count = 0
+        log_subject_id = ""
         for raw_task in planned:
             planned_count += 1
             if planned_count > PLUGIN_TASK_LIMIT:
@@ -735,6 +736,10 @@ class PluginManager:
                     f"Plugin worker plan exceeds the {PLUGIN_TASK_LIMIT} task limit"
                 )
             task = _normalize_plugin_task(raw_task)
+            if planned_count == 1:
+                log_subject_id = task["subject_id"]
+            elif planned_count == 2:
+                log_subject_id = ""
             subject_key = (
                 f"plugin:{plugin_id}:{worker_id}:{task['task_id']}"
             )
@@ -793,12 +798,13 @@ class PluginManager:
             INSERT INTO plugin_worker_log(
               run_id, plugin_id, worker_id, created_at, level, subject_id, message
             )
-            VALUES ('', ?, ?, ?, 'queue info', '', ?)
+            VALUES ('', ?, ?, ?, 'queue info', ?, ?)
             """,
             (
                 plugin_id,
                 worker_id,
                 now,
+                log_subject_id,
                 (
                     f"Queued {inserted} {process['name']} tasks; "
                     f"{already_queued} already queued"

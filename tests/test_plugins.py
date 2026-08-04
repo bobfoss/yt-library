@@ -291,6 +291,11 @@ class PluginManagerTests(unittest.TestCase):
                         manual=True,
                     )
                 row = dict(core.worker_queue_rows(conn, limit=1)[0])
+                queue_log = dict(
+                    conn.execute(
+                        "SELECT * FROM plugin_worker_log WHERE level = 'queue info'"
+                    ).fetchone()
+                )
             finally:
                 conn.close()
 
@@ -300,6 +305,7 @@ class PluginManagerTests(unittest.TestCase):
             self.assertEqual(row["task_type"], "fetch")
             self.assertEqual(row["plugin_subject_id"], "abcdefghijk")
             self.assertEqual(row["payload_json"], '{"example":true}')
+            self.assertEqual(queue_log["subject_id"], "abcdefghijk")
 
             worker = PluginTaskWorker()
             self.assertTrue(worker.start(db_path, manager, row)["started"])
@@ -334,6 +340,9 @@ class PluginManagerTests(unittest.TestCase):
             self.assertTrue(any(log["message"] == "Processed abcdefghijk" for log in logs))
             self.assertEqual(total, len(logs))
             self.assertTrue(all(row["source"] == "plugin:subtitles" for row in page))
+            queue_page_log = next(row for row in page if row["level"] == "queue info")
+            self.assertEqual(queue_page_log["identifier"], "abcdefghijk")
+            self.assertEqual(queue_page_log["subject_id"], "Example video")
 
             status = manager.statuses()[0]
             process = status["workerProcesses"][0]
@@ -347,6 +356,40 @@ class PluginManagerTests(unittest.TestCase):
             self.assertEqual(targeted_action["id"], "fetch-video")
             self.assertEqual(targeted_action["inputs"][0]["name"], "video_id")
             self.assertTrue(targeted_action["inputs"][0]["required"])
+
+    def test_plugin_bulk_queue_log_has_no_misleading_single_subject(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_video(conn, "abcdefghijk", title="First video")
+                    core.upsert_video(conn, "lmnopqrstuv", title="Second video")
+            finally:
+                conn.close()
+            manager = PluginManager(
+                {"plugins": {"subtitles": {"enabled": True}}},
+                db_path=db_path,
+                entry_points=[FakeEntryPoint(FakePlugin)],
+            )
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    queued = manager.enqueue_process(
+                        conn,
+                        "subtitles",
+                        "fetch",
+                        {},
+                        manual=True,
+                    )
+                queue_log = conn.execute(
+                    "SELECT subject_id FROM plugin_worker_log WHERE level = 'queue info'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+            self.assertEqual(queued["planned"], 2)
+            self.assertEqual(queue_log["subject_id"], "")
 
     def test_plugin_process_can_hook_library_update(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
