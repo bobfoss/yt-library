@@ -123,6 +123,40 @@ class AdminServerTests(unittest.TestCase):
         )
         handler.send_json.assert_called_once_with({"hits": []}, status=200)
 
+    def test_search_applies_generic_plugin_video_filters(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.config_data = {}
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.filter_videos.return_value = (
+            frozenset({"available", "unavailable"}),
+            frozenset({"unavailable"}),
+        )
+        handler.send_json = Mock()
+        connection = Mock()
+        payload = {"results": [], "total": 0}
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch("yt_library.server.omni_search_data", return_value=payload) as search_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/search?q=history&video_filter_plugin=example&limit=1"
+                )
+            )
+
+        handler.plugin_manager.filter_videos.assert_called_once_with("example", "history")
+        self.assertEqual(
+            search_data.call_args.kwargs["video_id_filters"],
+            [frozenset({"available", "unavailable"})],
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["video_search_match_ids"],
+            {"unavailable"},
+        )
+        handler.send_json.assert_called_once_with(payload)
+
     def test_get_dispatches_page_admin_and_library_routes(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler._handle_page_get = Mock(return_value=False)

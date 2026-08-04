@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable as IterableCollection, Mapping
 import importlib.metadata as importlib_metadata
 import json
 import re
@@ -68,6 +69,16 @@ def _browser_assets(instance: Any) -> list[dict[str, str]]:
 
 def _asset_error(message: str) -> bytes:
     return json.dumps({"error": message}, ensure_ascii=False).encode("utf-8")
+
+
+def _normalized_video_ids(value: Any, label: str) -> frozenset[str]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, IterableCollection):
+        raise TypeError(f"Plugin {label} must be an iterable of video IDs")
+    return frozenset(
+        video_id
+        for item in value
+        if (video_id := str(item).strip())
+    )
 
 
 class PluginManager:
@@ -241,6 +252,36 @@ class PluginManager:
             return 503, "application/json; charset=utf-8", _asset_error(
                 f"Plugin browser asset failed: {type(exc).__name__}: {exc}"
             )
+
+    def filter_videos(
+        self,
+        plugin_id: str,
+        query: str,
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        record = self._records.get(plugin_id)
+        if record is None:
+            raise LookupError(f"Plugin is not enabled: {plugin_id}")
+        if record.instance is None:
+            raise RuntimeError(f"Plugin is unavailable: {plugin_id}")
+        handler = getattr(record.instance, "filter_videos", None)
+        if not callable(handler):
+            raise TypeError(f"Plugin does not provide a video filter: {plugin_id}")
+        try:
+            payload = handler(query)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Plugin video filter failed: {plugin_id}: {type(exc).__name__}: {exc}"
+            ) from exc
+        if not isinstance(payload, Mapping):
+            raise TypeError("Plugin video filter response must be a mapping")
+        video_ids = _normalized_video_ids(payload.get("video_ids"), "video_ids")
+        search_match_ids = _normalized_video_ids(
+            payload.get("search_match_ids", ()),
+            "search_match_ids",
+        )
+        if not search_match_ids.issubset(video_ids):
+            raise ValueError("Plugin search matches must be included in its video filter")
+        return video_ids, search_match_ids
 
     def shutdown(self) -> None:
         for record in reversed(list(self._records.values())):

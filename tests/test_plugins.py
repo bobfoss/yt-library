@@ -40,6 +40,12 @@ class FakePlugin:
         }
         return content_types[path], f"/* {path} */"
 
+    def filter_videos(self, query):
+        return {
+            "video_ids": {"available", "unavailable"},
+            "search_match_ids": {"unavailable"} if query else set(),
+        }
+
     def shutdown(self) -> None:
         self.stopped = True
 
@@ -109,9 +115,14 @@ class PluginManagerTests(unittest.TestCase):
             asset_status, content_type, body = manager.handle_browser_asset(
                 "subtitles", "browser.js"
             )
+            video_ids, search_match_ids = manager.filter_videos(
+                "subtitles", "history"
+            )
             self.assertEqual(asset_status, 200)
             self.assertEqual(content_type, "text/javascript; charset=utf-8")
             self.assertEqual(body, b"/* browser.js */")
+            self.assertEqual(video_ids, frozenset({"available", "unavailable"}))
+            self.assertEqual(search_match_ids, frozenset({"unavailable"}))
 
     def test_incompatible_and_missing_plugins_are_nonfatal(self) -> None:
         class IncompatiblePlugin(FakePlugin):

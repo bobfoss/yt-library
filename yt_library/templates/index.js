@@ -88,16 +88,28 @@ function browserSearchPlugin(pluginId) {
   return browserSearchPlugins().find(plugin => plugin.id === pluginId) || null;
 }
 
-function browserPluginAssetUrl(pluginId, path) {
-  const encodedPath = String(path || '').split('/').map(encodeURIComponent).join('/');
-  return `/plugins/${encodeURIComponent(pluginId)}/assets/${encodedPath}`;
+function browserVideoFilterPlugins() {
+  return browserSearchPlugins().filter(plugin => plugin.search.videoFacet === true);
 }
 
-async function loadBrowserPluginAsset(pluginId, asset) {
+function browserResultSearchPlugins() {
+  return browserSearchPlugins().filter(plugin => (
+    plugin.search.videoFacet !== true
+    && typeof plugin.search.fetch === 'function'
+  ));
+}
+
+function browserPluginAssetUrl(pluginId, path, version = '') {
+  const encodedPath = String(path || '').split('/').map(encodeURIComponent).join('/');
+  const baseUrl = `/plugins/${encodeURIComponent(pluginId)}/assets/${encodedPath}`;
+  return version ? `${baseUrl}?v=${encodeURIComponent(version)}` : baseUrl;
+}
+
+async function loadBrowserPluginAsset(pluginId, asset, version = '') {
   const path = String(asset?.path || '');
   const type = String(asset?.type || '');
   if (!path || !['script', 'style'].includes(type)) return;
-  const url = browserPluginAssetUrl(pluginId, path);
+  const url = browserPluginAssetUrl(pluginId, path, version);
   if (loadedBrowserPluginAssets.has(url)) return;
   const element = type === 'style'
     ? document.createElement('link')
@@ -120,7 +132,7 @@ async function loadBrowserPlugins(statuses) {
   for (const status of statuses || []) {
     if (!status.enabled || status.state !== 'ready') continue;
     for (const asset of status.browserAssets || []) {
-      await loadBrowserPluginAsset(status.id, asset);
+      await loadBrowserPluginAsset(status.id, asset, status.version);
     }
   }
 }
@@ -289,9 +301,11 @@ function searchPresetDefinition(presetId) {
   if (searchPresetDefinitions[presetId]) return searchPresetDefinitions[presetId];
   const entry = browserSearchPresets().find(item => item.presetId === presetId);
   if (!entry) return null;
+  const videoFacet = entry.plugin.search.videoFacet === true;
   return {
     emptyMessage: entry.preset.emptyMessage,
-    kind: entry.plugin.id,
+    kind: videoFacet ? 'videos' : entry.plugin.id,
+    pluginFilter: videoFacet ? entry.plugin.id : '',
     preserveQuery: entry.preset.preserveQuery === true,
     sort: entry.preset.sort || 'relevance',
   };
@@ -723,6 +737,9 @@ function applySearchPresetState(preset, groupKey = '') {
   searchPlaylistGroupKey = preset === 'playlist-group' ? groupKey : '';
   clearSearchMetaVisibility();
   enableDefaultSearchKind(definition.kind);
+  if (definition.pluginFilter) {
+    pluginSearchVisibility.set(definition.pluginFilter, true);
+  }
   if (preset === 'playlist-videos') {
     setSearchFacetSelection('membership', ['member']);
   } else if (preset === 'liked-videos') {
@@ -740,6 +757,11 @@ function defaultSearchResultsSort(
 ) {
   if (query) return 'relevance';
   return searchPresetDefinition(preset)?.sort || 'newest';
+}
+
+function browserPluginForcesRelevance(plugin, query = search.value.trim()) {
+  const mode = plugin?.search?.forceRelevance;
+  return mode === true || (mode === 'query' && Boolean(query));
 }
 
 function searchSortPreferenceContext(preset = activeSearchPreset) {
@@ -769,7 +791,7 @@ function selectedSearchKinds() {
     'videos',
     'playlists',
     'channels',
-    ...browserSearchPlugins().map(plugin => plugin.id),
+    ...browserResultSearchPlugins().map(plugin => plugin.id),
   ].filter(searchKindEnabled);
 }
 
@@ -794,6 +816,8 @@ function activeSearchSourceScopes() {
 }
 
 function presetDefiningFiltersMatch() {
+  const pluginFilter = searchPresetDefinition(activeSearchPreset)?.pluginFilter;
+  if (pluginFilter && !searchKindEnabled(pluginFilter)) return false;
   if (activeSearchPreset === 'playlist-videos') {
     return searchMetaVisibility.membership.member && !searchMetaVisibility.membership.non_member;
   }
@@ -926,7 +950,7 @@ function applySearchHash(hash) {
     ? requestedSort
     : preferredSearchResultsSort(search.value.trim());
   if (browserSearchPlugins().some(plugin => (
-    searchKindEnabled(plugin.id) && plugin.search.forceRelevance
+    searchKindEnabled(plugin.id) && browserPluginForcesRelevance(plugin)
   ))) {
     searchResultsSort = 'relevance';
     searchSortExplicit = false;
@@ -1228,6 +1252,15 @@ function setSearchKindFilter(kind, checked) {
       input.checked = checked;
     }
     syncMetaFilterGroup(`search-${facetKey}`);
+  }
+  if (kind === 'videos' && !checked) {
+    for (const videoFilter of browserVideoFilterPlugins()) {
+      pluginSearchVisibility.set(videoFilter.id, false);
+      const input = searchForFilters.querySelector(
+        `[data-search-plugin-filter="${videoFilter.id}"]`
+      );
+      if (input instanceof HTMLInputElement) input.checked = false;
+    }
   }
   syncSearchKindFilter(kind);
   return true;
@@ -2560,6 +2593,22 @@ function searchMetaFiltersHtml(
       </div>
     </div>
   `;
+  const pluginVideoFacetHtml = plugin => {
+    const catalogCount = Number(plugin.search.catalogCount?.(browserPluginStatus(plugin.id)) || 0);
+    const count = searchKindEnabled(plugin.id)
+      ? (metaCounts?.videos?.total ?? catalogCount)
+      : catalogCount;
+    return `
+    <div class="search-meta-facet flat" data-search-kind-facet="videos">
+      <div class="search-meta-controls">
+        <label class="meta-filter meta-filter-parent">
+          <input type="checkbox" data-search-plugin-filter="${escapeHtml(plugin.id)}" ${searchKindEnabled(plugin.id) ? 'checked' : ''}>
+          <span>${escapeHtml(plugin.search.label || plugin.id)} <span class="meta-filter-count">${filterCountText(count)}</span></span>
+        </label>
+      </div>
+    </div>
+  `;
+  };
   const kindHtml = (titleText, kind, count, facetsHtml) => {
     const kindEnabled = searchKindEnabled(kind);
     return `
@@ -2580,6 +2629,7 @@ function searchMetaFiltersHtml(
       facetHtml({ key: 'reactions', visibility: searchMetaVisibility.reactions, definitions: reactionMetaFilterDefinitions, counts: reactionCounts, allLabel: 'Reactions', kind: 'videos' }),
       facetHtml({ key: 'completion', visibility: searchMetaVisibility.completion, definitions: completionMetaFilterDefinitions(partialCompletionMinimumPercent, 'search-completion-minimum'), counts: completionCounts, allLabel: 'Completion', kind: 'videos' }),
       facetHtml({ key: 'membership', visibility: searchMetaVisibility.membership, definitions: playlistMembershipMetaFilterDefinitions, counts: playlistMembershipCounts, allLabel: 'Playlist membership', kind: 'videos' }),
+      ...browserVideoFilterPlugins().map(pluginVideoFacetHtml),
     ].join('')),
     kindHtml('Playlists', 'playlists', metaCounts?.playlists?.total, [
       facetHtml({ key: 'playlistVisibility', visibility: searchMetaVisibility.playlistVisibility, definitions: playlistVisibilityMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Visibility', kind: 'playlists' }),
@@ -2590,7 +2640,7 @@ function searchMetaFiltersHtml(
       facetHtml({ key: 'channelSubscription', visibility: searchMetaVisibility.channelSubscription, definitions: channelSubscriptionMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Subscription', kind: 'channels' }),
       facetHtml({ key: 'channelStatus', visibility: searchMetaVisibility.channelStatus, definitions: channelStatusMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Status', kind: 'channels' }),
     ].join('')),
-    ...browserSearchPlugins().map(plugin => kindHtml(
+    ...browserResultSearchPlugins().map(plugin => kindHtml(
       escapeHtml(plugin.search.label || plugin.id),
       plugin.id,
       resultCounts?.plugins?.[plugin.id]
@@ -2621,7 +2671,7 @@ function renderSearchMetaFilters({
     'videos',
     'playlists',
     'channels',
-    ...browserSearchPlugins().map(plugin => plugin.id),
+    ...browserResultSearchPlugins().map(plugin => plugin.id),
   ]) {
     syncSearchKindFilter(kind);
   }
@@ -2639,7 +2689,7 @@ function syncSearchFiltersForSelection() {
 
 function searchResultsSortHtml() {
   const forceRelevance = browserSearchPlugins().some(plugin => (
-    searchKindEnabled(plugin.id) && plugin.search.forceRelevance
+    searchKindEnabled(plugin.id) && browserPluginForcesRelevance(plugin)
   ));
   const options = forceRelevance ? [
     ['relevance', 'Relevance'],
@@ -2872,7 +2922,7 @@ async function fetchBrowserPluginSearches(query, limit, offset) {
   let totalIsExact = true;
   let remaining = limit;
   let localOffset = offset;
-  for (const plugin of browserSearchPlugins().filter(item => searchKindEnabled(item.id))) {
+  for (const plugin of browserResultSearchPlugins().filter(item => searchKindEnabled(item.id))) {
     let payload = { total: 0, totalIsExact: true, results: [] };
     if (query || plugin.search.fetchEmptyQuery === true) {
       try {
@@ -2915,11 +2965,15 @@ async function fetchBrowserPluginSearches(query, limit, offset) {
   };
 }
 
-async function decorateCoreSearchResults(results, errors) {
+async function decorateCoreSearchResults(results, errors, query) {
   for (const plugin of browserSearchPlugins().filter(item => searchKindEnabled(item.id))) {
     if (typeof plugin.search.decorateCoreResults !== 'function') continue;
     try {
-      await plugin.search.decorateCoreResults(results, browserPluginHost(plugin.id));
+      await plugin.search.decorateCoreResults(
+        results,
+        browserPluginHost(plugin.id),
+        { query },
+      );
     } catch (error) {
       errors.push({
         id: plugin.id,
@@ -2981,6 +3035,9 @@ async function fetchOmniSearch(query, page = currentPage) {
   return cachedRequest(omniSearchCache, key, async () => {
     const pluginPayload = await fetchBrowserPluginSearches(query, limit, offset);
     const requestParams = new URLSearchParams(coreParams);
+    for (const plugin of browserVideoFilterPlugins().filter(item => searchKindEnabled(item.id))) {
+      requestParams.append('video_filter_plugin', plugin.id);
+    }
     requestParams.set('limit', String(Math.max(1, pluginPayload.remaining)));
     requestParams.set('offset', String(pluginPayload.coreOffset));
     const response = await fetch(`/api/search?${requestParams}`, { cache: 'no-store' });
@@ -2989,7 +3046,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     const coreRows = pluginPayload.remaining
       ? (corePayload.results || []).slice(0, pluginPayload.remaining)
       : [];
-    await decorateCoreSearchResults(coreRows, pluginPayload.errors);
+    await decorateCoreSearchResults(coreRows, pluginPayload.errors, query);
     const payload = {
       ...corePayload,
       query,
@@ -4009,6 +4066,7 @@ function handleMetaChange(event) {
   if (!(target instanceof HTMLInputElement)) return;
   const searchFilterInteraction = (
     target.dataset.searchKindFilter
+    || target.dataset.searchPluginFilter
     || target.dataset.searchMetaFilter
     || target.dataset.searchCompletionMinimum !== undefined
     || String(target.dataset.metaAllFilter || '').startsWith('search-')
@@ -4069,14 +4127,39 @@ function handleMetaChange(event) {
       saveFilterPreference(plugin.search.preferenceKey, target.checked);
     } else {
       saveSearchOptInPreferences(searchKindFacetKeys(searchKindFilter));
+      if (searchKindFilter === 'videos' && !target.checked) {
+        for (const videoFilter of browserVideoFilterPlugins()) {
+          saveFilterPreference(videoFilter.search.preferenceKey, false);
+        }
+      }
     }
-    if (plugin?.search.forceRelevance && target.checked) {
+    if (plugin && browserPluginForcesRelevance(plugin) && target.checked) {
       searchResultsSort = 'relevance';
       searchSortExplicit = false;
     }
     currentPage = 1;
     reconcileSearchPreset();
     showSearchMetaProgress(searchKindFilter);
+    syncSearchHashAndRender(!activatedFromHistory);
+    return;
+  }
+  const searchPluginFilter = target.dataset.searchPluginFilter;
+  if (searchPluginFilter) {
+    const plugin = browserVideoFilterPlugins().find(item => item.id === searchPluginFilter);
+    if (!plugin) return;
+    pluginSearchVisibility.set(plugin.id, target.checked);
+    saveFilterPreference(plugin.search.preferenceKey, target.checked);
+    if (target.checked && !searchKindEnabled('videos')) {
+      enableDefaultSearchKind('videos');
+      renderSearchMetaFilters();
+    }
+    if (browserPluginForcesRelevance(plugin) && target.checked) {
+      searchResultsSort = 'relevance';
+      searchSortExplicit = false;
+    }
+    currentPage = 1;
+    reconcileSearchPreset();
+    showSearchMetaProgress('videos');
     syncSearchHashAndRender(!activatedFromHistory);
     return;
   }

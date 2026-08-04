@@ -761,6 +761,56 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(data["results"][0]["item"]["video_id"], "both1")
         self.assertTrue(data["results"][0]["matchedDescription"])
 
+    def test_omni_search_plugin_video_filter_composes_with_availability(self) -> None:
+        self.add_video("plugin-public", "Ordinary public title")
+        self.add_video("plugin-unavailable", "Ordinary unavailable title")
+        self.add_video("outside-filter", "Ordinary outside title")
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 1, availability = 'public' WHERE video_id = 'plugin-public'"
+        )
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 0, availability = 'private' WHERE video_id = 'plugin-unavailable'"
+        )
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 1, availability = 'public' WHERE video_id = 'outside-filter'"
+        )
+        self.conn.commit()
+        filter_ids = {"plugin-public", "plugin-unavailable"}
+        search_match_ids = {"plugin-public", "plugin-unavailable"}
+
+        available = omni_search_data(
+            self.conn,
+            "transcript-only phrase",
+            search_fields=set(),
+            result_kinds={"video"},
+            video_id_filters=[filter_ids],
+            video_search_match_ids=search_match_ids,
+            video_meta_filters={"public"},
+        )
+        unavailable = omni_search_data(
+            self.conn,
+            "transcript-only phrase",
+            search_fields=set(),
+            result_kinds={"video"},
+            video_id_filters=[filter_ids],
+            video_search_match_ids=search_match_ids,
+            video_meta_filters={"unavailable"},
+        )
+
+        self.assertEqual(
+            [result["item"]["video_id"] for result in available["results"]],
+            ["plugin-public"],
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in unavailable["results"]],
+            ["plugin-unavailable"],
+        )
+        self.assertTrue(available["results"][0]["pluginSearchMatch"])
+        self.assertEqual(available["metaCounts"], unavailable["metaCounts"])
+        self.assertEqual(available["metaCounts"]["videos"]["total"], 2)
+        self.assertEqual(available["metaCounts"]["videos"]["public"], 1)
+        self.assertEqual(available["metaCounts"]["videos"]["unavailable"], 1)
+
     def test_omni_search_meta_filters_count_before_filtering_all_result_types(self) -> None:
         for video_id, title in (
             ("available1", "Needle available"),

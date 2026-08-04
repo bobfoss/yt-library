@@ -938,6 +938,22 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             query = (params.get("q") or [""])[0]
             search_fields = query_set_param(params, "search_fields")
             sort = (params.get("sort") or [None])[0]
+            video_id_filters: list[frozenset[str]] = []
+            video_search_match_ids: set[str] = set()
+            try:
+                for plugin_id in dict.fromkeys(params.get("video_filter_plugin") or []):
+                    video_ids, search_match_ids = self.plugin_manager.filter_videos(
+                        plugin_id,
+                        query,
+                    )
+                    video_id_filters.append(video_ids)
+                    video_search_match_ids.update(search_match_ids)
+            except (LookupError, RuntimeError, TypeError, ValueError) as exc:
+                self.send_json(
+                    {"error": "Video filter unavailable", "message": str(exc)},
+                    status=503,
+                )
+                return
             try:
                 limit = max(1, min(5000, int((params.get("limit") or ["100"])[0] or 100)))
             except ValueError:
@@ -967,6 +983,8 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         params,
                         "video_playlist_membership",
                     ),
+                    video_id_filters=video_id_filters,
+                    video_search_match_ids=video_search_match_ids,
                     channel_subscription_filters=query_set_param(
                         params,
                         "channel_subscription",

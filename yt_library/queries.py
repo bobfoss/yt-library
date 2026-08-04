@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Collection, Sequence
 from datetime import datetime, time, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -1506,6 +1507,8 @@ def omni_search_data(
     video_completion_filters: set[str] | None = None,
     video_partial_min_percent: int = 1,
     video_playlist_membership_filters: set[str] | None = None,
+    video_id_filters: Sequence[Collection[str]] = (),
+    video_search_match_ids: Collection[str] = (),
     channel_subscription_filters: set[str] | None = None,
     channel_status_filters: set[str] | None = None,
     playlist_meta_filters: set[str] | None = None,
@@ -1541,6 +1544,28 @@ def omni_search_data(
     }
     search_titles = "titles" in active_search_fields
     search_descriptions = "descriptions" in active_search_fields
+    active_video_id_filters = [frozenset(values) for values in video_id_filters]
+    active_video_search_match_ids = frozenset(video_search_match_ids)
+    has_video_search_matches = bool(query and active_video_search_match_ids)
+    if has_video_search_matches:
+        conn.execute("DROP TABLE IF EXISTS temp.omni_video_search_matches")
+        conn.execute(
+            """
+            CREATE TEMP TABLE omni_video_search_matches(
+              video_id TEXT PRIMARY KEY
+            ) WITHOUT ROWID
+            """
+        )
+        conn.executemany(
+            "INSERT INTO temp.omni_video_search_matches(video_id) VALUES (?)",
+            ((video_id,) for video_id in active_video_search_match_ids),
+        )
+    video_search_match_sql = (
+        "EXISTS (SELECT 1 FROM temp.omni_video_search_matches "
+        "WHERE video_id = v.video_id)"
+        if has_video_search_matches
+        else "0"
+    )
     results: list[dict[str, Any]] = []
 
     if "playlist" in active_result_kinds and (not query or search_titles or search_descriptions):
@@ -1662,7 +1687,10 @@ def omni_search_data(
             )
             results.append(_omni_result("channel", 1 if title_hit else 4, item, matched_description=not title_hit))
 
-    if "video" in active_result_kinds and (not query or search_titles or search_descriptions):
+    if (
+        "video" in active_result_kinds
+        and (not query or search_titles or search_descriptions or has_video_search_matches)
+    ):
         video_title_match = """
             (
               lower(
@@ -1685,6 +1713,8 @@ def omni_search_data(
                 video_matches.append(video_title_match)
             if search_descriptions:
                 video_matches.append(video_description_match)
+            if has_video_search_matches:
+                video_matches.append(video_search_match_sql)
         else:
             video_matches.append("1 = 1")
         video_title_hit = video_title_match if not query or search_titles else "0"
@@ -1693,6 +1723,7 @@ def omni_search_data(
             WITH candidate_videos AS MATERIALIZED (
               SELECT v.video_id,
                      CASE WHEN {video_title_hit} THEN 1 ELSE 0 END AS title_hit,
+                     CASE WHEN {video_search_match_sql} THEN 1 ELSE 0 END AS plugin_search_hit,
                      v.is_playable,
                      v.availability,
                      COALESCE(vr.archivarix_status, '') AS recovered_status
@@ -1755,6 +1786,7 @@ def omni_search_data(
                    COALESCE(lhp.youtube_ordinal, 0) AS latest_youtube_ordinal,
                    COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent,
                    candidate.title_hit,
+                   candidate.plugin_search_hit,
                    candidate.is_playable,
                    candidate.availability,
                    candidate.recovered_status
@@ -1769,16 +1801,17 @@ def omni_search_data(
         ):
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
+            plugin_search_hit = bool(item.pop("plugin_search_hit"))
             item["collection_category"] = _video_availability_category(item)
-            results.append(
-                _omni_result(
-                    "video",
-                    0 if title_hit else 3,
-                    item,
-                    matched_description=not title_hit,
-                    display_timezone=display_timezone,
-                )
+            result = _omni_result(
+                "video",
+                0 if title_hit else 3,
+                item,
+                matched_description=not title_hit and not plugin_search_hit,
+                display_timezone=display_timezone,
             )
+            result["pluginSearchMatch"] = plugin_search_hit
+            results.append(result)
 
     if (
         "video" in active_result_kinds
@@ -1838,6 +1871,19 @@ def omni_search_data(
             item["match_label"] = playlist_match_type_label(item.get("match_type") or "")
             item["match_note"] = playlist_match_type_note(item.get("match_type") or "")
             results.append(_omni_result("video", 0, item, matched_description=False))
+
+    if active_video_id_filters:
+        results = [
+            result
+            for result in results
+            if (
+                result["kind"] != "video"
+                or all(
+                    str(result["item"].get("video_id") or "") in video_ids
+                    for video_ids in active_video_id_filters
+                )
+            )
+        ]
 
     _assign_omni_meta_categories(conn, results)
     meta_counts = _omni_meta_counts(results)
