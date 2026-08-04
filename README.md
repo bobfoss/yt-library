@@ -282,8 +282,13 @@ metadata, plans bounded tasks from a read-only library-video projection, and
 runs one task at a time through the common persistent queue. YT Library owns
 the operational run rows and logs, applies global YouTube or Archivarix
 capacity limits, retains interrupted queue items, and exposes generic Basic or
-Advanced Admin buttons. Plugins may opt into the `library_initialize` and
-`library_update` lifecycle hooks; no hook runs unless the plugin declares it.
+Advanced Admin buttons. Plugins may opt into the `library_initialize`,
+`library_update`, and `video_scan` lifecycle hooks; no hook runs unless the
+plugin declares it. `video_scan` is emitted only for an individual video target
+accepted by Admin and forwards that exact ID as the `video_id` process
+parameter. Hook planners also receive the lifecycle name as `hook`.
+Hook planning failures are isolated per process, roll back any partial tasks,
+and are written to the common plugin log without cancelling the host action.
 Admin actions use
 `POST /api/admin/plugins/{plugin_id}/processes/{worker_id}/enqueue`, and plugin
 logs appear in the common log view under a `plugin:{plugin_id}` source.

@@ -818,21 +818,58 @@ class PluginManager:
         self,
         conn: sqlite3.Connection,
         hook: str,
+        params: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         normalized_hook = str(hook or "").strip()
+        hook_params = dict(params or {})
+        hook_params["hook"] = normalized_hook
         results: list[dict[str, Any]] = []
-        for (plugin_id, worker_id), process in self.process_definitions().items():
+        for index, ((plugin_id, worker_id), process) in enumerate(
+            self.process_definitions().items()
+        ):
             if normalized_hook not in process["hooks"]:
                 continue
-            results.append(
-                self.enqueue_process(
+            savepoint = f"plugin_hook_{index}"
+            conn.execute(f"SAVEPOINT {savepoint}")
+            try:
+                result = self.enqueue_process(
                     conn,
                     plugin_id,
                     worker_id,
-                    {"hook": normalized_hook},
+                    hook_params,
                     manual=False,
                 )
-            )
+            except Exception as exc:
+                conn.execute(f"ROLLBACK TO {savepoint}")
+                conn.execute(f"RELEASE {savepoint}")
+                message = f"{type(exc).__name__}: {exc}"
+                conn.execute(
+                    """
+                    INSERT INTO plugin_worker_log(
+                      run_id, plugin_id, worker_id, created_at, level,
+                      subject_id, message
+                    )
+                    VALUES ('', ?, ?, ?, 'queue error', '', ?)
+                    """,
+                    (
+                        plugin_id,
+                        worker_id,
+                        utc_now(),
+                        f"{normalized_hook} hook planning failed: {message}",
+                    ),
+                )
+                result = {
+                    "pluginId": plugin_id,
+                    "workerId": worker_id,
+                    "name": process["name"],
+                    "planned": 0,
+                    "inserted": 0,
+                    "alreadyQueued": 0,
+                    "error": message,
+                }
+            else:
+                conn.execute(f"RELEASE {savepoint}")
+            results.append(result)
         return results
 
     def run_worker(

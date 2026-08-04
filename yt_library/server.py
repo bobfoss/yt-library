@@ -1578,7 +1578,19 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     except ValueError as exc:
                         self.send_json({"error": str(exc)}, status=400)
                         return
-                self.send_json({"ok": True, **result})
+                    video_id = result.get("video_id", "")
+                    plugin_queue = (
+                        self.plugin_manager.enqueue_hook(
+                            conn,
+                            "video_scan",
+                            {"video_id": [video_id]},
+                        )
+                        if video_id
+                        else []
+                    )
+                self.send_json(
+                    {"ok": True, **result, "pluginQueue": plugin_queue}
+                )
             finally:
                 conn.close()
             return

@@ -31,7 +31,7 @@ class FakePlugin:
             "maxInFlight": 2,
             "adminSurface": "advanced",
             "buttonLabel": "Fetch",
-            "hooks": ["library_update"],
+            "hooks": ["library_update", "video_scan"],
             "adminActions": [
                 {
                     "id": "fetch-video",
@@ -374,6 +374,88 @@ class PluginManagerTests(unittest.TestCase):
 
             self.assertEqual(results[0]["inserted"], 1)
             self.assertEqual(tuple(row), ("plugin", "subtitles", 0))
+
+    def test_plugin_hook_forwards_event_parameters_to_planner(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_video(conn, "abcdefghijk", title="Example video")
+            finally:
+                conn.close()
+            plugin = FakePlugin()
+            manager = PluginManager(
+                {"plugins": {"subtitles": {"enabled": True}}},
+                db_path=db_path,
+                entry_points=[FakeEntryPoint(lambda: plugin)],
+            )
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    manager.enqueue_hook(
+                        conn,
+                        "video_scan",
+                        {"video_id": ["abcdefghijk"]},
+                    )
+            finally:
+                conn.close()
+
+            self.assertEqual(
+                plugin.planned_params,
+                {
+                    "hook": "video_scan",
+                    "video_id": ["abcdefghijk"],
+                },
+            )
+
+    def test_plugin_hook_failure_is_contained_and_rolls_back_partial_plan(self) -> None:
+        class FailingHookPlugin(FakePlugin):
+            def plan_worker(self, worker_id, context, params):
+                yield {
+                    "task_id": "abcdefghijk",
+                    "subject_id": "abcdefghijk",
+                    "video_id": "abcdefghijk",
+                    "title": "Partial task",
+                    "payload": {},
+                }
+                raise RuntimeError("planner broke")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            manager = PluginManager(
+                {"plugins": {"subtitles": {"enabled": True}}},
+                db_path=db_path,
+                entry_points=[FakeEntryPoint(FailingHookPlugin)],
+            )
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    results = manager.enqueue_hook(
+                        conn,
+                        "video_scan",
+                        {"video_id": ["abcdefghijk"]},
+                    )
+                queued = conn.execute(
+                    "SELECT COUNT(*) FROM worker_queue WHERE worker_type = 'plugin'"
+                ).fetchone()[0]
+                log = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM plugin_worker_log
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+            self.assertEqual(queued, 0)
+            self.assertIn("planner broke", results[0]["error"])
+            self.assertEqual(log["level"], "queue error")
+            self.assertIn("video_scan hook planning failed", log["message"])
 
     def test_common_dispatcher_runs_plugin_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

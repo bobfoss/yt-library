@@ -16,6 +16,61 @@ from tests.support import migrated_connection
 
 
 class AdminServerTests(unittest.TestCase):
+    def test_individual_video_scan_notifies_plugin_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            handler = object.__new__(server.LibraryHandler)
+            handler.db_path = db_path
+            handler.plugin_manager = Mock()
+            handler.plugin_manager.enqueue_hook.return_value = [
+                {
+                    "pluginId": "subtitles",
+                    "workerId": "fetch",
+                    "planned": 1,
+                    "inserted": 1,
+                    "alreadyQueued": 0,
+                }
+            ]
+            handler.send_json = Mock()
+
+            handler._handle_admin_action_post(
+                urllib.parse.urlparse("/api/admin/queue/add-target"),
+                {"target": ["abcdefghijk"]},
+            )
+
+            call = handler.plugin_manager.enqueue_hook.call_args
+            self.assertEqual(
+                call.args[1:],
+                ("video_scan", {"video_id": ["abcdefghijk"]}),
+            )
+            payload = handler.send_json.call_args.args[0]
+            self.assertEqual(payload["video_id"], "abcdefghijk")
+            self.assertEqual(
+                payload["pluginQueue"],
+                handler.plugin_manager.enqueue_hook.return_value,
+            )
+
+    def test_individual_channel_scan_does_not_notify_video_plugins(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            handler = object.__new__(server.LibraryHandler)
+            handler.db_path = db_path
+            handler.plugin_manager = Mock()
+            handler.send_json = Mock()
+
+            handler._handle_admin_action_post(
+                urllib.parse.urlparse("/api/admin/queue/add-target"),
+                {"target": ["UCabcdefghijklmnopqrstuv"]},
+            )
+
+            handler.plugin_manager.enqueue_hook.assert_not_called()
+            payload = handler.send_json.call_args.args[0]
+            self.assertEqual(payload["pluginQueue"], [])
+
     def test_plugin_admin_process_endpoint_plans_queue_and_starts_dispatcher(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
