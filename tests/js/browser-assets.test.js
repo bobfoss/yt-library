@@ -121,13 +121,16 @@ test('numbered browser pages cache and prefetch adjacent payloads', () => {
   assert.match(indexSource, /fetchVideoCollection\(\{[\s\S]*page = currentPage,/);
 });
 
-test('search sub-filters defer category dimming until refreshed results render', () => {
+test('search filters share deferred category dimming until refreshed results render', () => {
   const indexSource = source('index.js');
 
+  assert.match(indexSource, /function setSearchKindFilter\(kind, checked\)/);
   assert.match(indexSource, /function syncSearchKindFilter\(kind, applyDisabledStyles = true\)/);
   assert.match(indexSource, /if \(applyDisabledStyles\) \{[\s\S]{0,300}row\.classList\.toggle\('dimmed'/);
-  assert.match(indexSource, /syncMetaFilterGroup\(`search-plugin-\$\{plugin\.id\}`\);\s+syncSearchKindFilter\('videos', false\)/);
-  assert.match(indexSource, /syncSearchKindFilter\(searchKindForFacet\(groupName\), false\)/);
+  assert.match(indexSource, /function refreshSearchAfterFilterChange\(groupName, activatedFromHistory\)/);
+  assert.match(indexSource, /refreshSearchAfterFilterChange[\s\S]{0,200}syncSearchKindFilter\(searchKindForFacet\(groupName\), false\)/);
+  assert.match(indexSource, /setSearchKindFilter\(searchKindFilter, target\.checked\)[\s\S]{0,800}refreshSearchAfterFilterChange\(searchKindFilter, activatedFromHistory\)/);
+  assert.match(indexSource, /syncMetaFilterGroup\(`search-\$\{groupName\}`\);[\s\S]{0,180}refreshSearchAfterFilterChange\(groupName, activatedFromHistory\)/);
   assert.match(indexSource, /function renderSearchMetaFilters[\s\S]{0,900}syncSearchKindFilter\(kind\)/);
 });
 
