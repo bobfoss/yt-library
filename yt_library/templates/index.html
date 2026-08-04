@@ -146,6 +146,19 @@
     .search-tree-toggle-spacer { width: 14px; height: 18px; }
     .search-meta-row-title { color: var(--ink); font-size: 13px; font-weight: 650; text-align: left; display: inline-flex; align-items: center; justify-content: flex-start; gap: 4px; }
     .search-meta-row-title input { accent-color: var(--accent); margin: 0; }
+    .meta-filter-parent input:indeterminate,
+    .search-meta-row-title input:indeterminate {
+      appearance: none;
+      width: 13px;
+      height: 13px;
+      flex: 0 0 13px;
+      border: 1px solid var(--accent);
+      border-radius: 2px;
+      background:
+        linear-gradient(var(--bg), var(--bg)) center / 7px 2px no-repeat,
+        linear-gradient(var(--bg), var(--bg)) center / 2px 7px no-repeat,
+        var(--accent);
+    }
     .search-meta-row-title .count { color: var(--muted); font-weight: 400; margin-left: 4px; }
     .search-meta-progress { display: inline-block; width: 1.4em; flex: 0 0 1.4em; text-align: left; visibility: hidden; font-weight: 400; }
     .search-meta-progress.active { visibility: visible; }
