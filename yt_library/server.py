@@ -35,6 +35,7 @@ from .config import (
     configured_playlist_card_layout,
     configured_proxy_address,
     configured_request_delay_range,
+    configured_search_filter_tree_expanded,
     configured_search_card_layout,
     configured_sort_preferences,
     configured_update_frequency,
@@ -50,6 +51,7 @@ from .config import (
     save_config,
     valid_update_frequency,
     valid_filter_preference_key,
+    valid_search_filter_tree_node,
     valid_update_hour_minute,
     valid_update_time,
 )
@@ -144,6 +146,7 @@ PREFERENCE_POST_PATHS = frozenset(
         "/api/settings/page-size",
         "/api/settings/partial-completion-minimum",
         "/api/settings/filter-preference",
+        "/api/settings/search-filter-tree",
     }
 )
 ADMIN_CONFIGURATION_POST_PATHS = frozenset(
@@ -1219,6 +1222,25 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 }
             )
             return
+        if parsed.path == "/api/settings/search-filter-tree":
+            raw_nodes = (params.get("expanded") or [""])[0]
+            nodes = list(dict.fromkeys(
+                node.strip() for node in raw_nodes.split(",") if node.strip()
+            ))
+            if len(nodes) > 100 or any(
+                not valid_search_filter_tree_node(node) for node in nodes
+            ):
+                self.send_json({"error": "Invalid search filter tree state"}, status=400)
+                return
+            self.config_data["search_filter_tree_expanded"] = nodes
+            save_config(self.config_data)
+            self.send_json(
+                {
+                    "ok": True,
+                    "searchFilterTreeExpanded": nodes,
+                }
+            )
+            return
 
     def _handle_admin_configuration_post(
         self,
@@ -1788,6 +1810,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 configured_partial_completion_min_percent(self.config_data)
             ),
             "filterPreferences": configured_filter_preferences(self.config_data),
+            "searchFilterTreeExpanded": configured_search_filter_tree_expanded(
+                self.config_data
+            ),
         }
 
     def dispatch_settings(self) -> dict[str, Any]:

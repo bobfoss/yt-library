@@ -37,6 +37,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "page_size": 100,
     "partial_completion_min_percent": 1,
     "filter_preferences": {},
+    "search_filter_tree_expanded": [
+        "kind:videos",
+        "kind:playlists",
+        "kind:channels",
+    ],
     "update_frequency": "off",
     "update_hour_minute": 0,
     "update_time": "03:00",
@@ -95,6 +100,9 @@ FILTER_PREFERENCE_KEYS = frozenset(
 )
 PLUGIN_FILTER_PREFERENCE_PATTERN = re.compile(
     r"^plugins\.[a-z][a-z0-9_-]*\.(?:search|filters\.[a-z][a-z0-9_-]*)$"
+)
+SEARCH_FILTER_TREE_NODE_PATTERN = re.compile(
+    r"^(?:kind|facet):[A-Za-z][A-Za-z0-9_-]{0,79}$"
 )
 DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 UPDATE_FREQUENCIES = frozenset({"off", "hourly", "daily"})
@@ -201,6 +209,25 @@ def valid_filter_preference_key(value: str) -> bool:
     return value in FILTER_PREFERENCE_KEYS or bool(
         PLUGIN_FILTER_PREFERENCE_PATTERN.fullmatch(value)
     )
+
+
+def configured_search_filter_tree_expanded(config: dict[str, Any]) -> list[str]:
+    raw_nodes = config.get(
+        "search_filter_tree_expanded",
+        DEFAULT_CONFIG["search_filter_tree_expanded"],
+    )
+    if not isinstance(raw_nodes, list):
+        raw_nodes = DEFAULT_CONFIG["search_filter_tree_expanded"]
+    nodes: list[str] = []
+    for raw_node in raw_nodes:
+        node = str(raw_node or "").strip()
+        if valid_search_filter_tree_node(node) and node not in nodes:
+            nodes.append(node)
+    return nodes
+
+
+def valid_search_filter_tree_node(value: str) -> bool:
+    return bool(SEARCH_FILTER_TREE_NODE_PATTERN.fullmatch(value or ""))
 
 
 def configured_sort_preferences(config: dict[str, Any]) -> dict[str, str]:
@@ -432,6 +459,7 @@ CONFIG_NORMALIZERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "page_size": configured_page_size,
     "partial_completion_min_percent": configured_partial_completion_min_percent,
     "filter_preferences": configured_filter_preferences,
+    "search_filter_tree_expanded": configured_search_filter_tree_expanded,
     "update_frequency": configured_update_frequency,
     "update_hour_minute": configured_update_hour_minute,
     "update_time": configured_update_time,

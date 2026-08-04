@@ -532,6 +532,48 @@ class AdminServerTests(unittest.TestCase):
                 {"plugins.subtitles.search": True},
             )
 
+    def test_search_filter_tree_state_saves_without_restarting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.config_data = config
+            handler.send_json = Mock()
+            handler.path = (
+                "/api/settings/search-filter-tree?"
+                "expanded=kind:videos,facet:videos"
+            )
+
+            handler.do_POST()
+
+            expected = ["kind:videos", "facet:videos"]
+            self.assertEqual(config["search_filter_tree_expanded"], expected)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["search_filter_tree_expanded"], expected)
+            handler.send_json.assert_called_once_with(
+                {
+                    "ok": True,
+                    "searchFilterTreeExpanded": expected,
+                }
+            )
+
+    def test_search_filter_tree_state_rejects_invalid_nodes(self) -> None:
+        config = load_config(Path("missing-test-config.json"))
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = (
+            "/api/settings/search-filter-tree?expanded=kind:videos,bad%20node"
+        )
+        handler.config_data = config
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        self.assertEqual(
+            config["search_filter_tree_expanded"],
+            ["kind:videos", "kind:playlists", "kind:channels"],
+        )
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
     def test_filter_preference_rejects_unknown_key(self) -> None:
         config = load_config(Path("missing-test-config.json"))
         handler = object.__new__(server.LibraryHandler)

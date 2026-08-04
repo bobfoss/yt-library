@@ -94,13 +94,50 @@
     .card-layout-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; }
     .search-for-title { margin-top: 5px; }
     .search-meta-groups { display: grid; gap: 10px; }
-    .search-meta-kind { display: grid; gap: 5px; }
+    .search-meta-kind, .search-meta-facet {
+      display: grid;
+      grid-template-columns: 14px minmax(0, 1fr);
+      column-gap: 4px;
+      row-gap: 5px;
+    }
     .search-meta-kind.kind-disabled > .search-meta-row-title { opacity: .42; }
+    .search-meta-kind.kind-disabled > .search-tree-toggle { opacity: .42; }
     .search-meta-kind.kind-disabled > .search-meta-row-title .count,
     .search-meta-kind.kind-disabled .meta-filter-count { display: none; }
-    .search-meta-kind-children { display: grid; gap: 5px; padding-left: 18px; }
-    .search-meta-facet { display: grid; gap: 5px; }
+    .search-meta-kind-children, .search-meta-facet-children {
+      grid-column: 2;
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+    }
+    .search-meta-kind-children[hidden], .search-meta-facet-children[hidden] { display: none; }
     .search-meta-facet.dimmed { opacity: .42; }
+    .search-tree-toggle {
+      width: 14px;
+      height: 18px;
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: var(--muted);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .search-tree-toggle:hover { color: var(--ink); }
+    .search-tree-toggle svg {
+      width: 14px;
+      height: 14px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      transform: rotate(0deg);
+      transition: transform 160ms ease;
+    }
+    .search-tree-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+    .search-tree-toggle-spacer { width: 14px; height: 18px; }
     .search-meta-row-title { color: var(--ink); font-size: 13px; font-weight: 650; text-align: left; display: inline-flex; align-items: center; justify-content: flex-start; gap: 4px; }
     .search-meta-row-title input { accent-color: var(--accent); margin: 0; }
     .search-meta-row-title .count { color: var(--muted); font-weight: 400; margin-left: 4px; }
@@ -112,7 +149,7 @@
     .search-meta-controls { display: grid; gap: 5px; }
     .search-meta-controls .meta-filter { margin-left: 0; }
     .search-meta-facet .meta-filter-count { font-size: 12px; font-weight: 400; }
-    .search-meta-facet .meta-filter-child { margin-left: 18px; }
+    .search-meta-facet .meta-filter-child { margin-left: 0; }
     .search-meta-facet.flat .meta-filter-child { margin-left: 0; }
     .playlist-search { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; min-width: min(360px, 38vw); }
     .view-sort { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }

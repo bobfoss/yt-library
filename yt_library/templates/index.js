@@ -26,6 +26,17 @@ const filterPreferenceKeys = {
 const filterPreferences = Object.fromEntries(
   Object.entries(pageConfig.filterPreferences || {}).filter(([, enabled]) => enabled === true)
 );
+const defaultSearchFilterTreeExpanded = [
+  'kind:videos',
+  'kind:playlists',
+  'kind:channels',
+];
+const searchFilterTreeExpanded = new Set(
+  (Array.isArray(pageConfig.searchFilterTreeExpanded)
+    ? pageConfig.searchFilterTreeExpanded
+    : defaultSearchFilterTreeExpanded)
+    .filter(node => typeof node === 'string')
+);
 
 function filterPreferenceEnabled(key) {
   return filterPreferences[key] === true;
@@ -330,6 +341,8 @@ let partialCompletionMinimumSaveChain = Promise.resolve();
 let partialCompletionMinimumSaveVersion = 0;
 let filterPreferenceSaveChain = Promise.resolve();
 const filterPreferenceSaveVersions = new Map();
+let searchFilterTreeSaveChain = Promise.resolve();
+let searchFilterTreeSaveVersion = 0;
 const searchPresetDefinitions = {
   videos: { kind: 'videos', sort: 'newest' },
   'playlist-videos': { kind: 'videos', sort: 'newest' },
@@ -2663,22 +2676,18 @@ const playlistStatusMetaFilterDefinitions = [
   { key: 'removed', label: 'removed', className: 'status' },
 ];
 
-function metaFilterControlsHtml({
+function metaFilterChildrenHtml({
   groupName,
   filterAttribute,
   visibility,
   counts,
   definitions,
   filterValuePrefix = '',
-  allLabel = 'All',
-  showAll = true,
 }) {
   const applicableDefinitions = definitions.filter(({ key }) =>
     Object.prototype.hasOwnProperty.call(visibility, key)
   );
-  return `
-    ${showAll ? `<label class="meta-filter meta-filter-parent"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>${escapeHtml(allLabel)}</span></label>` : ''}
-    ${applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '', minimumPercent = null, minimumAttribute = '' }) => minimumPercent === null ? `
+  return applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '', minimumPercent = null, minimumAttribute = '' }) => minimumPercent === null ? `
         <label class="meta-filter meta-filter-child">
           <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
           ${visibilityIcon
@@ -2697,7 +2706,29 @@ function metaFilterControlsHtml({
             <span>% <span class="meta-filter-count">${filterCountText(metaFilterCount(counts, key))}</span></span>
           </span>
         </div>
-      `).join('')}
+      `).join('');
+}
+
+function metaFilterControlsHtml({
+  groupName,
+  filterAttribute,
+  visibility,
+  counts,
+  definitions,
+  filterValuePrefix = '',
+  allLabel = 'All',
+  showAll = true,
+}) {
+  return `
+    ${showAll ? `<label class="meta-filter meta-filter-parent"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>${escapeHtml(allLabel)}</span></label>` : ''}
+    ${metaFilterChildrenHtml({
+      groupName,
+      filterAttribute,
+      visibility,
+      counts,
+      definitions,
+      filterValuePrefix,
+    })}
   `;
 }
 
@@ -2787,6 +2818,27 @@ function playlistVideoFiltersHtml(
   `;
 }
 
+function searchFilterTreeChildrenId(nodeId) {
+  return `search-filter-tree-${nodeId.replace(/[^A-Za-z0-9_-]/g, '-')}`;
+}
+
+function searchFilterTreeToggleHtml(nodeId, label) {
+  const expanded = searchFilterTreeExpanded.has(nodeId);
+  return `
+    <button
+      class="search-tree-toggle"
+      type="button"
+      data-search-tree-toggle="${escapeHtml(nodeId)}"
+      aria-controls="${escapeHtml(searchFilterTreeChildrenId(nodeId))}"
+      aria-expanded="${expanded ? 'true' : 'false'}"
+      aria-label="${expanded ? 'Collapse' : 'Expand'} ${escapeHtml(label)}"
+      title="${expanded ? 'Collapse' : 'Expand'} ${escapeHtml(label)}"
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
+    </button>
+  `;
+}
+
 function searchMetaFiltersHtml(
   metaCounts,
   reactionCounts,
@@ -2795,56 +2847,86 @@ function searchMetaFiltersHtml(
   uploaderCategoryCounts,
   resultCounts,
 ) {
-  const facetHtml = ({ key, visibility, definitions, counts, allLabel = 'All', kind, showAll = true }) => `
-    <div class="search-meta-facet${showAll ? '' : ' flat'}" data-search-kind-facet="${kind}">
-      <div class="search-meta-controls">
-        ${metaFilterControlsHtml({
-          groupName: `search-${key}`,
-          filterAttribute: 'search-meta-filter',
-          filterValuePrefix: `${key}:`,
-          visibility,
-          counts: searchKindEnabled(kind) ? counts : null,
-          definitions,
-          allLabel,
-          showAll,
-        })}
+  const facetHtml = ({
+    key,
+    visibility,
+    definitions,
+    counts,
+    allLabel = 'All',
+    kind,
+    groupName = `search-${key}`,
+    filterAttribute = 'search-meta-filter',
+    filterValuePrefix = `${key}:`,
+  }) => {
+    const nodeId = `facet:${key}`;
+    const expanded = searchFilterTreeExpanded.has(nodeId);
+    return `
+      <div class="search-meta-facet" data-search-kind-facet="${escapeHtml(kind)}" data-search-tree-node="${escapeHtml(nodeId)}">
+        ${searchFilterTreeToggleHtml(nodeId, allLabel)}
+        <label class="meta-filter meta-filter-parent">
+          <input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}">
+          <span>${escapeHtml(allLabel)}</span>
+        </label>
+        <div
+          id="${escapeHtml(searchFilterTreeChildrenId(nodeId))}"
+          class="search-meta-controls search-meta-facet-children"
+          data-search-tree-children
+          ${expanded ? '' : 'hidden'}
+        >
+          ${metaFilterChildrenHtml({
+            groupName,
+            filterAttribute,
+            filterValuePrefix,
+            visibility,
+            counts: searchKindEnabled(kind) ? counts : null,
+            definitions,
+          })}
+        </div>
       </div>
-    </div>
-  `;
+    `;
+  };
   const pluginVideoFacetHtml = plugin => {
     const definition = browserVideoFacetDefinition(plugin);
-    const visibility = browserVideoFacetState(plugin);
-    const counts = metaCounts?.videoPlugins?.[plugin.id] || null;
-    return `
-    <div class="search-meta-facet" data-search-kind-facet="videos">
-      <div class="search-meta-controls">
-        ${metaFilterControlsHtml({
-          groupName: `search-plugin-${plugin.id}`,
-          filterAttribute: 'search-plugin-facet-filter',
-          filterValuePrefix: `${plugin.id}:`,
-          visibility,
-          counts,
-          definitions: [
-            { key: 'absent', label: definition.absentLabel || `no ${plugin.search.label || plugin.id}` },
-            { key: 'present', label: definition.presentLabel || plugin.search.label || plugin.id },
-          ],
-          allLabel: plugin.search.label || plugin.id,
-        })}
-      </div>
-    </div>
-  `;
+    return facetHtml({
+      key: `plugin-${plugin.id}`,
+      groupName: `search-plugin-${plugin.id}`,
+      filterAttribute: 'search-plugin-facet-filter',
+      filterValuePrefix: `${plugin.id}:`,
+      visibility: browserVideoFacetState(plugin),
+      counts: metaCounts?.videoPlugins?.[plugin.id] || null,
+      definitions: [
+        { key: 'absent', label: definition.absentLabel || `no ${plugin.search.label || plugin.id}` },
+        { key: 'present', label: definition.presentLabel || plugin.search.label || plugin.id },
+      ],
+      allLabel: plugin.search.label || plugin.id,
+      kind: 'videos',
+    });
   };
   const kindHtml = (titleText, kind, count, facetsHtml) => {
     const kindEnabled = searchKindEnabled(kind);
+    const hasChildren = Boolean(facetsHtml.trim());
+    const nodeId = `kind:${kind}`;
+    const expanded = hasChildren && searchFilterTreeExpanded.has(nodeId);
+    const escapedTitle = escapeHtml(titleText);
     return `
-    <div class="search-meta-kind${kindEnabled ? '' : ' kind-disabled'}">
+    <div class="search-meta-kind${kindEnabled ? '' : ' kind-disabled'}" data-search-tree-node="${escapeHtml(nodeId)}">
+      ${hasChildren
+        ? searchFilterTreeToggleHtml(nodeId, `${titleText} filters`)
+        : '<span class="search-tree-toggle-spacer" aria-hidden="true"></span>'}
       <label class="search-meta-row-title">
         <input type="checkbox" data-search-kind-filter="${kind}">
-        <span>${titleText}</span>
+        <span>${escapedTitle}</span>
         <span class="count">${kindEnabled ? filterCountText(count) : ''}</span>
         <span class="search-meta-progress" data-search-meta-progress="${kind}" aria-hidden="true"></span>
       </label>
-      <div class="search-meta-kind-children">${facetsHtml}</div>
+      ${hasChildren ? `
+        <div
+          id="${escapeHtml(searchFilterTreeChildrenId(nodeId))}"
+          class="search-meta-kind-children"
+          data-search-tree-children
+          ${expanded ? '' : 'hidden'}
+        >${facetsHtml}</div>
+      ` : ''}
     </div>
   `;
   };
@@ -2872,7 +2954,7 @@ function searchMetaFiltersHtml(
       facetHtml({ key: 'channelStatus', visibility: searchMetaVisibility.channelStatus, definitions: channelStatusMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Status', kind: 'channels' }),
     ].join('')),
     ...browserResultSearchPlugins().map(plugin => kindHtml(
-      escapeHtml(plugin.search.label || plugin.id),
+      plugin.search.label || plugin.id,
       plugin.id,
       resultCounts?.plugins?.[plugin.id]
         ?? Number(plugin.search.catalogCount?.(browserPluginStatus(plugin.id)) || 0),
@@ -2913,6 +2995,28 @@ function renderSearchMetaFilters({
     syncSearchKindFilter(kind);
   }
   updateSearchMetaProgress();
+}
+
+function applySearchFilterTreeNodeState(nodeId) {
+  const button = [...searchForFilters.querySelectorAll('[data-search-tree-toggle]')]
+    .find(candidate => candidate.dataset.searchTreeToggle === nodeId);
+  if (!(button instanceof HTMLButtonElement)) return;
+  const expanded = searchFilterTreeExpanded.has(nodeId);
+  const controlsId = button.getAttribute('aria-controls') || '';
+  const children = controlsId ? document.getElementById(controlsId) : null;
+  button.setAttribute('aria-expanded', String(expanded));
+  const label = button.getAttribute('aria-label')?.replace(/^(?:Collapse|Expand)\s+/, '') || 'filters';
+  button.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${label}`);
+  button.title = `${expanded ? 'Collapse' : 'Expand'} ${label}`;
+  if (children instanceof HTMLElement) children.hidden = !expanded;
+}
+
+function toggleSearchFilterTreeNode(nodeId) {
+  const wasExpanded = searchFilterTreeExpanded.has(nodeId);
+  if (wasExpanded) searchFilterTreeExpanded.delete(nodeId);
+  else searchFilterTreeExpanded.add(nodeId);
+  applySearchFilterTreeNodeState(nodeId);
+  saveSearchFilterTreePreference(nodeId, wasExpanded);
 }
 
 function syncSearchFiltersForSelection() {
@@ -4526,6 +4630,13 @@ function handleMetaChange(event) {
 }
 meta.addEventListener('change', handleMetaChange);
 searchForFilters.addEventListener('change', handleMetaChange);
+searchForFilters.addEventListener('click', event => {
+  if (!(event.target instanceof Element)) return;
+  const button = event.target.closest('[data-search-tree-toggle]');
+  if (!(button instanceof HTMLButtonElement)) return;
+  const nodeId = button.dataset.searchTreeToggle || '';
+  if (nodeId) toggleSearchFilterTreeNode(nodeId);
+});
 function scheduleCompletionMinimumInput(event) {
   const target = event.target;
   if (!(target instanceof HTMLInputElement)) return;
@@ -4656,6 +4767,35 @@ function persistFilterPreference(preferenceKey, enabled) {
   const request = filterPreferenceSaveChain.catch(() => {}).then(save);
   filterPreferenceSaveChain = request;
   return request;
+}
+
+function persistSearchFilterTreePreference(expandedNodes) {
+  const save = async () => {
+    const params = new URLSearchParams({ expanded: expandedNodes.join(',') });
+    const response = await fetch(
+      `/api/settings/search-filter-tree?${params.toString()}`,
+      { method: 'POST' },
+    );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) {
+      throw new Error(result.error || `Filter tree save failed (${response.status})`);
+    }
+  };
+  const request = searchFilterTreeSaveChain.catch(() => {}).then(save);
+  searchFilterTreeSaveChain = request;
+  return request;
+}
+
+function saveSearchFilterTreePreference(nodeId, wasExpanded) {
+  const version = ++searchFilterTreeSaveVersion;
+  const expandedNodes = [...searchFilterTreeExpanded].sort();
+  void persistSearchFilterTreePreference(expandedNodes).catch(error => {
+    if (searchFilterTreeSaveVersion !== version) return;
+    if (wasExpanded) searchFilterTreeExpanded.add(nodeId);
+    else searchFilterTreeExpanded.delete(nodeId);
+    applySearchFilterTreeNodeState(nodeId);
+    window.alert(error instanceof Error ? error.message : String(error));
+  });
 }
 
 function savePartialCompletionMinimum(value, previousValue) {

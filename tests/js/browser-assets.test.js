@@ -159,6 +159,18 @@ test('search filters share deferred category dimming until refreshed results ren
   assert.match(indexSource, /function renderSearchMetaFilters[\s\S]*?for \(const kind of \[[\s\S]*?syncSearchKindFilter\(kind\)/);
 });
 
+test('search filter tree folds facets and persists disclosure state', () => {
+  const indexHtml = source('index.html');
+  const indexSource = source('index.js');
+
+  assert.match(indexHtml, /\.search-tree-toggle[\s\S]*transition: transform 160ms ease/);
+  assert.match(indexHtml, /\.search-tree-toggle\[aria-expanded="true"\][\s\S]*rotate\(90deg\)/);
+  assert.match(indexSource, /defaultSearchFilterTreeExpanded = \[[\s\S]*'kind:videos'[\s\S]*'kind:playlists'[\s\S]*'kind:channels'/);
+  assert.match(indexSource, /data-search-tree-toggle="\$\{escapeHtml\(nodeId\)\}"/);
+  assert.match(indexSource, /class="search-meta-controls search-meta-facet-children"[\s\S]*\$\{expanded \? '' : 'hidden'\}/);
+  assert.match(indexSource, /\/api\/settings\/search-filter-tree/);
+});
+
 test('uploader category facet requires detected categories', () => {
   const indexSource = source('index.js');
 

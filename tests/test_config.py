@@ -31,6 +31,7 @@ from yt_library.config import (
     configured_proxy_address,
     configured_request_delay_range,
     configured_search_card_layout,
+    configured_search_filter_tree_expanded,
     configured_sort_preferences,
     configured_update_frequency,
     configured_update_hour_minute,
@@ -46,6 +47,7 @@ from yt_library.config import (
     save_config,
     valid_update_frequency,
     valid_filter_preference_key,
+    valid_search_filter_tree_node,
     valid_update_hour_minute,
     valid_update_time,
 )
@@ -216,6 +218,25 @@ class ConfigTests(unittest.TestCase):
             99,
         )
         self.assertEqual(configured_filter_preferences({}), {})
+        self.assertEqual(
+            configured_search_filter_tree_expanded({}),
+            ["kind:videos", "kind:playlists", "kind:channels"],
+        )
+        self.assertEqual(
+            configured_search_filter_tree_expanded(
+                {
+                    "search_filter_tree_expanded": [
+                        "kind:videos",
+                        "facet:uploaderCategory",
+                        "kind:videos",
+                        "bad node",
+                    ]
+                }
+            ),
+            ["kind:videos", "facet:uploaderCategory"],
+        )
+        self.assertTrue(valid_search_filter_tree_node("facet:plugin-subtitles"))
+        self.assertFalse(valid_search_filter_tree_node("facet:bad node"))
         self.assertTrue(valid_filter_preference_key("plugins.subtitles.search"))
         self.assertTrue(
             valid_filter_preference_key("plugins.subtitles.filters.present_disabled")
@@ -476,6 +497,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["page_size"], 100)
             self.assertEqual(payload["partial_completion_min_percent"], 1)
             self.assertEqual(payload["filter_preferences"], {})
+            self.assertEqual(
+                payload["search_filter_tree_expanded"],
+                ["kind:videos", "kind:playlists", "kind:channels"],
+            )
             self.assertEqual(payload["update_frequency"], "off")
             self.assertEqual(payload["update_hour_minute"], 0)
             self.assertEqual(payload["update_time"], "03:00")

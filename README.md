@@ -88,6 +88,11 @@ in the generated config file:
   "search_card_layout": "grid",
   "history_card_layout": "compact",
   "sort_preferences": {},
+  "search_filter_tree_expanded": [
+    "kind:videos",
+    "kind:playlists",
+    "kind:channels"
+  ],
   "update_daily": false,
   "update_time": "03:00",
   "use_proxy": false,
