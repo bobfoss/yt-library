@@ -258,6 +258,18 @@ test('video-card helpers escape markup and clamp watch progress', () => {
     helpers.searchHighlight.snippetHtml('before <mark>hit & <b></mark> <script>'),
     'before <mark class="search-highlight">hit &amp; &lt;b&gt;</mark> &lt;script&gt;',
   );
+  assert.equal(
+    helpers.searchHighlight.excerptHtml(
+      'Discard these opening words because the reflecting match is later than the card can show safely.',
+      'reflecting',
+      { before: 12, after: 20 },
+    ),
+    '…the <mark class="search-highlight">reflecting</mark> match is later…',
+  );
+  assert.equal(
+    helpers.searchHighlight.excerptHtml('No match & <b>', 'reflecting'),
+    'No match &amp; &lt;b&gt;',
+  );
   assert.equal(helpers.watchProgressPercent({ watch_progress_percent: 0.4 }), 1);
   assert.equal(helpers.watchProgressPercent({ watch_progress_percent: 104 }), 100);
   assert.equal(helpers.watchProgressPercent({ watch_progress_percent: 'bad' }), 0);

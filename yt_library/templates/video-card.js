@@ -30,7 +30,35 @@
       .replaceAll('&lt;/mark&gt;', '</mark>');
   }
 
+  function searchHighlightExcerptHtml(value, query, options = {}) {
+    const text = String(value || '');
+    const term = String(query || '').trim();
+    if (!term) return escapeHtml(text);
+    const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = new RegExp(escapedTerm, 'iu').exec(text);
+    if (!match) return escapeHtml(text);
+    const before = Number.isFinite(Number(options.before))
+      ? Math.max(0, Math.floor(Number(options.before)))
+      : 64;
+    const after = Number.isFinite(Number(options.after))
+      ? Math.max(0, Math.floor(Number(options.after)))
+      : 140;
+    let start = Math.max(0, match.index - before);
+    let end = Math.min(text.length, match.index + match[0].length + after);
+    if (start > 0) {
+      const leadingFragment = /^\S+\s+/.exec(text.slice(start, match.index));
+      if (leadingFragment) start += leadingFragment[0].length;
+    }
+    if (end < text.length) {
+      const trailingFragment = /\s+\S*$/.exec(text.slice(match.index + match[0].length, end));
+      if (trailingFragment) end -= trailingFragment[0].length;
+    }
+    const excerpt = `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
+    return searchHighlightTextHtml(excerpt, term);
+  }
+
   const searchHighlight = Object.freeze({
+    excerptHtml: searchHighlightExcerptHtml,
     snippetHtml: searchHighlightSnippetHtml,
     textHtml: searchHighlightTextHtml,
   });

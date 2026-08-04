@@ -295,9 +295,10 @@ required text inputs whose values are sent as process query parameters. YTL
 renders and submits these controls without knowing their plugin semantics.
 Browser plugins receive a generic `host.ui.searchHighlight` helper. Its
 `textHtml` method safely highlights a literal query in plain text, while
-`snippetHtml` escapes a server-generated snippet and admits only its exact
-`<mark>` delimiters. Highlight styling and HTML safety therefore remain owned
-by YT Library rather than individual plugins.
+`excerptHtml` centers a word-bounded excerpt on the first literal match and
+`snippetHtml` escapes a server-generated snippet while admitting only its
+exact `<mark>` delimiters. Highlight styling and HTML safety therefore remain
+owned by YT Library rather than individual plugins.
 
 The first plugin is the sibling YT Subtitles project. A local activation uses:
 

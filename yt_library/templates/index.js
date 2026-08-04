@@ -4379,7 +4379,7 @@ function searchResultCardFor(result, options = {}) {
       ? searchHighlight.textHtml(titleText, query)
       : undefined,
     descriptionHtml: query && descriptionText && searchFields.has('descriptions')
-      ? searchHighlight.textHtml(descriptionText, query)
+      ? searchHighlight.excerptHtml(descriptionText, query)
       : undefined,
   });
   for (const plugin of browserSearchPlugins().filter(item => searchKindEnabled(item.id))) {
