@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -635,6 +635,18 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (14, utc_now()),
         )
+    if current_version < 15:
+        video_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+        }
+        if "uploader_category" not in video_columns:
+            conn.execute(
+                "ALTER TABLE videos ADD COLUMN uploader_category TEXT NOT NULL DEFAULT ''"
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (15, utc_now()),
+        )
 
 
 def _schema_version(conn: sqlite3.Connection) -> int:
@@ -649,5 +661,4 @@ def _schema_version(conn: sqlite3.Connection) -> int:
         return 0
     value = conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()[0]
     return int(value or 0)
-
 

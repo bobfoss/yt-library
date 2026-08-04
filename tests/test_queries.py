@@ -61,6 +61,31 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(data["videos"][0]["metadata_channel"], "Channel UC_first")
         self.assertIn("playlist_links", data["videos"][0])
 
+    def test_video_read_models_expose_uploader_category(self) -> None:
+        self.add_video("category123", "Category Video")
+        self.conn.execute(
+            "UPDATE videos SET uploader_category = 'Music' WHERE video_id = 'category123'"
+        )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES ('category-history', 'category123', '2026-08-03', 'date_only')
+            """
+        )
+        self.conn.commit()
+
+        detail = video_detail_data(self.conn, "category123")
+        search_item = next(
+            result["item"]
+            for result in omni_search_data(self.conn, "Category Video")["results"]
+            if result["kind"] == "video"
+        )
+        history_item = history_search_data(self.conn, "Category Video")["watch"][0]
+
+        self.assertEqual(detail["uploader_category"], "Music")
+        self.assertEqual(search_item["uploader_category"], "Music")
+        self.assertEqual(history_item["uploader_category"], "Music")
+
     def test_channel_aliases_drive_all_external_channel_links(self) -> None:
         channel_id = "UC_alias_owner"
         self.add_video("alias-video", "Alias Video", channel_id)

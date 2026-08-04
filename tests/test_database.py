@@ -25,12 +25,46 @@ class DatabaseModuleTests(unittest.TestCase):
                 schema_version = conn.execute(
                     "SELECT MAX(version) FROM schema_migrations"
                 ).fetchone()[0]
+                video_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+                }
                 foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
             finally:
                 conn.close()
 
         self.assertEqual(schema_version, database.SCHEMA_VERSION)
+        self.assertIn("uploader_category", video_columns)
         self.assertEqual(foreign_keys, 1)
+
+    def test_database_module_migrates_uploader_category_from_version_14(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.execute("ALTER TABLE videos DROP COLUMN uploader_category")
+                    conn.execute("DELETE FROM schema_migrations")
+                    conn.execute(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES (14, '2026-08-03T00:00:00Z')"
+                    )
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                schema_version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                video_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+                }
+            finally:
+                conn.close()
+
+        self.assertEqual(schema_version, database.SCHEMA_VERSION)
+        self.assertIn("uploader_category", video_columns)
 
 
 if __name__ == "__main__":

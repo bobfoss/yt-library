@@ -7,6 +7,7 @@ const escapeHtml = VideoCard.escapeHtml;
 const membersOnlyIconHtml = VideoCard.membersOnlyIconHtml;
 const reactionIconsHtml = VideoCard.reactionIconsHtml;
 const reactionLabel = VideoCard.reactionLabel;
+const uploaderCategoryHtml = VideoCard.uploaderCategoryHtml;
 const thumbnailWithProgress = VideoCard.thumbnailWithProgress;
 const thumbIconHtml = VideoCard.thumbIconHtml;
 const watchProgressPercent = VideoCard.watchProgressPercent;
@@ -3501,6 +3502,7 @@ function videoDetailCardFor(video) {
         ${watchedLineHtml(video)}
         ${watchSparklineHtml(video, true)}
         ${reactionIconsHtml(video)}
+        ${uploaderCategoryHtml(video.uploader_category)}
         ${playlistSourceLinksHtml(video)}
         ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : '<div class="empty">No description captured for this video.</div>'}
       </div>
@@ -4020,6 +4022,7 @@ function playlistVideoCardFor(video, options = {}) {
     watchedHtml: watchedLineHtml(video),
     sparklineHtml: watchSparklineHtml(video),
     reactionHtml: reactionIconsHtml(video),
+    uploaderCategory: video.uploader_category,
     description: options.description === undefined ? video.metadata_description : options.description,
   });
 }

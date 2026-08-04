@@ -150,6 +150,13 @@
     `;
   }
 
+  function uploaderCategoryHtml(value) {
+    const category = String(value || '').trim();
+    return category
+      ? `<div class="details uploader-category">Uploader category: ${escapeHtml(category)}</div>`
+      : '';
+  }
+
   function titleHtml(options) {
     const title = escapeHtml(options.title || '');
     if (options.titleHref) {
@@ -193,6 +200,7 @@
       ${options.watchedHtml || ''}
       ${options.sparklineHtml || ''}
       ${options.reactionHtml || ''}
+      ${uploaderCategoryHtml(options.uploaderCategory)}
       ${options.description ? `<div class="description">${escapeHtml(options.description)}</div>` : ''}
       ${detailRowHtml(options.sources)}
       ${options.playlistSourcesHtml || ''}
@@ -212,6 +220,7 @@
     reactionIconsHtml,
     thumbnailWithProgress,
     thumbIconHtml,
+    uploaderCategoryHtml,
     watchProgressPercent,
     watchSparklineHtml,
     watchedLineHtml,

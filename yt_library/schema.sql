@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS videos (
   duration_text TEXT NOT NULL DEFAULT '',
   view_count TEXT NOT NULL DEFAULT '',
   upload_date TEXT NOT NULL DEFAULT '',
+  uploader_category TEXT NOT NULL DEFAULT '',
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
   reaction TEXT NOT NULL DEFAULT '',

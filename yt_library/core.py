@@ -592,6 +592,7 @@ def upsert_video(
     duration_text: str = "",
     view_count: str = "",
     upload_date: str = "",
+    uploader_category: str = "",
     thumbnail_url: str = "",
     thumbnail_path: str = "",
     reaction: str = "",
@@ -656,6 +657,7 @@ def upsert_video(
         current("duration_text", duration_text),
         current("view_count", str(view_count or "")),
         current("upload_date", upload_date),
+        current("uploader_category", uploader_category),
         current("thumbnail_url", thumbnail_url),
         current("thumbnail_path", thumbnail_path),
         current("reaction", reaction),
@@ -674,7 +676,7 @@ def upsert_video(
             """
             UPDATE videos SET
               title=?, description=?, channel_id=?, duration_text=?, view_count=?, upload_date=?,
-              thumbnail_url=?, thumbnail_path=?, reaction=?, is_playable=?,
+              uploader_category=?, thumbnail_url=?, thumbnail_path=?, reaction=?, is_playable=?,
               availability=?, metadata_source=?,
               fetch_status=?, fetch_error=?, fetched_at=?, last_seen_available_at=?,
               last_checked_at=?, updated_at=?
@@ -687,10 +689,10 @@ def upsert_video(
             """
             INSERT INTO videos(
               video_id, title, description, channel_id, duration_text, view_count, upload_date,
-              thumbnail_url, thumbnail_path, reaction, is_playable, availability, metadata_source,
+              uploader_category, thumbnail_url, thumbnail_path, reaction, is_playable, availability, metadata_source,
               fetch_status, fetch_error, fetched_at, last_seen_available_at,
               last_checked_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (video_id, *values),
         )
@@ -3064,6 +3066,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         "duration_text": format_duration(details.get("lengthSeconds")),
         "view_count": str(details.get("viewCount") or ""),
         "upload_date": str(microformat.get("uploadDate") or microformat.get("publishDate") or ""),
+        "uploader_category": str(microformat.get("category") or "").strip(),
         "thumbnail_url": thumbnail_url,
         "channel_thumbnail_url": channel_thumbnail_url,
         "reaction": reaction,
@@ -3188,6 +3191,7 @@ def store_video_metadata(
         duration_text=metadata.get("duration_text", ""),
         view_count=metadata.get("view_count", ""),
         upload_date=metadata.get("upload_date", ""),
+        uploader_category=metadata.get("uploader_category", ""),
         thumbnail_url=metadata.get("thumbnail_url", ""),
         thumbnail_path=metadata.get("thumbnail_path", ""),
         reaction=metadata.get("reaction", ""),

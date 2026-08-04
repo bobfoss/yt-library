@@ -1856,7 +1856,10 @@ class CoreHelperTests(unittest.TestCase):
         var ytInitialPlayerResponse = {
           "playabilityStatus": {"status": "OK"},
           "videoDetails": {"title": "Unlisted video", "author": "Creator"},
-          "microformat": {"playerMicroformatRenderer": {"isUnlisted": true}}
+          "microformat": {"playerMicroformatRenderer": {
+            "isUnlisted": true,
+            "category": "Music"
+          }}
         };
         var ytInitialData = {};
         </script>
@@ -1866,6 +1869,7 @@ class CoreHelperTests(unittest.TestCase):
         metadata = core.extract_watch_metadata(html, "unlisted123")
 
         self.assertEqual(metadata["availability"], "unlisted")
+        self.assertEqual(metadata["uploader_category"], "Music")
         self.assertEqual(core.storable_watch_playability_value(metadata), 1)
         with tempfile.TemporaryDirectory() as tmp:
             conn = migrated_connection(Path(tmp) / "library.sqlite3")
@@ -1874,14 +1878,18 @@ class CoreHelperTests(unittest.TestCase):
                     core.store_video_metadata(conn, metadata, "ok")
                 stored = conn.execute(
                     """
-                    SELECT is_playable, availability
+                    SELECT is_playable, availability, uploader_category
                     FROM videos
                     WHERE video_id = 'unlisted123'
                     """
                 ).fetchone()
                 self.assertEqual(
                     dict(stored),
-                    {"is_playable": 1, "availability": "unlisted"},
+                    {
+                        "is_playable": 1,
+                        "availability": "unlisted",
+                        "uploader_category": "Music",
+                    },
                 )
             finally:
                 conn.close()
