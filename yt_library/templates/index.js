@@ -2112,9 +2112,9 @@ function historyActivityRange(yearOffset = historyActivityYearOffset) {
 }
 
 function historyRowDateKey(row) {
-  for (const value of [row?.watch_date, row?.watched_at]) {
-    const dateKey = String(value || '').slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return dateKey;
+  for (const value of [row?.watched_at, row?.watch_date]) {
+    const dateKey = window.YTLibraryTime.dateKey(value);
+    if (dateKey) return dateKey;
   }
   return '';
 }
@@ -4121,9 +4121,7 @@ function historyWatchedAtLabel(video) {
 }
 
 function historyDayLabel(video) {
-  const value = video.time_quality === 'exact' && video.watched_at
-    ? video.watched_at
-    : video.watch_date || '';
+  const value = video.watched_at || video.watch_date || '';
   const dateLabel = window.YTLibraryTime.formatDate(value);
   if (!dateLabel) return '';
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
@@ -4175,7 +4173,8 @@ function historyRowCardFor(video, { layout = 'detailed' } = {}) {
   });
   article.classList.add('history-card');
   article.classList.toggle('history-row', layout !== 'grid');
-  if (video.watch_date) article.dataset.watchDate = video.watch_date;
+  const watchDate = historyRowDateKey(video);
+  if (watchDate) article.dataset.watchDate = watchDate;
   if (!article.querySelector('.thumb-wrap')) {
     const placeholder = document.createElement('div');
     placeholder.className = 'thumb-wrap';

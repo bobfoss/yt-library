@@ -18,6 +18,22 @@ function source(name) {
   return fs.readFileSync(path.join(templateDirectory, name), 'utf8');
 }
 
+function timezoneHelpers(displayTimezone) {
+  const context = {
+    CustomEvent: class CustomEvent {},
+    Date,
+    Intl,
+    URLSearchParams,
+    console,
+    window: {
+      YT_LIBRARY_CONFIG: { displayTimezone },
+      dispatchEvent() {},
+    },
+  };
+  vm.runInNewContext(source('timezone.js'), context, { filename: 'timezone.js' });
+  return context.window.YTLibraryTime;
+}
+
 test('all served browser assets have valid JavaScript syntax', () => {
   for (const name of assetNames) {
     assert.doesNotThrow(
@@ -83,8 +99,17 @@ test('history views render shared day dividers', () => {
   assert.match(indexSource, /function historyRowsWithDayDividers\(rows, options = \{\}\)/);
   assert.equal((indexSource.match(/historyRowsWithDayDividers\(rows/g) || []).length, 3);
   assert.match(indexSource, /divider\.dataset\.historyDate = date/);
+  assert.match(indexSource, /for \(const value of \[row\?\.watched_at, row\?\.watch_date\]\)/);
+  assert.match(indexSource, /const watchDate = historyRowDateKey\(video\)/);
   assert.match(indexSource, /const target = divider instanceof HTMLElement \? divider : row/);
   assert.match(indexHtml, /\.history-day-divider/);
+});
+
+test('history day keys use the configured display timezone', () => {
+  const time = timezoneHelpers('America/Los_Angeles');
+
+  assert.equal(time.dateKey('2026-08-01T06:59:45.594617Z'), '2026-07-31');
+  assert.equal(time.dateKey('2026-08-01'), '2026-08-01');
 });
 
 test('histogram navigation uses a restorable date URL', () => {
