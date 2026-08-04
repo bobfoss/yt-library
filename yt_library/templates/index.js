@@ -1404,13 +1404,15 @@ function setSearchKindFilter(kind, checked) {
   return true;
 }
 
-function syncSearchKindFilter(kind) {
+function syncSearchKindFilter(kind, applyDisabledStyles = true) {
   const parent = searchForFilters.querySelector(`[data-search-kind-filter="${kind}"]`);
   if (!(parent instanceof HTMLInputElement)) return;
   if (browserSearchPlugin(kind)) {
     parent.checked = searchKindEnabled(kind);
     parent.indeterminate = false;
-    parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !parent.checked);
+    if (applyDisabledStyles) {
+      parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !parent.checked);
+    }
     return;
   }
   const facetKeys = searchKindFacetKeys(kind);
@@ -1429,17 +1431,21 @@ function syncSearchKindFilter(kind) {
     const allChildrenSelected = facetSelections.every(values => values.every(Boolean));
     parent.checked = everyFacetHasSelection;
     parent.indeterminate = everyFacetHasSelection && !allChildrenSelected;
-    for (const row of searchForFilters.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
-      row.classList.toggle('dimmed', !everyFacetHasSelection);
+    if (applyDisabledStyles) {
+      for (const row of searchForFilters.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
+        row.classList.toggle('dimmed', !everyFacetHasSelection);
+      }
+      parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !everyFacetHasSelection);
     }
-    parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !everyFacetHasSelection);
     return;
   }
   syncFilterGroup(
     parent,
     [...searchForFilters.querySelectorAll(`[data-meta-child-filter="search-${kind}"]`)],
   );
-  parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !parent.checked);
+  if (applyDisabledStyles) {
+    parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !parent.checked);
+  }
 }
 
 function searchKindForFacet(facetKey) {
@@ -4296,7 +4302,7 @@ function handleMetaChange(event) {
     currentPage = 1;
     syncMetaFilterGroup('search-completion');
     restoreEmptySearchKindFacets('completion');
-    syncSearchKindFilter('videos');
+    syncSearchKindFilter('videos', false);
     reconcileSearchPreset();
     showSearchMetaProgress('completion');
     syncSearchHashAndRender(!activatedFromHistory);
@@ -4366,7 +4372,7 @@ function handleMetaChange(event) {
     }
     currentPage = 1;
     syncMetaFilterGroup(`search-plugin-${plugin.id}`);
-    syncSearchKindFilter('videos');
+    syncSearchKindFilter('videos', false);
     reconcileSearchPreset();
     showSearchMetaProgress('videos');
     syncSearchHashAndRender(!activatedFromHistory);
@@ -4388,7 +4394,7 @@ function handleMetaChange(event) {
         renderSearchMetaFilters();
       }
       syncMetaFilterGroup(metaAllFilter);
-      syncSearchKindFilter('videos');
+      syncSearchKindFilter('videos', false);
       reconcileSearchPreset();
       showSearchMetaProgress('videos');
       syncSearchHashAndRender(!activatedFromHistory);
@@ -4397,7 +4403,7 @@ function handleMetaChange(event) {
       saveSearchOptInPreferences([facetKey]);
       syncMetaFilterGroup(metaAllFilter);
       if (target.checked) restoreEmptySearchKindFacets(facetKey);
-      syncSearchKindFilter(searchKindForFacet(facetKey));
+      syncSearchKindFilter(searchKindForFacet(facetKey), false);
       reconcileSearchPreset();
       showSearchMetaProgress(facetKey);
       syncSearchHashAndRender(!activatedFromHistory);
@@ -4427,7 +4433,7 @@ function handleMetaChange(event) {
     currentPage = 1;
     syncMetaFilterGroup(`search-${groupName}`);
     if (target.checked) restoreEmptySearchKindFacets(groupName);
-    syncSearchKindFilter(searchKindForFacet(groupName));
+    syncSearchKindFilter(searchKindForFacet(groupName), false);
     reconcileSearchPreset();
     showSearchMetaProgress(groupName);
     syncSearchHashAndRender(!activatedFromHistory);

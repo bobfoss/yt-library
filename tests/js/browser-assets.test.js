@@ -121,6 +121,16 @@ test('numbered browser pages cache and prefetch adjacent payloads', () => {
   assert.match(indexSource, /fetchVideoCollection\(\{[\s\S]*page = currentPage,/);
 });
 
+test('search sub-filters defer category dimming until refreshed results render', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /function syncSearchKindFilter\(kind, applyDisabledStyles = true\)/);
+  assert.match(indexSource, /if \(applyDisabledStyles\) \{[\s\S]{0,300}row\.classList\.toggle\('dimmed'/);
+  assert.match(indexSource, /syncMetaFilterGroup\(`search-plugin-\$\{plugin\.id\}`\);\s+syncSearchKindFilter\('videos', false\)/);
+  assert.match(indexSource, /syncSearchKindFilter\(searchKindForFacet\(groupName\), false\)/);
+  assert.match(indexSource, /function renderSearchMetaFilters[\s\S]{0,900}syncSearchKindFilter\(kind\)/);
+});
+
 test('history heatmap can return to the current year and day', () => {
   const indexSource = source('index.js');
 
