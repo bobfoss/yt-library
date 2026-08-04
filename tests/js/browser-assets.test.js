@@ -181,7 +181,7 @@ test('search filter tree folds facets and persists disclosure state', () => {
   assert.match(indexHtml, /\.search-meta-facet-children \{[\s\S]*grid-template-columns: 14px minmax\(0, 1fr\)/);
   assert.match(indexHtml, /\.search-meta-facet > \.meta-filter \{ margin-left: 0; \}/);
   assert.match(indexHtml, /\.filter-parent-checkbox > input:indeterminate \+ \.filter-parent-checkbox-indicator \{ display: inline-flex; \}/);
-  assert.match(indexHtml, /\.filter-parent-checkbox-indicator svg \{[^}]*stroke-width: 2;/);
+  assert.match(indexHtml, /\.filter-parent-checkbox-indicator svg \{[^}]*stroke-width: 2\.5;/);
   assert.match(indexSource, /function parentFilterCheckboxHtml[\s\S]*M2\.75 6\.5h7\.5M6\.5 2\.75v7\.5/);
   assert.match(indexSource, /defaultSearchFilterTreeExpanded = \[[\s\S]*'kind:videos'[\s\S]*'kind:playlists'[\s\S]*'kind:channels'/);
   assert.match(indexSource, /data-search-tree-toggle="\$\{escapeHtml\(nodeId\)\}"/);
