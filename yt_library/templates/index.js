@@ -2756,7 +2756,18 @@ function metaFilterChildrenHtml({
             <span>% <span class="meta-filter-count">${filterCountText(metaFilterCount(counts, key))}</span></span>
           </span>
         </div>
-      `).join('');
+  `).join('');
+}
+
+function parentFilterCheckboxHtml(dataAttribute, value) {
+  return `
+    <span class="filter-parent-checkbox">
+      <input type="checkbox" ${dataAttribute}="${escapeHtml(value)}">
+      <span class="filter-parent-checkbox-indicator" aria-hidden="true">
+        <svg viewBox="0 0 13 13"><path d="M3.25 6.5h6.5M6.5 3.25v6.5"></path></svg>
+      </span>
+    </span>
+  `;
 }
 
 function metaFilterControlsHtml({
@@ -2770,7 +2781,7 @@ function metaFilterControlsHtml({
   showAll = true,
 }) {
   return `
-    ${showAll ? `<label class="meta-filter meta-filter-parent"><input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}"> <span>${escapeHtml(allLabel)}</span></label>` : ''}
+    ${showAll ? `<label class="meta-filter meta-filter-parent">${parentFilterCheckboxHtml('data-meta-all-filter', groupName)} <span>${escapeHtml(allLabel)}</span></label>` : ''}
     ${metaFilterChildrenHtml({
       groupName,
       filterAttribute,
@@ -2914,7 +2925,7 @@ function searchMetaFiltersHtml(
       <div class="search-meta-facet" data-search-kind-facet="${escapeHtml(kind)}" data-search-tree-node="${escapeHtml(nodeId)}">
         ${searchFilterTreeToggleHtml(nodeId, allLabel)}
         <label class="meta-filter meta-filter-parent">
-          <input type="checkbox" data-meta-all-filter="${escapeHtml(groupName)}">
+          ${parentFilterCheckboxHtml('data-meta-all-filter', groupName)}
           <span>${escapeHtml(allLabel)}</span>
         </label>
         <div
@@ -2967,7 +2978,7 @@ function searchMetaFiltersHtml(
         ? searchFilterTreeToggleHtml(nodeId, `${titleText} filters`)
         : '<span class="search-tree-toggle-spacer" aria-hidden="true"></span>'}
       <label class="search-meta-row-title">
-        <input type="checkbox" data-search-kind-filter="${kind}">
+        ${parentFilterCheckboxHtml('data-search-kind-filter', kind)}
         <span>${escapedTitle}</span>
         <span class="count">${kindEnabled ? filterCountText(count) : ''}</span>
         <span class="search-meta-progress" data-search-meta-progress="${kind}" aria-hidden="true"></span>
