@@ -165,6 +165,7 @@ test('search filter tree folds facets and persists disclosure state', () => {
 
   assert.match(indexHtml, /\.search-tree-toggle[\s\S]*transition: transform 160ms ease/);
   assert.match(indexHtml, /\.search-tree-toggle\[aria-expanded="true"\][\s\S]*rotate\(90deg\)/);
+  assert.match(indexHtml, /\.search-meta-facet-children \{ padding-left: 12px; \}/);
   assert.match(indexSource, /defaultSearchFilterTreeExpanded = \[[\s\S]*'kind:videos'[\s\S]*'kind:playlists'[\s\S]*'kind:channels'/);
   assert.match(indexSource, /data-search-tree-toggle="\$\{escapeHtml\(nodeId\)\}"/);
   assert.match(indexSource, /class="search-meta-controls search-meta-facet-children"[\s\S]*\$\{expanded \? '' : 'hidden'\}/);
