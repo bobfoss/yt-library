@@ -42,7 +42,11 @@
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
     .workstreams { display: grid; gap: 24px; margin-bottom: 18px; }
-    .plugin-workstreams { display: contents; }
+    .plugins-panel { margin-bottom: 16px; }
+    .plugin-workstreams:empty { display: none; }
+    .plugin-workstream + .plugin-workstream { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+    .plugin-workstream-header { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+    .plugin-workstream-header h3 { font-size: 16px; margin: 0; }
     .plugin-process-slot:empty { display: none; }
     .plugin-process-slot .controls { margin-top: 0; }
     .plugin-process-input { width: 220px; }
@@ -349,8 +353,11 @@
         </div>
       </section>
 
-      <div id="pluginWorkstreams" class="plugin-workstreams"></div>
+    </section>
 
+    <section id="pluginPanel" class="panel plugins-panel advanced-only">
+      <div class="queue-title"><h2>Plugins</h2></div>
+      <div id="pluginWorkstreams" class="plugin-workstreams"></div>
     </section>
 
     <section class="panel">

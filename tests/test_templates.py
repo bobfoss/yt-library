@@ -110,6 +110,7 @@ class TemplateDomTests(unittest.TestCase):
             "scanPlaylists": ("button", "button"),
             "fetchChannelMetadata": ("button", "button"),
             "startLiveHistory": ("button", "button"),
+            "pluginPanel": ("section", None),
             "startWorkerQueue": ("button", "button"),
             "logPanel": ("div", None),
         }
@@ -129,6 +130,7 @@ class TemplateDomTests(unittest.TestCase):
                 "Playlists",
                 "Channels",
                 "History",
+                "Plugins",
                 "Worker queue",
             ],
         )

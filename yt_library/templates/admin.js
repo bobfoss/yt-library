@@ -26,6 +26,7 @@ const fields = {
   channelBackfillStatus: document.getElementById('channelBackfillStatus'),
   videoPluginProcesses: document.getElementById('videoPluginProcesses'),
   pluginWorkstreams: document.getElementById('pluginWorkstreams'),
+  pluginPanel: document.getElementById('pluginPanel'),
   logs: document.getElementById('logs'),
   logPanel: document.getElementById('logPanel'),
   logSourceFilter: document.getElementById('logSourceFilter'),
@@ -679,6 +680,7 @@ function renderPluginWorkstreams(plugins) {
   syncPluginLogSources(plugins);
   const sections = [];
   const videoActions = [];
+  let hasBasicPlugin = false;
   for (const plugin of plugins) {
     const pluginBlocks = [];
     let hasBasicAction = false;
@@ -699,17 +701,20 @@ function renderPluginWorkstreams(plugins) {
         `);
       }
     }
+    hasBasicPlugin ||= hasBasicAction;
     sections.push(`
-      <section class="workstream plugin-workstream ${hasBasicAction ? '' : 'advanced-only'}"
+      <section class="plugin-workstream ${hasBasicAction ? '' : 'advanced-only'}"
                data-plugin-id="${escapeHtml(plugin.id)}">
-        <div class="workstream-header">
-          <h2>${escapeHtml(plugin.name || plugin.id)}</h2>
+        <div class="plugin-workstream-header">
+          <h3>${escapeHtml(plugin.name || plugin.id)}</h3>
           ${pluginEnabledControlHtml(plugin)}
         </div>
         ${pluginBlocks.join('') || `<p class="message">${escapeHtml(plugin.message || plugin.state || 'Unavailable')}</p>`}
       </section>
     `);
   }
+  fields.pluginPanel.hidden = plugins.length === 0;
+  fields.pluginPanel.classList.toggle('advanced-only', !hasBasicPlugin);
   fields.pluginWorkstreams.innerHTML = sections.join('');
   fields.videoPluginProcesses.innerHTML = videoActions.join('');
 }

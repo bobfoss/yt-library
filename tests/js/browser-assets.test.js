@@ -117,12 +117,16 @@ test('advanced admin renders a generic persisted plugin enabled slider', () => {
   const adminHtml = source('admin.html');
 
   assert.match(adminHtml, /\.plugin-enabled-control/);
+  assert.match(adminHtml, /<section id="pluginPanel" class="panel plugins-panel advanced-only">/);
+  assert.match(adminHtml, /<div class="queue-title"><h2>Plugins<\/h2><\/div>/);
   assert.match(adminSource, /function pluginEnabledControlHtml\(plugin\)/);
   assert.match(adminSource, /<span>Enabled<\/span>/);
   assert.match(adminSource, /class="plugin-enabled-toggle" type="checkbox"/);
   assert.match(adminSource, /\$\{plugin\.enabled \? 'checked' : ''\}/);
   assert.match(adminSource, /\/api\/admin\/plugins\/\$\{encodeURIComponent\(pluginId\)\}\/enabled/);
   assert.match(adminSource, /pluginWorkstreams\.addEventListener\('change', savePluginEnabled\)/);
+  assert.match(adminSource, /<div class="plugin-workstream-header">/);
+  assert.match(adminSource, /fields\.pluginPanel\.classList\.toggle\('advanced-only', !hasBasicPlugin\)/);
 });
 
 test('history views render shared day dividers', () => {
