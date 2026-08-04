@@ -250,6 +250,14 @@ test('video-card helpers escape markup and clamp watch progress', () => {
   const helpers = context.window.YTLibraryVideoCard;
 
   assert.equal(helpers.escapeHtml('<a href="x">&</a>'), '&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;');
+  assert.equal(
+    helpers.searchHighlight.textHtml('Reflecting & reflecting <b>', 'reflecting'),
+    '<mark class="search-highlight">Reflecting</mark> &amp; <mark class="search-highlight">reflecting</mark> &lt;b&gt;',
+  );
+  assert.equal(
+    helpers.searchHighlight.snippetHtml('before <mark>hit & <b></mark> <script>'),
+    'before <mark class="search-highlight">hit &amp; &lt;b&gt;</mark> &lt;script&gt;',
+  );
   assert.equal(helpers.watchProgressPercent({ watch_progress_percent: 0.4 }), 1);
   assert.equal(helpers.watchProgressPercent({ watch_progress_percent: 104 }), 100);
   assert.equal(helpers.watchProgressPercent({ watch_progress_percent: 'bad' }), 0);

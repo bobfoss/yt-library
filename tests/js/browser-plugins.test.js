@@ -16,6 +16,7 @@ test('browser plugins are loaded through a generic registration contract', () =>
   assert.match(indexSource, /loadBrowserPluginAsset\(status\.id, asset, status\.version\)/);
   assert.match(indexSource, /libraryVideos,/);
   assert.match(indexSource, /createSearchVideoCard: searchVideoCardFor/);
+  assert.match(indexSource, /searchHighlight,/);
   assert.match(indexSource, /browserSearchPresets\('videos'\)/);
   assert.match(indexSource, /searchPresetDefinition\(preset\)/);
   assert.match(indexSource, /query \|\| plugin\.search\.fetchEmptyQuery === true/);

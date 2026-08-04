@@ -293,6 +293,11 @@ Processes may also declare validated `adminActions`. An action can remain in
 its plugin workstream or use the generic `videos` placement, and can describe
 required text inputs whose values are sent as process query parameters. YTL
 renders and submits these controls without knowing their plugin semantics.
+Browser plugins receive a generic `host.ui.searchHighlight` helper. Its
+`textHtml` method safely highlights a literal query in plain text, while
+`snippetHtml` escapes a server-generated snippet and admits only its exact
+`<mark>` delimiters. Highlight styling and HTML safety therefore remain owned
+by YT Library rather than individual plugins.
 
 The first plugin is the sibling YT Subtitles project. A local activation uses:
 

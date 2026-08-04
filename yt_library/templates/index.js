@@ -7,6 +7,7 @@ const escapeHtml = VideoCard.escapeHtml;
 const membersOnlyIconHtml = VideoCard.membersOnlyIconHtml;
 const reactionIconsHtml = VideoCard.reactionIconsHtml;
 const reactionLabel = VideoCard.reactionLabel;
+const searchHighlight = VideoCard.searchHighlight;
 const uploaderCategoryHtml = VideoCard.uploaderCategoryHtml;
 const thumbnailWithProgress = VideoCard.thumbnailWithProgress;
 const thumbIconHtml = VideoCard.thumbIconHtml;
@@ -3303,6 +3304,7 @@ function browserPluginHost(pluginId) {
       createVideoCard: videoCardFor,
       escapeHtml,
       localVideoHref,
+      searchHighlight,
     },
   };
 }
@@ -4043,7 +4045,10 @@ async function render() {
     const pageInfo = remotePageInfo(total, rows.length, remoteLimit);
     renderPager(pageInfo);
     applySearchCardLayout();
-    grid.replaceChildren(...rows.map(searchResultCardFor));
+    grid.replaceChildren(...rows.map(result => searchResultCardFor(result, {
+      query,
+      searchFields: payload.searchFields,
+    })));
     empty.hidden = rows.length !== 0;
     empty.textContent = searchPresetEmptyMessage(query) || 'No results match.';
     scheduleAdjacentPagePrefetch(pageInfo, page => fetchOmniSearch(query, page));
@@ -4235,6 +4240,7 @@ function playlistVideoCardFor(video, options = {}) {
     resultKind: options.resultKind,
     position: options.showPosition ? video.position : '',
     title: displayVideoTitle(video),
+    titleHtml: options.titleHtml,
     localUrl: video.video_id ? localVideoHref(video.video_id) : '',
     externalUrl: options.externalUrl === undefined ? watchUrl : options.externalUrl,
     badges: [
@@ -4260,6 +4266,7 @@ function playlistVideoCardFor(video, options = {}) {
     reactionHtml: reactionIconsHtml(video),
     uploaderCategory: video.uploader_category,
     description: options.description === undefined ? video.metadata_description : options.description,
+    descriptionHtml: options.descriptionHtml,
   });
 }
 
@@ -4347,7 +4354,7 @@ function historyRowCardFor(video, { layout = 'detailed' } = {}) {
   return article;
 }
 
-function searchResultCardFor(result) {
+function searchResultCardFor(result, options = {}) {
   if (result.kind === 'plugin') {
     const plugin = browserSearchPlugin(result.pluginId);
     const card = plugin?.search?.renderResult?.(
@@ -4363,7 +4370,18 @@ function searchResultCardFor(result) {
     return channelCardFor(result.item, { resultKind: 'Channel' });
   }
   const video = result.item;
-  const card = searchVideoCardFor(video);
+  const query = String(options.query || '');
+  const searchFields = new Set(options.searchFields || []);
+  const titleText = displayVideoTitle(video);
+  const descriptionText = String(video.metadata_description || '');
+  const card = searchVideoCardFor(video, {
+    titleHtml: query && searchFields.has('titles')
+      ? searchHighlight.textHtml(titleText, query)
+      : undefined,
+    descriptionHtml: query && descriptionText && searchFields.has('descriptions')
+      ? searchHighlight.textHtml(descriptionText, query)
+      : undefined,
+  });
   for (const plugin of browserSearchPlugins().filter(item => searchKindEnabled(item.id))) {
     if (typeof plugin.search.decorateCoreResultCard !== 'function') continue;
     try {

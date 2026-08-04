@@ -5,6 +5,36 @@
     }[character]));
   }
 
+  const searchHighlightMark = '<mark class="search-highlight">';
+
+  function searchHighlightTextHtml(value, query) {
+    const text = String(value || '');
+    const term = String(query || '').trim();
+    if (!term) return escapeHtml(text);
+    const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const matches = text.matchAll(new RegExp(escapedTerm, 'giu'));
+    let html = '';
+    let offset = 0;
+    for (const match of matches) {
+      const index = Number(match.index);
+      html += escapeHtml(text.slice(offset, index));
+      html += `${searchHighlightMark}${escapeHtml(match[0])}</mark>`;
+      offset = index + match[0].length;
+    }
+    return `${html}${escapeHtml(text.slice(offset))}`;
+  }
+
+  function searchHighlightSnippetHtml(value) {
+    return escapeHtml(value)
+      .replaceAll('&lt;mark&gt;', searchHighlightMark)
+      .replaceAll('&lt;/mark&gt;', '</mark>');
+  }
+
+  const searchHighlight = Object.freeze({
+    snippetHtml: searchHighlightSnippetHtml,
+    textHtml: searchHighlightTextHtml,
+  });
+
   function detailRowHtml(items, className = 'details') {
     const filtered = (items || []).filter(Boolean);
     return filtered.length ? `<div class="${className}">${filtered.join('')}</div>` : '';
@@ -158,7 +188,10 @@
   }
 
   function titleHtml(options) {
-    const title = escapeHtml(options.title || '');
+    const titleText = String(options.title || '');
+    const title = options.titleHtml === undefined
+      ? escapeHtml(titleText)
+      : String(options.titleHtml || '');
     if (options.titleHref) {
       const target = options.titleTarget ? ` target="${escapeHtml(options.titleTarget)}"` : '';
       const rel = options.titleTarget === '_blank' ? ' rel="noreferrer"' : '';
@@ -168,7 +201,7 @@
       ? `<a class="playlist-title" href="${escapeHtml(options.localUrl)}">${title}</a>`
       : '';
     const externalTitle = options.externalUrl && options.externalIconHtml
-      ? `<a class="external-link" href="${escapeHtml(options.externalUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${title} on YouTube">${options.externalIconHtml}</a>`
+      ? `<a class="external-link" href="${escapeHtml(options.externalUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${options.externalIconHtml}</a>`
       : '';
     if (localTitle || externalTitle) {
       return `<div class="title-row">${localTitle || `<div class="video-title">${title}</div>`}${externalTitle}</div>`;
@@ -201,7 +234,9 @@
       ${options.sparklineHtml || ''}
       ${options.reactionHtml || ''}
       ${uploaderCategoryHtml(options.uploaderCategory)}
-      ${options.description ? `<div class="description">${escapeHtml(options.description)}</div>` : ''}
+      ${options.descriptionHtml
+        ? `<div class="description">${options.descriptionHtml}</div>`
+        : (options.description ? `<div class="description">${escapeHtml(options.description)}</div>` : '')}
       ${detailRowHtml(options.sources)}
       ${options.playlistSourcesHtml || ''}
     `;
@@ -218,6 +253,7 @@
     membersOnlyIconHtml,
     reactionLabel,
     reactionIconsHtml,
+    searchHighlight,
     thumbnailWithProgress,
     thumbIconHtml,
     uploaderCategoryHtml,
