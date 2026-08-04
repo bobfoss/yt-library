@@ -153,7 +153,7 @@
   function uploaderCategoryHtml(value) {
     const category = String(value || '').trim();
     return category
-      ? `<div class="details uploader-category">Uploader category: ${escapeHtml(category)}</div>`
+      ? `<div class="details uploader-category"><span class="uploader-category-label">Uploader category: </span><span>${escapeHtml(category)}</span></div>`
       : '';
   }
 
