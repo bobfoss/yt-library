@@ -52,7 +52,7 @@
     .search { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 10px 12px; font: inherit; margin-bottom: 14px; }
     .filters { border-bottom: 1px solid var(--line); padding: 0 0 10px; margin-bottom: 14px; display: grid; gap: 7px; transition: opacity 120ms ease; }
     .filters.view-inactive { opacity: .42; }
-    .filter-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .filter-title { color: var(--muted); font-size: 12px; }
     .filter { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
     .filter input { accent-color: var(--accent); }
     .filter.dimmed { opacity: .42; }
@@ -403,10 +403,10 @@
       <button id="search-nav" class="group search-nav" type="button" data-key="__search__"><span>Search</span><span class="count"></span></button>
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
       <div id="search-filters" class="filters" aria-label="Search filters">
-        <div class="filter-title">Search In</div>
+        <div class="filter-title">Search in</div>
         <label class="filter"><input class="search-field" type="checkbox" data-search-field="titles" checked> Titles</label>
         <label class="filter"><input class="search-field" type="checkbox" data-search-field="descriptions" checked> Descriptions</label>
-        <div class="filter-title search-for-title">Search For</div>
+        <div class="filter-title search-for-title">Search for</div>
         <div id="search-for-filters" class="search-meta-groups"></div>
       </div>
       <nav id="groups"></nav>
