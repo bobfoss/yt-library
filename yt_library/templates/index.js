@@ -216,6 +216,7 @@ let playlistCompletionVisibility = {
 };
 let playlistDuplicatesOnly = false;
 let completionMinimumInputTimer = null;
+const noUploaderCategoryFilter = '__no_category__';
 const defaultSearchMetaVisibility = {
   videos: {
     public: true,
@@ -234,6 +235,7 @@ const defaultSearchMetaVisibility = {
     never_watched: true,
   },
   membership: { member: true, non_member: true },
+  uploaderCategory: { [noUploaderCategoryFilter]: true },
   channelSubscription: { subscribed: true, non_subscribed: true },
   channelStatus: {
     active: true,
@@ -252,11 +254,13 @@ let searchMetaVisibility = Object.fromEntries(
     { ...visibility },
   ])
 );
+let uploaderCategorySelectionExplicit = false;
 const searchMetaParamNames = {
   videos: 'vm',
   reactions: 'vr',
   completion: 'vc',
   membership: 'vpm',
+  uploaderCategory: 'vuc',
   channelSubscription: 'csub',
   channelStatus: 'cstatus',
   playlistVisibility: 'pm',
@@ -401,6 +405,7 @@ let omniVideoPluginFacetCountsCache = new Map();
 let omniReactionCountsCache = new Map();
 let omniCompletionCountsCache = new Map();
 let omniPlaylistMembershipCountsCache = new Map();
+let omniUploaderCategoryCountsCache = new Map();
 let pendingHistoryDate = '';
 let historyNavigationDate = '';
 let channelHistoryCounts = new Map();
@@ -458,6 +463,7 @@ async function loadData({ preserveSearchContent = false } = {}) {
   omniReactionCountsCache = new Map();
   omniCompletionCountsCache = new Map();
   omniPlaylistMembershipCountsCache = new Map();
+  omniUploaderCategoryCountsCache = new Map();
   channelHistoryCounts = new Map();
   memberships = new Map();
   for (const item of data.memberships) {
@@ -801,6 +807,7 @@ function setSearchFacetSelection(groupName, selectedKeys) {
 }
 
 function applySearchPresetState(preset, groupKey = '') {
+  uploaderCategorySelectionExplicit = false;
   const definition = searchPresetDefinition(preset);
   if (!definition || (preset === 'playlist-group' && !groupKey)) {
     activeSearchPreset = '';
@@ -1028,12 +1035,21 @@ function applySearchHash(hash) {
     reactions: params.get(searchMetaParamNames.reactions),
     completion: params.get(searchMetaParamNames.completion),
     membership: params.get(searchMetaParamNames.membership),
+    uploaderCategory: params.get(searchMetaParamNames.uploaderCategory),
     channelSubscription: params.get(searchMetaParamNames.channelSubscription),
     channelStatus: params.get(searchMetaParamNames.channelStatus),
     playlistVisibility: params.get(searchMetaParamNames.playlistVisibility),
     playlistOwnership: params.get(searchMetaParamNames.playlistOwnership),
     playlistStatus: params.get(searchMetaParamNames.playlistStatus),
   };
+  const uploaderCategoryParam = metaParamValues.uploaderCategory;
+  uploaderCategorySelectionExplicit = uploaderCategoryParam !== null;
+  if (uploaderCategoryParam && uploaderCategoryParam !== '__none__') {
+    for (const category of uploaderCategoryParam.split(',').filter(Boolean)) {
+      defaultSearchMetaVisibility.uploaderCategory[category] = true;
+      searchMetaVisibility.uploaderCategory[category] = false;
+    }
+  }
   for (const [groupName, value] of Object.entries(metaParamValues)) {
     applyMetaFilterParam(
       searchMetaVisibility[groupName],
@@ -1310,6 +1326,7 @@ function metaFilterGroupVisibility(groupName) {
     'search-reactions': searchMetaVisibility.reactions,
     'search-completion': searchMetaVisibility.completion,
     'search-membership': searchMetaVisibility.membership,
+    'search-uploaderCategory': searchMetaVisibility.uploaderCategory,
     'search-channelSubscription': searchMetaVisibility.channelSubscription,
     'search-channelStatus': searchMetaVisibility.channelStatus,
     'search-playlistVisibility': searchMetaVisibility.playlistVisibility,
@@ -1354,7 +1371,13 @@ function syncMetaFilterGroup(groupName) {
   );
 }
 
-const searchVideoFacetKeys = ['videos', 'reactions', 'completion', 'membership'];
+const searchVideoFacetKeys = [
+  'videos',
+  'reactions',
+  'completion',
+  'membership',
+  'uploaderCategory',
+];
 const searchPlaylistFacetKeys = ['playlistVisibility', 'playlistOwnership', 'playlistStatus'];
 const searchChannelFacetKeys = ['channelSubscription', 'channelStatus'];
 
@@ -2588,6 +2611,29 @@ const playlistMembershipMetaFilterDefinitions = [
   { key: 'member', label: 'member' },
   { key: 'non_member', label: 'non-member' },
 ];
+function uploaderCategoryMetaFilterDefinitions(counts) {
+  const categories = Object.keys(counts || {})
+    .filter(key => key !== 'total' && key !== noUploaderCategoryFilter)
+    .sort((left, right) => left.localeCompare(right));
+  if (!categories.length) return [];
+  return [
+    { key: noUploaderCategoryFilter, label: 'No category' },
+    ...categories.map(category => ({ key: category, label: category })),
+  ];
+}
+
+function syncUploaderCategoryVisibility(counts) {
+  const definitions = uploaderCategoryMetaFilterDefinitions(counts);
+  for (const { key } of definitions) {
+    if (!Object.prototype.hasOwnProperty.call(defaultSearchMetaVisibility.uploaderCategory, key)) {
+      defaultSearchMetaVisibility.uploaderCategory[key] = true;
+    }
+    if (!Object.prototype.hasOwnProperty.call(searchMetaVisibility.uploaderCategory, key)) {
+      searchMetaVisibility.uploaderCategory[key] = !uploaderCategorySelectionExplicit;
+    }
+  }
+  return definitions;
+}
 const channelSubscriptionMetaFilterDefinitions = [
   { key: 'subscribed', label: 'subscribed' },
   { key: 'non_subscribed', label: 'non-subscribed' },
@@ -2746,6 +2792,7 @@ function searchMetaFiltersHtml(
   reactionCounts,
   completionCounts,
   playlistMembershipCounts,
+  uploaderCategoryCounts,
   resultCounts,
 ) {
   const facetHtml = ({ key, visibility, definitions, counts, allLabel = 'All', kind, showAll = true }) => `
@@ -2801,12 +2848,18 @@ function searchMetaFiltersHtml(
     </div>
   `;
   };
+  const uploaderCategoryDefinitions = uploaderCategoryMetaFilterDefinitions(
+    uploaderCategoryCounts,
+  );
   return [
     kindHtml('Videos', 'videos', metaCounts?.videos?.total, [
       facetHtml({ key: 'videos', visibility: searchMetaVisibility.videos, definitions: visibleVideoMetaFilterDefinitions(metaCounts?.videos), counts: metaCounts?.videos, allLabel: 'Availability', kind: 'videos' }),
       facetHtml({ key: 'reactions', visibility: searchMetaVisibility.reactions, definitions: reactionMetaFilterDefinitions, counts: reactionCounts, allLabel: 'Reactions', kind: 'videos' }),
       facetHtml({ key: 'completion', visibility: searchMetaVisibility.completion, definitions: completionMetaFilterDefinitions(partialCompletionMinimumPercent, 'search-completion-minimum'), counts: completionCounts, allLabel: 'Completion', kind: 'videos' }),
       facetHtml({ key: 'membership', visibility: searchMetaVisibility.membership, definitions: playlistMembershipMetaFilterDefinitions, counts: playlistMembershipCounts, allLabel: 'Playlist membership', kind: 'videos' }),
+      ...(uploaderCategoryDefinitions.length ? [
+        facetHtml({ key: 'uploaderCategory', visibility: searchMetaVisibility.uploaderCategory, definitions: uploaderCategoryDefinitions, counts: uploaderCategoryCounts, allLabel: 'Uploader category', kind: 'videos' }),
+      ] : []),
       ...browserVideoFilterPlugins().map(pluginVideoFacetHtml),
     ].join('')),
     kindHtml('Playlists', 'playlists', metaCounts?.playlists?.total, [
@@ -2833,16 +2886,19 @@ function renderSearchMetaFilters({
   reactionCounts = null,
   completionCounts = null,
   playlistMembershipCounts = null,
+  uploaderCategoryCounts = null,
   counts = null,
 } = {}) {
+  syncUploaderCategoryVisibility(uploaderCategoryCounts);
   searchForFilters.innerHTML = searchMetaFiltersHtml(
     metaCounts,
     reactionCounts,
     completionCounts,
     playlistMembershipCounts,
+    uploaderCategoryCounts,
     counts,
   );
-  for (const key of ['videos', 'reactions', 'completion', 'membership', 'playlistVisibility', 'playlistOwnership', 'playlistStatus', 'channelSubscription', 'channelStatus']) {
+  for (const key of ['videos', 'reactions', 'completion', 'membership', 'uploaderCategory', 'playlistVisibility', 'playlistOwnership', 'playlistStatus', 'channelSubscription', 'channelStatus']) {
     syncMetaFilterGroup(`search-${key}`);
   }
   for (const plugin of browserVideoFilterPlugins()) {
@@ -3190,6 +3246,7 @@ async function fetchOmniSearch(query, page = currentPage) {
   const reactionCountsCache = omniReactionCountsCache;
   const completionCountsCache = omniCompletionCountsCache;
   const playlistMembershipCountsCache = omniPlaylistMembershipCountsCache;
+  const uploaderCategoryCountsCache = omniUploaderCategoryCountsCache;
   const coreParams = new URLSearchParams({
     q: query,
     search_fields: searchFieldsValue,
@@ -3209,6 +3266,12 @@ async function fetchOmniSearch(query, page = currentPage) {
     playlist_status: metaFilterParamValue(searchMetaVisibility.playlistStatus),
     sort: searchResultsSort,
   });
+  if (!allMetaFiltersEnabled(searchMetaVisibility.uploaderCategory)) {
+    coreParams.set(
+      'video_uploader_category',
+      metaFilterParamValue(searchMetaVisibility.uploaderCategory),
+    );
+  }
   const pluginKey = browserSearchPlugins()
     .map(browserPluginStateKey)
     .filter(Boolean)
@@ -3225,6 +3288,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     metaFilterParamValue(searchMetaVisibility.completion),
     String(partialCompletionMinimumPercent),
     metaFilterParamValue(searchMetaVisibility.membership),
+    metaFilterParamValue(searchMetaVisibility.uploaderCategory),
     query ? browserVideoFilterPlugins().map(browserVideoFacetSearchActive) : [],
   ]);
   const key = `${coreParams.toString()}&plugins=${encodeURIComponent(pluginKey)}&limit=${limit}&offset=${offset}`;
@@ -3291,6 +3355,12 @@ async function fetchOmniSearch(query, page = currentPage) {
         { ...(payload.playlistMembershipCounts || {}) },
       );
     }
+    if (!uploaderCategoryCountsCache.has(metaCountsKey)) {
+      uploaderCategoryCountsCache.set(
+        metaCountsKey,
+        { ...(payload.uploaderCategoryCounts || {}) },
+      );
+    }
     const stableMetaCounts = {
       ...metaCountsCache.get(metaCountsKey),
       videoPlugins: videoPluginFacetCountsCache.get(videoPluginFacetCountsKey),
@@ -3301,6 +3371,7 @@ async function fetchOmniSearch(query, page = currentPage) {
       reactionCounts: reactionCountsCache.get(metaCountsKey),
       completionCounts: completionCountsCache.get(metaCountsKey),
       playlistMembershipCounts: playlistMembershipCountsCache.get(metaCountsKey),
+      uploaderCategoryCounts: uploaderCategoryCountsCache.get(metaCountsKey),
     };
     return stablePayload;
   }, adjacentPageCacheLimit);

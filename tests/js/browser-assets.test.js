@@ -131,7 +131,14 @@ test('search filters share deferred category dimming until refreshed results ren
   assert.match(indexSource, /refreshSearchAfterFilterChange[\s\S]{0,200}syncSearchKindFilter\(searchKindForFacet\(groupName\), false\)/);
   assert.match(indexSource, /setSearchKindFilter\(searchKindFilter, target\.checked\)[\s\S]{0,800}refreshSearchAfterFilterChange\(searchKindFilter, activatedFromHistory\)/);
   assert.match(indexSource, /syncMetaFilterGroup\(`search-\$\{groupName\}`\);[\s\S]{0,180}refreshSearchAfterFilterChange\(groupName, activatedFromHistory\)/);
-  assert.match(indexSource, /function renderSearchMetaFilters[\s\S]{0,900}syncSearchKindFilter\(kind\)/);
+  assert.match(indexSource, /function renderSearchMetaFilters[\s\S]*?for \(const kind of \[[\s\S]*?syncSearchKindFilter\(kind\)/);
+});
+
+test('uploader category facet requires detected categories', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /function uploaderCategoryMetaFilterDefinitions\(counts\)[\s\S]*?if \(!categories\.length\) return \[\]/);
+  assert.match(indexSource, /\.\.\.\(uploaderCategoryDefinitions\.length \? \[[\s\S]*?allLabel: 'Uploader category'/);
 });
 
 test('history heatmap can return to the current year and day', () => {

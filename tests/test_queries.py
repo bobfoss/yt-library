@@ -1321,6 +1321,68 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["never1", "unknown1"],
         )
 
+    def test_omni_search_uploader_category_facet(self) -> None:
+        for video_id, title, category in (
+            ("music1", "Category music", "Music"),
+            ("science1", "Category science", "Science & Technology"),
+            ("uncategorized1", "Category missing", ""),
+        ):
+            self.add_video(video_id, title)
+            self.conn.execute(
+                "UPDATE videos SET uploader_category = ? WHERE video_id = ?",
+                (category, video_id),
+            )
+        self.conn.commit()
+
+        unfiltered = omni_search_data(
+            self.conn,
+            "category",
+            result_kinds={"video"},
+            sort="title",
+            limit=100,
+        )
+
+        self.assertEqual(unfiltered["uploaderCategoryCounts"]["total"], 3)
+        self.assertEqual(
+            unfiltered["uploaderCategoryCounts"]["__no_category__"],
+            1,
+        )
+        self.assertEqual(unfiltered["uploaderCategoryCounts"]["Music"], 1)
+        self.assertEqual(
+            unfiltered["uploaderCategoryCounts"]["Science & Technology"],
+            1,
+        )
+
+        filtered = omni_search_data(
+            self.conn,
+            "category",
+            result_kinds={"video"},
+            video_uploader_category_filters={"Music"},
+            sort="title",
+            limit=100,
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in filtered["results"]],
+            ["music1"],
+        )
+        self.assertEqual(
+            filtered["uploaderCategoryCounts"],
+            unfiltered["uploaderCategoryCounts"],
+        )
+
+        uncategorized = omni_search_data(
+            self.conn,
+            "category",
+            result_kinds={"video"},
+            video_uploader_category_filters={"__no_category__"},
+            sort="title",
+            limit=100,
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in uncategorized["results"]],
+            ["uncategorized1"],
+        )
+
     def test_omni_search_filters_partial_completion_by_minimum_percentage(self) -> None:
         for video_id, title in (
             ("partial-low", "Partial low"),

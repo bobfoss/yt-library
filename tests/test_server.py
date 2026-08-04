@@ -186,6 +186,32 @@ class AdminServerTests(unittest.TestCase):
         )
         handler.send_json.assert_called_once_with(payload)
 
+    def test_search_passes_uploader_category_filters(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.config_data = {}
+        handler.plugin_manager = Mock()
+        handler.send_json = Mock()
+        connection = Mock()
+        payload = {"results": [], "total": 0}
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch("yt_library.server.omni_search_data", return_value=payload) as search_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/search?video_uploader_category=Science+%26+Technology,__no_category__&limit=1"
+                )
+            )
+
+        self.assertEqual(
+            search_data.call_args.kwargs["video_uploader_category_filters"],
+            {"Science & Technology", "__no_category__"},
+        )
+        connection.close.assert_called_once_with()
+        handler.send_json.assert_called_once_with(payload)
+
     def test_search_applies_generic_plugin_video_exclusions(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.db_path = Path("library.sqlite3")
