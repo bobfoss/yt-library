@@ -59,6 +59,7 @@ from .core import (
     fetch_new_channel_metadata_if_needed,
     fetch_watch_metadata,
     fetch_youtube_history_web,
+    history_upload_date_conflicts,
     is_system_playlist,
     load_cookie_opener,
     log_live_history_event,
@@ -128,6 +129,46 @@ _YOUTUBE_AUTH_PROBE_CACHE_KEY: tuple[str, int, int, str] | None = None
 _YOUTUBE_AUTH_PROBE_CACHE_TIME = 0.0
 _YOUTUBE_AUTH_PROBE_CACHE_VALUE = ""
 _YOUTUBE_AUTH_PROBE_CACHE_SECONDS = 300.0
+
+
+def log_history_date_conflicts(
+    conn: sqlite3.Connection,
+    run_id: str,
+    conflicts: list[dict[str, str]],
+    *,
+    worker_type: str,
+) -> None:
+    logger = log_live_history_event if worker_type == "history" else log_worker_event
+    level = "warn" if worker_type == "history" else "video warn"
+    seen: set[tuple[str, str, str]] = set()
+    for conflict in conflicts:
+        key = (
+            conflict["video_id"],
+            conflict["watch_date"],
+            conflict["published_date"],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        message = (
+            f"Watch date {conflict['watch_date']} predates published date "
+            f"{conflict['published_date']}; retained because YouTube may republish videos."
+        )
+        prior = conn.execute(
+            """
+            SELECT 1
+            FROM (
+              SELECT video_id, message FROM metadata_worker_log
+              UNION ALL
+              SELECT video_id, message FROM live_history_worker_log
+            )
+            WHERE video_id = ? AND message = ?
+            LIMIT 1
+            """,
+            (conflict["video_id"], message),
+        ).fetchone()
+        if not prior:
+            logger(conn, run_id, level, message, conflict["video_id"])
 
 
 def cached_youtube_authentication_probe(cookie_file: Path, proxy_url: str = "") -> str:
@@ -310,6 +351,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
         record_summary: bool = True,
         queue_id: int = 0,
         proxy_url: str = "",
+        timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
     ) -> dict[str, Any]:
         return self._start_background(
             self._run,
@@ -324,6 +366,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                 stale_days,
                 record_summary,
                 queue_id,
+                timezone_name,
                 proxy_url,
             ),
             started_message="Worker started",
@@ -349,6 +392,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
         stale_days: int,
         record_summary: bool,
         target_queue_id: int = 0,
+        timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
         proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
@@ -560,6 +604,12 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                         store_channel_metadata(conn, metadata, status, error, updated_at=now)
                     else:
                         store_video_metadata(conn, metadata, status, error, updated_at=now)
+                        log_history_date_conflicts(
+                            conn,
+                            run_id,
+                            history_upload_date_conflicts(conn, video_id, timezone_name),
+                            worker_type="metadata",
+                        )
                         if status == "no_metadata":
                             placeholder_was_queued = enqueue_placeholder_recovery_item(
                                 conn,
@@ -1436,6 +1486,13 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                         start,
                         occurrence_snapshot,
                         seen_occurrences,
+                        timezone_name,
+                    )
+                    log_history_date_conflicts(
+                        conn,
+                        run_id,
+                        save_stats["date_conflicts"],
+                        worker_type="history",
                     )
                     for guard in save_stats["progress_guards"]:
                         log_live_history_event(
@@ -2609,6 +2666,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         record_summary=False,
                         queue_id=queue_id,
                         proxy_url=proxy_url,
+                        timezone_name=timezone_name,
                     )
                     if result.get("started"):
                         with self._lock:

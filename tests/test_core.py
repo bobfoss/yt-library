@@ -894,6 +894,33 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(core.history_date_from_label("Jun 30", today), "2026-06-30")
         self.assertEqual(core.history_date_from_label("Dec 31", today), "2025-12-31")
 
+    def test_history_fetch_requests_browse_data_in_configured_timezone(self) -> None:
+        jar = core.http.cookiejar.CookieJar()
+        with (
+            patch.object(core, "load_cookie_jar", return_value=jar),
+            patch.object(core, "request_text", return_value="history page"),
+            patch.object(
+                core,
+                "extract_ytcfg",
+                return_value={
+                    "INNERTUBE_API_KEY": "api-key",
+                    "INNERTUBE_CLIENT_NAME": "WEB",
+                    "INNERTUBE_CLIENT_VERSION": "client-version",
+                },
+            ),
+            patch.object(core, "request_youtubei_json", return_value={}) as request,
+        ):
+            rows = core.fetch_youtube_history_web(
+                Path("cookies.txt"),
+                timezone_name="America/Los_Angeles",
+            )
+
+        self.assertEqual(rows, [])
+        payload = request.call_args.args[3]
+        self.assertEqual(payload["browseId"], "FEhistory")
+        self.assertEqual(payload["context"]["client"]["timeZone"], "America/Los_Angeles")
+        self.assertIn(payload["context"]["client"]["utcOffsetMinutes"], {-480, -420})
+
     def test_watch_datetime_helpers_normalize_offsets(self) -> None:
         self.assertEqual(
             core.takeout_watch_datetime("July 4, 2026, 5:27:45 AM PDT"),
@@ -2425,6 +2452,45 @@ class CoreHelperTests(unittest.TestCase):
                 conn.close()
 
         self.assertEqual(first_seen_at, "2021-07-06")
+
+    def test_youtube_history_warns_without_rewriting_date_before_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "new-video",
+                        title="New video",
+                        upload_date="2026-08-03T12:31:02-07:00",
+                        source="metadata",
+                    )
+                    stats = core.save_youtube_history_events(
+                        conn,
+                        [{"video_id": "new-video", "watch_date": "2026-08-02"}],
+                        1,
+                        {},
+                        Counter(),
+                        "America/Los_Angeles",
+                    )
+                event = conn.execute(
+                    "SELECT watch_date FROM history_events WHERE video_id = 'new-video'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(event["watch_date"], "2026-08-02")
+        self.assertEqual(
+            stats["date_conflicts"],
+            [
+                {
+                    "event_id": core.youtube_history_event_id("new-video", "2026-08-02", 1),
+                    "video_id": "new-video",
+                    "watch_date": "2026-08-02",
+                    "published_date": "2026-08-03",
+                }
+            ],
+        )
 
     def test_youtube_takeout_match_count_is_scoped_to_the_fetched_batch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

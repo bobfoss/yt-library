@@ -76,6 +76,44 @@ class WorkerQueueTests(unittest.TestCase):
             ("placeholder-run", "info", "video-3", "placeholder"),
         )
 
+    def test_history_date_conflict_warning_is_deduplicated_across_workers(self) -> None:
+        conflict = {
+            "event_id": "history-event",
+            "video_id": "new-video",
+            "watch_date": "2026-08-02",
+            "published_date": "2026-08-03",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    workers.log_history_date_conflicts(
+                        conn,
+                        "history-run",
+                        [conflict, conflict],
+                        worker_type="history",
+                    )
+                    workers.log_history_date_conflicts(
+                        conn,
+                        "metadata-run",
+                        [conflict],
+                        worker_type="metadata",
+                    )
+                history_rows = conn.execute(
+                    "SELECT level, video_id, message FROM live_history_worker_log"
+                ).fetchall()
+                metadata_count = conn.execute(
+                    "SELECT COUNT(*) FROM metadata_worker_log"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(len(history_rows), 1)
+        self.assertEqual(history_rows[0]["level"], "warn")
+        self.assertEqual(history_rows[0]["video_id"], "new-video")
+        self.assertIn("retained because YouTube may republish videos", history_rows[0]["message"])
+        self.assertEqual(metadata_count, 0)
+
     def test_recent_history_uses_small_batch_and_stops_after_two_matching_days(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

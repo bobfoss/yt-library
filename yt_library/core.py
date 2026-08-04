@@ -2467,6 +2467,48 @@ def local_date_for_utc_instant(value: str, timezone_name: str) -> str:
     return parsed.astimezone(zone).date().isoformat()
 
 
+def history_upload_date_conflicts(
+    conn: sqlite3.Connection,
+    video_id: str,
+    timezone_name: str,
+) -> list[dict[str, str]]:
+    video = conn.execute(
+        "SELECT upload_date FROM videos WHERE video_id = ?",
+        (video_id,),
+    ).fetchone()
+    upload_date = str(video["upload_date"] or "").strip() if video else ""
+    if not upload_date:
+        return []
+    published_date = (
+        upload_date
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", upload_date)
+        else local_date_for_utc_instant(upload_date, timezone_name)
+    )
+    if not published_date:
+        return []
+    return [
+        {
+            "event_id": str(row["event_id"]),
+            "video_id": video_id,
+            "watch_date": str(row["watch_date"]),
+            "published_date": published_date,
+        }
+        for row in conn.execute(
+            """
+            SELECT event_id, watch_date
+            FROM history_events
+            WHERE video_id = ?
+              AND watched_at IS NULL
+              AND watch_date IS NOT NULL
+              AND watch_date <> ''
+              AND watch_date < ?
+            ORDER BY watch_date, event_id
+            """,
+            (video_id, published_date),
+        )
+    ]
+
+
 def takeout_watch_datetime(watched_at: str) -> str:
     cleaned = re.sub(r"\s+", " ", watched_at).strip()
     iso_match = re.match(r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$", cleaned)
@@ -2658,12 +2700,23 @@ def fetch_youtube_history_web(
     page = request_text(opener, referer)
     if "Watch history isn't viewable when signed out" in page or "Keep track of what you watch" in page:
         raise RuntimeError("YouTube history page is not signed in with the provided cookie file.")
-    initial_data = extract_json_assignment(page, "ytInitialData")
     config = extract_ytcfg(page)
     api_key = config.get("INNERTUBE_API_KEY", "")
     client_version = config.get("INNERTUBE_CLIENT_VERSION", "")
-    pages = [initial_data]
-    token = continuation_token(initial_data)
+    if not api_key or not client_version:
+        raise RuntimeError("Could not find YouTube web API configuration in the history page.")
+    context = youtube_web_context(config, timezone_name)
+    pages = [
+        request_youtubei_json(
+            opener,
+            jar,
+            api_key,
+            {"context": context, "browseId": "FEhistory"},
+            referer,
+            client_version,
+        )
+    ]
+    token = continuation_token(pages[0])
     seen_tokens: set[str] = set()
     max_needed = max(1, start) + max(1, limit) - 1
     all_rows: list[dict[str, Any]] = []
@@ -2682,7 +2735,7 @@ def fetch_youtube_history_web(
             break
         seen_tokens.add(token)
         payload = {
-            "context": youtube_web_context(config),
+            "context": context,
             "continuation": token,
         }
         next_page = request_youtubei_json(opener, jar, api_key, payload, referer, client_version)
@@ -3770,14 +3823,27 @@ def import_playlists(args: argparse.Namespace) -> None:
     print(f"Wrote {db_path}")
 
 
-def youtube_web_context(config: dict[str, Any]) -> dict[str, Any]:
-    return {
+def youtube_web_context(
+    config: dict[str, Any],
+    timezone_name: str = "",
+) -> dict[str, Any]:
+    context = {
         "client": {
             "clientName": config.get("INNERTUBE_CLIENT_NAME", "WEB"),
             "clientVersion": config.get("INNERTUBE_CLIENT_VERSION", ""),
             "visitorData": urllib.parse.unquote(config.get("VISITOR_DATA", "")),
         }
     }
+    if timezone_name:
+        try:
+            zone = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            zone = timezone.utc
+            timezone_name = "UTC"
+        offset = datetime.now(zone).utcoffset() or timedelta(0)
+        context["client"]["timeZone"] = timezone_name
+        context["client"]["utcOffsetMinutes"] = int(offset.total_seconds() // 60)
+    return context
 
 
 def fetch_current_youtube_playlists(
@@ -4972,6 +5038,7 @@ def save_youtube_history_events(
     start: int,
     occurrence_snapshot: HistoryOccurrenceSnapshot,
     seen_occurrences: Counter[HistoryOccurrenceKey],
+    timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
 ) -> dict[str, Any]:
     now = utc_now()
     observed_at = now
@@ -5127,12 +5194,21 @@ def save_youtube_history_events(
                 "new_ordinal": index,
             }
         )
+    date_conflicts = [
+        conflict
+        for video_id in dict.fromkeys(
+            str(row.get("video_id") or "").strip() for row in rows
+        )
+        if video_id
+        for conflict in history_upload_date_conflicts(conn, video_id, timezone_name)
+    ]
     return {
         "new": new,
         "existing": existing,
         "last_video_id": last_video_id,
         "assignments": assignments,
         "progress_guards": progress_guards,
+        "date_conflicts": date_conflicts,
     }
 
 
