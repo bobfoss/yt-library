@@ -287,6 +287,8 @@ Advanced Admin buttons. Plugins may opt into the `library_initialize` and
 Admin actions use
 `POST /api/admin/plugins/{plugin_id}/processes/{worker_id}/enqueue`, and plugin
 logs appear in the common log view under a `plugin:{plugin_id}` source.
+Process-specific query parameters are forwarded to the plugin planner;
+repeated parameter names remain ordered value lists.
 
 The first plugin is the sibling YT Subtitles project. A local activation uses:
 

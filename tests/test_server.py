@@ -37,11 +37,18 @@ class AdminServerTests(unittest.TestCase):
                 urllib.parse.urlparse(
                     "/api/admin/plugins/example/processes/fetch/enqueue"
                 ),
-                {},
+                {"video_id": ["abcdefghijk", "mnopqrstuvw"]},
             )
 
             call = handler.plugin_manager.enqueue_process.call_args
-            self.assertEqual(call.args[1:], ("example", "fetch", {}))
+            self.assertEqual(
+                call.args[1:],
+                (
+                    "example",
+                    "fetch",
+                    {"video_id": ["abcdefghijk", "mnopqrstuvw"]},
+                ),
+            )
             self.assertEqual(call.kwargs, {"manual": True})
             handler._start_worker_queue.assert_called_once_with()
             handler.send_json.assert_called_once_with(
