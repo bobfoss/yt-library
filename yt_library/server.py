@@ -991,30 +991,47 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 excluded_plugin_ids = set(
                     params.get("video_exclude_filter_plugin") or []
                 )
+                requested_search_plugin_ids = params.get("video_search_plugin")
+                search_plugin_ids = (
+                    set(included_plugin_ids)
+                    if requested_search_plugin_ids is None
+                    else {
+                        plugin_id
+                        for plugin_id in requested_search_plugin_ids
+                        if plugin_id and plugin_id != "__none__"
+                    }
+                )
                 facet_plugin_ids = dict.fromkeys(
                     [
                         *(params.get("video_facet_plugin") or []),
                         *included_plugin_ids,
                         *excluded_plugin_ids,
+                        *search_plugin_ids,
                     ]
                 )
                 for plugin_id in facet_plugin_ids:
                     video_ids, search_match_ids = self.plugin_manager.filter_videos(
                         plugin_id,
-                        query if plugin_id in included_plugin_ids else "",
+                        query if plugin_id in search_plugin_ids else "",
                     )
                     video_facet_memberships[plugin_id] = video_ids
                     if plugin_id in included_plugin_ids:
                         video_id_filters.append(video_ids)
+                    if plugin_id in search_plugin_ids:
                         video_search_match_ids.update(search_match_ids)
                         video_search_match_memberships[plugin_id] = search_match_ids
+                    if plugin_id in excluded_plugin_ids:
+                        video_id_exclusion_filters.append(video_ids)
+                    projection_ids: frozenset[str] = frozenset()
+                    if plugin_id in included_plugin_ids:
                         projection_ids = search_match_ids if query.strip() else video_ids
+                    if plugin_id in search_plugin_ids and query.strip():
+                        projection_ids = projection_ids.union(search_match_ids)
+                    if projection_ids:
                         video_projections[plugin_id] = self.plugin_manager.project_videos(
                             plugin_id,
                             projection_ids,
                         )
-                    if plugin_id in excluded_plugin_ids:
-                        video_id_exclusion_filters.append(video_ids)
             except (LookupError, RuntimeError, TypeError, ValueError) as exc:
                 self.send_json(
                     {"error": "Video filter unavailable", "message": str(exc)},

@@ -255,6 +255,86 @@ class AdminServerTests(unittest.TestCase):
         connection.close.assert_called_once_with()
         handler.send_json.assert_called_once_with(payload)
 
+    def test_search_applies_plugin_text_matches_without_filtering_for_presence(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.config_data = {}
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.filter_videos.return_value = (
+            frozenset({"matching", "other"}),
+            frozenset({"matching"}),
+        )
+        handler.plugin_manager.project_videos.return_value = {
+            "matching": {
+                "video_id": "matching",
+                "title": "Projected match",
+            }
+        }
+        handler.send_json = Mock()
+
+        with (
+            patch("yt_library.server.connect", return_value=Mock()),
+            patch(
+                "yt_library.server.omni_search_data",
+                return_value={"results": [], "total": 0},
+            ) as search_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/search?q=history&video_search_plugin=example&limit=1"
+                )
+            )
+
+        handler.plugin_manager.filter_videos.assert_called_once_with("example", "history")
+        handler.plugin_manager.project_videos.assert_called_once_with(
+            "example",
+            frozenset({"matching"}),
+        )
+        self.assertEqual(search_data.call_args.kwargs["video_id_filters"], [])
+        self.assertEqual(
+            search_data.call_args.kwargs["video_search_match_ids"],
+            {"matching"},
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["video_search_match_memberships"],
+            {"example": frozenset({"matching"})},
+        )
+
+    def test_search_can_filter_plugin_presence_without_searching_plugin_text(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.config_data = {}
+        handler.plugin_manager = Mock()
+        video_ids = frozenset({"with-plugin-data"})
+        handler.plugin_manager.filter_videos.return_value = (video_ids, frozenset())
+        handler.send_json = Mock()
+
+        with (
+            patch("yt_library.server.connect", return_value=Mock()),
+            patch(
+                "yt_library.server.omni_search_data",
+                return_value={"results": [], "total": 0},
+            ) as search_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/search?q=history&video_filter_plugin=example"
+                    "&video_search_plugin=__none__&limit=1"
+                )
+            )
+
+        handler.plugin_manager.filter_videos.assert_called_once_with("example", "")
+        handler.plugin_manager.project_videos.assert_not_called()
+        self.assertEqual(
+            search_data.call_args.kwargs["video_id_filters"],
+            [video_ids],
+        )
+        self.assertEqual(search_data.call_args.kwargs["video_search_match_ids"], set())
+        self.assertEqual(
+            search_data.call_args.kwargs["video_search_match_memberships"],
+            {},
+        )
+
     def test_search_applies_generic_plugin_video_exclusions(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.db_path = Path("library.sqlite3")

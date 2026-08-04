@@ -169,6 +169,7 @@ class TemplateDomTests(unittest.TestCase):
             "search-nav": ("button", "button"),
             "search": ("input", "search"),
             "search-filters": ("div", None),
+            "search-in-fields": ("div", None),
             "search-for-filters": ("div", None),
             "groups": ("nav", None),
             "view-title": ("h2", None),

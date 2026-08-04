@@ -448,8 +448,10 @@
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
       <div id="search-filters" class="filters" aria-label="Search filters">
         <div class="filter-title">Search in</div>
-        <label class="filter"><input class="search-field" type="checkbox" data-search-field="titles" checked> Titles</label>
-        <label class="filter"><input class="search-field" type="checkbox" data-search-field="descriptions" checked> Descriptions</label>
+        <div id="search-in-fields">
+          <label class="filter"><input class="search-field" type="checkbox" data-search-field="titles" checked> Titles</label>
+          <label class="filter"><input class="search-field" type="checkbox" data-search-field="descriptions" checked> Descriptions</label>
+        </div>
         <div class="filter-title search-for-title">Search for</div>
         <div id="search-for-filters" class="search-meta-groups"></div>
       </div>

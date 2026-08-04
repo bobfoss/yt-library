@@ -27,6 +27,10 @@ test('browser plugins are loaded through a generic registration contract', () =>
   assert.match(indexSource, /requestParams\.append\('video_facet_plugin', plugin\.id\)/);
   assert.match(indexSource, /requestParams\.append\('video_filter_plugin', plugin\.id\)/);
   assert.match(indexSource, /requestParams\.append\('video_exclude_filter_plugin', plugin\.id\)/);
+  assert.match(indexSource, /plugin\?\.search\?\.searchField/);
+  assert.match(indexSource, /label\.dataset\.browserPluginSearchField = plugin\.id/);
+  assert.match(indexSource, /requestParams\.append\('video_search_plugin', plugin\.id\)/);
+  assert.match(indexSource, /requestParams\.append\('video_search_plugin', '__none__'\)/);
 });
 
 test('plugin-specific browser presentation stays outside core templates', () => {

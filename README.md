@@ -307,15 +307,17 @@ The first plugin is the sibling YT Subtitles project. A local activation uses:
 }
 ```
 
-YT Subtitles owns and migrates its separate database. YT Library never writes
-that database and joins plugin results to canonical videos only by video ID.
-When the plugin is enabled and ready, Subtitles appears as a top-level search
-category. The category is off by default and persists an explicit user opt-in
-through the generic `plugins.<id>.search` filter-preference namespace. Subtitle
-search and transcript data remain on namespaced plugin routes and never enter
-YT Library's core query layer. Plugin-owned browser assets are loaded from the
-generic `/plugins/<id>/assets/` namespace; the core templates contain only the
-registration, search-provider, and detail-panel extension hooks.
+YT Subtitles owns its separate database schema. YT Library never writes that
+database and joins plugin results to canonical videos only by video ID.
+When the plugin is enabled and ready, it contributes a Subtitles option under
+**Search in** and a subtitle-presence facet under Videos. Search-field state and
+presence filtering are independent: transcript matches join title and
+description matches by video ID without requiring the presence facet to narrow
+the result set. Subtitle text remains on namespaced plugin routes; the host
+receives only match IDs and read-only projections. Plugin-owned browser assets
+are loaded from the generic `/plugins/<id>/assets/` namespace, and the core
+templates contain only generic registration, search-field, video-facet,
+search-provider, and detail-panel extension hooks.
 
 ## Security
 

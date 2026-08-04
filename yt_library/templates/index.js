@@ -57,6 +57,47 @@ const loadedBrowserPluginAssets = new Set();
 const pluginSearchVisibility = new Map();
 const pluginVideoFacetVisibility = new Map();
 
+function browserSearchFieldDefinition(plugin) {
+  const definition = plugin?.search?.searchField;
+  return definition && typeof definition === 'object' ? definition : null;
+}
+
+function browserSearchFieldKey(plugin) {
+  const definition = browserSearchFieldDefinition(plugin);
+  return String(definition?.key || plugin?.id || '');
+}
+
+function browserPluginSearchFieldEnabled(plugin) {
+  const key = browserSearchFieldKey(plugin);
+  return Boolean(key && activeSearchFields().has(key));
+}
+
+function registerBrowserPluginSearchField(plugin) {
+  const definition = browserSearchFieldDefinition(plugin);
+  if (!definition) return;
+  const key = browserSearchFieldKey(plugin);
+  const labelText = String(definition.label || '').trim();
+  if (!/^[a-z][a-z0-9_-]*$/.test(key)) {
+    throw new TypeError(`Plugin search field key is invalid: ${key}`);
+  }
+  if (!labelText) throw new TypeError(`Plugin search field label is required: ${plugin.id}`);
+  if (searchFields.some(input => input.dataset.searchField === key)) {
+    throw new Error(`Search field is already registered: ${key}`);
+  }
+  const label = document.createElement('label');
+  label.className = 'filter';
+  label.dataset.browserPluginSearchField = plugin.id;
+  const input = document.createElement('input');
+  input.className = 'search-field';
+  input.type = 'checkbox';
+  input.dataset.searchField = key;
+  input.checked = definition.defaultEnabled !== false;
+  label.append(input, document.createTextNode(` ${labelText}`));
+  searchInFields.append(label);
+  searchFields.push(input);
+  bindSearchField(input);
+}
+
 function browserVideoFacetDefinition(plugin) {
   const definition = plugin?.search?.videoFacet;
   return definition && typeof definition === 'object' ? definition : null;
@@ -77,6 +118,7 @@ function registerBrowserPlugin(plugin) {
   if (browserPlugins.has(pluginId)) throw new Error(`Plugin is already registered: ${pluginId}`);
   browserPlugins.set(pluginId, plugin);
   if (plugin.search) {
+    registerBrowserPluginSearchField(plugin);
     if (browserVideoFacetDefinition(plugin)) {
       pluginVideoFacetVisibility.set(
         pluginId,
@@ -123,6 +165,12 @@ function browserSearchPlugin(pluginId) {
 
 function browserVideoFilterPlugins() {
   return browserSearchPlugins().filter(plugin => Boolean(browserVideoFacetDefinition(plugin)));
+}
+
+function browserVideoSearchFieldPlugins() {
+  return browserVideoFilterPlugins().filter(plugin => (
+    browserPluginSearchFieldEnabled(plugin) && searchKindEnabled(plugin.id)
+  ));
 }
 
 function browserVideoFacetState(plugin) {
@@ -439,6 +487,7 @@ const search = document.getElementById('search');
 const searchNav = document.getElementById('search-nav');
 const historyNav = document.getElementById('history-nav');
 const searchFilters = document.getElementById('search-filters');
+const searchInFields = document.getElementById('search-in-fields');
 const searchForFilters = document.getElementById('search-for-filters');
 const refresh = document.getElementById('refresh');
 const groupsEl = document.getElementById('groups');
@@ -866,7 +915,7 @@ function browserPluginForcesRelevance(plugin, query = search.value.trim()) {
 
 function browserPluginSearchActive(plugin) {
   return browserVideoFacetDefinition(plugin)
-    ? browserVideoFacetSearchActive(plugin)
+    ? browserVideoFacetSearchActive(plugin) || browserPluginSearchFieldEnabled(plugin)
     : searchKindEnabled(plugin.id);
 }
 
@@ -3411,6 +3460,14 @@ async function fetchOmniSearch(query, page = currentPage) {
         requestParams.append('video_exclude_filter_plugin', plugin.id);
       }
     }
+    const videoSearchFieldPlugins = browserVideoSearchFieldPlugins();
+    if (videoSearchFieldPlugins.length) {
+      for (const plugin of videoSearchFieldPlugins) {
+        requestParams.append('video_search_plugin', plugin.id);
+      }
+    } else {
+      requestParams.append('video_search_plugin', '__none__');
+    }
     requestParams.set('limit', String(Math.max(1, pluginPayload.remaining)));
     requestParams.set('offset', String(pluginPayload.coreOffset));
     const response = await fetch(`/api/search?${requestParams}`, { cache: 'no-store' });
@@ -4956,13 +5013,14 @@ window.addEventListener('wheel', handlePageBoundaryWheel, { passive: false });
 window.addEventListener('touchstart', handlePageBoundaryTouchStart, { passive: true });
 window.addEventListener('touchmove', handlePageBoundaryTouchMove, { passive: true });
 window.addEventListener('touchend', handlePageBoundaryTouchEnd, { passive: true });
-for (const input of searchFields) {
+function bindSearchField(input) {
   input.addEventListener('change', () => {
     const activatedFromHistory = activateSearchFromHistory({ resetMetaVisibility: true });
     currentPage = 1;
     syncSearchHashAndRender(!activatedFromHistory);
   });
 }
+for (const input of searchFields) bindSearchField(input);
 window.addEventListener('hashchange', () => {
   const progressToken = pendingSidebarProgressToken;
   pendingSidebarProgressToken = null;
