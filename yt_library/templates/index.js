@@ -1418,6 +1418,13 @@ function syncSearchKindFilter(kind) {
     const facetSelections = facetKeys.map(
       key => Object.values(searchMetaVisibility[key])
     );
+    if (kind === 'videos') {
+      facetSelections.push(
+        ...browserVideoFilterPlugins().map(plugin => (
+          Object.values(browserVideoFacetState(plugin))
+        )),
+      );
+    }
     const everyFacetHasSelection = facetSelections.every(values => values.some(Boolean));
     const allChildrenSelected = facetSelections.every(values => values.every(Boolean));
     parent.checked = everyFacetHasSelection;
@@ -1456,6 +1463,19 @@ function restoreEmptySearchKindFacets(facetKey) {
       input.checked = Boolean(defaults[filterName]);
     }
     syncMetaFilterGroup(`search-${siblingKey}`);
+  }
+  if (kind !== 'videos') return;
+  for (const plugin of browserVideoFilterPlugins()) {
+    const state = browserVideoFacetState(plugin);
+    if (Object.values(state).some(Boolean)) continue;
+    Object.assign(state, { present: true, absent: true });
+    for (const input of searchForFilters.querySelectorAll(
+      `[data-search-plugin-facet-filter^="${plugin.id}:"]`
+    )) {
+      const filterName = input.dataset.searchPluginFacetFilter.split(':')[1];
+      input.checked = Boolean(state[filterName]);
+    }
+    syncMetaFilterGroup(`search-plugin-${plugin.id}`);
   }
 }
 

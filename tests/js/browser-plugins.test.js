@@ -22,6 +22,8 @@ test('browser plugins are loaded through a generic registration contract', () =>
   assert.match(indexSource, /plugin\.search\.decorateCoreResultCard\(card, result,/);
   assert.match(indexSource, /search-plugin-facet-filter/);
   assert.match(indexSource, /browserVideoFacetState/);
+  assert.match(indexSource, /facetSelections\.push\([\s\S]*browserVideoFilterPlugins/);
+  assert.match(indexSource, /restoreEmptySearchKindFacets[\s\S]*Object\.assign\(state, \{ present: true, absent: true \}\)/);
   assert.match(indexSource, /requestParams\.append\('video_facet_plugin', plugin\.id\)/);
   assert.match(indexSource, /requestParams\.append\('video_filter_plugin', plugin\.id\)/);
   assert.match(indexSource, /requestParams\.append\('video_exclude_filter_plugin', plugin\.id\)/);
