@@ -24,6 +24,7 @@ const fields = {
   playlistBackfillStatus: document.getElementById('playlistBackfillStatus'),
   backfillChannelAccount: document.getElementById('backfillChannelAccount'),
   channelBackfillStatus: document.getElementById('channelBackfillStatus'),
+  pluginWorkstreams: document.getElementById('pluginWorkstreams'),
   logs: document.getElementById('logs'),
   logPanel: document.getElementById('logPanel'),
   logSourceFilter: document.getElementById('logSourceFilter'),
@@ -307,6 +308,13 @@ function normalizedLogs(data) {
       identifier: log.display_id || '',
       source: 'history',
     })),
+    ...(data.pluginWorkerLogs || []).map(log => ({
+      ...log,
+      stream: 'pluginWorkerLogs',
+      subject_id: log.subject_title || log.subject_id || '',
+      identifier: log.display_id || '',
+      source: `plugin:${log.plugin_id || ''}`,
+    })),
   ];
 }
 
@@ -448,6 +456,11 @@ function workerDetails(row) {
 }
 
 function workerLabel(row) {
+  if (row.worker_type === 'plugin') {
+    return [row.source_key || 'plugin', row.task_type || '', row.manual ? 'manual' : '']
+      .filter(Boolean)
+      .join(' ');
+  }
   return [row.worker_type || '', row.task_type || '', row.manual ? 'manual' : ''].filter(Boolean).join(' ');
 }
 
@@ -579,6 +592,65 @@ function applyQueueDelta(payload) {
   scheduleQueueRender();
 }
 
+function syncPluginLogSources(plugins) {
+  const selected = fields.logSourceFilter.value || 'all';
+  for (const option of [...fields.logSourceFilter.querySelectorAll('option[data-plugin-source]')]) {
+    option.remove();
+  }
+  for (const plugin of plugins) {
+    if (!(plugin.workerProcesses || []).length) continue;
+    const option = document.createElement('option');
+    option.value = `plugin:${plugin.id}`;
+    option.textContent = plugin.name || plugin.id;
+    option.dataset.pluginSource = plugin.id;
+    fields.logSourceFilter.appendChild(option);
+  }
+  if ([...fields.logSourceFilter.options].some(option => option.value === selected)) {
+    fields.logSourceFilter.value = selected;
+  }
+}
+
+function renderPluginWorkstreams(plugins) {
+  syncPluginLogSources(plugins);
+  const sections = [];
+  for (const plugin of plugins) {
+    for (const process of plugin.workerProcesses || []) {
+      const surface = process.adminSurface || 'none';
+      if (surface === 'none') continue;
+      const latest = process.latestRun || {};
+      const queued = Number(process.queuedCount || 0);
+      const running = Number(process.runningCount || 0);
+      const details = [
+        queued ? `${queued.toLocaleString()} queued` : 'Nothing queued',
+        running ? `${running.toLocaleString()} running` : '',
+        latest.outcome ? `Last: ${latest.outcome}` : '',
+        latest.finished_at ? fmtTime(latest.finished_at) : '',
+      ].filter(Boolean).join(' | ');
+      const ready = plugin.state === 'ready';
+      sections.push(`
+        <section class="workstream plugin-workstream ${surface === 'advanced' ? 'advanced-only' : ''}"
+                 data-plugin-id="${escapeHtml(plugin.id)}"
+                 data-plugin-worker-id="${escapeHtml(process.id)}">
+          <div class="workstream-header">
+            <h2>${escapeHtml(plugin.name || plugin.id)}</h2>
+            <span class="metric">${escapeHtml(process.name || process.id)}</span>
+          </div>
+          ${process.description ? `<p class="message">${escapeHtml(process.description)}</p>` : ''}
+          <div class="controls">
+            <button class="plugin-process-enqueue primary" type="button"
+                    data-plugin-id="${escapeHtml(plugin.id)}"
+                    data-plugin-worker-id="${escapeHtml(process.id)}"
+                    data-confirm="${escapeHtml(process.confirm || '')}"
+                    ${ready ? '' : 'disabled'}>${escapeHtml(process.buttonLabel || process.name)}</button>
+            <span class="metric plugin-process-status" aria-live="polite">${escapeHtml(ready ? details : (plugin.message || plugin.state || 'Unavailable'))}</span>
+          </div>
+        </section>
+      `);
+    }
+  }
+  fields.pluginWorkstreams.innerHTML = sections.join('');
+}
+
 function render(data) {
   const service = data.service || {};
   const serviceState = String(service.status || 'unknown');
@@ -592,6 +664,7 @@ function render(data) {
     service.startedAt ? `Started ${fmtTime(service.startedAt)}` : '',
   ].filter(Boolean).join(' | ');
   fields.restartService.disabled = serviceState === 'restarting';
+  renderPluginWorkstreams(data.plugins || []);
 
   const hasLibraryData = Boolean(data.hasLibraryData);
   fields.initializeControls.classList.toggle('initialization-complete', hasLibraryData);
@@ -1203,6 +1276,32 @@ fields.workerQueueRows.addEventListener('click', event => {
   const queueId = button.dataset.queueId || '';
   if (!queueId) return;
   post('/api/admin/queue/remove', { queue_id: queueId }).catch(error => alert(error.message));
+});
+fields.pluginWorkstreams.addEventListener('click', async event => {
+  const button = event.target.closest('.plugin-process-enqueue');
+  if (!button) return;
+  const pluginId = button.dataset.pluginId || '';
+  const workerId = button.dataset.pluginWorkerId || '';
+  const confirmation = button.dataset.confirm || '';
+  if (!pluginId || !workerId || (confirmation && !confirm(confirmation))) return;
+  const section = button.closest('.plugin-workstream');
+  const status = section?.querySelector('.plugin-process-status');
+  button.disabled = true;
+  if (status) status.textContent = 'Planning tasks';
+  try {
+    const result = await post(
+      `/api/admin/plugins/${encodeURIComponent(pluginId)}/processes/${encodeURIComponent(workerId)}/enqueue`,
+    );
+    const queue = result.queue || {};
+    if (status) {
+      status.textContent = `Queued ${Number(queue.inserted || 0).toLocaleString()}; ${Number(queue.alreadyQueued || 0).toLocaleString()} already queued`;
+    }
+    scheduleActionPolls();
+  } catch (error) {
+    if (status) status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 });
 document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start').catch(error => alert(error.message)));
 fields.updateFrequency.addEventListener('change', () => {

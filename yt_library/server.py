@@ -9,6 +9,7 @@ import json
 import math
 import os
 import posixpath
+import re
 import sqlite3
 import subprocess
 import sys
@@ -252,11 +253,17 @@ def enqueue_library_update(
     config_data: dict[str, Any],
     *,
     scheduled: bool = False,
+    plugin_manager: PluginManager | None = None,
 ) -> dict[str, Any]:
     conn = connect(db_path)
     try:
         with conn:
             queue_stats = enqueue_update_tasks(conn)
+            plugin_queue = (
+                plugin_manager.enqueue_hook(conn, "library_update")
+                if plugin_manager is not None
+                else []
+            )
             log_worker_queue_event(
                 conn,
                 "info",
@@ -272,13 +279,17 @@ def enqueue_library_update(
             )
     finally:
         conn.close()
-    dispatcher = WORKER_QUEUE_DISPATCHER.start(
-        db_path,
-        cookie_file,
-        video_thumbs,
-        config_data,
+    dispatcher_args = (db_path, cookie_file, video_thumbs, config_data)
+    dispatcher = (
+        WORKER_QUEUE_DISPATCHER.start(*dispatcher_args, plugin_manager)
+        if plugin_manager is not None
+        else WORKER_QUEUE_DISPATCHER.start(*dispatcher_args)
     )
-    return {"queue": queue_stats, "dispatcher": dispatcher}
+    return {
+        "queue": queue_stats,
+        "pluginQueue": plugin_queue,
+        "dispatcher": dispatcher,
+    }
 
 
 class UpdateScheduler:
@@ -291,6 +302,7 @@ class UpdateScheduler:
         self._cookie_file: Path | None = None
         self._video_thumbs: Path | None = None
         self._config_data: dict[str, Any] | None = None
+        self._plugin_manager: PluginManager | None = None
         self._next_run_at: datetime | None = None
         self._last_queued_at = ""
         self._last_error = ""
@@ -301,12 +313,14 @@ class UpdateScheduler:
         cookie_file: Path,
         video_thumbs: Path,
         config_data: dict[str, Any],
+        plugin_manager: PluginManager | None = None,
     ) -> None:
         with self._lock:
             self._db_path = db_path
             self._cookie_file = cookie_file
             self._video_thumbs = video_thumbs
             self._config_data = config_data
+            self._plugin_manager = plugin_manager
             self._next_run_at = self._calculate_next_run(config_data)
             if self._thread and self._thread.is_alive():
                 self._wake.set()
@@ -365,6 +379,7 @@ class UpdateScheduler:
                 db_path = self._db_path
                 cookie_file = self._cookie_file
                 video_thumbs = self._video_thumbs
+                plugin_manager = self._plugin_manager
             if (
                 not config_data
                 or configured_update_frequency(config_data) == "off"
@@ -392,6 +407,7 @@ class UpdateScheduler:
                     video_thumbs,
                     config_data,
                     scheduled=True,
+                    plugin_manager=plugin_manager,
                 )
                 dispatcher = result["dispatcher"]
                 if dispatcher.get("blocked"):
@@ -448,11 +464,17 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             conn.close()
 
     def _start_worker_queue(self) -> dict[str, Any]:
-        return WORKER_QUEUE_DISPATCHER.start(
+        args = (
             self.db_path,
             self.cookie_file,
             self.video_thumbs,
             self.config_data,
+        )
+        plugin_manager = getattr(self, "plugin_manager", None)
+        return (
+            WORKER_QUEUE_DISPATCHER.start(*args, plugin_manager)
+            if plugin_manager is not None
+            else WORKER_QUEUE_DISPATCHER.start(*args)
         )
 
     def _enqueue_and_start(
@@ -463,7 +485,19 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         return result, self._start_worker_queue()
 
     def _handle_initialize(self) -> None:
-        queue_stats, dispatcher = self._enqueue_and_start(enqueue_initialization_tasks)
+        def enqueue(conn: sqlite3.Connection) -> dict[str, Any]:
+            core_queue = enqueue_initialization_tasks(conn)
+            plugin_manager = getattr(self, "plugin_manager", None)
+            return {
+                **core_queue,
+                "plugins": (
+                    plugin_manager.enqueue_hook(conn, "library_initialize")
+                    if plugin_manager is not None
+                    else []
+                ),
+            }
+
+        queue_stats, dispatcher = self._enqueue_and_start(enqueue)
         self.send_json({"ok": True, "queue": queue_stats, "dispatcher": dispatcher})
 
     def _handle_metadata_start(self, params: dict[str, list[str]]) -> None:
@@ -1467,6 +1501,37 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         parsed: urllib.parse.ParseResult,
         params: dict[str, list[str]],
     ) -> None:
+        plugin_process_match = re.fullmatch(
+            r"/api/admin/plugins/([a-z][a-z0-9_-]*)/processes/"
+            r"([a-z][a-z0-9_-]*)/enqueue",
+            parsed.path,
+        )
+        if plugin_process_match:
+            plugin_id, worker_id = plugin_process_match.groups()
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    try:
+                        queue = self.plugin_manager.enqueue_process(
+                            conn,
+                            plugin_id,
+                            worker_id,
+                            params,
+                            manual=True,
+                        )
+                    except LookupError as exc:
+                        self.send_json({"error": str(exc)}, status=404)
+                        return
+                    except (RuntimeError, TypeError, ValueError) as exc:
+                        self.send_json({"error": str(exc)}, status=400)
+                        return
+            finally:
+                conn.close()
+            dispatcher = self._start_worker_queue()
+            self.send_json(
+                {"ok": True, "queue": queue, "dispatcher": dispatcher}
+            )
+            return
         if parsed.path == "/api/admin/initialize":
             self._handle_initialize()
             return
@@ -1476,6 +1541,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 self.cookie_file,
                 self.video_thumbs,
                 self.config_data,
+                plugin_manager=self.plugin_manager,
             )
             self.send_json({"ok": True, **result})
             return
@@ -2016,7 +2082,7 @@ def serve(args: argparse.Namespace) -> None:
         LIVE_HISTORY_WORKER,
         PLACEHOLDER_RECOVERY_WORKER,
     )
-    plugin_manager = PluginManager(args.config_data)
+    plugin_manager = PluginManager(args.config_data, db_path=db_path)
     service_started_at = utc_now()
     restart_requested = threading.Event()
     server: http.server.ThreadingHTTPServer | None = None
@@ -2059,6 +2125,7 @@ def serve(args: argparse.Namespace) -> None:
         Path(args.cookies),
         Path(args.video_thumbs),
         args.config_data,
+        plugin_manager,
     )
     print(f"Serving http://{args.host}:{args.port}")
     try:

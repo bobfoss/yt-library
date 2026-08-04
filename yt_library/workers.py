@@ -115,6 +115,7 @@ from .core import (
 )
 from .my_activity import MyActivityError, fetch_my_activity_pages
 from .network import ProxyUnavailableError, probe_socks5_proxy
+from .plugins import PluginManager, PluginTaskWorker
 from .request_pacing import pace_outbound_request
 from .youtube_data_api import (
     YouTubeDataApiError,
@@ -2220,6 +2221,10 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         self._completed_count = 0
         self._metadata_workers: dict[int, tuple[MetadataWorker, str]] = {}
         self._placeholder_workers: dict[int, tuple[PlaceholderRecoveryWorker, str]] = {}
+        self._plugin_workers: dict[
+            int, tuple[PluginTaskWorker, str, str, str]
+        ] = {}
+        self._plugin_manager: PluginManager | None = None
         self._archivarix_retry_requested = threading.Event()
         self._proxy_retry_requested = threading.Event()
         self._dispatch_mode = "delay"
@@ -2235,8 +2240,17 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             completed = self._completed_count
             initial = self._initial_count
             started_at = self._started_at if active else ""
-            youtube_in_flight = len(self._metadata_workers)
-            archivarix_in_flight = len(self._placeholder_workers)
+            plugin_services = [
+                service
+                for _worker, service, _plugin_id, _worker_id in self._plugin_workers.values()
+            ]
+            youtube_in_flight = len(self._metadata_workers) + plugin_services.count(
+                "youtube"
+            )
+            archivarix_in_flight = len(self._placeholder_workers) + plugin_services.count(
+                "archivarix"
+            )
+            plugin_in_flight = len(self._plugin_workers)
         remaining = max(0, int(remaining_count or 0))
         eta_seconds = 0.0
         if active and completed > 0:
@@ -2251,6 +2265,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             "remaining_count": remaining,
             "youtube_in_flight": youtube_in_flight,
             "archivarix_in_flight": archivarix_in_flight,
+            "plugin_in_flight": plugin_in_flight,
         }
 
     def start(
@@ -2259,6 +2274,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         cookie_file: Path,
         thumb_dir: Path,
         config_data: dict[str, Any] | None = None,
+        plugin_manager: PluginManager | None = None,
     ) -> dict[str, Any]:
         config = config_data or {}
         dispatch_mode = configured_dispatch_mode(config)
@@ -2306,6 +2322,8 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             self._completed_count = 0
             self._metadata_workers = {}
             self._placeholder_workers = {}
+            self._plugin_workers = {}
+            self._plugin_manager = plugin_manager
             self._archivarix_retry_requested.clear()
             self._proxy_retry_requested.clear()
             self._set_dispatch_settings_unlocked(
@@ -2345,9 +2363,14 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             self._stop.set()
             metadata_workers = [worker for worker, _run_id in self._metadata_workers.values()]
             placeholder_workers = [worker for worker, _run_id in self._placeholder_workers.values()]
+            plugin_workers = [
+                worker for worker, _service, _plugin_id, _worker_id in self._plugin_workers.values()
+            ]
             for worker in metadata_workers:
                 worker.stop()
             for worker in placeholder_workers:
+                worker.stop()
+            for worker in plugin_workers:
                 worker.stop()
             METADATA_WORKER.stop()
             PLAYLIST_SCAN_WORKER.stop()
@@ -2449,6 +2472,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         db_path: Path,
         worker_types: tuple[str, ...] = (),
         excluded_queue_ids: set[int] | None = None,
+        plugin_process_keys: set[tuple[str, str]] | None = None,
     ) -> dict[str, Any] | None:
         conn = connect(db_path)
         try:
@@ -2458,6 +2482,20 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 placeholders = ", ".join("?" for _ in worker_types)
                 clauses.append(f"worker_type IN ({placeholders})")
                 params.extend(worker_types)
+            if "plugin" in worker_types and plugin_process_keys is not None:
+                allowed = sorted(plugin_process_keys)
+                if allowed:
+                    process_clauses = []
+                    for plugin_id, worker_id in allowed:
+                        process_clauses.append("(source_key = ? AND task_type = ?)")
+                        params.extend((plugin_id, worker_id))
+                    clauses.append(
+                        "(worker_type <> 'plugin' OR ("
+                        + " OR ".join(process_clauses)
+                        + "))"
+                    )
+                else:
+                    clauses.append("worker_type <> 'plugin'")
             excluded = sorted(excluded_queue_ids or set())
             if excluded:
                 placeholders = ", ".join("?" for _ in excluded)
@@ -2501,6 +2539,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         proxy_url: str = "",
         config: dict[str, Any] | None = None,
     ) -> None:
+        plugin_manager = self._plugin_manager
         conn = connect(db_path)
         try:
             self._mark_initial_count(worker_queue_count(conn))
@@ -2547,6 +2586,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 with self._lock:
                     metadata_workers = dict(self._metadata_workers)
                 placeholder_workers = dict(self._placeholder_workers)
+                plugin_workers = dict(self._plugin_workers)
 
                 for queue_id, (worker, run_id) in metadata_workers.items():
                     if worker.is_alive():
@@ -2574,6 +2614,18 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     with self._lock:
                         self._placeholder_workers.pop(queue_id, None)
 
+                for queue_id, (
+                    worker,
+                    _service,
+                    _plugin_id,
+                    _worker_id,
+                ) in plugin_workers.items():
+                    if worker.is_alive():
+                        continue
+                    self._mark_completed()
+                    with self._lock:
+                        self._plugin_workers.pop(queue_id, None)
+
                 if authentication_blocked:
                     youtube_blocked = True
                     with self._lock:
@@ -2597,6 +2649,8 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 with self._lock:
                     metadata_queue_ids = set(self._metadata_workers)
                     placeholder_queue_ids = set(self._placeholder_workers)
+                    plugin_queue_ids = set(self._plugin_workers)
+                    active_plugin_workers = list(self._plugin_workers.values())
                     current_mode = self._dispatch_mode
                     current_job_delay = self._job_dispatch_delay
                     youtube_max_in_flight = self._youtube_max_in_flight
@@ -2613,20 +2667,64 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     )
                     dispatch_revision = current_dispatch_revision
 
+                active_plugin_process_counts = Counter(
+                    (plugin_id, worker_id)
+                    for _worker, _service, plugin_id, worker_id in active_plugin_workers
+                )
+                plugin_youtube_in_flight = sum(
+                    service == "youtube"
+                    for _worker, service, _plugin_id, _worker_id in active_plugin_workers
+                )
+                plugin_archivarix_in_flight = sum(
+                    service == "archivarix"
+                    for _worker, service, _plugin_id, _worker_id in active_plugin_workers
+                )
+                process_definitions = (
+                    plugin_manager.process_definitions() if plugin_manager is not None else {}
+                )
+                eligible_plugin_processes: set[tuple[str, str]] = set()
+                for process_key, process in process_definitions.items():
+                    if active_plugin_process_counts[process_key] >= int(
+                        process["maxInFlight"]
+                    ):
+                        continue
+                    service = str(process["service"])
+                    if service == "youtube" and (
+                        proxy_blocked
+                        or youtube_blocked
+                        or len(metadata_queue_ids) + plugin_youtube_in_flight
+                        >= youtube_max_in_flight
+                    ):
+                        continue
+                    if service == "archivarix" and (
+                        proxy_blocked
+                        or archivarix_blocked
+                        or len(placeholder_queue_ids) + plugin_archivarix_in_flight
+                        >= archivarix_max_in_flight
+                    ):
+                        continue
+                    eligible_plugin_processes.add(process_key)
+
                 eligible_worker_types: list[str] = []
                 if (
                     not proxy_blocked
                     and not youtube_blocked
-                    and len(metadata_queue_ids) < youtube_max_in_flight
+                    and len(metadata_queue_ids) + plugin_youtube_in_flight
+                    < youtube_max_in_flight
                 ):
                     eligible_worker_types.append("metadata")
                 if (
                     not proxy_blocked
                     and not archivarix_blocked
-                    and len(placeholder_queue_ids) < archivarix_max_in_flight
+                    and len(placeholder_queue_ids) + plugin_archivarix_in_flight
+                    < archivarix_max_in_flight
                 ):
                     eligible_worker_types.append("placeholder")
-                has_active = bool(metadata_queue_ids or placeholder_queue_ids)
+                if eligible_plugin_processes:
+                    eligible_worker_types.append("plugin")
+                has_active = bool(
+                    metadata_queue_ids or placeholder_queue_ids or plugin_queue_ids
+                )
                 if not proxy_blocked and not has_active and not youtube_blocked:
                     eligible_worker_types.extend(("account", "playlist", "history"))
                 if not eligible_worker_types:
@@ -2637,7 +2735,8 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 row = self._next_row(
                     db_path,
                     tuple(eligible_worker_types),
-                    metadata_queue_ids | placeholder_queue_ids,
+                    metadata_queue_ids | placeholder_queue_ids | plugin_queue_ids,
+                    eligible_plugin_processes,
                 )
                 if not row:
                     if has_active:
@@ -2755,6 +2854,30 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         proxy_blocked = True
                     elif not self._stop.is_set():
                         self._mark_completed()
+                elif worker_type == "plugin":
+                    plugin_id = str(row.get("source_key") or "")
+                    worker_id = str(row.get("task_type") or "")
+                    process = (
+                        plugin_manager.process_definition(plugin_id, worker_id)
+                        if plugin_manager is not None
+                        else None
+                    )
+                    if process is None or plugin_manager is None:
+                        self._drop_unknown_row(db_path, row)
+                        self._mark_completed()
+                    else:
+                        worker = PluginTaskWorker()
+                        result = worker.start(db_path, plugin_manager, row)
+                        if result.get("started"):
+                            with self._lock:
+                                self._plugin_workers[queue_id] = (
+                                    worker,
+                                    str(process["service"]),
+                                    plugin_id,
+                                    worker_id,
+                                )
+                            launched = True
+                            launched_at = time.monotonic()
                 elif worker_type == "account":
                     run_optional_account_sync(
                         db_path,
@@ -2776,15 +2899,25 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             with self._lock:
                 metadata_workers = [worker for worker, _run_id in self._metadata_workers.values()]
                 placeholder_workers = [worker for worker, _run_id in self._placeholder_workers.values()]
+                plugin_workers = [
+                    worker
+                    for worker, _service, _plugin_id, _worker_id in self._plugin_workers.values()
+                ]
             for worker in metadata_workers:
                 worker.stop()
             for worker in placeholder_workers:
                 worker.stop()
-            while any(worker.is_alive() for worker in [*metadata_workers, *placeholder_workers]):
+            for worker in plugin_workers:
+                worker.stop()
+            while any(
+                worker.is_alive()
+                for worker in [*metadata_workers, *placeholder_workers, *plugin_workers]
+            ):
                 time.sleep(0.05)
             with self._lock:
                 self._metadata_workers.clear()
                 self._placeholder_workers.clear()
+                self._plugin_workers.clear()
 
 
 WORKER_QUEUE_DISPATCHER = WorkerQueueDispatcher()

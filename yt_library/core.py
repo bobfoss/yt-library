@@ -6015,6 +6015,8 @@ def worker_queue_rows(
                w.playlist_count,
                w.priority,
                w.manual,
+               w.plugin_subject_id,
+               w.payload_json,
                w.created_at,
                w.updated_at,
                p.title AS playlist_title,
@@ -6067,6 +6069,8 @@ def worker_queue_rows_by_id(
                w.playlist_count,
                w.priority,
                w.manual,
+               w.plugin_subject_id,
+               w.payload_json,
                w.created_at,
                w.updated_at,
                p.title AS playlist_title,
@@ -6119,11 +6123,20 @@ _WORKER_LOG_TABLES = {
     "playlistScanLogs": "playlist_scan_worker_log",
     "liveHistoryLogs": "live_history_worker_log",
     "placeholderRecoveryLogs": "placeholder_recovery_worker_log",
+    "pluginWorkerLogs": "plugin_worker_log",
 }
 
 
 def worker_log_select(name: str) -> str:
     table = _WORKER_LOG_TABLES[name]
+    if name == "pluginWorkerLogs":
+        return f"""
+            SELECT l.*,
+                   COALESCE(NULLIF(v.title, ''), l.subject_id) AS subject_title,
+                   CASE WHEN v.video_id IS NULL THEN '' ELSE l.subject_id END AS display_id
+            FROM {table} l
+            LEFT JOIN videos v ON v.video_id = l.subject_id
+        """
     if name == "playlistScanLogs":
         return f"""
             SELECT l.*,
@@ -6229,6 +6242,8 @@ def _worker_log_source(name: str, level: str) -> str:
         if normalized_level.startswith("placeholder "):
             return "placeholder"
         return "metadata"
+    if name == "pluginWorkerLogs":
+        raise ValueError("Plugin log sources require the log row")
     return {
         "playlistScanLogs": "playlist",
         "liveHistoryLogs": "history",
@@ -6259,7 +6274,13 @@ def _worker_log_filter_sql(
         "liveHistoryLogs": "history",
         "placeholderRecoveryLogs": "placeholder",
     }.get(name)
-    if fixed_source:
+    if name == "pluginWorkerLogs":
+        if source.startswith("plugin:"):
+            clauses.append("l.plugin_id = ?")
+            params.append(source.removeprefix("plugin:"))
+        elif source:
+            return None
+    elif fixed_source:
         if source and source != fixed_source:
             return None
     elif source == "queue":
@@ -6294,7 +6315,11 @@ def _worker_log_filter_sql(
 
 
 def _normalized_worker_log(name: str, row: sqlite3.Row) -> dict[str, Any]:
-    source = _worker_log_source(name, row["level"])
+    source = (
+        f"plugin:{row['plugin_id']}"
+        if name == "pluginWorkerLogs"
+        else _worker_log_source(name, row["level"])
+    )
     identifier = row["display_id"] or ""
     subject = row["subject_title"] or ""
     if not subject:
@@ -6304,6 +6329,8 @@ def _normalized_worker_log(name: str, row: sqlite3.Row) -> dict[str, Any]:
             subject = row["video_id"] or ""
         elif name == "playlistScanLogs":
             subject = row["playlist_id"] or ""
+        elif name == "pluginWorkerLogs":
+            subject = row["subject_id"] or ""
     return {
         "stream": name,
         "id": int(row["id"]),
@@ -6328,7 +6355,9 @@ def worker_log_page(
     row_offset = max(0, int(offset))
     source_filter = str(source or "").strip().lower()
     severity_filter = str(severity or "").strip().lower()
-    if source_filter not in {"", "queue", "metadata", "playlist", "history", "placeholder"}:
+    if source_filter not in {"", "queue", "metadata", "playlist", "history", "placeholder"} and not re.fullmatch(
+        r"plugin:[a-z][a-z0-9_-]*", source_filter
+    ):
         raise ValueError(f"Unknown log source: {source}")
     if severity_filter not in {"", "info", "warn", "error", "debug"}:
         raise ValueError(f"Unknown log severity: {severity}")
@@ -7743,6 +7772,7 @@ def admin_status(
         playlist_logs: list[dict[str, Any]] = []
         live_history_logs: list[dict[str, Any]] = []
         placeholder_recovery_logs: list[dict[str, Any]] = []
+        plugin_worker_logs: list[dict[str, Any]] = []
         if include_logs:
             log_snapshot = worker_log_snapshot(conn)
             metadata_logs = [dict(row) for row in log_snapshot["metadataLogs"]]
@@ -7750,6 +7780,9 @@ def admin_status(
             live_history_logs = [dict(row) for row in log_snapshot["liveHistoryLogs"]]
             placeholder_recovery_logs = [
                 dict(row) for row in log_snapshot["placeholderRecoveryLogs"]
+            ]
+            plugin_worker_logs = [
+                dict(row) for row in log_snapshot["pluginWorkerLogs"]
             ]
     finally:
         conn.close()
@@ -7797,6 +7830,7 @@ def admin_status(
         "playlistScanLogs": playlist_logs,
         "liveHistoryLogs": live_history_logs,
         "placeholderRecoveryLogs": placeholder_recovery_logs,
+        "pluginWorkerLogs": plugin_worker_logs,
     }
 
 
@@ -7806,6 +7840,7 @@ _WORKER_RUN_TABLES = (
     "live_history_worker_runs",
     "placeholder_recovery_worker_runs",
 )
+_PLUGIN_WORKER_RUN_TABLE = "plugin_worker_runs"
 
 
 def _interrupt_running_worker_rows(
@@ -7813,7 +7848,7 @@ def _interrupt_running_worker_rows(
     table: str,
     finished_at: str,
 ) -> None:
-    if table not in _WORKER_RUN_TABLES:
+    if table not in {*_WORKER_RUN_TABLES, _PLUGIN_WORKER_RUN_TABLE}:
         raise ValueError(f"Unknown worker run table: {table}")
     conn.execute(
         f"""
@@ -7857,6 +7892,7 @@ def reconcile_worker_runs(
         with conn:
             for table in inactive_run_tables:
                 _interrupt_running_worker_rows(conn, table, now)
+            _interrupt_running_worker_rows(conn, _PLUGIN_WORKER_RUN_TABLE, now)
     finally:
         conn.close()
 

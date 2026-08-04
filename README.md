@@ -276,6 +276,18 @@ enabled in local configuration. Plugin API routes are namespaced below
 `/api/plugins/{plugin_id}/`; discovery, startup, status, and request failures are
 contained so the base application remains usable.
 
+Plugin API version 2 adds optional worker processes without giving plugins
+direct access to the YT Library database. A plugin declares validated process
+metadata, plans bounded tasks from a read-only library-video projection, and
+runs one task at a time through the common persistent queue. YT Library owns
+the operational run rows and logs, applies global YouTube or Archivarix
+capacity limits, retains interrupted queue items, and exposes generic Basic or
+Advanced Admin buttons. Plugins may opt into the `library_initialize` and
+`library_update` lifecycle hooks; no hook runs unless the plugin declares it.
+Admin actions use
+`POST /api/admin/plugins/{plugin_id}/processes/{worker_id}/enqueue`, and plugin
+logs appear in the common log view under a `plugin:{plugin_id}` source.
+
 The first plugin is the sibling YT Subtitles project. A local activation uses:
 
 ```json

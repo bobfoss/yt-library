@@ -42,6 +42,7 @@
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
     .workstreams { display: grid; gap: 24px; margin-bottom: 18px; }
+    .plugin-workstreams { display: contents; }
     .workstream { border-top: 1px solid var(--line); padding-top: 18px; }
     .workstream-header { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin-bottom: 12px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 12px; }
@@ -339,6 +340,8 @@
           <button id="reconcileHistory" type="button">Reconcile history</button>
         </div>
       </section>
+
+      <div id="pluginWorkstreams" class="plugin-workstreams"></div>
 
     </section>
 

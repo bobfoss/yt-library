@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from yt_library.plugins import PLUGIN_API_VERSION, PluginManager
+from yt_library import core
+from yt_library.config import load_config
+from yt_library.plugins import PLUGIN_API_VERSION, PluginManager, PluginTaskWorker
+from yt_library.workers import WorkerQueueDispatcher
+
+from tests.support import migrated_connection
 
 
 class FakePlugin:
@@ -16,6 +22,17 @@ class FakePlugin:
     browser_assets = (
         {"path": "browser.css", "type": "style"},
         {"path": "browser.js", "type": "script"},
+    )
+    worker_processes = (
+        {
+            "id": "fetch",
+            "name": "Fetch test data",
+            "service": "youtube",
+            "maxInFlight": 2,
+            "adminSurface": "advanced",
+            "buttonLabel": "Fetch",
+            "hooks": ["library_update"],
+        },
     )
 
     def __init__(self) -> None:
@@ -52,6 +69,28 @@ class FakePlugin:
             for video_id in sorted(video_ids)
             if video_id != "unavailable"
         ]
+
+    def plan_worker(self, worker_id, context, params):
+        self.planned_params = params
+        return [
+            {
+                "task_id": row["video_id"],
+                "subject_id": row["video_id"],
+                "video_id": row["video_id"],
+                "title": row["title"],
+                "payload": {"example": True},
+            }
+            for row in context.library_videos()
+        ]
+
+    def run_worker(self, worker_id, task, runtime):
+        runtime.log("info", f"Processed {task['video_id']}")
+        return {
+            "outcome": "found",
+            "processed": 1,
+            "found": 1,
+            "message": "Test plugin task complete",
+        }
 
     def shutdown(self) -> None:
         self.stopped = True
@@ -185,6 +224,166 @@ class PluginManagerTests(unittest.TestCase):
         self.assertEqual(statuses["missing"]["state"], "missing")
         request_status, _ = manager.handle_api("subtitles", "GET", "status", {})
         self.assertEqual(request_status, 503)
+
+    def test_plugin_process_plans_queues_runs_and_logs_host_owned_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_video(conn, "abcdefghijk", title="Example video")
+            finally:
+                conn.close()
+            manager = PluginManager(
+                {"plugins": {"subtitles": {"enabled": True}}},
+                db_path=db_path,
+                entry_points=[FakeEntryPoint(FakePlugin)],
+            )
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    queued = manager.enqueue_process(
+                        conn,
+                        "subtitles",
+                        "fetch",
+                        {"source": ["admin"]},
+                        manual=True,
+                    )
+                row = dict(core.worker_queue_rows(conn, limit=1)[0])
+            finally:
+                conn.close()
+
+            self.assertEqual(queued["inserted"], 1)
+            self.assertEqual(row["worker_type"], "plugin")
+            self.assertEqual(row["source_key"], "subtitles")
+            self.assertEqual(row["task_type"], "fetch")
+            self.assertEqual(row["plugin_subject_id"], "abcdefghijk")
+            self.assertEqual(row["payload_json"], '{"example":true}')
+
+            worker = PluginTaskWorker()
+            self.assertTrue(worker.start(db_path, manager, row)["started"])
+            deadline = time.monotonic() + 5
+            while worker.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(worker.is_alive())
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_count(conn), 0)
+                run = dict(
+                    conn.execute(
+                        "SELECT * FROM plugin_worker_runs ORDER BY started_at DESC LIMIT 1"
+                    ).fetchone()
+                )
+                logs = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT * FROM plugin_worker_log ORDER BY id"
+                    )
+                ]
+                page, total = core.worker_log_page(
+                    conn,
+                    source="plugin:subtitles",
+                )
+            finally:
+                conn.close()
+            self.assertEqual(run["status"], "complete")
+            self.assertEqual(run["outcome"], "found")
+            self.assertEqual(run["found"], 1)
+            self.assertTrue(any(log["message"] == "Processed abcdefghijk" for log in logs))
+            self.assertEqual(total, len(logs))
+            self.assertTrue(all(row["source"] == "plugin:subtitles" for row in page))
+
+            status = manager.statuses()[0]
+            process = status["workerProcesses"][0]
+            self.assertEqual(process["service"], "youtube")
+            self.assertEqual(process["latestRun"]["outcome"], "found")
+
+    def test_plugin_process_can_hook_library_update(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_video(conn, "abcdefghijk", title="Example video")
+            finally:
+                conn.close()
+            manager = PluginManager(
+                {"plugins": {"subtitles": {"enabled": True}}},
+                db_path=db_path,
+                entry_points=[FakeEntryPoint(FakePlugin)],
+            )
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    results = manager.enqueue_hook(conn, "library_update")
+                row = conn.execute(
+                    "SELECT worker_type, source_key, manual FROM worker_queue"
+                ).fetchone()
+            finally:
+                conn.close()
+
+            self.assertEqual(results[0]["inserted"], 1)
+            self.assertEqual(tuple(row), ("plugin", "subtitles", 0))
+
+    def test_common_dispatcher_runs_plugin_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_video(conn, "abcdefghijk", title="Example video")
+            finally:
+                conn.close()
+            manager = PluginManager(
+                {"plugins": {"subtitles": {"enabled": True}}},
+                db_path=db_path,
+                entry_points=[FakeEntryPoint(FakePlugin)],
+            )
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    manager.enqueue_process(
+                        conn,
+                        "subtitles",
+                        "fetch",
+                        {},
+                        manual=True,
+                    )
+            finally:
+                conn.close()
+
+            dispatcher = WorkerQueueDispatcher()
+            dispatcher_config = load_config(root / "config.json")
+            dispatcher_config.update(
+                {
+                    "job_dispatch_delay_seconds": 0,
+                    "youtube_max_in_flight": 2,
+                }
+            )
+            started = dispatcher.start(
+                db_path,
+                root / "cookies.txt",
+                root / "thumbs",
+                dispatcher_config,
+                manager,
+            )
+            self.assertTrue(started["started"])
+            deadline = time.monotonic() + 5
+            while dispatcher.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(dispatcher.is_alive())
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_count(conn), 0)
+                run = conn.execute(
+                    "SELECT status, outcome FROM plugin_worker_runs"
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertEqual(tuple(run), ("complete", "found"))
 
 
 if __name__ == "__main__":

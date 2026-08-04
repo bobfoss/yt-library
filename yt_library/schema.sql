@@ -203,6 +203,8 @@ CREATE TABLE IF NOT EXISTS worker_queue (
   playlist_count INTEGER NOT NULL DEFAULT 0,
   priority INTEGER NOT NULL DEFAULT 0,
   manual INTEGER NOT NULL DEFAULT 0,
+  plugin_subject_id TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -331,6 +333,34 @@ CREATE TABLE IF NOT EXISTS placeholder_recovery_worker_log (
   message TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS plugin_worker_runs (
+  run_id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  queue_id INTEGER NOT NULL DEFAULT 0,
+  subject_id TEXT NOT NULL DEFAULT '',
+  outcome TEXT NOT NULL DEFAULT '',
+  processed INTEGER NOT NULL DEFAULT 0,
+  found INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS plugin_worker_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL DEFAULT '',
+  plugin_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  level TEXT NOT NULL DEFAULT '',
+  subject_id TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_groups_parent_position ON groups(parent_key, position);
 CREATE INDEX IF NOT EXISTS idx_group_playlists_position ON group_playlists(group_key, position);
 CREATE INDEX IF NOT EXISTS idx_channels_title ON channels(title COLLATE NOCASE);
@@ -365,3 +395,9 @@ CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_run ON metadata_worker_log(ru
 CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_run ON playlist_scan_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_live_history_worker_log_run ON live_history_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_placeholder_recovery_worker_log_run ON placeholder_recovery_worker_log(run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_plugin_worker_runs_process
+  ON plugin_worker_runs(plugin_id, worker_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_plugin_worker_runs_subject
+  ON plugin_worker_runs(plugin_id, worker_id, subject_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_plugin_worker_log_process
+  ON plugin_worker_log(plugin_id, worker_id, id DESC);

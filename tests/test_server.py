@@ -16,6 +16,42 @@ from tests.support import migrated_connection
 
 
 class AdminServerTests(unittest.TestCase):
+    def test_plugin_admin_process_endpoint_plans_queue_and_starts_dispatcher(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            handler = object.__new__(server.LibraryHandler)
+            handler.db_path = db_path
+            handler.plugin_manager = Mock()
+            handler.plugin_manager.enqueue_process.return_value = {
+                "pluginId": "example",
+                "workerId": "fetch",
+                "inserted": 3,
+                "alreadyQueued": 1,
+            }
+            handler._start_worker_queue = Mock(return_value={"started": True})
+            handler.send_json = Mock()
+
+            handler._handle_admin_action_post(
+                urllib.parse.urlparse(
+                    "/api/admin/plugins/example/processes/fetch/enqueue"
+                ),
+                {},
+            )
+
+            call = handler.plugin_manager.enqueue_process.call_args
+            self.assertEqual(call.args[1:], ("example", "fetch", {}))
+            self.assertEqual(call.kwargs, {"manual": True})
+            handler._start_worker_queue.assert_called_once_with()
+            handler.send_json.assert_called_once_with(
+                {
+                    "ok": True,
+                    "queue": handler.plugin_manager.enqueue_process.return_value,
+                    "dispatcher": {"started": True},
+                }
+            )
+
     def test_channel_alias_route_resolves_before_loading_videos(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.db_path = Path("library.sqlite3")

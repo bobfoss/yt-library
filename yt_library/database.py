@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -647,6 +647,58 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (15, utc_now()),
         )
+    if current_version < 16:
+        queue_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(worker_queue)")
+        }
+        if "payload_json" not in queue_columns:
+            conn.execute(
+                "ALTER TABLE worker_queue ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "plugin_subject_id" not in queue_columns:
+            conn.execute(
+                "ALTER TABLE worker_queue ADD COLUMN plugin_subject_id TEXT NOT NULL DEFAULT ''"
+            )
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS plugin_worker_runs (
+              run_id TEXT PRIMARY KEY,
+              plugin_id TEXT NOT NULL,
+              worker_id TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT '',
+              started_at TEXT NOT NULL,
+              finished_at TEXT,
+              queue_id INTEGER NOT NULL DEFAULT 0,
+              subject_id TEXT NOT NULL DEFAULT '',
+              outcome TEXT NOT NULL DEFAULT '',
+              processed INTEGER NOT NULL DEFAULT 0,
+              found INTEGER NOT NULL DEFAULT 0,
+              failed INTEGER NOT NULL DEFAULT 0,
+              skipped INTEGER NOT NULL DEFAULT 0,
+              message TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS plugin_worker_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id TEXT NOT NULL DEFAULT '',
+              plugin_id TEXT NOT NULL,
+              worker_id TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              level TEXT NOT NULL DEFAULT '',
+              subject_id TEXT NOT NULL DEFAULT '',
+              message TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_plugin_worker_runs_process
+              ON plugin_worker_runs(plugin_id, worker_id, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_plugin_worker_runs_subject
+              ON plugin_worker_runs(plugin_id, worker_id, subject_id, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_plugin_worker_log_process
+              ON plugin_worker_log(plugin_id, worker_id, id DESC);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (16, utc_now()),
+        )
 
 
 def _schema_version(conn: sqlite3.Connection) -> int:
@@ -661,4 +713,3 @@ def _schema_version(conn: sqlite3.Connection) -> int:
         return 0
     value = conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()[0]
     return int(value or 0)
-
