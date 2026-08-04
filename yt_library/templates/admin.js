@@ -341,6 +341,14 @@ function logSeverity(level) {
   return 'info';
 }
 
+const logSeverityRanks = Object.freeze({ info: 0, warn: 1, error: 2, debug: 3 });
+
+function logMatchesLevel(log, selectedLevel = selectedLogLevel()) {
+  const logRank = logSeverityRanks[logSeverity(log.level)] ?? logSeverityRanks.info;
+  const selectedRank = logSeverityRanks[selectedLevel] ?? logSeverityRanks.error;
+  return logRank <= selectedRank;
+}
+
 function displayLogMessage(log) {
   const message = String(log.message || '');
   if (log.source !== 'metadata' || log.level !== 'channel' || !log.identifier) return message;
@@ -355,12 +363,12 @@ function selectedLogSource() {
 }
 
 function selectedLogLevel() {
-  return fields.logLevelFilter.value || 'all';
+  return fields.logLevelFilter.value || 'error';
 }
 
 function logMatchesSelection(log) {
   return (selectedLogSource() === 'all' || log.source === selectedLogSource())
-    && (selectedLogLevel() === 'all' || logSeverity(log.level) === selectedLogLevel());
+    && logMatchesLevel(log);
 }
 
 function logKey(log) {

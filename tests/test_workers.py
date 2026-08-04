@@ -2372,16 +2372,20 @@ class WorkerQueueTests(unittest.TestCase):
                         "INSERT INTO placeholder_recovery_worker_log(run_id, created_at, level, video_id, message) "
                         "VALUES ('run-1', '2026-07-13T12:00:00Z', 'found', 'missing-id', 'placeholder')"
                     )
+                    conn.execute(
+                        "INSERT INTO metadata_worker_log(run_id, created_at, level, video_id, message) "
+                        "VALUES ('run-1', '2026-07-13T11:59:59Z', 'video debug', 'abc12345678', 'debug metadata')"
+                    )
 
                 rows, total = core.worker_log_page(conn, limit=2)
-                self.assertEqual(total, 5)
+                self.assertEqual(total, 6)
                 self.assertEqual([row["message"] for row in rows], ["queue", "metadata"])
                 self.assertEqual(rows[0]["source"], "queue")
                 self.assertEqual(rows[0]["level"], "error")
                 self.assertEqual(rows[0]["identifier"], "abc12345678")
 
                 rows, total = core.worker_log_page(conn, limit=2, offset=2)
-                self.assertEqual(total, 5)
+                self.assertEqual(total, 6)
                 self.assertEqual([row["message"] for row in rows], ["playlist", "queued placeholder"])
 
                 rows, total = core.worker_log_page(conn, source="placeholder")
@@ -2394,9 +2398,24 @@ class WorkerQueueTests(unittest.TestCase):
                     },
                 )
 
-                rows, total = core.worker_log_page(conn, severity="warn")
+                rows, total = core.worker_log_page(conn, severity="info")
                 self.assertEqual(total, 2)
-                self.assertEqual([row["message"] for row in rows], ["playlist", "queued placeholder"])
+                self.assertEqual([row["message"] for row in rows], ["metadata", "placeholder"])
+
+                rows, total = core.worker_log_page(conn, severity="warn")
+                self.assertEqual(total, 4)
+                self.assertEqual(
+                    [row["message"] for row in rows],
+                    ["metadata", "playlist", "queued placeholder", "placeholder"],
+                )
+
+                rows, total = core.worker_log_page(conn, severity="error")
+                self.assertEqual(total, 5)
+                self.assertNotIn("debug metadata", [row["message"] for row in rows])
+
+                rows, total = core.worker_log_page(conn, severity="debug")
+                self.assertEqual(total, 6)
+                self.assertIn("debug metadata", [row["message"] for row in rows])
             finally:
                 conn.close()
 

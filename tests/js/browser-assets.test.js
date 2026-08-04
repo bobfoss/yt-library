@@ -89,6 +89,17 @@ test('admin status polling clears stale running state on request failures', () =
   assert.match(adminSource, /renderServiceUnavailable\(statusError\);/);
 });
 
+test('admin log level selector uses cumulative verbosity with error as the default', () => {
+  const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
+
+  assert.doesNotMatch(adminHtml, /All levels/);
+  assert.match(adminHtml, /<option value="error" selected>Error<\/option>/);
+  assert.match(adminSource, /logSeverityRanks = Object\.freeze\(\{ info: 0, warn: 1, error: 2, debug: 3 \}\)/);
+  assert.match(adminSource, /return logRank <= selectedRank;/);
+  assert.match(adminSource, /fields\.logLevelFilter\.value \|\| 'error'/);
+});
+
 test('admin renders generic placed plugin process inputs', () => {
   const adminSource = source('admin.js');
   const adminHtml = source('admin.html');

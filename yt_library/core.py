@@ -6295,22 +6295,20 @@ def _worker_log_filter_sql(
         return None
 
     padded_level = "(' ' || LOWER(TRIM(l.level)) || ' ')"
-    if severity == "error":
-        clauses.append(f"INSTR({padded_level}, ' error ') > 0")
-    elif severity == "warn":
-        clauses.append(
-            f"(INSTR({padded_level}, ' warn ') > 0 OR "
-            f"INSTR({padded_level}, ' warning ') > 0)"
-        )
-    elif severity == "debug":
-        clauses.append(f"INSTR({padded_level}, ' debug ') > 0")
-    elif severity == "info":
+    if severity == "info":
         clauses.append(
             f"INSTR({padded_level}, ' error ') = 0 AND "
             f"INSTR({padded_level}, ' warn ') = 0 AND "
             f"INSTR({padded_level}, ' warning ') = 0 AND "
             f"INSTR({padded_level}, ' debug ') = 0"
         )
+    elif severity == "warn":
+        clauses.append(
+            f"INSTR({padded_level}, ' error ') = 0 AND "
+            f"INSTR({padded_level}, ' debug ') = 0"
+        )
+    elif severity == "error":
+        clauses.append(f"INSTR({padded_level}, ' debug ') = 0")
     return (" AND ".join(clauses) if clauses else "1 = 1", params)
 
 
