@@ -132,6 +132,12 @@ class AdminServerTests(unittest.TestCase):
             frozenset({"available", "unavailable"}),
             frozenset({"unavailable"}),
         )
+        handler.plugin_manager.project_videos.return_value = {
+            "unavailable": {
+                "video_id": "unavailable",
+                "title": "Projected video",
+            }
+        }
         handler.send_json = Mock()
         connection = Mock()
         payload = {"results": [], "total": 0}
@@ -147,6 +153,10 @@ class AdminServerTests(unittest.TestCase):
             )
 
         handler.plugin_manager.filter_videos.assert_called_once_with("example", "history")
+        handler.plugin_manager.project_videos.assert_called_once_with(
+            "example",
+            frozenset({"unavailable"}),
+        )
         self.assertEqual(
             search_data.call_args.kwargs["video_id_filters"],
             [frozenset({"available", "unavailable"})],
@@ -162,6 +172,17 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(
             search_data.call_args.kwargs["video_search_match_memberships"],
             {"example": frozenset({"unavailable"})},
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["video_projections"],
+            {
+                "example": {
+                    "unavailable": {
+                        "video_id": "unavailable",
+                        "title": "Projected video",
+                    }
+                }
+            },
         )
         handler.send_json.assert_called_once_with(payload)
 
@@ -237,6 +258,34 @@ class AdminServerTests(unittest.TestCase):
         summaries.assert_called_once_with(connection, ["first123", "second123"])
         connection.close.assert_called_once_with()
         handler.send_json.assert_called_once_with(payload)
+
+    def test_video_detail_route_falls_back_to_optional_plugin_projection(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.projected_video.return_value = {
+            "video_id": "projected1",
+            "title": "Projected video",
+            "projection_plugin_ids": ["example"],
+        }
+        handler.send_json = Mock()
+        connection = Mock()
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch("yt_library.server.video_detail_data", return_value=None),
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse("/api/videos/projected1")
+            )
+
+        handler.plugin_manager.projected_video.assert_called_once_with("projected1")
+        payload = handler.send_json.call_args.args[0]
+        self.assertEqual(payload["video_id"], "projected1")
+        self.assertEqual(payload["metadata_title"], "Projected video")
+        self.assertTrue(payload["virtual_video"])
+        self.assertEqual(payload["projection_plugin_ids"], ["example"])
+        connection.close.assert_called_once_with()
 
     def test_get_page_route_stops_api_dispatch(self) -> None:
         handler = object.__new__(server.LibraryHandler)

@@ -3487,6 +3487,7 @@ function videoDetailCardFor(video) {
           ${watchUrl ? `<a class="external-link" href="${escapeHtml(watchUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
         </div>
         ${badgeRowsHtml([
+          { label: video.virtual_video ? 'Not in library' : '' },
           { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
           { label: matchTypeLabel(video), title: video.match_note },
         ])}

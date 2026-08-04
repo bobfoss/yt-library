@@ -879,6 +879,102 @@ class NormalizedReadModelTests(unittest.TestCase):
             without_plugin_data["metaCounts"]["videoPlugins"],
         )
 
+    def test_omni_search_merges_read_only_plugin_video_projections(self) -> None:
+        self.add_video("known-video", "Canonical library title")
+        self.conn.execute(
+            "UPDATE videos SET is_playable = 1, availability = 'public' "
+            "WHERE video_id = 'known-video'"
+        )
+        self.conn.commit()
+        filter_ids = {"known-video", "virtual-video"}
+        projections = {
+            "example": {
+                "known-video": {
+                    "video_id": "known-video",
+                    "title": "Projected title must not replace canonical data",
+                },
+                "virtual-video": {
+                    "video_id": "virtual-video",
+                    "title": "Virtual projected title",
+                },
+            }
+        }
+
+        data = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"video"},
+            video_id_filters=[filter_ids],
+            video_facet_memberships={"example": filter_ids},
+            video_projections=projections,
+            video_meta_filters={"public", "unknown"},
+            sort="title",
+        )
+
+        self.assertEqual(data["total"], 2)
+        items = {result["item"]["video_id"]: result["item"] for result in data["results"]}
+        self.assertEqual(items["known-video"]["metadata_title"], "Canonical library title")
+        self.assertNotIn("virtual_video", items["known-video"])
+        projected = items["virtual-video"]
+        self.assertEqual(projected["metadata_title"], "Virtual projected title")
+        self.assertTrue(projected["virtual_video"])
+        self.assertEqual(projected["availability"], "")
+        self.assertEqual(projected["plugin_badges"], [{"label": "Not in library"}])
+        self.assertEqual(projected["projection_plugin_ids"], ["example"])
+        self.assertEqual(data["metaCounts"]["videos"]["total"], 2)
+        self.assertEqual(data["metaCounts"]["videos"]["public"], 1)
+        self.assertEqual(data["metaCounts"]["videos"]["unknown"], 1)
+        self.assertEqual(data["reactionCounts"]["none"], 2)
+        self.assertEqual(data["completionCounts"]["unknown"], 1)
+        self.assertEqual(data["completionCounts"]["never_watched"], 1)
+        self.assertEqual(data["playlistMembershipCounts"]["non_member"], 2)
+        self.assertEqual(
+            data["metaCounts"]["videoPlugins"]["example"],
+            {"present": 2, "absent": 0},
+        )
+
+        without_projections = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"video"},
+            video_id_filters=[filter_ids],
+            video_facet_memberships={"example": filter_ids},
+        )
+        self.assertEqual(without_projections["total"], 1)
+
+    def test_omni_search_only_projects_query_matches(self) -> None:
+        filter_ids = {"matching-video", "other-video"}
+        search_match_ids = {"matching-video"}
+        data = omni_search_data(
+            self.conn,
+            "transcript phrase",
+            search_fields=set(),
+            result_kinds={"video"},
+            video_id_filters=[filter_ids],
+            video_search_match_ids=search_match_ids,
+            video_facet_memberships={"example": filter_ids},
+            video_search_match_memberships={"example": search_match_ids},
+            video_projections={
+                "example": {
+                    "matching-video": {
+                        "video_id": "matching-video",
+                        "title": "Matching projection",
+                    },
+                    "other-video": {
+                        "video_id": "other-video",
+                        "title": "Nonmatching projection",
+                    },
+                }
+            },
+        )
+
+        self.assertEqual(data["total"], 1)
+        result = data["results"][0]
+        self.assertEqual(result["item"]["video_id"], "matching-video")
+        self.assertTrue(result["pluginSearchMatch"])
+        self.assertEqual(result["pluginSearchMatches"], ["example"])
+        self.assertEqual(result["pluginFacets"], {"example": True})
+
     def test_omni_search_meta_filters_count_before_filtering_all_result_types(self) -> None:
         for video_id, title in (
             ("available1", "Needle available"),

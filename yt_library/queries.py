@@ -565,7 +565,7 @@ def _video_collection_category(item: dict[str, Any]) -> str:
 
 
 def _video_completion_category(item: dict[str, Any]) -> str:
-    if not item.get("video_id"):
+    if not item.get("video_id") or item.get("virtual_video"):
         return "unknown"
     progress = int(item.get("watch_progress_percent") or 0)
     if progress >= 100:
@@ -1060,6 +1060,58 @@ def video_detail_data(conn: sqlite3.Connection, video_id: str) -> dict[str, Any]
     return wrappers[0]["item"]
 
 
+def projected_video_data(projection: Mapping[str, Any]) -> dict[str, Any]:
+    video_id = str(projection.get("video_id") or "").strip()
+    title = str(projection.get("title") or "").strip()
+    plugin_ids = sorted(
+        {
+            plugin_id
+            for value in projection.get("projection_plugin_ids") or ()
+            if (plugin_id := str(value).strip())
+        }
+    )
+    return {
+        "video_id": video_id,
+        "title": title,
+        "metadata_title": title,
+        "metadata_description": "",
+        "metadata_thumbnail_path": "",
+        "metadata_channel_thumbnail_path": "",
+        "metadata_channel": "",
+        "metadata_channel_id": "",
+        "metadata_channel_aliases": "",
+        "metadata_channel_reference": "",
+        "metadata_channel_url": "",
+        "metadata_duration": "",
+        "metadata_upload_date": "",
+        "metadata_fetch_status": "",
+        "duration_text": "",
+        "uploader_category": "",
+        "reaction": "",
+        "is_playable": None,
+        "availability": "",
+        "playlist_count": 0,
+        "playlist_links": [],
+        "watch_count": 0,
+        "watch_progress_percent": 0,
+        "watch_resume_seconds": 0,
+        "watch_dates": [],
+        "latest_watch_at": "",
+        "latest_youtube_ordinal": 0,
+        "collection_category": "unknown",
+        "recovered_status": "",
+        "archive_url": "",
+        "video_file_url": "",
+        "match_label": "",
+        "match_note": "",
+        "updated_at": "",
+        "url": youtube_video_url(video_id),
+        "virtual_video": True,
+        "projection_plugin_ids": plugin_ids,
+        "plugin_badges": [{"label": "Not in library"}],
+    }
+
+
 def video_summaries_data(
     conn: sqlite3.Connection,
     video_ids: list[str],
@@ -1094,6 +1146,7 @@ OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS = ("mine", "others", "ownership_unknown")
 OMNI_SEARCH_PLAYLIST_STATUS_FILTERS = ("active", "removed")
 OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS = ("subscribed", "non_subscribed")
 OMNI_SEARCH_CHANNEL_STATUS_FILTERS = ("active", "terminated")
+NO_UPLOADER_CATEGORY_FILTER = "__no_category__"
 
 
 def _omni_like_pattern(query: str) -> str:
@@ -1328,6 +1381,47 @@ def _omni_playlist_membership_counts(results: list[dict[str, Any]]) -> dict[str,
     return counts
 
 
+def _omni_video_uploader_category(result: dict[str, Any]) -> str:
+    return (
+        str(result["item"].get("uploader_category") or "").strip()
+        or NO_UPLOADER_CATEGORY_FILTER
+    )
+
+
+def _known_uploader_categories(conn: sqlite3.Connection) -> tuple[str, ...]:
+    categories = {
+        str(row[0]).strip()
+        for row in conn.execute(
+            """
+            SELECT DISTINCT trim(uploader_category)
+            FROM videos
+            WHERE trim(uploader_category) <> ''
+            """
+        )
+        if str(row[0]).strip()
+    }
+    return tuple(sorted(categories, key=str.casefold))
+
+
+def _omni_uploader_category_counts(
+    results: list[dict[str, Any]],
+    known_categories: Collection[str],
+) -> dict[str, int]:
+    counts = {
+        "total": 0,
+        NO_UPLOADER_CATEGORY_FILTER: 0,
+        **{category: 0 for category in known_categories},
+    }
+    for result in results:
+        if result["kind"] != "video":
+            continue
+        category = _omni_video_uploader_category(result)
+        counts["total"] += 1
+        counts.setdefault(category, 0)
+        counts[category] += 1
+    return counts
+
+
 def _playlist_links_by_video(
     conn: sqlite3.Connection,
     video_ids: list[str],
@@ -1508,11 +1602,13 @@ def omni_search_data(
     video_completion_filters: set[str] | None = None,
     video_partial_min_percent: int = 1,
     video_playlist_membership_filters: set[str] | None = None,
+    video_uploader_category_filters: set[str] | None = None,
     video_id_filters: Sequence[Collection[str]] = (),
     video_id_exclusion_filters: Sequence[Collection[str]] = (),
     video_facet_memberships: Mapping[str, Collection[str]] | None = None,
     video_search_match_ids: Collection[str] = (),
     video_search_match_memberships: Mapping[str, Collection[str]] | None = None,
+    video_projections: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
     channel_subscription_filters: set[str] | None = None,
     channel_status_filters: set[str] | None = None,
     playlist_meta_filters: set[str] | None = None,
@@ -1559,6 +1655,15 @@ def omni_search_data(
     active_video_search_match_memberships = {
         str(plugin_id): frozenset(values)
         for plugin_id, values in (video_search_match_memberships or {}).items()
+    }
+    active_video_projections = {
+        str(plugin_id): {
+            str(video_id): projection
+            for video_id, projection in projections.items()
+            if isinstance(projection, Mapping)
+        }
+        for plugin_id, projections in (video_projections or {}).items()
+        if isinstance(projections, Mapping)
     }
     active_video_search_match_ids = frozenset(video_search_match_ids).union(
         *active_video_search_match_memberships.values()
@@ -1743,6 +1848,7 @@ def omni_search_data(
                      CASE WHEN {video_search_match_sql} THEN 1 ELSE 0 END AS plugin_search_hit,
                      v.is_playable,
                      v.availability,
+                     v.uploader_category,
                      COALESCE(vr.archivarix_status, '') AS recovered_status
               FROM videos v
               LEFT JOIN channels ch ON ch.channel_id = v.channel_id
@@ -1806,6 +1912,7 @@ def omni_search_data(
                    candidate.plugin_search_hit,
                    candidate.is_playable,
                    candidate.availability,
+                   candidate.uploader_category,
                    candidate.recovered_status
             FROM candidate_videos candidate
             JOIN videos v ON v.video_id = candidate.video_id
@@ -1833,6 +1940,55 @@ def omni_search_data(
                 for plugin_id, video_ids in active_video_search_match_memberships.items()
                 if str(item.get("video_id") or "") in video_ids
             )
+            results.append(result)
+
+    if "video" in active_result_kinds and video_source == "":
+        library_video_ids = {
+            str(result["item"].get("video_id") or "")
+            for result in results
+            if result["kind"] == "video"
+        }
+        projected_items: dict[str, dict[str, Any]] = {}
+        for plugin_id, projections in active_video_projections.items():
+            search_matches = active_video_search_match_memberships.get(
+                plugin_id,
+                frozenset(),
+            )
+            for video_id, projection in projections.items():
+                if (
+                    not video_id
+                    or video_id in library_video_ids
+                    or (query and video_id not in search_matches)
+                ):
+                    continue
+                item = projected_items.get(video_id)
+                if item is None:
+                    item = projected_video_data(projection)
+                    item["projection_plugin_ids"] = []
+                    projected_items[video_id] = item
+                if not item["metadata_title"] and projection.get("title"):
+                    title = str(projection["title"]).strip()
+                    item["title"] = title
+                    item["metadata_title"] = title
+                item["projection_plugin_ids"].append(plugin_id)
+        for video_id, item in projected_items.items():
+            matching_plugin_ids = sorted(
+                plugin_id
+                for plugin_id, video_ids in active_video_search_match_memberships.items()
+                if video_id in video_ids
+            )
+            item["projection_plugin_ids"] = sorted(
+                set(item["projection_plugin_ids"])
+            )
+            result = _omni_result(
+                "video",
+                3 if query else 0,
+                item,
+                matched_description=False,
+                display_timezone=display_timezone,
+            )
+            result["pluginSearchMatch"] = bool(query and matching_plugin_ids)
+            result["pluginSearchMatches"] = matching_plugin_ids
             results.append(result)
 
     if (
@@ -1918,6 +2074,16 @@ def omni_search_data(
         else set(video_playlist_membership_filters)
         & set(OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS)
     )
+    known_uploader_categories = _known_uploader_categories(conn)
+    allowed_uploader_category_filters = {
+        NO_UPLOADER_CATEGORY_FILTER,
+        *known_uploader_categories,
+    }
+    selected_uploader_category_filters = (
+        allowed_uploader_category_filters
+        if video_uploader_category_filters is None
+        else set(video_uploader_category_filters) & allowed_uploader_category_filters
+    )
     selected_playlist_ownership_filters = (
         set(OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS)
         if playlist_ownership_filters is None
@@ -1963,6 +2129,8 @@ def omni_search_data(
                 )
                 and _omni_video_playlist_membership_category(result)
                 in selected_playlist_membership_filters
+                and _omni_video_uploader_category(result)
+                in selected_uploader_category_filters
             )
         return False
 
@@ -2015,6 +2183,10 @@ def omni_search_data(
     playlist_membership_counts = _omni_playlist_membership_counts(
         plugin_filtered_results
     )
+    uploader_category_counts = _omni_uploader_category_counts(
+        plugin_filtered_results,
+        known_uploader_categories,
+    )
     results = [
         result for result in plugin_filtered_results if matches_native_filters(result)
     ]
@@ -2060,6 +2232,7 @@ def omni_search_data(
         "reactionCounts": reaction_counts,
         "completionCounts": completion_counts,
         "playlistMembershipCounts": playlist_membership_counts,
+        "uploaderCategoryCounts": uploader_category_counts,
         "results": page,
     }
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable as IterableCollection, Mapping
+from collections.abc import Collection, Iterable as IterableCollection, Mapping
 import importlib.metadata as importlib_metadata
 import json
 import re
@@ -79,6 +79,33 @@ def _normalized_video_ids(value: Any, label: str) -> frozenset[str]:
         for item in value
         if (video_id := str(item).strip())
     )
+
+
+def _normalized_video_projections(
+    value: Any,
+    requested_video_ids: Collection[str],
+) -> dict[str, dict[str, str]]:
+    if isinstance(value, (str, bytes, Mapping)) or not isinstance(
+        value, IterableCollection
+    ):
+        raise TypeError("Plugin video projections must be an iterable of objects")
+    requested = frozenset(requested_video_ids)
+    projections: dict[str, dict[str, str]] = {}
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise TypeError("Plugin video projections must be objects")
+        video_id = str(item.get("video_id") or "").strip()
+        if not video_id:
+            raise ValueError("Plugin video projections require video_id")
+        if video_id not in requested:
+            raise ValueError("Plugin returned an unrequested video projection")
+        if video_id in projections:
+            raise ValueError("Plugin returned duplicate video projections")
+        projections[video_id] = {
+            "video_id": video_id,
+            "title": str(item.get("title") or "").strip(),
+        }
+    return projections
 
 
 class PluginManager:
@@ -282,6 +309,58 @@ class PluginManager:
         if not search_match_ids.issubset(video_ids):
             raise ValueError("Plugin search matches must be included in its video filter")
         return video_ids, search_match_ids
+
+    def project_videos(
+        self,
+        plugin_id: str,
+        video_ids: Collection[str],
+    ) -> dict[str, dict[str, str]]:
+        record = self._records.get(plugin_id)
+        if record is None:
+            raise LookupError(f"Plugin is not enabled: {plugin_id}")
+        if record.instance is None:
+            raise RuntimeError(f"Plugin is unavailable: {plugin_id}")
+        requested_video_ids = frozenset(
+            video_id
+            for value in video_ids
+            if (video_id := str(value).strip())
+        )
+        if not requested_video_ids:
+            return {}
+        handler = getattr(record.instance, "project_videos", None)
+        if not callable(handler):
+            return {}
+        try:
+            payload = handler(requested_video_ids)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Plugin video projection failed: {plugin_id}: {type(exc).__name__}: {exc}"
+            ) from exc
+        return _normalized_video_projections(payload, requested_video_ids)
+
+    def projected_video(self, video_id: str) -> dict[str, Any] | None:
+        video_id = str(video_id).strip()
+        if not video_id:
+            return None
+        projection: dict[str, Any] | None = None
+        plugin_ids: list[str] = []
+        for plugin_id in sorted(self._records):
+            record = self._records[plugin_id]
+            if record.instance is None:
+                continue
+            try:
+                candidate = self.project_videos(plugin_id, {video_id}).get(video_id)
+            except (RuntimeError, TypeError, ValueError):
+                continue
+            if candidate is None:
+                continue
+            plugin_ids.append(plugin_id)
+            if projection is None or (not projection["title"] and candidate["title"]):
+                projection = dict(candidate)
+        if projection is None:
+            return None
+        projection["projection_plugin_ids"] = plugin_ids
+        return projection
 
     def shutdown(self) -> None:
         for record in reversed(list(self._records.values())):

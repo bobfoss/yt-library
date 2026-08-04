@@ -112,6 +112,7 @@ from .queries import (
     omni_search_data,
     playlist_detail_data,
     playlist_list_data,
+    projected_video_data,
     video_collection_data,
     video_detail_data,
     video_summaries_data,
@@ -869,6 +870,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             finally:
                 conn.close()
             if data is None:
+                projection = self.plugin_manager.projected_video(video_id)
+                if projection is not None:
+                    data = projected_video_data(projection)
+            if data is None:
                 self.send_json({"error": "Video not found"}, status=404)
             else:
                 self.send_json(data)
@@ -943,6 +948,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             video_facet_memberships: dict[str, frozenset[str]] = {}
             video_search_match_ids: set[str] = set()
             video_search_match_memberships: dict[str, frozenset[str]] = {}
+            video_projections: dict[str, dict[str, dict[str, str]]] = {}
             try:
                 included_plugin_ids = set(params.get("video_filter_plugin") or [])
                 excluded_plugin_ids = set(
@@ -965,6 +971,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         video_id_filters.append(video_ids)
                         video_search_match_ids.update(search_match_ids)
                         video_search_match_memberships[plugin_id] = search_match_ids
+                        projection_ids = search_match_ids if query.strip() else video_ids
+                        video_projections[plugin_id] = self.plugin_manager.project_videos(
+                            plugin_id,
+                            projection_ids,
+                        )
                     if plugin_id in excluded_plugin_ids:
                         video_id_exclusion_filters.append(video_ids)
             except (LookupError, RuntimeError, TypeError, ValueError) as exc:
@@ -1002,11 +1013,16 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         params,
                         "video_playlist_membership",
                     ),
+                    video_uploader_category_filters=query_set_param(
+                        params,
+                        "video_uploader_category",
+                    ),
                     video_id_filters=video_id_filters,
                     video_id_exclusion_filters=video_id_exclusion_filters,
                     video_facet_memberships=video_facet_memberships,
                     video_search_match_ids=video_search_match_ids,
                     video_search_match_memberships=video_search_match_memberships,
+                    video_projections=video_projections,
                     channel_subscription_filters=query_set_param(
                         params,
                         "channel_subscription",

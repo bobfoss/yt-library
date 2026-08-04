@@ -46,6 +46,13 @@ class FakePlugin:
             "search_match_ids": {"unavailable"} if query else set(),
         }
 
+    def project_videos(self, video_ids):
+        return [
+            {"video_id": video_id, "title": f"Projected {video_id}"}
+            for video_id in sorted(video_ids)
+            if video_id != "unavailable"
+        ]
+
     def shutdown(self) -> None:
         self.stopped = True
 
@@ -118,11 +125,46 @@ class PluginManagerTests(unittest.TestCase):
             video_ids, search_match_ids = manager.filter_videos(
                 "subtitles", "history"
             )
+            projections = manager.project_videos(
+                "subtitles",
+                {"available", "unavailable"},
+            )
+            projected_video = manager.projected_video("available")
             self.assertEqual(asset_status, 200)
             self.assertEqual(content_type, "text/javascript; charset=utf-8")
             self.assertEqual(body, b"/* browser.js */")
             self.assertEqual(video_ids, frozenset({"available", "unavailable"}))
             self.assertEqual(search_match_ids, frozenset({"unavailable"}))
+            self.assertEqual(
+                projections,
+                {
+                    "available": {
+                        "video_id": "available",
+                        "title": "Projected available",
+                    }
+                },
+            )
+            self.assertEqual(
+                projected_video,
+                {
+                    "video_id": "available",
+                    "title": "Projected available",
+                    "projection_plugin_ids": ["subtitles"],
+                },
+            )
+
+    def test_video_projection_contract_rejects_invalid_plugin_rows(self) -> None:
+        class InvalidProjectionPlugin(FakePlugin):
+            def project_videos(self, video_ids):
+                return [{"video_id": "not-requested", "title": "Wrong"}]
+
+        manager = PluginManager(
+            {"plugins": {"subtitles": {"enabled": True}}},
+            entry_points=[FakeEntryPoint(InvalidProjectionPlugin)],
+        )
+
+        with self.assertRaisesRegex(ValueError, "unrequested"):
+            manager.project_videos("subtitles", {"requested"})
 
     def test_incompatible_and_missing_plugins_are_nonfatal(self) -> None:
         class IncompatiblePlugin(FakePlugin):
