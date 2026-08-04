@@ -2869,18 +2869,21 @@ function searchMetaFiltersHtml(
         </label>
         <div
           id="${escapeHtml(searchFilterTreeChildrenId(nodeId))}"
-          class="search-meta-controls search-meta-facet-children"
+          class="search-meta-facet-children"
           data-search-tree-children
           ${expanded ? '' : 'hidden'}
         >
-          ${metaFilterChildrenHtml({
-            groupName,
-            filterAttribute,
-            filterValuePrefix,
-            visibility,
-            counts: searchKindEnabled(kind) ? counts : null,
-            definitions,
-          })}
+          <span class="search-tree-toggle-spacer" aria-hidden="true"></span>
+          <div class="search-meta-controls">
+            ${metaFilterChildrenHtml({
+              groupName,
+              filterAttribute,
+              filterValuePrefix,
+              visibility,
+              counts: searchKindEnabled(kind) ? counts : null,
+              definitions,
+            })}
+          </div>
         </div>
       </div>
     `;

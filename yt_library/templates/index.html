@@ -78,7 +78,7 @@
     .meta { color: var(--muted); font-size: 14px; }
     .meta-filter { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; }
     .meta-filter.dimmed { opacity: .42; }
-    .meta-filter input { accent-color: var(--accent); }
+    .meta-filter input { accent-color: var(--accent); margin: 0; }
     .completion-partial-toggle { display: inline-flex; align-items: center; gap: 5px; }
     .completion-minimum-control { display: inline-flex; align-items: center; gap: 4px; }
     .completion-minimum-input { width: 52px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 4px; padding: 2px 4px; font: inherit; }
@@ -110,7 +110,12 @@
       gap: 5px;
       min-width: 0;
     }
-    .search-meta-facet-children { padding-left: 12px; }
+    .search-meta-facet-children {
+      grid-template-columns: 14px minmax(0, 1fr);
+      column-gap: 4px;
+    }
+    .search-meta-facet-children > .search-tree-toggle-spacer { grid-column: 1; }
+    .search-meta-facet-children > .search-meta-controls { grid-column: 2; }
     .search-meta-kind-children[hidden], .search-meta-facet-children[hidden] { display: none; }
     .search-meta-facet.dimmed { opacity: .42; }
     .search-tree-toggle {

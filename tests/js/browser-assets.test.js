@@ -165,10 +165,11 @@ test('search filter tree folds facets and persists disclosure state', () => {
 
   assert.match(indexHtml, /\.search-tree-toggle[\s\S]*transition: transform 160ms ease/);
   assert.match(indexHtml, /\.search-tree-toggle\[aria-expanded="true"\][\s\S]*rotate\(90deg\)/);
-  assert.match(indexHtml, /\.search-meta-facet-children \{ padding-left: 12px; \}/);
+  assert.match(indexHtml, /\.meta-filter input \{ accent-color: var\(--accent\); margin: 0; \}/);
+  assert.match(indexHtml, /\.search-meta-facet-children \{[\s\S]*grid-template-columns: 14px minmax\(0, 1fr\)/);
   assert.match(indexSource, /defaultSearchFilterTreeExpanded = \[[\s\S]*'kind:videos'[\s\S]*'kind:playlists'[\s\S]*'kind:channels'/);
   assert.match(indexSource, /data-search-tree-toggle="\$\{escapeHtml\(nodeId\)\}"/);
-  assert.match(indexSource, /class="search-meta-controls search-meta-facet-children"[\s\S]*\$\{expanded \? '' : 'hidden'\}/);
+  assert.match(indexSource, /class="search-meta-facet-children"[\s\S]*\$\{expanded \? '' : 'hidden'\}[\s\S]*class="search-tree-toggle-spacer"[\s\S]*class="search-meta-controls"/);
   assert.match(indexSource, /\/api\/settings\/search-filter-tree/);
 });
 
