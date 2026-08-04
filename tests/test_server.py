@@ -142,7 +142,7 @@ class AdminServerTests(unittest.TestCase):
         ):
             handler._handle_library_get(
                 urllib.parse.urlparse(
-                    "/api/search?q=history&video_filter_plugin=example&limit=1"
+                    "/api/search?q=history&video_facet_plugin=example&video_filter_plugin=example&limit=1"
                 )
             )
 
@@ -155,7 +155,43 @@ class AdminServerTests(unittest.TestCase):
             search_data.call_args.kwargs["video_search_match_ids"],
             {"unavailable"},
         )
+        self.assertEqual(
+            search_data.call_args.kwargs["video_facet_memberships"],
+            {"example": frozenset({"available", "unavailable"})},
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["video_search_match_memberships"],
+            {"example": frozenset({"unavailable"})},
+        )
         handler.send_json.assert_called_once_with(payload)
+
+    def test_search_applies_generic_plugin_video_exclusions(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.config_data = {}
+        handler.plugin_manager = Mock()
+        video_ids = frozenset({"with-plugin-data"})
+        handler.plugin_manager.filter_videos.return_value = (video_ids, frozenset())
+        handler.send_json = Mock()
+
+        with (
+            patch("yt_library.server.connect", return_value=Mock()),
+            patch(
+                "yt_library.server.omni_search_data",
+                return_value={"results": [], "total": 0},
+            ) as search_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/search?video_facet_plugin=example&video_exclude_filter_plugin=example&limit=1"
+                )
+            )
+
+        handler.plugin_manager.filter_videos.assert_called_once_with("example", "")
+        self.assertEqual(
+            search_data.call_args.kwargs["video_id_exclusion_filters"],
+            [video_ids],
+        )
 
     def test_get_dispatches_page_admin_and_library_routes(self) -> None:
         handler = object.__new__(server.LibraryHandler)

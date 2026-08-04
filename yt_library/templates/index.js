@@ -43,6 +43,20 @@ let children = new Map();
 const browserPlugins = new Map();
 const loadedBrowserPluginAssets = new Set();
 const pluginSearchVisibility = new Map();
+const pluginVideoFacetVisibility = new Map();
+
+function browserVideoFacetDefinition(plugin) {
+  const definition = plugin?.search?.videoFacet;
+  return definition && typeof definition === 'object' ? definition : null;
+}
+
+function defaultBrowserVideoFacetVisibility(plugin) {
+  const definition = browserVideoFacetDefinition(plugin);
+  return {
+    present: !filterPreferenceEnabled(String(definition?.presentDisabledPreferenceKey || '')),
+    absent: !filterPreferenceEnabled(String(definition?.absentDisabledPreferenceKey || '')),
+  };
+}
 
 function registerBrowserPlugin(plugin) {
   if (!plugin || typeof plugin !== 'object') throw new TypeError('Plugin registration is required');
@@ -51,10 +65,17 @@ function registerBrowserPlugin(plugin) {
   if (browserPlugins.has(pluginId)) throw new Error(`Plugin is already registered: ${pluginId}`);
   browserPlugins.set(pluginId, plugin);
   if (plugin.search) {
-    pluginSearchVisibility.set(
-      pluginId,
-      filterPreferenceEnabled(String(plugin.search.preferenceKey || '')),
-    );
+    if (browserVideoFacetDefinition(plugin)) {
+      pluginVideoFacetVisibility.set(
+        pluginId,
+        defaultBrowserVideoFacetVisibility(plugin),
+      );
+    } else {
+      pluginSearchVisibility.set(
+        pluginId,
+        filterPreferenceEnabled(String(plugin.search.preferenceKey || '')),
+      );
+    }
   }
 }
 
@@ -89,12 +110,40 @@ function browserSearchPlugin(pluginId) {
 }
 
 function browserVideoFilterPlugins() {
-  return browserSearchPlugins().filter(plugin => plugin.search.videoFacet === true);
+  return browserSearchPlugins().filter(plugin => Boolean(browserVideoFacetDefinition(plugin)));
+}
+
+function browserVideoFacetState(plugin) {
+  return pluginVideoFacetVisibility.get(plugin.id) || { present: false, absent: false };
+}
+
+function browserVideoFacetSearchActive(plugin) {
+  const state = browserVideoFacetState(plugin);
+  return state.present && !state.absent;
+}
+
+function browserPluginStateKey(plugin) {
+  if (browserVideoFacetDefinition(plugin)) {
+    const state = browserVideoFacetState(plugin);
+    return `${plugin.id}:${state.present ? '1' : '0'}${state.absent ? '1' : '0'}`;
+  }
+  return searchKindEnabled(plugin.id) ? plugin.id : '';
+}
+
+function saveBrowserVideoFacetPreferences(plugin) {
+  const definition = browserVideoFacetDefinition(plugin);
+  const state = browserVideoFacetState(plugin);
+  if (definition.presentDisabledPreferenceKey) {
+    saveFilterPreference(definition.presentDisabledPreferenceKey, !state.present);
+  }
+  if (definition.absentDisabledPreferenceKey) {
+    saveFilterPreference(definition.absentDisabledPreferenceKey, !state.absent);
+  }
 }
 
 function browserResultSearchPlugins() {
   return browserSearchPlugins().filter(plugin => (
-    plugin.search.videoFacet !== true
+    !browserVideoFacetDefinition(plugin)
     && typeof plugin.search.fetch === 'function'
   ));
 }
@@ -301,7 +350,7 @@ function searchPresetDefinition(presetId) {
   if (searchPresetDefinitions[presetId]) return searchPresetDefinitions[presetId];
   const entry = browserSearchPresets().find(item => item.presetId === presetId);
   if (!entry) return null;
-  const videoFacet = entry.plugin.search.videoFacet === true;
+  const videoFacet = Boolean(browserVideoFacetDefinition(entry.plugin));
   return {
     emptyMessage: entry.preset.emptyMessage,
     kind: videoFacet ? 'videos' : entry.plugin.id,
@@ -347,6 +396,7 @@ let adjacentPagePrefetchGeneration = 0;
 let videoMetaCountsCache = new Map();
 let videoCompletionCountsCache = new Map();
 let omniMetaCountsCache = new Map();
+let omniVideoPluginFacetCountsCache = new Map();
 let omniReactionCountsCache = new Map();
 let omniCompletionCountsCache = new Map();
 let omniPlaylistMembershipCountsCache = new Map();
@@ -403,6 +453,7 @@ async function loadData({ preserveSearchContent = false } = {}) {
   videoMetaCountsCache = new Map();
   videoCompletionCountsCache = new Map();
   omniMetaCountsCache = new Map();
+  omniVideoPluginFacetCountsCache = new Map();
   omniReactionCountsCache = new Map();
   omniCompletionCountsCache = new Map();
   omniPlaylistMembershipCountsCache = new Map();
@@ -634,6 +685,16 @@ function setLocalFilterPreference(preferenceKey, enabled) {
     item => item.search.preferenceKey === preferenceKey
   );
   if (plugin) pluginSearchVisibility.set(plugin.id, enabled);
+  for (const videoFacetPlugin of browserVideoFilterPlugins()) {
+    const definition = browserVideoFacetDefinition(videoFacetPlugin);
+    const state = browserVideoFacetState(videoFacetPlugin);
+    if (definition.presentDisabledPreferenceKey === preferenceKey) {
+      state.present = !enabled;
+    }
+    if (definition.absentDisabledPreferenceKey === preferenceKey) {
+      state.absent = !enabled;
+    }
+  }
   const playlistFilter = playlistVideoOptInFilters.find(
     item => item.preferenceKey === preferenceKey
   );
@@ -693,10 +754,17 @@ function resetSearchMetaVisibility() {
     Object.assign(searchMetaVisibility[groupName], defaults);
   }
   for (const plugin of browserSearchPlugins()) {
-    pluginSearchVisibility.set(
-      plugin.id,
-      filterPreferenceEnabled(String(plugin.search.preferenceKey || '')),
-    );
+    if (browserVideoFacetDefinition(plugin)) {
+      Object.assign(
+        browserVideoFacetState(plugin),
+        defaultBrowserVideoFacetVisibility(plugin),
+      );
+    } else {
+      pluginSearchVisibility.set(
+        plugin.id,
+        filterPreferenceEnabled(String(plugin.search.preferenceKey || '')),
+      );
+    }
   }
 }
 
@@ -704,7 +772,13 @@ function clearSearchMetaVisibility() {
   for (const visibility of Object.values(searchMetaVisibility)) {
     for (const key of Object.keys(visibility)) visibility[key] = false;
   }
-  for (const plugin of browserSearchPlugins()) pluginSearchVisibility.set(plugin.id, false);
+  for (const plugin of browserSearchPlugins()) {
+    if (browserVideoFacetDefinition(plugin)) {
+      Object.assign(browserVideoFacetState(plugin), { present: false, absent: false });
+    } else {
+      pluginSearchVisibility.set(plugin.id, false);
+    }
+  }
 }
 
 function enableDefaultSearchKind(kind) {
@@ -738,7 +812,12 @@ function applySearchPresetState(preset, groupKey = '') {
   clearSearchMetaVisibility();
   enableDefaultSearchKind(definition.kind);
   if (definition.pluginFilter) {
-    pluginSearchVisibility.set(definition.pluginFilter, true);
+    const plugin = browserSearchPlugin(definition.pluginFilter);
+    if (browserVideoFacetDefinition(plugin)) {
+      Object.assign(browserVideoFacetState(plugin), { present: true, absent: false });
+    } else {
+      pluginSearchVisibility.set(definition.pluginFilter, true);
+    }
   }
   if (preset === 'playlist-videos') {
     setSearchFacetSelection('membership', ['member']);
@@ -764,6 +843,12 @@ function browserPluginForcesRelevance(plugin, query = search.value.trim()) {
   return mode === true || (mode === 'query' && Boolean(query));
 }
 
+function browserPluginSearchActive(plugin) {
+  return browserVideoFacetDefinition(plugin)
+    ? browserVideoFacetSearchActive(plugin)
+    : searchKindEnabled(plugin.id);
+}
+
 function searchSortPreferenceContext(preset = activeSearchPreset) {
   return preset || 'search';
 }
@@ -780,10 +865,21 @@ function preferredSearchResultsSort(
 
 function searchKindEnabled(kind) {
   const plugin = browserSearchPlugin(kind);
-  if (plugin) return pluginSearchVisibility.get(plugin.id) === true;
-  return searchKindFacetKeys(kind).every(
+  if (plugin) {
+    if (browserVideoFacetDefinition(plugin)) {
+      const state = browserVideoFacetState(plugin);
+      return state.present || state.absent;
+    }
+    return pluginSearchVisibility.get(plugin.id) === true;
+  }
+  const nativeFacetsEnabled = searchKindFacetKeys(kind).every(
     key => Object.values(searchMetaVisibility[key]).some(Boolean)
   );
+  if (kind !== 'videos' || !nativeFacetsEnabled) return nativeFacetsEnabled;
+  return browserVideoFilterPlugins().every(pluginItem => {
+    const state = browserVideoFacetState(pluginItem);
+    return state.present || state.absent;
+  });
 }
 
 function selectedSearchKinds() {
@@ -817,7 +913,17 @@ function activeSearchSourceScopes() {
 
 function presetDefiningFiltersMatch() {
   const pluginFilter = searchPresetDefinition(activeSearchPreset)?.pluginFilter;
-  if (pluginFilter && !searchKindEnabled(pluginFilter)) return false;
+  if (pluginFilter) {
+    const plugin = browserSearchPlugin(pluginFilter);
+    if (
+      !plugin
+      || (
+        browserVideoFacetDefinition(plugin)
+          ? !browserVideoFacetSearchActive(plugin)
+          : !searchKindEnabled(pluginFilter)
+      )
+    ) return false;
+  }
   if (activeSearchPreset === 'playlist-videos') {
     return searchMetaVisibility.membership.member && !searchMetaVisibility.membership.non_member;
   }
@@ -877,7 +983,12 @@ function searchHash() {
     if (searchMetaVisibility[groupName][key]) params.set(paramName, '1');
   }
   for (const plugin of browserSearchPlugins()) {
-    if (searchKindEnabled(plugin.id)) {
+    const videoFacet = browserVideoFacetDefinition(plugin);
+    if (videoFacet) {
+      const state = browserVideoFacetState(plugin);
+      params.set(videoFacet.presentHashParam || `plugin-${plugin.id}-present`, state.present ? '1' : '0');
+      params.set(videoFacet.absentHashParam || `plugin-${plugin.id}-absent`, state.absent ? '1' : '0');
+    } else if (searchKindEnabled(plugin.id)) {
       params.set(plugin.search.hashParam || `plugin-${plugin.id}`, '1');
     }
   }
@@ -941,8 +1052,21 @@ function applySearchHash(hash) {
     }
   }
   for (const plugin of browserSearchPlugins()) {
-    const hashParam = plugin.search.hashParam || `plugin-${plugin.id}`;
-    if (params.get(hashParam) === '1') pluginSearchVisibility.set(plugin.id, true);
+    const videoFacet = browserVideoFacetDefinition(plugin);
+    if (videoFacet) {
+      const state = browserVideoFacetState(plugin);
+      const presentParam = params.get(
+        videoFacet.presentHashParam || `plugin-${plugin.id}-present`
+      );
+      const absentParam = params.get(
+        videoFacet.absentHashParam || `plugin-${plugin.id}-absent`
+      );
+      if (presentParam !== null) state.present = presentParam === '1';
+      if (absentParam !== null) state.absent = absentParam === '1';
+    } else {
+      const hashParam = plugin.search.hashParam || `plugin-${plugin.id}`;
+      if (params.get(hashParam) === '1') pluginSearchVisibility.set(plugin.id, true);
+    }
   }
   const requestedSort = params.get('sort') || '';
   searchSortExplicit = searchSortOptions.has(requestedSort);
@@ -950,7 +1074,7 @@ function applySearchHash(hash) {
     ? requestedSort
     : preferredSearchResultsSort(search.value.trim());
   if (browserSearchPlugins().some(plugin => (
-    searchKindEnabled(plugin.id) && browserPluginForcesRelevance(plugin)
+    browserPluginSearchActive(plugin) && browserPluginForcesRelevance(plugin)
   ))) {
     searchResultsSort = 'relevance';
     searchSortExplicit = false;
@@ -1173,6 +1297,11 @@ function syncFilterGroup(parent, childFilters, dimChildrenWhenUnchecked = true) 
 }
 
 function metaFilterGroupVisibility(groupName) {
+  if (groupName.startsWith('search-plugin-')) {
+    const pluginId = groupName.slice('search-plugin-'.length);
+    const plugin = browserVideoFilterPlugins().find(item => item.id === pluginId);
+    return plugin ? browserVideoFacetState(plugin) : null;
+  }
   const groups = {
     'playlist-videos': playlistVisibility,
     'playlist-completion': playlistCompletionVisibility,
@@ -1238,7 +1367,11 @@ function searchKindFacetKeys(kind) {
 function setSearchKindFilter(kind, checked) {
   const plugin = browserSearchPlugin(kind);
   if (plugin) {
-    pluginSearchVisibility.set(plugin.id, checked);
+    if (browserVideoFacetDefinition(plugin)) {
+      Object.assign(browserVideoFacetState(plugin), { present: checked, absent: checked });
+    } else {
+      pluginSearchVisibility.set(plugin.id, checked);
+    }
     syncSearchKindFilter(kind);
     return true;
   }
@@ -1253,13 +1386,18 @@ function setSearchKindFilter(kind, checked) {
     }
     syncMetaFilterGroup(`search-${facetKey}`);
   }
-  if (kind === 'videos' && !checked) {
+  if (kind === 'videos') {
     for (const videoFilter of browserVideoFilterPlugins()) {
-      pluginSearchVisibility.set(videoFilter.id, false);
-      const input = searchForFilters.querySelector(
-        `[data-search-plugin-filter="${videoFilter.id}"]`
+      Object.assign(
+        browserVideoFacetState(videoFilter),
+        { present: checked, absent: checked },
       );
-      if (input instanceof HTMLInputElement) input.checked = false;
+      for (const input of searchForFilters.querySelectorAll(
+        `[data-meta-child-filter="search-plugin-${videoFilter.id}"]`
+      )) {
+        input.checked = checked;
+      }
+      syncMetaFilterGroup(`search-plugin-${videoFilter.id}`);
     }
   }
   syncSearchKindFilter(kind);
@@ -2594,17 +2732,24 @@ function searchMetaFiltersHtml(
     </div>
   `;
   const pluginVideoFacetHtml = plugin => {
-    const catalogCount = Number(plugin.search.catalogCount?.(browserPluginStatus(plugin.id)) || 0);
-    const count = searchKindEnabled(plugin.id)
-      ? (metaCounts?.videos?.total ?? catalogCount)
-      : catalogCount;
+    const definition = browserVideoFacetDefinition(plugin);
+    const visibility = browserVideoFacetState(plugin);
+    const counts = metaCounts?.videoPlugins?.[plugin.id] || null;
     return `
-    <div class="search-meta-facet flat" data-search-kind-facet="videos">
+    <div class="search-meta-facet" data-search-kind-facet="videos">
       <div class="search-meta-controls">
-        <label class="meta-filter meta-filter-parent">
-          <input type="checkbox" data-search-plugin-filter="${escapeHtml(plugin.id)}" ${searchKindEnabled(plugin.id) ? 'checked' : ''}>
-          <span>${escapeHtml(plugin.search.label || plugin.id)} <span class="meta-filter-count">${filterCountText(count)}</span></span>
-        </label>
+        ${metaFilterControlsHtml({
+          groupName: `search-plugin-${plugin.id}`,
+          filterAttribute: 'search-plugin-facet-filter',
+          filterValuePrefix: `${plugin.id}:`,
+          visibility,
+          counts,
+          definitions: [
+            { key: 'absent', label: definition.absentLabel || `no ${plugin.search.label || plugin.id}` },
+            { key: 'present', label: definition.presentLabel || plugin.search.label || plugin.id },
+          ],
+          allLabel: plugin.search.label || plugin.id,
+        })}
       </div>
     </div>
   `;
@@ -2667,6 +2812,9 @@ function renderSearchMetaFilters({
   for (const key of ['videos', 'reactions', 'completion', 'membership', 'playlistVisibility', 'playlistOwnership', 'playlistStatus', 'channelSubscription', 'channelStatus']) {
     syncMetaFilterGroup(`search-${key}`);
   }
+  for (const plugin of browserVideoFilterPlugins()) {
+    syncMetaFilterGroup(`search-plugin-${plugin.id}`);
+  }
   for (const kind of [
     'videos',
     'playlists',
@@ -2689,7 +2837,7 @@ function syncSearchFiltersForSelection() {
 
 function searchResultsSortHtml() {
   const forceRelevance = browserSearchPlugins().some(plugin => (
-    searchKindEnabled(plugin.id) && browserPluginForcesRelevance(plugin)
+    browserPluginSearchActive(plugin) && browserPluginForcesRelevance(plugin)
   ));
   const options = forceRelevance ? [
     ['relevance', 'Relevance'],
@@ -3001,10 +3149,11 @@ async function fetchOmniSearch(query, page = currentPage) {
     sourceScopes.channel,
     partialCompletionMinimumPercent,
     browserSearchPlugins()
-      .filter(plugin => searchKindEnabled(plugin.id))
-      .map(plugin => plugin.id),
+      .map(browserPluginStateKey)
+      .filter(Boolean),
   ]);
   const metaCountsCache = omniMetaCountsCache;
+  const videoPluginFacetCountsCache = omniVideoPluginFacetCountsCache;
   const reactionCountsCache = omniReactionCountsCache;
   const completionCountsCache = omniCompletionCountsCache;
   const playlistMembershipCountsCache = omniPlaylistMembershipCountsCache;
@@ -3028,15 +3177,35 @@ async function fetchOmniSearch(query, page = currentPage) {
     sort: searchResultsSort,
   });
   const pluginKey = browserSearchPlugins()
-    .filter(plugin => searchKindEnabled(plugin.id))
-    .map(plugin => plugin.id)
+    .map(browserPluginStateKey)
+    .filter(Boolean)
     .join(',');
+  const videoPluginFacetCountsKey = JSON.stringify([
+    query,
+    searchFieldsValue,
+    kindsValue,
+    searchPlaylistGroupKey,
+    sourceScopes.video,
+    sourceScopes.channel,
+    metaFilterParamValue(searchMetaVisibility.videos),
+    metaFilterParamValue(searchMetaVisibility.reactions),
+    metaFilterParamValue(searchMetaVisibility.completion),
+    String(partialCompletionMinimumPercent),
+    metaFilterParamValue(searchMetaVisibility.membership),
+    query ? browserVideoFilterPlugins().map(browserVideoFacetSearchActive) : [],
+  ]);
   const key = `${coreParams.toString()}&plugins=${encodeURIComponent(pluginKey)}&limit=${limit}&offset=${offset}`;
   return cachedRequest(omniSearchCache, key, async () => {
     const pluginPayload = await fetchBrowserPluginSearches(query, limit, offset);
     const requestParams = new URLSearchParams(coreParams);
-    for (const plugin of browserVideoFilterPlugins().filter(item => searchKindEnabled(item.id))) {
-      requestParams.append('video_filter_plugin', plugin.id);
+    for (const plugin of browserVideoFilterPlugins()) {
+      const state = browserVideoFacetState(plugin);
+      requestParams.append('video_facet_plugin', plugin.id);
+      if (state.present && !state.absent) {
+        requestParams.append('video_filter_plugin', plugin.id);
+      } else if (state.absent && !state.present) {
+        requestParams.append('video_exclude_filter_plugin', plugin.id);
+      }
     }
     requestParams.set('limit', String(Math.max(1, pluginPayload.remaining)));
     requestParams.set('offset', String(pluginPayload.coreOffset));
@@ -3067,6 +3236,16 @@ async function fetchOmniSearch(query, page = currentPage) {
       );
       metaCountsCache.set(metaCountsKey, stableMetaCounts);
     }
+    if (!videoPluginFacetCountsCache.has(videoPluginFacetCountsKey)) {
+      videoPluginFacetCountsCache.set(
+        videoPluginFacetCountsKey,
+        Object.fromEntries(
+          Object.entries(payload.metaCounts?.videoPlugins || {}).map(
+            ([pluginId, counts]) => [pluginId, { ...counts }]
+          )
+        ),
+      );
+    }
     if (!reactionCountsCache.has(metaCountsKey)) {
       reactionCountsCache.set(metaCountsKey, { ...(payload.reactionCounts || {}) });
     }
@@ -3079,9 +3258,13 @@ async function fetchOmniSearch(query, page = currentPage) {
         { ...(payload.playlistMembershipCounts || {}) },
       );
     }
+    const stableMetaCounts = {
+      ...metaCountsCache.get(metaCountsKey),
+      videoPlugins: videoPluginFacetCountsCache.get(videoPluginFacetCountsKey),
+    };
     const stablePayload = {
       ...payload,
-      metaCounts: metaCountsCache.get(metaCountsKey),
+      metaCounts: stableMetaCounts,
       reactionCounts: reactionCountsCache.get(metaCountsKey),
       completionCounts: completionCountsCache.get(metaCountsKey),
       playlistMembershipCounts: playlistMembershipCountsCache.get(metaCountsKey),
@@ -4066,7 +4249,7 @@ function handleMetaChange(event) {
   if (!(target instanceof HTMLInputElement)) return;
   const searchFilterInteraction = (
     target.dataset.searchKindFilter
-    || target.dataset.searchPluginFilter
+    || target.dataset.searchPluginFacetFilter
     || target.dataset.searchMetaFilter
     || target.dataset.searchCompletionMinimum !== undefined
     || String(target.dataset.metaAllFilter || '').startsWith('search-')
@@ -4124,16 +4307,17 @@ function handleMetaChange(event) {
   if (searchKindFilter && setSearchKindFilter(searchKindFilter, target.checked)) {
     const plugin = browserSearchPlugin(searchKindFilter);
     if (plugin) {
-      saveFilterPreference(plugin.search.preferenceKey, target.checked);
+      if (plugin.search.preferenceKey) {
+        saveFilterPreference(plugin.search.preferenceKey, target.checked);
+      }
     } else {
       saveSearchOptInPreferences(searchKindFacetKeys(searchKindFilter));
-      if (searchKindFilter === 'videos' && !target.checked) {
-        for (const videoFilter of browserVideoFilterPlugins()) {
-          saveFilterPreference(videoFilter.search.preferenceKey, false);
-        }
-      }
     }
-    if (plugin && browserPluginForcesRelevance(plugin) && target.checked) {
+    if (
+      plugin
+      && browserPluginSearchActive(plugin)
+      && browserPluginForcesRelevance(plugin)
+    ) {
       searchResultsSort = 'relevance';
       searchSortExplicit = false;
     }
@@ -4143,21 +4327,26 @@ function handleMetaChange(event) {
     syncSearchHashAndRender(!activatedFromHistory);
     return;
   }
-  const searchPluginFilter = target.dataset.searchPluginFilter;
-  if (searchPluginFilter) {
-    const plugin = browserVideoFilterPlugins().find(item => item.id === searchPluginFilter);
+  const searchPluginFacetFilter = target.dataset.searchPluginFacetFilter;
+  if (searchPluginFacetFilter) {
+    const [pluginId, filterName] = searchPluginFacetFilter.split(':');
+    const plugin = browserVideoFilterPlugins().find(item => item.id === pluginId);
     if (!plugin) return;
-    pluginSearchVisibility.set(plugin.id, target.checked);
-    saveFilterPreference(plugin.search.preferenceKey, target.checked);
+    const state = browserVideoFacetState(plugin);
+    if (!Object.prototype.hasOwnProperty.call(state, filterName)) return;
+    state[filterName] = target.checked;
+    saveBrowserVideoFacetPreferences(plugin);
     if (target.checked && !searchKindEnabled('videos')) {
       enableDefaultSearchKind('videos');
       renderSearchMetaFilters();
     }
-    if (browserPluginForcesRelevance(plugin) && target.checked) {
+    if (browserPluginSearchActive(plugin) && browserPluginForcesRelevance(plugin)) {
       searchResultsSort = 'relevance';
       searchSortExplicit = false;
     }
     currentPage = 1;
+    syncMetaFilterGroup(`search-plugin-${plugin.id}`);
+    syncSearchKindFilter('videos');
     reconcileSearchPreset();
     showSearchMetaProgress('videos');
     syncSearchHashAndRender(!activatedFromHistory);
@@ -4169,7 +4358,21 @@ function handleMetaChange(event) {
     : false;
   if (metaAllFilter && setMetaFilterGroup(metaAllFilter, selectAllMetaChildren)) {
     currentPage = 1;
-    if (metaAllFilter.startsWith('search-')) {
+    if (metaAllFilter.startsWith('search-plugin-')) {
+      const pluginId = metaAllFilter.slice('search-plugin-'.length);
+      const plugin = browserVideoFilterPlugins().find(item => item.id === pluginId);
+      if (!plugin) return;
+      saveBrowserVideoFacetPreferences(plugin);
+      if (selectAllMetaChildren && !searchKindEnabled('videos')) {
+        enableDefaultSearchKind('videos');
+        renderSearchMetaFilters();
+      }
+      syncMetaFilterGroup(metaAllFilter);
+      syncSearchKindFilter('videos');
+      reconcileSearchPreset();
+      showSearchMetaProgress('videos');
+      syncSearchHashAndRender(!activatedFromHistory);
+    } else if (metaAllFilter.startsWith('search-')) {
       const facetKey = metaAllFilter.slice('search-'.length);
       saveSearchOptInPreferences([facetKey]);
       syncMetaFilterGroup(metaAllFilter);

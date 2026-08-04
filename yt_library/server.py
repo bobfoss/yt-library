@@ -939,15 +939,34 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             search_fields = query_set_param(params, "search_fields")
             sort = (params.get("sort") or [None])[0]
             video_id_filters: list[frozenset[str]] = []
+            video_id_exclusion_filters: list[frozenset[str]] = []
+            video_facet_memberships: dict[str, frozenset[str]] = {}
             video_search_match_ids: set[str] = set()
+            video_search_match_memberships: dict[str, frozenset[str]] = {}
             try:
-                for plugin_id in dict.fromkeys(params.get("video_filter_plugin") or []):
+                included_plugin_ids = set(params.get("video_filter_plugin") or [])
+                excluded_plugin_ids = set(
+                    params.get("video_exclude_filter_plugin") or []
+                )
+                facet_plugin_ids = dict.fromkeys(
+                    [
+                        *(params.get("video_facet_plugin") or []),
+                        *included_plugin_ids,
+                        *excluded_plugin_ids,
+                    ]
+                )
+                for plugin_id in facet_plugin_ids:
                     video_ids, search_match_ids = self.plugin_manager.filter_videos(
                         plugin_id,
-                        query,
+                        query if plugin_id in included_plugin_ids else "",
                     )
-                    video_id_filters.append(video_ids)
-                    video_search_match_ids.update(search_match_ids)
+                    video_facet_memberships[plugin_id] = video_ids
+                    if plugin_id in included_plugin_ids:
+                        video_id_filters.append(video_ids)
+                        video_search_match_ids.update(search_match_ids)
+                        video_search_match_memberships[plugin_id] = search_match_ids
+                    if plugin_id in excluded_plugin_ids:
+                        video_id_exclusion_filters.append(video_ids)
             except (LookupError, RuntimeError, TypeError, ValueError) as exc:
                 self.send_json(
                     {"error": "Video filter unavailable", "message": str(exc)},
@@ -984,7 +1003,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         "video_playlist_membership",
                     ),
                     video_id_filters=video_id_filters,
+                    video_id_exclusion_filters=video_id_exclusion_filters,
+                    video_facet_memberships=video_facet_memberships,
                     video_search_match_ids=video_search_match_ids,
+                    video_search_match_memberships=video_search_match_memberships,
                     channel_subscription_filters=query_set_param(
                         params,
                         "channel_subscription",

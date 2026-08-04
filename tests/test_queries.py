@@ -785,6 +785,8 @@ class NormalizedReadModelTests(unittest.TestCase):
             result_kinds={"video"},
             video_id_filters=[filter_ids],
             video_search_match_ids=search_match_ids,
+            video_facet_memberships={"example": filter_ids},
+            video_search_match_memberships={"example": search_match_ids},
             video_meta_filters={"public"},
         )
         unavailable = omni_search_data(
@@ -794,6 +796,8 @@ class NormalizedReadModelTests(unittest.TestCase):
             result_kinds={"video"},
             video_id_filters=[filter_ids],
             video_search_match_ids=search_match_ids,
+            video_facet_memberships={"example": filter_ids},
+            video_search_match_memberships={"example": search_match_ids},
             video_meta_filters={"unavailable"},
         )
 
@@ -806,10 +810,49 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["plugin-unavailable"],
         )
         self.assertTrue(available["results"][0]["pluginSearchMatch"])
+        self.assertEqual(available["results"][0]["pluginSearchMatches"], ["example"])
+        self.assertEqual(available["results"][0]["pluginFacets"], {"example": True})
         self.assertEqual(available["metaCounts"], unavailable["metaCounts"])
         self.assertEqual(available["metaCounts"]["videos"]["total"], 2)
         self.assertEqual(available["metaCounts"]["videos"]["public"], 1)
         self.assertEqual(available["metaCounts"]["videos"]["unavailable"], 1)
+        self.assertEqual(
+            available["metaCounts"]["videoPlugins"]["example"],
+            {"present": 1, "absent": 0},
+        )
+
+        all_videos = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"video"},
+            video_facet_memberships={"example": filter_ids},
+        )
+        with_plugin_data = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"video"},
+            video_id_filters=[filter_ids],
+            video_facet_memberships={"example": filter_ids},
+        )
+        without_plugin_data = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"video"},
+            video_id_exclusion_filters=[filter_ids],
+            video_facet_memberships={"example": filter_ids},
+        )
+
+        self.assertEqual(all_videos["total"], 3)
+        self.assertEqual(with_plugin_data["total"], 2)
+        self.assertEqual(without_plugin_data["total"], 1)
+        self.assertEqual(
+            all_videos["metaCounts"]["videoPlugins"]["example"],
+            {"present": 2, "absent": 1},
+        )
+        self.assertEqual(
+            with_plugin_data["metaCounts"]["videoPlugins"],
+            without_plugin_data["metaCounts"]["videoPlugins"],
+        )
 
     def test_omni_search_meta_filters_count_before_filtering_all_result_types(self) -> None:
         for video_id, title in (

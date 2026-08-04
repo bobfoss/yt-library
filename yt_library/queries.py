@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, time, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -1508,7 +1508,10 @@ def omni_search_data(
     video_partial_min_percent: int = 1,
     video_playlist_membership_filters: set[str] | None = None,
     video_id_filters: Sequence[Collection[str]] = (),
+    video_id_exclusion_filters: Sequence[Collection[str]] = (),
+    video_facet_memberships: Mapping[str, Collection[str]] | None = None,
     video_search_match_ids: Collection[str] = (),
+    video_search_match_memberships: Mapping[str, Collection[str]] | None = None,
     channel_subscription_filters: set[str] | None = None,
     channel_status_filters: set[str] | None = None,
     playlist_meta_filters: set[str] | None = None,
@@ -1545,7 +1548,20 @@ def omni_search_data(
     search_titles = "titles" in active_search_fields
     search_descriptions = "descriptions" in active_search_fields
     active_video_id_filters = [frozenset(values) for values in video_id_filters]
-    active_video_search_match_ids = frozenset(video_search_match_ids)
+    active_video_id_exclusion_filters = [
+        frozenset(values) for values in video_id_exclusion_filters
+    ]
+    active_video_facet_memberships = {
+        str(plugin_id): frozenset(values)
+        for plugin_id, values in (video_facet_memberships or {}).items()
+    }
+    active_video_search_match_memberships = {
+        str(plugin_id): frozenset(values)
+        for plugin_id, values in (video_search_match_memberships or {}).items()
+    }
+    active_video_search_match_ids = frozenset(video_search_match_ids).union(
+        *active_video_search_match_memberships.values()
+    )
     has_video_search_matches = bool(query and active_video_search_match_ids)
     if has_video_search_matches:
         conn.execute("DROP TABLE IF EXISTS temp.omni_video_search_matches")
@@ -1811,6 +1827,11 @@ def omni_search_data(
                 display_timezone=display_timezone,
             )
             result["pluginSearchMatch"] = plugin_search_hit
+            result["pluginSearchMatches"] = sorted(
+                plugin_id
+                for plugin_id, video_ids in active_video_search_match_memberships.items()
+                if str(item.get("video_id") or "") in video_ids
+            )
             results.append(result)
 
     if (
@@ -1872,27 +1893,10 @@ def omni_search_data(
             item["match_note"] = playlist_match_type_note(item.get("match_type") or "")
             results.append(_omni_result("video", 0, item, matched_description=False))
 
-    if active_video_id_filters:
-        results = [
-            result
-            for result in results
-            if (
-                result["kind"] != "video"
-                or all(
-                    str(result["item"].get("video_id") or "") in video_ids
-                    for video_ids in active_video_id_filters
-                )
-            )
-        ]
-
     _assign_omni_meta_categories(conn, results)
-    meta_counts = _omni_meta_counts(results)
-    reaction_counts = _omni_reaction_counts(results)
     video_partial_min_percent = _bounded_partial_min_percent(
         video_partial_min_percent
     )
-    completion_counts = _omni_completion_counts(results, video_partial_min_percent)
-    playlist_membership_counts = _omni_playlist_membership_counts(results)
     selected_meta_filters = {
         "video": _selected_omni_meta_filters(video_meta_filters, "video"),
         "playlist": _selected_omni_meta_filters(playlist_meta_filters, "playlist"),
@@ -1934,44 +1938,98 @@ def omni_search_data(
         if channel_status_filters is None
         else set(channel_status_filters) & set(OMNI_SEARCH_CHANNEL_STATUS_FILTERS)
     )
-    results = [
-        result
-        for result in results
-        if (
-            (
-                result["kind"] == "channel"
-                and result["channelSubscription"]
-                in selected_channel_subscription_filters
+
+    def matches_native_filters(result: dict[str, Any]) -> bool:
+        if result["kind"] == "channel":
+            return (
+                result["channelSubscription"] in selected_channel_subscription_filters
                 and result["channelStatus"] in selected_channel_status_filters
             )
-            or (
-                result["kind"] == "playlist"
-                and result["metaCategory"] in selected_meta_filters[result["kind"]]
+        if result["kind"] == "playlist":
+            return (
+                result["metaCategory"] in selected_meta_filters[result["kind"]]
                 and result["playlistOwnership"] in selected_playlist_ownership_filters
                 and result["playlistStatus"] in selected_playlist_status_filters
             )
+        if result["kind"] == "video":
+            return (
+                result["metaCategory"] in selected_meta_filters[result["kind"]]
+                and _omni_video_reaction_category(result) in selected_reaction_filters
+                and _video_matches_completion_filter(
+                    result["item"],
+                    selected_completion_filters,
+                    video_partial_min_percent,
+                )
+                and _omni_video_playlist_membership_category(result)
+                in selected_playlist_membership_filters
+            )
+        return False
+
+    native_video_results = [
+        result
+        for result in results
+        if result["kind"] == "video" and matches_native_filters(result)
+    ]
+    video_facet_counts = {
+        plugin_id: {
+            "present": sum(
+                1
+                for result in native_video_results
+                if str(result["item"].get("video_id") or "") in video_ids
+            ),
+            "absent": sum(
+                1
+                for result in native_video_results
+                if str(result["item"].get("video_id") or "") not in video_ids
+            ),
+        }
+        for plugin_id, video_ids in active_video_facet_memberships.items()
+    }
+
+    plugin_filtered_results = [
+        result
+        for result in results
+        if (
+            result["kind"] != "video"
             or (
-                result["kind"] == "video"
-                and result["metaCategory"] in selected_meta_filters[result["kind"]]
-                and (
-                    _omni_video_reaction_category(result)
-                    in selected_reaction_filters
-                    and _video_matches_completion_filter(
-                        result["item"],
-                        selected_completion_filters,
-                        video_partial_min_percent,
-                    )
-                    and _omni_video_playlist_membership_category(result)
-                    in selected_playlist_membership_filters
+                all(
+                    str(result["item"].get("video_id") or "") in video_ids
+                    for video_ids in active_video_id_filters
+                )
+                and all(
+                    str(result["item"].get("video_id") or "") not in video_ids
+                    for video_ids in active_video_id_exclusion_filters
                 )
             )
         )
+    ]
+    meta_counts = _omni_meta_counts(plugin_filtered_results)
+    if video_facet_counts:
+        meta_counts["videoPlugins"] = video_facet_counts
+    reaction_counts = _omni_reaction_counts(plugin_filtered_results)
+    completion_counts = _omni_completion_counts(
+        plugin_filtered_results,
+        video_partial_min_percent,
+    )
+    playlist_membership_counts = _omni_playlist_membership_counts(
+        plugin_filtered_results
+    )
+    results = [
+        result for result in plugin_filtered_results if matches_native_filters(result)
     ]
     _sort_omni_results(results, sort)
     total = len(results)
     if total and offset >= total:
         offset = ((total - 1) // limit) * limit
     page = results[offset : offset + limit]
+    for result in page:
+        if result["kind"] != "video":
+            continue
+        video_id = str(result["item"].get("video_id") or "")
+        result["pluginFacets"] = {
+            plugin_id: video_id in video_ids
+            for plugin_id, video_ids in active_video_facet_memberships.items()
+        }
     _hydrate_omni_videos(conn, page)
     _add_omni_video_links(conn, page)
     counts = {

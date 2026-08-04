@@ -94,7 +94,7 @@ FILTER_PREFERENCE_KEYS = frozenset(
     }
 )
 PLUGIN_FILTER_PREFERENCE_PATTERN = re.compile(
-    r"^plugins\.[a-z][a-z0-9_-]*\.search$"
+    r"^plugins\.[a-z][a-z0-9_-]*\.(?:search|filters\.[a-z][a-z0-9_-]*)$"
 )
 DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 UPDATE_FREQUENCIES = frozenset({"off", "hourly", "daily"})
