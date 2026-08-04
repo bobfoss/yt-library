@@ -43,6 +43,9 @@
     a:hover { text-decoration: underline; }
     .workstreams { display: grid; gap: 24px; margin-bottom: 18px; }
     .plugin-workstreams { display: contents; }
+    .plugin-process-slot:empty { display: none; }
+    .plugin-process-slot .controls { margin-top: 0; }
+    .plugin-process-input { width: 220px; }
     .workstream { border-top: 1px solid var(--line); padding-top: 18px; }
     .workstream-header { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin-bottom: 12px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 12px; }
@@ -289,6 +292,7 @@
           <button id="backfillVideoVisibility" type="button">Backfill visibility</button>
           <span id="videoBackfillStatus" class="metric" aria-live="polite"></span>
         </div>
+        <div id="videoPluginProcesses" class="plugin-process-slot"></div>
         <div class="grid" id="videoMetadataCounts"></div>
       </section>
 

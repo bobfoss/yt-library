@@ -32,6 +32,23 @@ class FakePlugin:
             "adminSurface": "advanced",
             "buttonLabel": "Fetch",
             "hooks": ["library_update"],
+            "adminActions": [
+                {
+                    "id": "fetch-video",
+                    "placement": "videos",
+                    "surface": "advanced",
+                    "buttonLabel": "Fetch one",
+                    "inputs": [
+                        {
+                            "name": "video_id",
+                            "label": "Video ID",
+                            "placeholder": "11-character ID",
+                            "required": True,
+                            "maxLength": 11,
+                        }
+                    ],
+                }
+            ],
         },
     )
 
@@ -225,6 +242,30 @@ class PluginManagerTests(unittest.TestCase):
         request_status, _ = manager.handle_api("subtitles", "GET", "status", {})
         self.assertEqual(request_status, 503)
 
+    def test_invalid_plugin_admin_action_is_nonfatal(self) -> None:
+        class InvalidAdminPlugin(FakePlugin):
+            worker_processes = (
+                {
+                    **FakePlugin.worker_processes[0],
+                    "adminActions": [
+                        {
+                            "id": "invalid",
+                            "placement": "database",
+                            "buttonLabel": "Invalid",
+                        }
+                    ],
+                },
+            )
+
+        manager = PluginManager(
+            {"plugins": {"subtitles": {"enabled": True}}},
+            entry_points=[FakeEntryPoint(InvalidAdminPlugin)],
+        )
+
+        status = manager.statuses()[0]
+        self.assertEqual(status["state"], "error")
+        self.assertIn("Invalid plugin admin placement", status["message"])
+
     def test_plugin_process_plans_queues_runs_and_logs_host_owned_work(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
@@ -298,6 +339,14 @@ class PluginManagerTests(unittest.TestCase):
             process = status["workerProcesses"][0]
             self.assertEqual(process["service"], "youtube")
             self.assertEqual(process["latestRun"]["outcome"], "found")
+            self.assertEqual(
+                [action["placement"] for action in process["adminActions"]],
+                ["plugin", "videos"],
+            )
+            targeted_action = process["adminActions"][1]
+            self.assertEqual(targeted_action["id"], "fetch-video")
+            self.assertEqual(targeted_action["inputs"][0]["name"], "video_id")
+            self.assertTrue(targeted_action["inputs"][0]["required"])
 
     def test_plugin_process_can_hook_library_update(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

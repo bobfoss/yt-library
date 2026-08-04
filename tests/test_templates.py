@@ -106,6 +106,7 @@ class TemplateDomTests(unittest.TestCase):
             "updateTime": ("input", "time"),
             "updateHourMinute": ("select", None),
             "fetchVideoMetadata": ("button", "button"),
+            "videoPluginProcesses": ("div", None),
             "scanPlaylists": ("button", "button"),
             "fetchChannelMetadata": ("button", "button"),
             "startLiveHistory": ("button", "button"),

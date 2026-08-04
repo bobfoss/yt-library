@@ -24,6 +24,7 @@ const fields = {
   playlistBackfillStatus: document.getElementById('playlistBackfillStatus'),
   backfillChannelAccount: document.getElementById('backfillChannelAccount'),
   channelBackfillStatus: document.getElementById('channelBackfillStatus'),
+  videoPluginProcesses: document.getElementById('videoPluginProcesses'),
   pluginWorkstreams: document.getElementById('pluginWorkstreams'),
   logs: document.getElementById('logs'),
   logPanel: document.getElementById('logPanel'),
@@ -610,45 +611,74 @@ function syncPluginLogSources(plugins) {
   }
 }
 
+function pluginProcessDetails(process) {
+  const latest = process.latestRun || {};
+  const queued = Number(process.queuedCount || 0);
+  const running = Number(process.runningCount || 0);
+  return [
+    queued ? `${queued.toLocaleString()} queued` : 'Nothing queued',
+    running ? `${running.toLocaleString()} running` : '',
+    latest.outcome ? `Last: ${latest.outcome}` : '',
+    latest.finished_at ? fmtTime(latest.finished_at) : '',
+  ].filter(Boolean).join(' | ');
+}
+
+function pluginProcessActionHtml(plugin, process, action, { includeSurface = false } = {}) {
+  const ready = plugin.state === 'ready';
+  const inputs = (action.inputs || []).map(input => `
+    <label>${escapeHtml(input.label || input.name)}
+      <input class="plugin-process-input" type="text"
+             data-plugin-param="${escapeHtml(input.name)}"
+             placeholder="${escapeHtml(input.placeholder || '')}"
+             maxlength="${Number(input.maxLength || 500)}"
+             autocomplete="off" spellcheck="false"
+             ${input.required ? 'required' : ''}>
+    </label>
+  `).join('');
+  return `
+    <form class="plugin-process-action controls ${includeSurface && action.surface === 'advanced' ? 'advanced-only' : ''}"
+          data-plugin-id="${escapeHtml(plugin.id)}"
+          data-plugin-worker-id="${escapeHtml(process.id)}"
+          data-plugin-action-id="${escapeHtml(action.id || 'default')}"
+          data-confirm="${escapeHtml(action.confirm || '')}"
+          aria-label="${escapeHtml(`${plugin.name || plugin.id} ${action.buttonLabel || process.name}`)}">
+      ${inputs}
+      <button class="plugin-process-enqueue primary" type="submit"
+              ${ready ? '' : 'disabled'}>${escapeHtml(action.buttonLabel || process.name)}</button>
+      <span class="metric plugin-process-status" aria-live="polite">${escapeHtml(ready ? pluginProcessDetails(process) : (plugin.message || plugin.state || 'Unavailable'))}</span>
+    </form>
+  `;
+}
+
 function renderPluginWorkstreams(plugins) {
   syncPluginLogSources(plugins);
   const sections = [];
+  const videoActions = [];
   for (const plugin of plugins) {
     for (const process of plugin.workerProcesses || []) {
-      const surface = process.adminSurface || 'none';
-      if (surface === 'none') continue;
-      const latest = process.latestRun || {};
-      const queued = Number(process.queuedCount || 0);
-      const running = Number(process.runningCount || 0);
-      const details = [
-        queued ? `${queued.toLocaleString()} queued` : 'Nothing queued',
-        running ? `${running.toLocaleString()} running` : '',
-        latest.outcome ? `Last: ${latest.outcome}` : '',
-        latest.finished_at ? fmtTime(latest.finished_at) : '',
-      ].filter(Boolean).join(' | ');
-      const ready = plugin.state === 'ready';
-      sections.push(`
-        <section class="workstream plugin-workstream ${surface === 'advanced' ? 'advanced-only' : ''}"
-                 data-plugin-id="${escapeHtml(plugin.id)}"
-                 data-plugin-worker-id="${escapeHtml(process.id)}">
-          <div class="workstream-header">
-            <h2>${escapeHtml(plugin.name || plugin.id)}</h2>
-            <span class="metric">${escapeHtml(process.name || process.id)}</span>
-          </div>
-          ${process.description ? `<p class="message">${escapeHtml(process.description)}</p>` : ''}
-          <div class="controls">
-            <button class="plugin-process-enqueue primary" type="button"
-                    data-plugin-id="${escapeHtml(plugin.id)}"
-                    data-plugin-worker-id="${escapeHtml(process.id)}"
-                    data-confirm="${escapeHtml(process.confirm || '')}"
-                    ${ready ? '' : 'disabled'}>${escapeHtml(process.buttonLabel || process.name)}</button>
-            <span class="metric plugin-process-status" aria-live="polite">${escapeHtml(ready ? details : (plugin.message || plugin.state || 'Unavailable'))}</span>
-          </div>
-        </section>
-      `);
+      for (const action of process.adminActions || []) {
+        if (action.placement === 'videos') {
+          videoActions.push(pluginProcessActionHtml(plugin, process, action, { includeSurface: true }));
+          continue;
+        }
+        if (action.placement !== 'plugin') continue;
+        sections.push(`
+          <section class="workstream plugin-workstream ${action.surface === 'advanced' ? 'advanced-only' : ''}"
+                   data-plugin-id="${escapeHtml(plugin.id)}"
+                   data-plugin-worker-id="${escapeHtml(process.id)}">
+            <div class="workstream-header">
+              <h2>${escapeHtml(plugin.name || plugin.id)}</h2>
+              <span class="metric">${escapeHtml(process.name || process.id)}</span>
+            </div>
+            ${action.description ? `<p class="message">${escapeHtml(action.description)}</p>` : ''}
+            ${pluginProcessActionHtml(plugin, process, action)}
+          </section>
+        `);
+      }
     }
   }
   fields.pluginWorkstreams.innerHTML = sections.join('');
+  fields.videoPluginProcesses.innerHTML = videoActions.join('');
 }
 
 function render(data) {
@@ -902,8 +932,13 @@ async function post(path, params = {}) {
     fields.startWorkerQueue.classList.remove('primary');
   }
   const response = await fetch(`${path}?${new URLSearchParams(params)}`, { method: 'POST' });
-  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
-  const payload = await response.json();
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch (error) {
+    // A process restart can close the connection immediately after a valid response.
+  }
+  if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
   await loadStatus({ force: true });
   scheduleActionPolls();
   return payload;
@@ -1277,32 +1312,47 @@ fields.workerQueueRows.addEventListener('click', event => {
   if (!queueId) return;
   post('/api/admin/queue/remove', { queue_id: queueId }).catch(error => alert(error.message));
 });
-fields.pluginWorkstreams.addEventListener('click', async event => {
-  const button = event.target.closest('.plugin-process-enqueue');
-  if (!button) return;
-  const pluginId = button.dataset.pluginId || '';
-  const workerId = button.dataset.pluginWorkerId || '';
-  const confirmation = button.dataset.confirm || '';
+async function enqueuePluginProcess(event) {
+  const action = event.target.closest('.plugin-process-action');
+  if (!action) return;
+  event.preventDefault();
+  const button = action.querySelector('.plugin-process-enqueue');
+  const pluginId = action.dataset.pluginId || '';
+  const workerId = action.dataset.pluginWorkerId || '';
+  const confirmation = action.dataset.confirm || '';
   if (!pluginId || !workerId || (confirmation && !confirm(confirmation))) return;
-  const section = button.closest('.plugin-workstream');
-  const status = section?.querySelector('.plugin-process-status');
+  const status = action.querySelector('.plugin-process-status');
+  const params = {};
+  for (const input of action.querySelectorAll('[data-plugin-param]')) {
+    const value = input.value.trim();
+    if (input.required && !value) {
+      input.focus();
+      if (status) status.textContent = `Enter ${input.closest('label')?.textContent?.trim() || input.dataset.pluginParam}`;
+      return;
+    }
+    if (value) params[input.dataset.pluginParam] = value;
+  }
   button.disabled = true;
   if (status) status.textContent = 'Planning tasks';
   try {
-    const result = await post(
+    const result = await requestJson(
       `/api/admin/plugins/${encodeURIComponent(pluginId)}/processes/${encodeURIComponent(workerId)}/enqueue`,
+      params,
     );
     const queue = result.queue || {};
     if (status) {
       status.textContent = `Queued ${Number(queue.inserted || 0).toLocaleString()}; ${Number(queue.alreadyQueued || 0).toLocaleString()} already queued`;
     }
+    for (const input of action.querySelectorAll('[data-plugin-param]')) input.value = '';
     scheduleActionPolls();
   } catch (error) {
     if (status) status.textContent = error.message;
   } finally {
     button.disabled = false;
   }
-});
+}
+fields.pluginWorkstreams.addEventListener('submit', enqueuePluginProcess);
+fields.videoPluginProcesses.addEventListener('submit', enqueuePluginProcess);
 document.getElementById('startLiveHistory').addEventListener('click', () => post('/api/admin/live-history/start').catch(error => alert(error.message)));
 fields.updateFrequency.addEventListener('change', () => {
   syncUpdateScheduleControls();

@@ -25,6 +25,7 @@ PLUGIN_BROWSER_ASSET_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 PLUGIN_BROWSER_ASSET_TYPES = {"script", "style"}
 PLUGIN_PROCESS_SERVICES = {"local", "youtube", "archivarix"}
 PLUGIN_ADMIN_SURFACES = {"none", "basic", "advanced"}
+PLUGIN_ADMIN_PLACEMENTS = {"plugin", "videos"}
 PLUGIN_TASK_LIMIT = 250_000
 PLUGIN_TASK_PAYLOAD_BYTES = 64 * 1024
 
@@ -221,6 +222,128 @@ def _short_text(value: Any, *, maximum: int) -> str:
     return str(value or "").strip()[:maximum]
 
 
+def _plugin_admin_inputs(
+    worker_id: str,
+    action_id: str,
+    raw_inputs: Any,
+) -> list[dict[str, Any]]:
+    if raw_inputs is None:
+        return []
+    if isinstance(raw_inputs, (str, bytes, Mapping)) or not isinstance(
+        raw_inputs, IterableCollection
+    ):
+        raise TypeError(
+            f"Plugin worker process {worker_id} admin action {action_id} "
+            "inputs must be iterable"
+        )
+    inputs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_input in raw_inputs:
+        if not isinstance(raw_input, Mapping):
+            raise TypeError("Plugin admin action inputs must be objects")
+        name = _short_text(raw_input.get("name"), maximum=80)
+        if not PLUGIN_PROCESS_ID.fullmatch(name):
+            raise ValueError(f"Invalid plugin admin input name: {name or '<missing>'}")
+        if name in seen:
+            raise ValueError(f"Duplicate plugin admin input name: {name}")
+        seen.add(name)
+        label = _short_text(raw_input.get("label") or name, maximum=120)
+        try:
+            max_length = int(
+                raw_input.get("max_length", raw_input.get("maxLength", 500))
+            )
+        except (TypeError, ValueError):
+            max_length = 500
+        inputs.append(
+            {
+                "name": name,
+                "label": label,
+                "placeholder": _short_text(
+                    raw_input.get("placeholder"), maximum=250
+                ),
+                "required": raw_input.get("required") is True,
+                "maxLength": max(1, min(2000, max_length)),
+            }
+        )
+    return inputs
+
+
+def _plugin_admin_actions(
+    worker_id: str,
+    raw_process: Mapping[str, Any],
+    *,
+    process_name: str,
+    process_description: str,
+    legacy_surface: str,
+    legacy_button_label: str,
+    legacy_confirm: str,
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if legacy_surface != "none":
+        actions.append(
+            {
+                "id": "default",
+                "placement": "plugin",
+                "surface": legacy_surface,
+                "buttonLabel": legacy_button_label,
+                "description": process_description,
+                "confirm": legacy_confirm,
+                "inputs": [],
+            }
+        )
+        seen.add("default")
+    raw_actions = raw_process.get("admin_actions", raw_process.get("adminActions"))
+    if raw_actions is None:
+        return actions
+    if isinstance(raw_actions, (str, bytes, Mapping)) or not isinstance(
+        raw_actions, IterableCollection
+    ):
+        raise TypeError(f"Plugin worker process {worker_id} admin actions must be iterable")
+    for raw_action in raw_actions:
+        if not isinstance(raw_action, Mapping):
+            raise TypeError("Plugin worker process admin actions must be objects")
+        action_id = _short_text(raw_action.get("id"), maximum=80)
+        if not PLUGIN_PROCESS_ID.fullmatch(action_id):
+            raise ValueError(f"Invalid plugin admin action ID: {action_id or '<missing>'}")
+        if action_id in seen:
+            raise ValueError(f"Duplicate plugin admin action ID: {action_id}")
+        seen.add(action_id)
+        placement = _short_text(
+            raw_action.get("placement") or "plugin", maximum=20
+        ).lower()
+        if placement not in PLUGIN_ADMIN_PLACEMENTS:
+            raise ValueError(f"Invalid plugin admin placement: {placement}")
+        surface = _short_text(
+            raw_action.get("surface") or "advanced", maximum=20
+        ).lower()
+        if surface not in PLUGIN_ADMIN_SURFACES - {"none"}:
+            raise ValueError(f"Invalid plugin admin action surface: {surface}")
+        actions.append(
+            {
+                "id": action_id,
+                "placement": placement,
+                "surface": surface,
+                "buttonLabel": _short_text(
+                    raw_action.get("button_label")
+                    or raw_action.get("buttonLabel")
+                    or process_name,
+                    maximum=120,
+                ),
+                "description": _short_text(
+                    raw_action.get("description"), maximum=500
+                ),
+                "confirm": _short_text(raw_action.get("confirm"), maximum=500),
+                "inputs": _plugin_admin_inputs(
+                    worker_id,
+                    action_id,
+                    raw_action.get("inputs"),
+                ),
+            }
+        )
+    return actions
+
+
 def _worker_processes(instance: Any) -> list[dict[str, Any]]:
     raw_processes = getattr(instance, "worker_processes", ())
     if callable(raw_processes):
@@ -270,22 +393,33 @@ def _worker_processes(instance: Any) -> list[dict[str, Any]]:
                 raise ValueError(f"Invalid plugin lifecycle hook: {hook or '<missing>'}")
             if hook not in hooks:
                 hooks.append(hook)
-        processes.append(
-            {
-                "id": worker_id,
-                "name": name,
-                "description": _short_text(raw.get("description"), maximum=500),
-                "service": service,
-                "maxInFlight": max(1, min(100, max_in_flight)),
-                "adminSurface": surface,
-                "buttonLabel": _short_text(
-                    raw.get("button_label") or raw.get("buttonLabel") or name,
-                    maximum=120,
-                ),
-                "confirm": _short_text(raw.get("confirm"), maximum=500),
-                "hooks": hooks,
-            }
+        description = _short_text(raw.get("description"), maximum=500)
+        button_label = _short_text(
+            raw.get("button_label") or raw.get("buttonLabel") or name,
+            maximum=120,
         )
+        confirm = _short_text(raw.get("confirm"), maximum=500)
+        process = {
+            "id": worker_id,
+            "name": name,
+            "description": description,
+            "service": service,
+            "maxInFlight": max(1, min(100, max_in_flight)),
+            "adminSurface": surface,
+            "buttonLabel": button_label,
+            "confirm": confirm,
+            "hooks": hooks,
+        }
+        process["adminActions"] = _plugin_admin_actions(
+            worker_id,
+            raw,
+            process_name=name,
+            process_description=description,
+            legacy_surface=surface,
+            legacy_button_label=button_label,
+            legacy_confirm=confirm,
+        )
+        processes.append(process)
     if processes:
         if not callable(getattr(instance, "plan_worker", None)):
             raise TypeError("Plugin worker processes require plan_worker")

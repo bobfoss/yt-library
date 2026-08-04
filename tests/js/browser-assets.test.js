@@ -89,6 +89,18 @@ test('admin status polling clears stale running state on request failures', () =
   assert.match(adminSource, /renderServiceUnavailable\(statusError\);/);
 });
 
+test('admin renders generic placed plugin process inputs', () => {
+  const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
+
+  assert.match(adminHtml, /id="videoPluginProcesses"/);
+  assert.match(adminSource, /process\.adminActions \|\| \[\]/);
+  assert.match(adminSource, /action\.placement === 'videos'/);
+  assert.match(adminSource, /data-plugin-param=/);
+  assert.match(adminSource, /params\[input\.dataset\.pluginParam\] = value/);
+  assert.match(adminSource, /videoPluginProcesses\.addEventListener\('submit', enqueuePluginProcess\)/);
+});
+
 test('history views render shared day dividers', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');

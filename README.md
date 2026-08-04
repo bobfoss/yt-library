@@ -289,6 +289,10 @@ Admin actions use
 logs appear in the common log view under a `plugin:{plugin_id}` source.
 Process-specific query parameters are forwarded to the plugin planner;
 repeated parameter names remain ordered value lists.
+Processes may also declare validated `adminActions`. An action can remain in
+its plugin workstream or use the generic `videos` placement, and can describe
+required text inputs whose values are sent as process query parameters. YTL
+renders and submits these controls without knowing their plugin semantics.
 
 The first plugin is the sibling YT Subtitles project. A local activation uses:
 
