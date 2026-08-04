@@ -860,6 +860,18 @@ function enableDefaultSearchKind(kind) {
   for (const facetKey of searchKindFacetKeys(kind)) {
     Object.assign(searchMetaVisibility[facetKey], defaultSearchMetaVisibility[facetKey]);
   }
+  if (kind !== 'videos') return;
+  for (const videoFilter of browserVideoFilterPlugins()) {
+    const state = browserVideoFacetState(videoFilter);
+    if (state.present || state.absent) continue;
+    const defaults = defaultBrowserVideoFacetVisibility(videoFilter);
+    Object.assign(
+      state,
+      defaults.present || defaults.absent
+        ? defaults
+        : { present: true, absent: true },
+    );
+  }
 }
 
 function setSearchFacetSelection(groupName, selectedKeys) {

@@ -171,6 +171,12 @@ test('search filters share deferred category dimming until refreshed results ren
   assert.match(indexSource, /function renderSearchMetaFilters[\s\S]*?for \(const kind of \[[\s\S]*?syncSearchKindFilter\(kind\)/);
 });
 
+test('video presets restore plugin-provided facets', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /function enableDefaultSearchKind\(kind\)[\s\S]*if \(kind !== 'videos'\) return;[\s\S]*browserVideoFilterPlugins\(\)[\s\S]*defaultBrowserVideoFacetVisibility\(videoFilter\)/);
+});
+
 test('search filter tree folds facets and persists disclosure state', () => {
   const indexHtml = source('index.html');
   const indexSource = source('index.js');
