@@ -93,6 +93,20 @@ test('playlist unavailable and removed filters are persisted opt-ins', () => {
   assert.match(indexSource, /metaAllFilter === 'playlist-videos'[\s\S]{0,100}savePlaylistVideoOptInPreferences\(\)/);
 });
 
+test('playlist cards show visibility before counts and pluralize video counts', () => {
+  const indexSource = source('index.js');
+  const cardSource = indexSource.slice(
+    indexSource.indexOf('function cardFor('),
+    indexSource.indexOf('function playlistStatusLabelHtml('),
+  );
+
+  assert.ok(
+    cardSource.indexOf('playlistVisibilityLabelHtml(playlist)')
+      < cardSource.indexOf('playlistCount ?'),
+  );
+  assert.match(indexSource, /count === 1 \? 'video' : 'videos'/);
+});
+
 test('admin status polling clears stale running state on request failures', () => {
   const adminSource = source('admin.js');
 

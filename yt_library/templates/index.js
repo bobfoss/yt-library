@@ -4416,9 +4416,9 @@ function cardFor(playlist, options = {}) {
     actionsHtml: `<a class="external-link" href="${escapeHtml(playlist.url)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(playlist.title)} on YouTube">${externalLinkSvg()}</a>`,
     bodyHtml: `
     <div class="details">
+      ${playlistVisibilityLabelHtml(playlist)}
       ${playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : ''}
       ${playlist.unavailable_count ? `<span class="badge">${playlist.unavailable_count} unavailable</span>` : ''}
-      ${playlistVisibilityLabelHtml(playlist)}
       ${playlistStatusLabelHtml(playlist)}
     </div>
     <div class="details">
@@ -4449,7 +4449,7 @@ function playlistVideoCountLabel(playlist) {
       || (reported && scanned && reported !== scanned)
     )
   );
-  return `${count} videos${incomplete ? ' (incomplete)' : ''}`;
+  return `${count} ${count === 1 ? 'video' : 'videos'}${incomplete ? ' (incomplete)' : ''}`;
 }
 
 function playlistOwnerHtml(playlist) {
