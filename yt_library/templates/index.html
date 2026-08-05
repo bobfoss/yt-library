@@ -435,7 +435,8 @@
     .history-heatmap-day { width: 11px; height: 11px; border: 0; border-radius: 2px; padding: 0; background: color-mix(in srgb, var(--line) 48%, transparent); }
     button.history-heatmap-day { cursor: pointer; }
     button.history-heatmap-day:hover,
-    button.history-heatmap-day:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+    button.history-heatmap-day:focus-visible,
+    button.history-heatmap-day[aria-current="date"] { outline: 2px solid var(--ink); outline-offset: 1px; }
     .history-heatmap-day.level-1 { background: color-mix(in srgb, var(--accent) 30%, var(--panel)); }
     .history-heatmap-day.level-2 { background: color-mix(in srgb, var(--accent) 48%, var(--panel)); }
     .history-heatmap-day.level-3 { background: color-mix(in srgb, var(--accent) 68%, var(--panel)); }

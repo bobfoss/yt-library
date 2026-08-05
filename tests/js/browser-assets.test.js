@@ -188,6 +188,17 @@ test('history day keys use the configured display timezone', () => {
   assert.equal(time.dateKey('2026-08-01'), '2026-08-01');
 });
 
+test('history heatmaps track the first fully visible card', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+
+  assert.match(indexSource, /function firstVisibleHistoryCardDate\(\)[\s\S]*?bounds\.top >= viewport\.top && bounds\.bottom <= viewport\.bottom/);
+  assert.match(indexSource, /function updateHistoryHeatmapCurrentDay\(\)[\s\S]*?cell\.setAttribute\('aria-current', 'date'\)/);
+  assert.match(indexSource, /resultsScroll\?\.addEventListener\('scroll', scheduleHistoryHeatmapCurrentDay/);
+  assert.match(indexSource, /window\.addEventListener\('scroll', scheduleHistoryHeatmapCurrentDay/);
+  assert.match(indexHtml, /button\.history-heatmap-day\[aria-current="date"\]/);
+});
+
 test('histogram navigation uses a restorable date URL', () => {
   const indexSource = source('index.js');
 

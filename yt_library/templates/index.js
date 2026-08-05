@@ -510,6 +510,7 @@ let pendingHistoryDate = '';
 let historyNavigationDate = '';
 let channelHistoryCounts = new Map();
 let channelDetailTab = 'playlists';
+let historyHeatmapDayFrame = null;
 let renderGeneration = 0;
 let renderedOmniSearchQuery = '';
 let searchResultsRendered = false;
@@ -694,6 +695,48 @@ function historyDateParam(value) {
 function historyDateNavigationIsActive() {
   return selected === '__history__'
     || (selected.startsWith('__channel__:') && channelDetailTab === 'history');
+}
+
+function historyCardViewportBounds() {
+  if (usesDocumentPageScrolling()) {
+    return { top: 0, bottom: window.innerHeight };
+  }
+  if (!(resultsScroll instanceof HTMLElement)) return null;
+  const bounds = resultsScroll.getBoundingClientRect();
+  return { top: bounds.top, bottom: bounds.bottom };
+}
+
+function firstVisibleHistoryCardDate() {
+  const viewport = historyCardViewportBounds();
+  if (!viewport || viewport.bottom <= viewport.top) return '';
+  let firstIntersectingDate = '';
+  for (const card of grid.querySelectorAll('.history-card[data-watch-date]')) {
+    const bounds = card.getBoundingClientRect();
+    if (bounds.bottom <= viewport.top || bounds.top >= viewport.bottom) continue;
+    const date = card.dataset.watchDate || '';
+    if (!firstIntersectingDate) firstIntersectingDate = date;
+    if (bounds.top >= viewport.top && bounds.bottom <= viewport.bottom) return date;
+  }
+  return firstIntersectingDate;
+}
+
+function updateHistoryHeatmapCurrentDay() {
+  historyHeatmapDayFrame = null;
+  if (!historyDateNavigationIsActive()) return;
+  const heatmap = viewContext.querySelector('.history-heatmap');
+  if (!(heatmap instanceof HTMLElement)) return;
+  const date = firstVisibleHistoryCardDate();
+  const current = heatmap.querySelector('.history-heatmap-day[aria-current="date"]');
+  if (current?.dataset.historyDate === date) return;
+  current?.removeAttribute('aria-current');
+  if (!date) return;
+  const cell = heatmap.querySelector(`.history-heatmap-day[data-history-date="${CSS.escape(date)}"]`);
+  if (cell instanceof HTMLButtonElement) cell.setAttribute('aria-current', 'date');
+}
+
+function scheduleHistoryHeatmapCurrentDay() {
+  if (historyHeatmapDayFrame !== null) return;
+  historyHeatmapDayFrame = requestAnimationFrame(updateHistoryHeatmapCurrentDay);
 }
 
 function applyPaginationParams(params, allowHistoryDate = false) {
@@ -2545,6 +2588,7 @@ function historyHeatmapFor(payload) {
   }
   scroll.append(months, weeks);
   heatmap.append(header, scroll);
+  scheduleHistoryHeatmapCurrentDay();
   return heatmap;
 }
 
@@ -5456,6 +5500,9 @@ window.addEventListener('wheel', handlePageBoundaryWheel, { passive: false });
 window.addEventListener('touchstart', handlePageBoundaryTouchStart, { passive: true });
 window.addEventListener('touchmove', handlePageBoundaryTouchMove, { passive: true });
 window.addEventListener('touchend', handlePageBoundaryTouchEnd, { passive: true });
+resultsScroll?.addEventListener('scroll', scheduleHistoryHeatmapCurrentDay, { passive: true });
+window.addEventListener('scroll', scheduleHistoryHeatmapCurrentDay, { passive: true });
+window.addEventListener('resize', scheduleHistoryHeatmapCurrentDay, { passive: true });
 function bindSearchField(input) {
   input.addEventListener('change', () => {
     const activatedFromHistory = activateSearchFromHistory({ resetMetaVisibility: true });
