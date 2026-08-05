@@ -3971,7 +3971,7 @@ def save_discovered_playlists(
     records: list[dict[str, str]],
     *,
     group_key: str = "youtube-ungrouped",
-    group_name: str = "Ungrouped / YouTube",
+    group_name: str = "Uncategorized",
 ) -> dict[str, int]:
     existing_ids = {
         row["playlist_id"]
