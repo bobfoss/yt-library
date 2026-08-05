@@ -408,7 +408,7 @@ const searchPresetDefinitions = {
   videos: { kind: 'videos', sort: 'newest' },
   playlisted: { kind: 'videos', sort: 'newest' },
   liked: { kind: 'videos', sort: 'newest' },
-  'all-playlists': { kind: 'playlists', sort: 'title' },
+  playlists: { kind: 'playlists', sort: 'title' },
   channels: { kind: 'channels', sort: 'title' },
   subscribed: { kind: 'channels', sort: 'title' },
   terminated: { kind: 'channels', sort: 'title' },
@@ -3995,7 +3995,7 @@ function renderGroups() {
   }
 
   const playlistSection = sectionFor('Playlists');
-  playlistSection.appendChild(presetLink('all-playlists', 'Playlists', counts.playlists || 0));
+  playlistSection.appendChild(presetLink('playlists', 'Playlists', counts.playlists || 0));
   appendNavigationGroupTrees(
     playlistSection,
     playlistChildren.get('') || [],

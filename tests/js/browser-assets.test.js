@@ -330,10 +330,12 @@ test('navigation preset labels and identifiers stay concise', () => {
 
   assert.match(indexSource, /presetLink\('playlisted', 'Playlisted',/);
   assert.match(indexSource, /presetLink\('liked', 'Liked',/);
+  assert.match(indexSource, /presetLink\('playlists', 'Playlists',/);
   assert.match(indexSource, /presetLink\('subscribed', 'Subscribed',/);
   assert.match(indexSource, /presetLink\('terminated', 'Terminated',/);
   assert.doesNotMatch(indexSource, /Playlist videos|Liked videos|Subscribed channels|Terminated channels/);
   assert.doesNotMatch(indexSource, /presetLink\('(playlist-videos|liked-videos|subscribed-channels|terminated-channels)'/);
+  assert.doesNotMatch(indexSource, /all-playlists/);
   assert.match(indexSource, /const invalidPreset = Boolean\(requestedPreset && !searchPresetDefinition\(requestedPreset\)\)/);
   assert.match(indexSource, /if \(invalidPreset\) updateSearchHash\(true\)/);
 });
