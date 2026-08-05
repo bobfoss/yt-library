@@ -800,6 +800,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         "SELECT playlist_id FROM playlists WHERE playlist_id <> ''"
                     )
                 )
+                known_channel_ids = frozenset(
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT channel_id FROM channels WHERE channel_id <> ''"
+                    )
+                )
             finally:
                 conn.close()
             playlist_groups = self.plugin_manager.project_playlist_groups(
@@ -809,6 +815,13 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             data["memberships"].extend(playlist_groups["memberships"])
             if playlist_groups["errors"]:
                 data["pluginGroupErrors"] = playlist_groups["errors"]
+            channel_groups = self.plugin_manager.project_channel_groups(
+                known_channel_ids
+            )
+            data["channelGroups"] = channel_groups["groups"]
+            data["channelMemberships"] = channel_groups["memberships"]
+            if channel_groups["errors"]:
+                data["pluginChannelGroupErrors"] = channel_groups["errors"]
             data["plugins"] = self.plugin_manager.statuses()
             self.send_json(data)
             return
@@ -997,6 +1010,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 if playlist_group_key
                 else None
             )
+            channel_group_key = (params.get("channel_group_key") or [""])[0]
+            channel_id_filter = (
+                self.plugin_manager.channel_ids_for_group(channel_group_key)
+                if channel_group_key
+                else None
+            )
             search_fields = query_set_param(params, "search_fields")
             sort = (params.get("sort") or [None])[0]
             video_id_filters: list[frozenset[str]] = []
@@ -1074,6 +1093,8 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     result_kinds=query_set_param(params, "kinds"),
                     playlist_group_key=playlist_group_key,
                     playlist_id_filter=playlist_id_filter,
+                    channel_group_key=channel_group_key,
+                    channel_id_filter=channel_id_filter,
                     video_source=(params.get("video_source") or [""])[0],
                     channel_source=(params.get("channel_source") or [""])[0],
                     video_meta_filters=query_set_param(params, "video_meta"),

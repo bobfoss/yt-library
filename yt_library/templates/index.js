@@ -51,8 +51,10 @@ function setDocumentTitle(itemTitle = '') {
 }
 
 let data = null;
-let memberships = new Map();
-let children = new Map();
+let playlistMemberships = new Map();
+let playlistChildren = new Map();
+let channelMemberships = new Map();
+let channelChildren = new Map();
 const browserPlugins = new Map();
 const loadedBrowserPluginAssets = new Set();
 const pluginSearchVisibility = new Map();
@@ -366,6 +368,7 @@ let searchResultsSort = 'newest';
 let searchSortExplicit = false;
 let activeSearchPreset = '';
 let searchPlaylistGroupKey = '';
+let searchChannelGroupKey = '';
 const cardLayouts = new Set(['grid', 'detailed', 'compact']);
 let searchCardLayout = cardLayouts.has(pageConfig.searchCardLayout)
   ? pageConfig.searchCardLayout
@@ -401,6 +404,7 @@ const searchPresetDefinitions = {
   'subscribed-channels': { kind: 'channels', sort: 'title' },
   'terminated-channels': { kind: 'channels', sort: 'title' },
   'playlist-group': { kind: 'playlists', sort: 'title' },
+  'channel-group': { kind: 'channels', sort: 'title' },
 };
 
 function browserSearchPresets(section = '') {
@@ -528,16 +532,27 @@ async function loadData({ preserveSearchContent = false } = {}) {
   omniPlaylistMembershipCountsCache = new Map();
   omniUploaderCategoryCountsCache = new Map();
   channelHistoryCounts = new Map();
-  memberships = new Map();
-  for (const item of data.memberships) {
-    if (!memberships.has(item.group_key)) memberships.set(item.group_key, []);
-    memberships.get(item.group_key).push(item.playlist_id);
+  playlistMemberships = new Map();
+  for (const item of data.memberships || []) {
+    if (!playlistMemberships.has(item.group_key)) playlistMemberships.set(item.group_key, []);
+    playlistMemberships.get(item.group_key).push(item.playlist_id);
   }
-  children = new Map();
-  for (const group of data.groups) {
+  playlistChildren = new Map();
+  for (const group of data.groups || []) {
     const parent = group.parent_key || '';
-    if (!children.has(parent)) children.set(parent, []);
-    children.get(parent).push(group);
+    if (!playlistChildren.has(parent)) playlistChildren.set(parent, []);
+    playlistChildren.get(parent).push(group);
+  }
+  channelMemberships = new Map();
+  for (const item of data.channelMemberships || []) {
+    if (!channelMemberships.has(item.group_key)) channelMemberships.set(item.group_key, []);
+    channelMemberships.get(item.group_key).push(item.channel_id);
+  }
+  channelChildren = new Map();
+  for (const group of data.channelGroups || []) {
+    const parent = group.parent_key || '';
+    if (!channelChildren.has(parent)) channelChildren.set(parent, []);
+    channelChildren.get(parent).push(group);
   }
   selected = selectionFromHash();
   renderGroups();
@@ -884,14 +899,17 @@ function setSearchFacetSelection(groupName, selectedKeys) {
 function applySearchPresetState(preset, groupKey = '') {
   uploaderCategorySelectionExplicit = false;
   const definition = searchPresetDefinition(preset);
-  if (!definition || (preset === 'playlist-group' && !groupKey)) {
+  const groupPreset = preset === 'playlist-group' || preset === 'channel-group';
+  if (!definition || (groupPreset && !groupKey)) {
     activeSearchPreset = '';
     searchPlaylistGroupKey = '';
+    searchChannelGroupKey = '';
     resetSearchMetaVisibility();
     return;
   }
   activeSearchPreset = preset;
   searchPlaylistGroupKey = preset === 'playlist-group' ? groupKey : '';
+  searchChannelGroupKey = preset === 'channel-group' ? groupKey : '';
   clearSearchMetaVisibility();
   enableDefaultSearchKind(definition.kind);
   if (definition.pluginFilter) {
@@ -1024,6 +1042,7 @@ function presetDefiningFiltersMatch() {
       && !searchMetaVisibility.channelStatus.active;
   }
   if (activeSearchPreset === 'playlist-group') return Boolean(searchPlaylistGroupKey);
+  if (activeSearchPreset === 'channel-group') return Boolean(searchChannelGroupKey);
   return true;
 }
 
@@ -1034,6 +1053,7 @@ function reconcileSearchPreset() {
   if (kinds.length === 1 && kinds[0] === definition.kind && presetDefiningFiltersMatch()) return;
   activeSearchPreset = '';
   searchPlaylistGroupKey = '';
+  searchChannelGroupKey = '';
 }
 
 function applyMetaFilterParam(visibility, value, excludedKeys = []) {
@@ -1051,7 +1071,8 @@ function searchHash() {
   const query = search.value.trim();
   if (query) params.set('q', query);
   if (activeSearchPreset) params.set('preset', activeSearchPreset);
-  if (searchPlaylistGroupKey) params.set('group', searchPlaylistGroupKey);
+  const groupKey = searchPlaylistGroupKey || searchChannelGroupKey;
+  if (groupKey) params.set('group', groupKey);
   if (activeSearchFields().size !== searchFields.length) {
     params.set('in', searchFieldParamValue() || '__none__');
   }
@@ -1277,6 +1298,7 @@ function activateSearchFromHistory({ resetMetaVisibility = false } = {}) {
   selected = '__search__';
   activeSearchPreset = '';
   searchPlaylistGroupKey = '';
+  searchChannelGroupKey = '';
   searchSortExplicit = false;
   currentPage = 1;
   searchFilters.classList.remove('view-inactive');
@@ -1294,6 +1316,7 @@ function activateUnscopedSearch() {
   selected = '__search__';
   activeSearchPreset = '';
   searchPlaylistGroupKey = '';
+  searchChannelGroupKey = '';
   resetSearchMetaVisibility();
   searchResultsSort = preferredSearchResultsSort(search.value.trim(), '');
   searchSortExplicit = false;
@@ -1366,10 +1389,18 @@ function resetPlaylistVisibilityFor(playlistId) {
   playlistPageSearch = '';
 }
 
-function groupCount(groupKey) {
-  const own = memberships.get(groupKey) || [];
-  const nested = (children.get(groupKey) || []).flatMap(child => memberships.get(child.group_key) || []);
-  return new Set([...own, ...nested]).size;
+function groupCount(groupKey, membershipMap, childMap) {
+  const identifiers = new Set();
+  const pending = [groupKey];
+  const visited = new Set();
+  while (pending.length) {
+    const current = pending.pop();
+    if (!current || visited.has(current)) continue;
+    visited.add(current);
+    for (const identifier of membershipMap.get(current) || []) identifiers.add(identifier);
+    for (const child of childMap.get(current) || []) pending.push(child.group_key);
+  }
+  return identifiers.size;
 }
 
 function activeSearchFields() {
@@ -3415,6 +3446,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     searchFieldsValue,
     kindsValue,
     searchPlaylistGroupKey,
+    searchChannelGroupKey,
     sourceScopes.video,
     sourceScopes.channel,
     partialCompletionMinimumPercent,
@@ -3433,6 +3465,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     search_fields: searchFieldsValue,
     kinds: kindsValue,
     playlist_group_key: searchPlaylistGroupKey,
+    channel_group_key: searchChannelGroupKey,
     video_source: sourceScopes.video,
     channel_source: sourceScopes.channel,
     video_meta: metaFilterParamValue(searchMetaVisibility.videos),
@@ -3462,6 +3495,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     searchFieldsValue,
     kindsValue,
     searchPlaylistGroupKey,
+    searchChannelGroupKey,
     sourceScopes.video,
     sourceScopes.channel,
     metaFilterParamValue(searchMetaVisibility.videos),
@@ -3621,14 +3655,22 @@ async function fetchVideoCollection({
   };
 }
 
-function buttonFor(group, child=false) {
+function buttonFor(group, preset, membershipMap, childMap, depth = 0) {
   const button = document.createElement('button');
-  button.className = `group ${child ? 'child' : ''}`;
-  button.dataset.preset = 'playlist-group';
+  button.className = `group ${depth > 0 ? 'child' : ''}`;
+  button.style.setProperty('--group-depth', String(depth));
+  button.dataset.preset = preset;
   button.dataset.groupKey = group.group_key;
-  button.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="count">${groupCount(group.group_key)}</span>`;
-  button.addEventListener('click', () => activateSearchPreset('playlist-group', group.group_key));
+  button.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="count">${groupCount(group.group_key, membershipMap, childMap)}</span>`;
+  button.addEventListener('click', () => activateSearchPreset(preset, group.group_key));
   return button;
+}
+
+function appendGroupTree(section, group, preset, membershipMap, childMap, depth = 0) {
+  section.appendChild(buttonFor(group, preset, membershipMap, childMap, depth));
+  for (const child of childMap.get(group.group_key) || []) {
+    appendGroupTree(section, child, preset, membershipMap, childMap, depth + 1);
+  }
 }
 
 function sectionFor(label) {
@@ -3652,17 +3694,21 @@ function presetButton(preset, label, count) {
 }
 
 function syncSidebarSelection() {
+  const groupPresets = new Set(['playlist-group', 'channel-group']);
   for (const button of groupsEl.querySelectorAll('.group')) {
+    const activeGroupKey = activeSearchPreset === 'channel-group'
+      ? searchChannelGroupKey
+      : searchPlaylistGroupKey;
     const activeGroupPreset = (
       selected === '__search__'
-      && activeSearchPreset === 'playlist-group'
-      && button.dataset.preset === 'playlist-group'
-      && button.dataset.groupKey === searchPlaylistGroupKey
+      && groupPresets.has(activeSearchPreset)
+      && button.dataset.preset === activeSearchPreset
+      && button.dataset.groupKey === activeGroupKey
     );
     const activeNamedPreset = (
       selected === '__search__'
       && button.dataset.preset
-      && button.dataset.preset !== 'playlist-group'
+      && !groupPresets.has(button.dataset.preset)
       && button.dataset.preset === activeSearchPreset
     );
     button.classList.toggle(
@@ -3696,17 +3742,29 @@ function renderGroups() {
 
   const playlistSection = sectionFor('Playlists');
   playlistSection.appendChild(presetButton('all-playlists', 'Playlists', counts.playlists || 0));
-  for (const group of children.get('') || []) {
-    playlistSection.appendChild(buttonFor(group));
-    for (const child of children.get(group.group_key) || []) {
-      playlistSection.appendChild(buttonFor(child, true));
-    }
+  for (const group of playlistChildren.get('') || []) {
+    appendGroupTree(
+      playlistSection,
+      group,
+      'playlist-group',
+      playlistMemberships,
+      playlistChildren,
+    );
   }
 
   const channelSection = sectionFor('Channels');
   channelSection.appendChild(presetButton('channels', 'Channels', counts.channels || 0));
   channelSection.appendChild(presetButton('subscribed-channels', 'Subscribed channels', counts.subscribed_channels || 0));
   channelSection.appendChild(presetButton('terminated-channels', 'Terminated channels', counts.terminated_channels || 0));
+  for (const group of channelChildren.get('') || []) {
+    appendGroupTree(
+      channelSection,
+      group,
+      'channel-group',
+      channelMemberships,
+      channelChildren,
+    );
+  }
   syncSidebarSelection();
 }
 
@@ -4468,6 +4526,7 @@ search.addEventListener('input', () => {
   if (!wasSearchHash) {
     activeSearchPreset = '';
     searchPlaylistGroupKey = '';
+    searchChannelGroupKey = '';
     resetSearchMetaVisibility();
     if (!searchSortExplicit) searchResultsSort = preferredSearchResultsSort();
   }

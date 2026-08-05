@@ -262,9 +262,30 @@ class AdminServerTests(unittest.TestCase):
             ],
             "errors": [],
         }
+        handler.plugin_manager.project_channel_groups.return_value = {
+            "groups": [
+                {
+                    "group_key": "plugin-channel:example:group",
+                    "name": "Example channels",
+                    "parent_key": None,
+                    "position": 0,
+                }
+            ],
+            "memberships": [
+                {
+                    "group_key": "plugin-channel:example:group",
+                    "channel_id": "UCknown",
+                    "position": 0,
+                }
+            ],
+            "errors": [],
+        }
         handler.send_json = Mock()
         connection = Mock()
-        connection.execute.return_value = [("PLknown",)]
+        connection.execute.side_effect = [
+            [("PLknown",)],
+            [("UCknown",)],
+        ]
 
         with (
             patch("yt_library.server.connect", return_value=connection),
@@ -294,11 +315,29 @@ class AdminServerTests(unittest.TestCase):
                     }
                 ],
                 "counts": {},
+                "channelGroups": [
+                    {
+                        "group_key": "plugin-channel:example:group",
+                        "name": "Example channels",
+                        "parent_key": None,
+                        "position": 0,
+                    }
+                ],
+                "channelMemberships": [
+                    {
+                        "group_key": "plugin-channel:example:group",
+                        "channel_id": "UCknown",
+                        "position": 0,
+                    }
+                ],
                 "plugins": [{"id": "example", "enabled": True, "state": "ready"}],
             }
         )
         handler.plugin_manager.project_playlist_groups.assert_called_once_with(
             frozenset({"PLknown"})
+        )
+        handler.plugin_manager.project_channel_groups.assert_called_once_with(
+            frozenset({"UCknown"})
         )
 
     def test_plugin_routes_are_namespaced_and_delegated(self) -> None:
@@ -418,6 +457,46 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(
             search_data.call_args.kwargs["playlist_group_key"],
             "plugin:example:parent",
+        )
+        connection.close.assert_called_once_with()
+        handler.send_json.assert_called_once_with(payload)
+
+    def test_search_resolves_plugin_channel_group_membership(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.config_data = {}
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.channel_ids_for_group.return_value = frozenset(
+            {"UCparent", "UCchild"}
+        )
+        handler.send_json = Mock()
+        connection = Mock()
+        payload = {"results": [], "total": 0}
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch(
+                "yt_library.server.omni_search_data",
+                return_value=payload,
+            ) as search_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/search?kinds=channel&channel_group_key="
+                    "plugin-channel%3Aexample%3Aparent&limit=1"
+                )
+            )
+
+        handler.plugin_manager.channel_ids_for_group.assert_called_once_with(
+            "plugin-channel:example:parent"
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["channel_id_filter"],
+            frozenset({"UCparent", "UCchild"}),
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["channel_group_key"],
+            "plugin-channel:example:parent",
         )
         connection.close.assert_called_once_with()
         handler.send_json.assert_called_once_with(payload)

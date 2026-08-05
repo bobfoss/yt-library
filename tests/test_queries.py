@@ -272,6 +272,43 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["PLalso", "PLincluded"],
         )
 
+    def test_omni_search_accepts_projected_channel_group_ids(self) -> None:
+        self.conn.executemany(
+            "INSERT INTO channels(channel_id, title) VALUES (?, ?)",
+            [
+                ("UCincluded", "Included channel"),
+                ("UCalso", "Also included"),
+                ("UCother", "Other channel"),
+            ],
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"channel"},
+            channel_group_key="plugin-channel:example:group",
+            channel_id_filter={"UCincluded", "UCalso", "UCmissing"},
+            sort="title",
+            limit=20,
+        )
+        unknown = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"channel"},
+            channel_group_key="plugin-channel:example:missing",
+            sort="title",
+            limit=20,
+        )
+
+        self.assertEqual(data["channelGroupKey"], "plugin-channel:example:group")
+        self.assertEqual(data["metaCounts"]["channels"]["total"], 2)
+        self.assertEqual(
+            [result["item"]["channel_id"] for result in data["results"]],
+            ["UCalso", "UCincluded"],
+        )
+        self.assertEqual(unknown["total"], 0)
+
     def test_omni_search_preset_sources_scope_candidates_and_counts(self) -> None:
         self.add_video("likedsource", "Liked source", "UC_subscribed_source")
         self.add_video("membersource", "Playlist member source", "UC_regular_source")

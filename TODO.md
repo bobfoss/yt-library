@@ -206,7 +206,7 @@ The left-navigation library lists are named omni-search presets. Search returns 
 
 ## Deferred Decisions
 
-- The PocketTube plugin currently projects only playlist IDs already present in YT Library. Consider a generic discovery/import workflow for unmatched plugin playlist references only if the proven read-only integration leaves a real need; do not fabricate canonical playlist rows from group membership alone.
+- The PocketTube plugin projects only playlist and channel IDs already present in YT Library. Consider a generic discovery/import workflow for unmatched plugin references only if the proven read-only integration leaves a real need; do not fabricate canonical rows from group membership alone.
 - Previous-database queue backfill remains a one-off recovery operation. Promote it to a supported command only if the workflow repeats and can define source-version and conflict rules.
 - `watch_resume_seconds` remains less trustworthy than the observed progress percentage. Do not expand resume-time behavior until additional examples explain the mismatch.
 - Watch-progress history needs an evidence survey before expanding the model. `history_events` already stores progress observed on individual live-history occurrences, while metadata scans maintain the latest canonical percentage on `videos`; there is no durable chronology that associates successive metadata observations with distinct rewatches. Survey progress coverage by watch date and observation date to estimate when YouTube stops exposing completion data. If repeated watches produce lower percentages alongside corresponding new history occurrences, evaluate retaining those observations per occurrence instead of replacing the prior canonical completion.

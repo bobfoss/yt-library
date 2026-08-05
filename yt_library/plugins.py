@@ -28,9 +28,10 @@ PLUGIN_ADMIN_SURFACES = {"none", "basic", "advanced"}
 PLUGIN_ADMIN_PLACEMENTS = {"plugin", "videos"}
 PLUGIN_TASK_LIMIT = 250_000
 PLUGIN_TASK_PAYLOAD_BYTES = 64 * 1024
-PLUGIN_PLAYLIST_GROUP_LIMIT = 10_000
-PLUGIN_PLAYLIST_MEMBERSHIP_LIMIT = 250_000
+PLUGIN_NAVIGATION_GROUP_LIMIT = 10_000
+PLUGIN_NAVIGATION_MEMBERSHIP_LIMIT = 250_000
 PLUGIN_PLAYLIST_GROUP_KEY_PREFIX = "plugin:"
+PLUGIN_CHANNEL_GROUP_KEY_PREFIX = "plugin-channel:"
 
 
 @dataclass(frozen=True)
@@ -221,62 +222,81 @@ def _normalized_video_projections(
     return projections
 
 
-def _plugin_playlist_group_key(plugin_id: str, group_key: str) -> str:
-    return f"{PLUGIN_PLAYLIST_GROUP_KEY_PREFIX}{plugin_id}:{group_key}"
+def _plugin_navigation_group_key(
+    plugin_id: str,
+    group_key: str,
+    prefix: str,
+) -> str:
+    return f"{prefix}{plugin_id}:{group_key}"
 
 
-def _normalized_playlist_group_projection(
+def _normalized_navigation_group_projection(
     plugin_id: str,
     value: Any,
+    *,
+    domain: str,
+    identifier_field: str,
+    key_prefix: str,
 ) -> dict[str, Any]:
     if not isinstance(value, Mapping):
-        raise TypeError("Plugin playlist-group projection must be an object")
+        raise TypeError(f"Plugin {domain}-group projection must be an object")
     raw_groups = value.get("groups")
     if isinstance(raw_groups, (str, bytes, Mapping)) or not isinstance(
         raw_groups, IterableCollection
     ):
-        raise TypeError("Plugin playlist groups must be an iterable of objects")
+        raise TypeError(f"Plugin {domain} groups must be an iterable of objects")
     raw_memberships = value.get("memberships")
     if isinstance(raw_memberships, (str, bytes, Mapping)) or not isinstance(
         raw_memberships, IterableCollection
     ):
-        raise TypeError("Plugin playlist memberships must be an iterable of objects")
+        raise TypeError(
+            f"Plugin {domain} memberships must be an iterable of objects"
+        )
 
     groups: list[dict[str, Any]] = []
     raw_group_keys: set[str] = set()
     raw_parents: dict[str, str | None] = {}
     for item in raw_groups:
-        if len(groups) >= PLUGIN_PLAYLIST_GROUP_LIMIT:
+        if len(groups) >= PLUGIN_NAVIGATION_GROUP_LIMIT:
             raise ValueError(
-                f"Plugin returned more than {PLUGIN_PLAYLIST_GROUP_LIMIT} playlist groups"
+                "Plugin returned more than "
+                f"{PLUGIN_NAVIGATION_GROUP_LIMIT} {domain} groups"
             )
         if not isinstance(item, Mapping):
-            raise TypeError("Plugin playlist groups must be objects")
+            raise TypeError(f"Plugin {domain} groups must be objects")
         group_key = str(item.get("group_key") or "").strip()
         name = str(item.get("name") or "").strip()
         parent_value = item.get("parent_key")
         parent_key = str(parent_value or "").strip() or None
         if not group_key or len(group_key) > 500 or any(ord(char) < 32 for char in group_key):
-            raise ValueError("Plugin playlist groups require a valid group_key")
+            raise ValueError(f"Plugin {domain} groups require a valid group_key")
         if group_key in raw_group_keys:
-            raise ValueError("Plugin returned duplicate playlist group keys")
+            raise ValueError(f"Plugin returned duplicate {domain} group keys")
         if not name or len(name) > 2_000:
-            raise ValueError("Plugin playlist groups require a valid name")
+            raise ValueError(f"Plugin {domain} groups require a valid name")
         try:
             position = int(item.get("position") or 0)
         except (TypeError, ValueError) as exc:
-            raise ValueError("Plugin playlist group positions must be integers") from exc
+            raise ValueError(
+                f"Plugin {domain} group positions must be integers"
+            ) from exc
         if position < 0:
-            raise ValueError("Plugin playlist group positions must be nonnegative")
+            raise ValueError(
+                f"Plugin {domain} group positions must be nonnegative"
+            )
         icon = str(item.get("icon") or "")[:10_000]
         raw_group_keys.add(group_key)
         raw_parents[group_key] = parent_key
         groups.append(
             {
-                "group_key": _plugin_playlist_group_key(plugin_id, group_key),
+                "group_key": _plugin_navigation_group_key(
+                    plugin_id, group_key, key_prefix
+                ),
                 "name": name,
                 "parent_key": (
-                    _plugin_playlist_group_key(plugin_id, parent_key)
+                    _plugin_navigation_group_key(
+                        plugin_id, parent_key, key_prefix
+                    )
                     if parent_key
                     else None
                 ),
@@ -288,50 +308,58 @@ def _normalized_playlist_group_projection(
     for group_key, parent_key in raw_parents.items():
         if parent_key is not None and parent_key not in raw_group_keys:
             raise ValueError(
-                f"Plugin playlist group {group_key!r} references a missing parent"
+                f"Plugin {domain} group {group_key!r} references a missing parent"
             )
         seen: set[str] = set()
         current: str | None = group_key
         while current is not None:
             if current in seen:
-                raise ValueError("Plugin playlist group hierarchy contains a cycle")
+                raise ValueError(
+                    f"Plugin {domain} group hierarchy contains a cycle"
+                )
             seen.add(current)
             current = raw_parents.get(current)
 
     memberships: list[dict[str, Any]] = []
     seen_memberships: set[tuple[str, str]] = set()
     for item in raw_memberships:
-        if len(memberships) >= PLUGIN_PLAYLIST_MEMBERSHIP_LIMIT:
+        if len(memberships) >= PLUGIN_NAVIGATION_MEMBERSHIP_LIMIT:
             raise ValueError(
                 "Plugin returned more than "
-                f"{PLUGIN_PLAYLIST_MEMBERSHIP_LIMIT} playlist memberships"
+                f"{PLUGIN_NAVIGATION_MEMBERSHIP_LIMIT} {domain} memberships"
             )
         if not isinstance(item, Mapping):
-            raise TypeError("Plugin playlist memberships must be objects")
+            raise TypeError(f"Plugin {domain} memberships must be objects")
         group_key = str(item.get("group_key") or "").strip()
-        playlist_id = str(item.get("playlist_id") or "").strip()
+        identifier = str(item.get(identifier_field) or "").strip()
         if group_key not in raw_group_keys:
-            raise ValueError("Plugin playlist membership references an unknown group")
-        if not playlist_id or len(playlist_id) > 500:
-            raise ValueError("Plugin playlist memberships require playlist_id")
-        membership_key = (group_key, playlist_id)
+            raise ValueError(
+                f"Plugin {domain} membership references an unknown group"
+            )
+        if not identifier or len(identifier) > 500:
+            raise ValueError(
+                f"Plugin {domain} memberships require {identifier_field}"
+            )
+        membership_key = (group_key, identifier)
         if membership_key in seen_memberships:
-            raise ValueError("Plugin returned duplicate playlist memberships")
+            raise ValueError(f"Plugin returned duplicate {domain} memberships")
         try:
             position = int(item.get("position") or 0)
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                "Plugin playlist membership positions must be integers"
+                f"Plugin {domain} membership positions must be integers"
             ) from exc
         if position < 0:
             raise ValueError(
-                "Plugin playlist membership positions must be nonnegative"
+                f"Plugin {domain} membership positions must be nonnegative"
             )
         seen_memberships.add(membership_key)
         memberships.append(
             {
-                "group_key": _plugin_playlist_group_key(plugin_id, group_key),
-                "playlist_id": playlist_id,
+                "group_key": _plugin_navigation_group_key(
+                    plugin_id, group_key, key_prefix
+                ),
+                identifier_field: identifier,
                 "position": position,
                 "source_plugin_id": plugin_id,
             }
@@ -342,6 +370,32 @@ def _normalized_playlist_group_projection(
         "groups": groups,
         "memberships": memberships,
     }
+
+
+def _normalized_playlist_group_projection(
+    plugin_id: str,
+    value: Any,
+) -> dict[str, Any]:
+    return _normalized_navigation_group_projection(
+        plugin_id,
+        value,
+        domain="playlist",
+        identifier_field="playlist_id",
+        key_prefix=PLUGIN_PLAYLIST_GROUP_KEY_PREFIX,
+    )
+
+
+def _normalized_channel_group_projection(
+    plugin_id: str,
+    value: Any,
+) -> dict[str, Any]:
+    return _normalized_navigation_group_projection(
+        plugin_id,
+        value,
+        domain="channel",
+        identifier_field="channel_id",
+        key_prefix=PLUGIN_CHANNEL_GROUP_KEY_PREFIX,
+    )
 
 
 def _short_text(value: Any, *, maximum: int) -> str:
@@ -688,6 +742,13 @@ class PluginManager:
                 raise TypeError(
                     "Plugin playlist_groups capability requires "
                     "project_playlist_groups"
+                )
+            if "channel_groups" in capabilities and not callable(
+                getattr(instance, "project_channel_groups", None)
+            ):
+                raise TypeError(
+                    "Plugin channel_groups capability requires "
+                    "project_channel_groups"
                 )
             _browser_assets(instance)
             _worker_processes(instance)
@@ -1188,17 +1249,22 @@ class PluginManager:
         projection["projection_plugin_ids"] = plugin_ids
         return projection
 
-    def project_playlist_groups(
+    def _project_navigation_groups(
         self,
-        known_playlist_ids: Collection[str] | None = None,
+        *,
+        capability: str,
+        method_name: str,
+        identifier_field: str,
+        normalizer: Any,
+        known_identifiers: Collection[str] | None = None,
     ) -> dict[str, Any]:
         known = (
             None
-            if known_playlist_ids is None
+            if known_identifiers is None
             else frozenset(
-                playlist_id
-                for value in known_playlist_ids
-                if (playlist_id := str(value).strip())
+                identifier
+                for value in known_identifiers
+                if (identifier := str(value).strip())
             )
         )
         groups: list[dict[str, Any]] = []
@@ -1207,7 +1273,7 @@ class PluginManager:
         for plugin_id in sorted(self._records):
             record = self._records[plugin_id]
             instance = record.instance
-            if instance is None or "playlist_groups" not in {
+            if instance is None or capability not in {
                 str(value) for value in getattr(instance, "capabilities", ())
             }:
                 continue
@@ -1217,11 +1283,8 @@ class PluginManager:
                     raise TypeError("Plugin status must be a JSON object")
                 if str(status.get("state") or "ready") != "ready":
                     continue
-                payload = instance.project_playlist_groups()
-                projection = _normalized_playlist_group_projection(
-                    plugin_id,
-                    payload,
-                )
+                payload = getattr(instance, method_name)()
+                projection = normalizer(plugin_id, payload)
             except Exception as exc:
                 errors.append(
                     {
@@ -1234,7 +1297,7 @@ class PluginManager:
             memberships.extend(
                 membership
                 for membership in projection["memberships"]
-                if known is None or membership["playlist_id"] in known
+                if known is None or membership[identifier_field] in known
             )
         return {
             "groups": groups,
@@ -1242,11 +1305,41 @@ class PluginManager:
             "errors": errors,
         }
 
-    def playlist_ids_for_group(self, group_key: str) -> frozenset[str] | None:
+    def project_playlist_groups(
+        self,
+        known_playlist_ids: Collection[str] | None = None,
+    ) -> dict[str, Any]:
+        return self._project_navigation_groups(
+            capability="playlist_groups",
+            method_name="project_playlist_groups",
+            identifier_field="playlist_id",
+            normalizer=_normalized_playlist_group_projection,
+            known_identifiers=known_playlist_ids,
+        )
+
+    def project_channel_groups(
+        self,
+        known_channel_ids: Collection[str] | None = None,
+    ) -> dict[str, Any]:
+        return self._project_navigation_groups(
+            capability="channel_groups",
+            method_name="project_channel_groups",
+            identifier_field="channel_id",
+            normalizer=_normalized_channel_group_projection,
+            known_identifiers=known_channel_ids,
+        )
+
+    def _identifiers_for_group(
+        self,
+        group_key: str,
+        *,
+        key_prefix: str,
+        identifier_field: str,
+        projection: dict[str, Any],
+    ) -> frozenset[str] | None:
         normalized_group_key = str(group_key or "").strip()
-        if not normalized_group_key.startswith(PLUGIN_PLAYLIST_GROUP_KEY_PREFIX):
+        if not normalized_group_key.startswith(key_prefix):
             return None
-        projection = self.project_playlist_groups()
         parent_by_group = {
             str(group["group_key"]): (
                 str(group["parent_key"]) if group.get("parent_key") else None
@@ -1265,9 +1358,33 @@ class PluginManager:
                     selected_groups.add(candidate)
                     changed = True
         return frozenset(
-            str(membership["playlist_id"])
+            str(membership[identifier_field])
             for membership in projection["memberships"]
             if membership["group_key"] in selected_groups
+        )
+
+    def playlist_ids_for_group(self, group_key: str) -> frozenset[str] | None:
+        if not str(group_key or "").strip().startswith(
+            PLUGIN_PLAYLIST_GROUP_KEY_PREFIX
+        ):
+            return None
+        return self._identifiers_for_group(
+            group_key,
+            key_prefix=PLUGIN_PLAYLIST_GROUP_KEY_PREFIX,
+            identifier_field="playlist_id",
+            projection=self.project_playlist_groups(),
+        )
+
+    def channel_ids_for_group(self, group_key: str) -> frozenset[str] | None:
+        if not str(group_key or "").strip().startswith(
+            PLUGIN_CHANNEL_GROUP_KEY_PREFIX
+        ):
+            return None
+        return self._identifiers_for_group(
+            group_key,
+            key_prefix=PLUGIN_CHANNEL_GROUP_KEY_PREFIX,
+            identifier_field="channel_id",
+            projection=self.project_channel_groups(),
         )
 
     def shutdown(self) -> None:

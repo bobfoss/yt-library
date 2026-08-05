@@ -18,7 +18,7 @@ class FakePlugin:
     plugin_name = "Test Subtitles"
     plugin_version = "1.2.3"
     plugin_api_version = PLUGIN_API_VERSION
-    capabilities = {"subtitle_search", "playlist_groups"}
+    capabilities = {"channel_groups", "subtitle_search", "playlist_groups"}
     browser_assets = (
         {"path": "browser.css", "type": "style"},
         {"path": "browser.js", "type": "script"},
@@ -127,6 +127,63 @@ class FakePlugin:
                 {
                     "group_key": "other",
                     "playlist_id": "PLmissing",
+                    "position": 0,
+                },
+            ],
+        }
+
+    def project_channel_groups(self):
+        return {
+            "revision": "channels-1",
+            "groups": [
+                {
+                    "group_key": "channels",
+                    "name": "Channels",
+                    "parent_key": None,
+                    "position": 0,
+                    "icon": "folder",
+                },
+                {
+                    "group_key": "science",
+                    "name": "Science",
+                    "parent_key": "channels",
+                    "position": 0,
+                    "icon": "spark",
+                },
+                {
+                    "group_key": "space",
+                    "name": "Space",
+                    "parent_key": "science",
+                    "position": 0,
+                    "icon": "rocket",
+                },
+                {
+                    "group_key": "other-channels",
+                    "name": "Other channels",
+                    "parent_key": None,
+                    "position": 1,
+                    "icon": "",
+                },
+            ],
+            "memberships": [
+                {
+                    "group_key": "channels",
+                    "channel_id": "UCparent",
+                    "position": 0,
+                },
+                {
+                    "group_key": "science",
+                    "channel_id": "UCchild",
+                    "position": 0,
+                },
+                {
+                    "group_key": "space",
+                    "channel_id": "UCgrandchild",
+                    "position": 0,
+                },
+                {
+                    "group_key": "other-channels",
+                    "channel_id": "UCmissing",
                     "position": 0,
                 },
             ],
@@ -255,6 +312,12 @@ class PluginManagerTests(unittest.TestCase):
             parent_playlist_ids = manager.playlist_ids_for_group(
                 "plugin:subtitles:parent"
             )
+            channel_groups = manager.project_channel_groups(
+                {"UCparent", "UCchild", "UCgrandchild"}
+            )
+            parent_channel_ids = manager.channel_ids_for_group(
+                "plugin-channel:subtitles:channels"
+            )
             self.assertEqual(asset_status, 200)
             self.assertEqual(content_type, "text/javascript; charset=utf-8")
             self.assertEqual(body, b"/* browser.js */")
@@ -297,6 +360,27 @@ class PluginManagerTests(unittest.TestCase):
                 parent_playlist_ids,
                 frozenset({"PLparent", "PLchild"}),
             )
+            self.assertEqual(
+                [group["group_key"] for group in channel_groups["groups"]],
+                [
+                    "plugin-channel:subtitles:channels",
+                    "plugin-channel:subtitles:science",
+                    "plugin-channel:subtitles:space",
+                    "plugin-channel:subtitles:other-channels",
+                ],
+            )
+            self.assertEqual(
+                [
+                    membership["channel_id"]
+                    for membership in channel_groups["memberships"]
+                ],
+                ["UCparent", "UCchild", "UCgrandchild"],
+            )
+            self.assertEqual(channel_groups["errors"], [])
+            self.assertEqual(
+                parent_channel_ids,
+                frozenset({"UCparent", "UCchild", "UCgrandchild"}),
+            )
 
     def test_video_projection_contract_rejects_invalid_plugin_rows(self) -> None:
         class InvalidProjectionPlugin(FakePlugin):
@@ -337,6 +421,44 @@ class PluginManagerTests(unittest.TestCase):
         self.assertEqual(projection["memberships"], [])
         self.assertEqual(projection["errors"][0]["pluginId"], "subtitles")
         self.assertIn("missing parent", projection["errors"][0]["message"])
+
+    def test_invalid_channel_group_projection_is_contained(self) -> None:
+        class InvalidGroupPlugin(FakePlugin):
+            def project_channel_groups(self):
+                return {
+                    "groups": [
+                        {
+                            "group_key": "parent",
+                            "name": "Parent",
+                            "parent_key": None,
+                            "position": 0,
+                        }
+                    ],
+                    "memberships": [
+                        {
+                            "group_key": "parent",
+                            "channel_id": "UCduplicate",
+                            "position": 0,
+                        },
+                        {
+                            "group_key": "parent",
+                            "channel_id": "UCduplicate",
+                            "position": 1,
+                        },
+                    ],
+                }
+
+        manager = PluginManager(
+            {"plugins": {"subtitles": {"enabled": True}}},
+            entry_points=[FakeEntryPoint(InvalidGroupPlugin)],
+        )
+
+        projection = manager.project_channel_groups()
+
+        self.assertEqual(projection["groups"], [])
+        self.assertEqual(projection["memberships"], [])
+        self.assertEqual(projection["errors"][0]["pluginId"], "subtitles")
+        self.assertIn("duplicate channel memberships", projection["errors"][0]["message"])
 
     def test_incompatible_and_missing_plugins_are_nonfatal(self) -> None:
         class IncompatiblePlugin(FakePlugin):

@@ -1596,6 +1596,8 @@ def omni_search_data(
     result_kinds: set[str] | None = None,
     playlist_group_key: str = "",
     playlist_id_filter: Collection[str] | None = None,
+    channel_group_key: str = "",
+    channel_id_filter: Collection[str] | None = None,
     video_source: str = "",
     channel_source: str = "",
     video_meta_filters: set[str] | None = None,
@@ -1627,6 +1629,7 @@ def omni_search_data(
         else set(result_kinds) & set(OMNI_SEARCH_KIND_ORDER)
     )
     playlist_group_key = playlist_group_key.strip()
+    channel_group_key = channel_group_key.strip()
     video_source = video_source if video_source in {"playlist_member", "liked"} else ""
     channel_source = channel_source if channel_source in {"subscribed", "terminated"} else ""
     active_search_fields = set(
@@ -1640,6 +1643,7 @@ def omni_search_data(
     params = {
         "pattern": pattern,
         "playlist_group_key": playlist_group_key,
+        "channel_group_key": channel_group_key,
         "video_source": video_source,
         "channel_source": channel_source,
     }
@@ -1690,6 +1694,39 @@ def omni_search_data(
             )
         )
         """
+    )
+    active_channel_id_filter = (
+        None
+        if channel_id_filter is None
+        else frozenset(
+            channel_id
+            for value in channel_id_filter
+            if (channel_id := str(value).strip())
+        )
+    )
+    if active_channel_id_filter is not None:
+        conn.execute("DROP TABLE IF EXISTS temp.omni_channel_group_filter")
+        conn.execute(
+            """
+            CREATE TEMP TABLE omni_channel_group_filter(
+              channel_id TEXT PRIMARY KEY
+            ) WITHOUT ROWID
+            """
+        )
+        conn.executemany(
+            "INSERT INTO temp.omni_channel_group_filter(channel_id) VALUES (?)",
+            ((channel_id,) for channel_id in active_channel_id_filter),
+        )
+    channel_group_filter_sql = (
+        """
+        EXISTS (
+          SELECT 1
+          FROM temp.omni_channel_group_filter plugin_group
+          WHERE plugin_group.channel_id = ch.channel_id
+        )
+        """
+        if active_channel_id_filter is not None
+        else ":channel_group_key = ''"
     )
     search_titles = "titles" in active_search_fields
     search_descriptions = "descriptions" in active_search_fields
@@ -1820,6 +1857,7 @@ def omni_search_data(
                    CASE WHEN {channel_title_hit} THEN 1 ELSE 0 END AS title_hit
             FROM channels ch
             WHERE ({' OR '.join(f'({match})' for match in channel_matches)})
+              AND ({channel_group_filter_sql})
               AND (
                 :channel_source = ''
                 OR (:channel_source = 'subscribed' AND ch.subscribed = 1)
@@ -2255,6 +2293,7 @@ def omni_search_data(
         "searchFields": sorted(active_search_fields),
         "resultKinds": sorted(active_result_kinds),
         "playlistGroupKey": playlist_group_key,
+        "channelGroupKey": channel_group_key,
         "videoSource": video_source,
         "channelSource": channel_source,
         "sort": sort,

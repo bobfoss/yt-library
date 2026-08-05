@@ -243,7 +243,8 @@ assets, and failure behavior predictable rather than relying on host fallbacks:
   harmless.
 
 Optional features add `browser_assets` and `handle_browser_asset`,
-`filter_videos`, `project_videos`, `project_playlist_groups`, or the worker
+`filter_videos`, `project_videos`, `project_playlist_groups`,
+`project_channel_groups`, or the worker
 methods described below. A plugin can avoid importing YTL at runtime by using
 `Any` or plugin-owned typing protocols for host contexts. The dependency
 direction remains plugin to host; YTL must never import the plugin package
@@ -496,7 +497,7 @@ contained so the core detail card remains usable. Fetch large data only when
 the user expands or requests it, paginate it, and avoid loading full transcripts
 or other large payloads during the initial detail render.
 
-### Playlist-group projections
+### Navigation-group projections
 
 A ready plugin advertising `playlist_groups` must implement
 `project_playlist_groups()` and return one bounded current-state projection:
@@ -532,6 +533,15 @@ set through the normal playlist search model. Missing playlist IDs are not
 inserted into YTL, and the plugin never receives a YTL database connection.
 Projection failures appear in bootstrap diagnostics without preventing native
 navigation or search.
+
+The parallel `channel_groups` capability requires `project_channel_groups()`
+with the same group shape and memberships containing `channel_id` instead of
+`playlist_id`. The host namespaces these keys as
+`plugin-channel:<plugin_id>:<local-key>`, retains memberships only for canonical
+channels already present in YTL, and renders the complete validated hierarchy
+under Channels. Selecting a group includes all descendants and filters the
+normal channel search model through an explicit channel-ID set. Unknown channel
+references remain plugin-owned and never create YTL rows.
 
 ### Host-owned worker queue
 

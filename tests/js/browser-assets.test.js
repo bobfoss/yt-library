@@ -205,6 +205,20 @@ test('video presets restore plugin-provided facets', () => {
   assert.match(indexSource, /function enableDefaultSearchKind\(kind\)[\s\S]*if \(kind !== 'videos'\) return;[\s\S]*browserVideoFilterPlugins\(\)[\s\S]*defaultBrowserVideoFacetVisibility\(videoFilter\)/);
 });
 
+test('channel group navigation is recursive and uses the generic search contract', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+
+  assert.match(indexSource, /let channelMemberships = new Map\(\);/);
+  assert.match(indexSource, /for \(const item of data\.channelMemberships \|\| \[\]\)/);
+  assert.match(indexSource, /'channel-group': \{ kind: 'channels', sort: 'title' \}/);
+  assert.match(indexSource, /channel_group_key: searchChannelGroupKey/);
+  assert.match(indexSource, /function appendGroupTree\([\s\S]*appendGroupTree\(/);
+  assert.match(indexSource, /appendGroupTree\([\s\S]*'channel-group'[\s\S]*channelMemberships[\s\S]*channelChildren/);
+  assert.match(indexSource, /while \(pending\.length\)[\s\S]*identifiers\.add\(identifier\)/);
+  assert.match(indexHtml, /--group-depth/);
+});
+
 test('search filter tree folds facets and persists disclosure state', () => {
   const indexHtml = source('index.html');
   const indexSource = source('index.js');

@@ -344,14 +344,14 @@ uses:
 }
 ```
 
-YT PocketTube owns its export, database, import history, and normalized group
-catalog. With the generic `playlist_groups` capability, it contributes ordered
-playlist groups and memberships joined only by YouTube playlist ID. YT Library
-namespaces the projected group keys, includes only canonical playlists already
-in the library, and applies the resulting ID set through normal playlist
-search. It never writes the plugin database or fabricates rows for unmatched
-playlist references. No PocketTube-specific markup, schema, or queries live in
-the core application.
+YT PocketTube owns its exports, database, import histories, and normalized group
+catalogs. With the generic `playlist_groups` and `channel_groups` capabilities,
+it contributes ordered playlist and subscription group hierarchies joined only
+by canonical YouTube playlist or channel ID. YT Library namespaces the projected
+keys, includes only canonical rows already in the library, and applies the
+resulting ID sets through normal playlist or channel search. It never writes the
+plugin database or fabricates rows for unmatched references. No
+PocketTube-specific markup, schema, or queries live in the core application.
 
 ## Security
 
