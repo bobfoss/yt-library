@@ -352,9 +352,13 @@ catalogs. With the generic `playlist_groups` and `channel_groups` capabilities,
 it contributes ordered playlist and subscription group hierarchies joined only
 by canonical YouTube playlist or channel ID. YT Library namespaces the projected
 keys, includes only canonical rows already in the library, and applies the
-resulting ID sets through normal playlist or channel search. It never writes the
-plugin database or fabricates rows for unmatched references. No
-PocketTube-specific markup, schema, or queries live in the core application.
+resulting ID sets through normal playlist or channel search. In each navigation
+section, plugin-projected groups appear beneath a count-free parent named from
+the plugin (for example, **PocketTube**); these parents and nested group branches
+are independently collapsible, with collapsed node IDs saved in
+`navigation_group_tree_collapsed`. It never writes the plugin database or
+fabricates rows for unmatched references. No PocketTube-specific markup, schema,
+or queries live in the core application.
 
 ## Security
 

@@ -3788,6 +3788,23 @@ function toggleNavigationGroupTreeNode(nodeId, toggle, childContainer, label) {
   saveNavigationGroupTreePreference(nodeId, wasCollapsed);
 }
 
+function navigationGroupTreeToggleFor(nodeId, label, childContainer) {
+  const childrenId = `navigation-group-tree-${++navigationGroupTreeDomId}`;
+  childContainer.className = 'group-tree-children';
+  childContainer.id = childrenId;
+  const toggle = document.createElement('button');
+  toggle.className = 'search-tree-toggle group-tree-toggle';
+  toggle.type = 'button';
+  toggle.dataset.groupTreeToggle = nodeId;
+  toggle.setAttribute('aria-controls', childrenId);
+  toggle.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>';
+  applyNavigationGroupTreeNodeState(nodeId, toggle, childContainer, label);
+  toggle.addEventListener('click', () => {
+    toggleNavigationGroupTreeNode(nodeId, toggle, childContainer, label);
+  });
+  return toggle;
+}
+
 function appendGroupTree(section, group, preset, membershipMap, childMap, depth = 0) {
   const childGroups = childMap.get(group.group_key) || [];
   const row = document.createElement('div');
@@ -3796,19 +3813,11 @@ function appendGroupTree(section, group, preset, membershipMap, childMap, depth 
   if (childGroups.length) {
     const nodeId = navigationGroupTreeNodeId(preset, group.group_key);
     const childContainer = document.createElement('div');
-    const childrenId = `navigation-group-tree-${++navigationGroupTreeDomId}`;
-    childContainer.className = 'group-tree-children';
-    childContainer.id = childrenId;
-    const toggle = document.createElement('button');
-    toggle.className = 'search-tree-toggle group-tree-toggle';
-    toggle.type = 'button';
-    toggle.dataset.groupTreeToggle = nodeId;
-    toggle.setAttribute('aria-controls', childrenId);
-    toggle.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>';
-    applyNavigationGroupTreeNodeState(nodeId, toggle, childContainer, group.name);
-    toggle.addEventListener('click', () => {
-      toggleNavigationGroupTreeNode(nodeId, toggle, childContainer, group.name);
-    });
+    const toggle = navigationGroupTreeToggleFor(
+      nodeId,
+      group.name,
+      childContainer,
+    );
     row.appendChild(toggle);
     row.appendChild(groupLinkFor(group, preset, membershipMap, childMap));
     section.appendChild(row);
@@ -3830,6 +3839,77 @@ function appendGroupTree(section, group, preset, membershipMap, childMap, depth 
     row.appendChild(spacer);
     row.appendChild(groupLinkFor(group, preset, membershipMap, childMap));
     section.appendChild(row);
+  }
+}
+
+function pluginNavigationLabel(pluginId) {
+  const plugin = (data.plugins || []).find(candidate => candidate.id === pluginId);
+  const label = String(plugin?.name || pluginId).trim().replace(/^YT\s+/i, '');
+  return label || pluginId;
+}
+
+function appendPluginGroupTree(
+  section,
+  pluginId,
+  rootGroups,
+  preset,
+  membershipMap,
+  childMap,
+) {
+  const label = pluginNavigationLabel(pluginId);
+  const nodeId = navigationGroupTreeNodeId(preset, `plugin-root:${pluginId}`);
+  const childContainer = document.createElement('div');
+  const row = document.createElement('div');
+  row.className = 'group-tree-row plugin-group-tree-row';
+  row.style.setProperty('--group-depth', '0');
+  row.appendChild(navigationGroupTreeToggleFor(nodeId, label, childContainer));
+  const labelNode = document.createElement('div');
+  labelNode.className = 'group group-tree-label';
+  labelNode.textContent = label;
+  row.appendChild(labelNode);
+  section.appendChild(row);
+  for (const group of rootGroups) {
+    appendGroupTree(
+      childContainer,
+      group,
+      preset,
+      membershipMap,
+      childMap,
+      1,
+    );
+  }
+  section.appendChild(childContainer);
+}
+
+function appendNavigationGroupTrees(section, rootGroups, preset, membershipMap, childMap) {
+  const entries = [];
+  const pluginEntries = new Map();
+  for (const group of rootGroups) {
+    const pluginId = String(group.source_plugin_id || '').trim();
+    if (!pluginId) {
+      entries.push({ group });
+      continue;
+    }
+    if (!pluginEntries.has(pluginId)) {
+      const entry = { pluginId, groups: [] };
+      pluginEntries.set(pluginId, entry);
+      entries.push(entry);
+    }
+    pluginEntries.get(pluginId).groups.push(group);
+  }
+  for (const entry of entries) {
+    if (entry.group) {
+      appendGroupTree(section, entry.group, preset, membershipMap, childMap);
+    } else {
+      appendPluginGroupTree(
+        section,
+        entry.pluginId,
+        entry.groups,
+        preset,
+        membershipMap,
+        childMap,
+      );
+    }
   }
 }
 
@@ -3916,29 +3996,25 @@ function renderGroups() {
 
   const playlistSection = sectionFor('Playlists');
   playlistSection.appendChild(presetLink('all-playlists', 'Playlists', counts.playlists || 0));
-  for (const group of playlistChildren.get('') || []) {
-    appendGroupTree(
-      playlistSection,
-      group,
-      'playlist-group',
-      playlistMemberships,
-      playlistChildren,
-    );
-  }
+  appendNavigationGroupTrees(
+    playlistSection,
+    playlistChildren.get('') || [],
+    'playlist-group',
+    playlistMemberships,
+    playlistChildren,
+  );
 
   const channelSection = sectionFor('Channels');
   channelSection.appendChild(presetLink('channels', 'Channels', counts.channels || 0));
   channelSection.appendChild(presetLink('subscribed', 'Subscribed', counts.subscribed_channels || 0));
   channelSection.appendChild(presetLink('terminated', 'Terminated', counts.terminated_channels || 0));
-  for (const group of channelChildren.get('') || []) {
-    appendGroupTree(
-      channelSection,
-      group,
-      'channel-group',
-      channelMemberships,
-      channelChildren,
-    );
-  }
+  appendNavigationGroupTrees(
+    channelSection,
+    channelChildren.get('') || [],
+    'channel-group',
+    channelMemberships,
+    channelChildren,
+  );
   syncSidebarSelection();
 }
 

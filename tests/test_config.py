@@ -243,6 +243,7 @@ class ConfigTests(unittest.TestCase):
                 {
                     "navigation_group_tree_collapsed": [
                         "playlist-group:parent",
+                        "playlist-group:plugin-root:pockettube",
                         "channel-group:plugin-channel:pockettube:Adventure",
                         "playlist-group:parent",
                         "bad node",
@@ -251,10 +252,16 @@ class ConfigTests(unittest.TestCase):
             ),
             [
                 "playlist-group:parent",
+                "playlist-group:plugin-root:pockettube",
                 "channel-group:plugin-channel:pockettube:Adventure",
             ],
         )
         self.assertTrue(valid_navigation_group_tree_node("playlist-group:parent"))
+        self.assertTrue(
+            valid_navigation_group_tree_node(
+                "playlist-group:plugin-root:pockettube"
+            )
+        )
         self.assertTrue(
             valid_navigation_group_tree_node(
                 "channel-group:plugin-channel:pockettube:Adventure"

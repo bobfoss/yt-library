@@ -801,9 +801,13 @@ Each source has different reliability. Takeout is best for exact watch timestamp
 
 The optional YT PocketTube plugin owns PocketTube exports, its database, and its
 import lifecycle. When separately installed and enabled, it contributes a
-read-only playlist-group hierarchy joined by YouTube playlist ID. YT Library
-does not write the plugin database or ingest unmatched playlist references; the
-legacy compatibility import and native group records remain separate.
+read-only playlist- and channel-group hierarchy joined by YouTube playlist or
+channel ID. YT Library does not write the plugin database or ingest unmatched
+references; the legacy compatibility import and native group records remain
+separate. The generic navigation host nests projected roots beneath a count-free
+plugin label in each applicable section. Plugin parents and their descendant
+branches use separate disclosure nodes whose collapsed IDs persist through the
+normal YTL configuration preference endpoint.
 
 ## Storage Model
 

@@ -274,6 +274,22 @@ test('navigation group branches collapse with persisted disclosure state', () =>
   assert.match(indexHtml, /\.search-tree-toggle\[aria-expanded="true"\] svg/);
 });
 
+test('plugin navigation groups render beneath count-free persisted parents', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+
+  assert.match(indexSource, /function appendNavigationGroupTrees\(/);
+  assert.match(indexSource, /String\(group\.source_plugin_id \|\| ''\)\.trim\(\)/);
+  assert.match(indexSource, /function appendPluginGroupTree\(/);
+  assert.match(indexSource, /`plugin-root:\$\{pluginId\}`/);
+  assert.match(indexSource, /replace\(\/\^YT\\s\+\/i, ''\)/);
+  assert.match(indexSource, /labelNode\.className = 'group group-tree-label'/);
+  assert.match(indexSource, /labelNode\.textContent = label/);
+  assert.match(indexSource, /appendNavigationGroupTrees\([\s\S]*'playlist-group'/);
+  assert.match(indexSource, /appendNavigationGroupTrees\([\s\S]*'channel-group'/);
+  assert.match(indexHtml, /\.group-tree-label \{ cursor: default; font-weight: 600; \}/);
+});
+
 test('search filter tree folds facets and persists disclosure state', () => {
   const indexHtml = source('index.html');
   const indexSource = source('index.js');

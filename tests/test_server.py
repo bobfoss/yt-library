@@ -978,14 +978,16 @@ class AdminServerTests(unittest.TestCase):
             handler.send_json = Mock()
             handler.path = (
                 "/api/settings/navigation-group-tree?"
-                "collapsed=playlist-group%3AParent&"
+                "collapsed=playlist-group%3Aplugin-root%3Apockettube&"
+                "collapsed=channel-group%3Aplugin-root%3Apockettube&"
                 "collapsed=channel-group%3Aplugin-channel%3Apockettube%3AAdventure"
             )
 
             handler.do_POST()
 
             expected = [
-                "playlist-group:Parent",
+                "playlist-group:plugin-root:pockettube",
+                "channel-group:plugin-root:pockettube",
                 "channel-group:plugin-channel:pockettube:Adventure",
             ]
             self.assertEqual(config["navigation_group_tree_collapsed"], expected)
