@@ -757,6 +757,47 @@ function allMetaFiltersEnabled(visibility, excludedKeys = []) {
     .every(([, enabled]) => enabled);
 }
 
+function searchMetaPresetBaseline(groupName, preset = activeSearchPreset) {
+  const visibility = searchMetaVisibility[groupName] || {};
+  const baseline = Object.fromEntries(
+    Object.keys(visibility).map(key => [key, false])
+  );
+  const definition = searchPresetDefinition(preset);
+  if (!definition || searchKindFacetKeys(definition.kind).includes(groupName)) {
+    for (const key of Object.keys(baseline)) {
+      baseline[key] = defaultSearchMetaVisibility[groupName]?.[key] === true;
+    }
+  }
+  const presetSelections = {
+    'playlist-videos': { membership: ['member'] },
+    'liked-videos': { reactions: ['liked'] },
+    'subscribed-channels': { channelSubscription: ['subscribed'] },
+    'terminated-channels': { channelStatus: ['terminated'] },
+  };
+  const selected = presetSelections[preset]?.[groupName];
+  if (selected) {
+    for (const key of Object.keys(baseline)) baseline[key] = selected.includes(key);
+  }
+  return baseline;
+}
+
+function metaFilterSelectionMatches(visibility, baseline, excludedKeys = []) {
+  const excluded = new Set(excludedKeys);
+  return Object.keys(visibility)
+    .filter(key => !excluded.has(key))
+    .every(key => visibility[key] === baseline[key]);
+}
+
+function browserVideoFacetPresetBaseline(plugin, preset = activeSearchPreset) {
+  const definition = searchPresetDefinition(preset);
+  const baseline = definition?.kind === 'videos' || !definition
+    ? defaultBrowserVideoFacetVisibility(plugin)
+    : { present: false, absent: false };
+  return definition?.pluginFilter === plugin.id
+    ? { present: true, absent: false }
+    : baseline;
+}
+
 function searchOptInKeys(groupName) {
   return searchOptInMetaFilters
     .filter(filter => filter.groupName === groupName)
@@ -1088,19 +1129,34 @@ function searchHash() {
   for (const [groupName, paramName] of Object.entries(searchMetaParamNames)) {
     const visibility = searchMetaVisibility[groupName];
     const optInKeys = searchOptInKeys(groupName);
-    if (!allMetaFiltersEnabled(visibility, optInKeys)) {
+    const baseline = searchMetaPresetBaseline(groupName);
+    if (!metaFilterSelectionMatches(visibility, baseline, optInKeys)) {
       params.set(paramName, metaFilterParamValue(visibility, optInKeys));
     }
   }
   for (const { groupName, key, paramName } of searchOptInMetaFilters) {
-    if (searchMetaVisibility[groupName][key]) params.set(paramName, '1');
+    const baseline = searchMetaPresetBaseline(groupName);
+    if (searchMetaVisibility[groupName][key] && !baseline[key]) {
+      params.set(paramName, '1');
+    }
   }
   for (const plugin of browserSearchPlugins()) {
     const videoFacet = browserVideoFacetDefinition(plugin);
     if (videoFacet) {
       const state = browserVideoFacetState(plugin);
-      params.set(videoFacet.presentHashParam || `plugin-${plugin.id}-present`, state.present ? '1' : '0');
-      params.set(videoFacet.absentHashParam || `plugin-${plugin.id}-absent`, state.absent ? '1' : '0');
+      const baseline = browserVideoFacetPresetBaseline(plugin);
+      if (state.present !== baseline.present) {
+        params.set(
+          videoFacet.presentHashParam || `plugin-${plugin.id}-present`,
+          state.present ? '1' : '0',
+        );
+      }
+      if (state.absent !== baseline.absent) {
+        params.set(
+          videoFacet.absentHashParam || `plugin-${plugin.id}-absent`,
+          state.absent ? '1' : '0',
+        );
+      }
     } else if (searchKindEnabled(plugin.id)) {
       params.set(plugin.search.hashParam || `plugin-${plugin.id}`, '1');
     }
@@ -2739,12 +2795,16 @@ function uploaderCategoryMetaFilterDefinitions(counts) {
 
 function syncUploaderCategoryVisibility(counts) {
   const definitions = uploaderCategoryMetaFilterDefinitions(counts);
+  const enableDetectedCategories = (
+    !uploaderCategorySelectionExplicit
+    && Object.values(searchMetaVisibility.uploaderCategory).some(Boolean)
+  );
   for (const { key } of definitions) {
     if (!Object.prototype.hasOwnProperty.call(defaultSearchMetaVisibility.uploaderCategory, key)) {
       defaultSearchMetaVisibility.uploaderCategory[key] = true;
     }
     if (!Object.prototype.hasOwnProperty.call(searchMetaVisibility.uploaderCategory, key)) {
-      searchMetaVisibility.uploaderCategory[key] = !uploaderCategorySelectionExplicit;
+      searchMetaVisibility.uploaderCategory[key] = enableDetectedCategories;
     }
   }
   return definitions;

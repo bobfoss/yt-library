@@ -205,6 +205,19 @@ test('video presets restore plugin-provided facets', () => {
   assert.match(indexSource, /function enableDefaultSearchKind\(kind\)[\s\S]*if \(kind !== 'videos'\) return;[\s\S]*browserVideoFilterPlugins\(\)[\s\S]*defaultBrowserVideoFacetVisibility\(videoFilter\)/);
 });
 
+test('search hashes omit state already implied by a preset', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /function searchMetaPresetBaseline\(groupName, preset = activeSearchPreset\)/);
+  assert.match(indexSource, /function metaFilterSelectionMatches\(visibility, baseline, excludedKeys = \[\]\)/);
+  assert.match(indexSource, /const baseline = searchMetaPresetBaseline\(groupName\);[\s\S]{0,120}metaFilterSelectionMatches\(visibility, baseline, optInKeys\)/);
+  assert.match(indexSource, /function browserVideoFacetPresetBaseline\(plugin, preset = activeSearchPreset\)/);
+  assert.match(indexSource, /state\.present !== baseline\.present/);
+  assert.match(indexSource, /state\.absent !== baseline\.absent/);
+  assert.match(indexSource, /const enableDetectedCategories = \([\s\S]{0,180}Object\.values\(searchMetaVisibility\.uploaderCategory\)\.some\(Boolean\)/);
+  assert.match(indexSource, /searchMetaVisibility\.uploaderCategory\[key\] = enableDetectedCategories/);
+});
+
 test('channel group navigation is recursive and uses the generic search contract', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');
