@@ -406,8 +406,8 @@ let navigationGroupTreeSaveChain = Promise.resolve();
 let navigationGroupTreeSaveVersion = 0;
 const searchPresetDefinitions = {
   videos: { kind: 'videos', sort: 'newest' },
-  'playlist-videos': { kind: 'videos', sort: 'newest' },
-  'liked-videos': { kind: 'videos', sort: 'newest' },
+  playlisted: { kind: 'videos', sort: 'newest' },
+  liked: { kind: 'videos', sort: 'newest' },
   'all-playlists': { kind: 'playlists', sort: 'title' },
   channels: { kind: 'channels', sort: 'title' },
   subscribed: { kind: 'channels', sort: 'title' },
@@ -769,8 +769,8 @@ function searchMetaPresetBaseline(groupName, preset = activeSearchPreset) {
     }
   }
   const presetSelections = {
-    'playlist-videos': { membership: ['member'] },
-    'liked-videos': { reactions: ['liked'] },
+    playlisted: { membership: ['member'] },
+    liked: { reactions: ['liked'] },
     subscribed: { channelSubscription: ['subscribed'] },
     terminated: { channelStatus: ['terminated'] },
   };
@@ -970,9 +970,9 @@ function applySearchPresetState(preset, groupKey = '') {
       pluginSearchVisibility.set(definition.pluginFilter, true);
     }
   }
-  if (preset === 'playlist-videos') {
+  if (preset === 'playlisted') {
     setSearchFacetSelection('membership', ['member']);
-  } else if (preset === 'liked-videos') {
+  } else if (preset === 'liked') {
     setSearchFacetSelection('reactions', ['liked']);
   } else if (preset === 'subscribed') {
     setSearchFacetSelection('channelSubscription', ['subscribed']);
@@ -1053,9 +1053,9 @@ function selectedSearchResultKinds() {
 
 function activeSearchSourceScopes() {
   return {
-    video: activeSearchPreset === 'playlist-videos'
+    video: activeSearchPreset === 'playlisted'
       ? 'playlist_member'
-      : (activeSearchPreset === 'liked-videos' ? 'liked' : ''),
+      : (activeSearchPreset === 'liked' ? 'liked' : ''),
     channel: activeSearchPreset === 'subscribed'
       ? 'subscribed'
       : (activeSearchPreset === 'terminated' ? 'terminated' : ''),
@@ -1075,10 +1075,10 @@ function presetDefiningFiltersMatch() {
       )
     ) return false;
   }
-  if (activeSearchPreset === 'playlist-videos') {
+  if (activeSearchPreset === 'playlisted') {
     return searchMetaVisibility.membership.member && !searchMetaVisibility.membership.non_member;
   }
-  if (activeSearchPreset === 'liked-videos') {
+  if (activeSearchPreset === 'liked') {
     return searchMetaVisibility.reactions.liked
       && !searchMetaVisibility.reactions.none
       && !searchMetaVisibility.reactions.disliked;
@@ -3855,8 +3855,8 @@ function renderGroups() {
   if (historyCount) historyCount.textContent = counts.history || 0;
   const videoSection = sectionFor('Videos');
   videoSection.appendChild(presetButton('videos', 'Videos', counts.videos || 0));
-  videoSection.appendChild(presetButton('playlist-videos', 'Playlist videos', counts.playlist_videos || 0));
-  videoSection.appendChild(presetButton('liked-videos', 'Liked videos', counts.liked_videos || 0));
+  videoSection.appendChild(presetButton('playlisted', 'Playlisted', counts.playlist_videos || 0));
+  videoSection.appendChild(presetButton('liked', 'Liked', counts.liked_videos || 0));
   for (const { plugin, preset, presetId } of browserSearchPresets('videos')) {
     const status = browserPluginStatus(plugin.id);
     const count = Number(

@@ -76,8 +76,8 @@ SEARCH_SORT_CONTEXTS = frozenset(
     {
         "search",
         "videos",
-        "playlist-videos",
-        "liked-videos",
+        "playlisted",
+        "liked",
         "all-playlists",
         "channels",
         "subscribed",

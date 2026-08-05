@@ -273,13 +273,15 @@ test('uploader category facet requires detected categories', () => {
   assert.match(indexSource, /\.\.\.\(uploaderCategoryDefinitions\.length \? \[[\s\S]*?allLabel: 'Uploader category'/);
 });
 
-test('channel preset labels stay concise', () => {
+test('navigation preset labels and identifiers stay concise', () => {
   const indexSource = source('index.js');
 
+  assert.match(indexSource, /presetButton\('playlisted', 'Playlisted',/);
+  assert.match(indexSource, /presetButton\('liked', 'Liked',/);
   assert.match(indexSource, /presetButton\('subscribed', 'Subscribed',/);
   assert.match(indexSource, /presetButton\('terminated', 'Terminated',/);
-  assert.doesNotMatch(indexSource, /Subscribed channels|Terminated channels/);
-  assert.doesNotMatch(indexSource, /subscribed-channels|terminated-channels/);
+  assert.doesNotMatch(indexSource, /Playlist videos|Liked videos|Subscribed channels|Terminated channels/);
+  assert.doesNotMatch(indexSource, /presetButton\('(playlist-videos|liked-videos|subscribed-channels|terminated-channels)'/);
 });
 
 test('history heatmap can return to the current year and day', () => {

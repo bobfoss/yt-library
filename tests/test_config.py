@@ -292,7 +292,7 @@ class ConfigTests(unittest.TestCase):
                 {
                     "sort_preferences": {
                         "search": "most_watched",
-                        "liked-videos": "oldest",
+                        "liked": "oldest",
                         "playlist": "playlist_order",
                         "playlist-group": "invalid",
                         "unknown-context": "title",
@@ -301,7 +301,7 @@ class ConfigTests(unittest.TestCase):
             ),
             {
                 "search": "most_watched",
-                "liked-videos": "oldest",
+                "liked": "oldest",
                 "playlist": "playlist_order",
             },
         )

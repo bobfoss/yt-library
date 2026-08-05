@@ -779,20 +779,20 @@ class AdminServerTests(unittest.TestCase):
             config_path = Path(temp_dir) / "yt_library.config.json"
             config = load_config(config_path)
             handler = object.__new__(server.LibraryHandler)
-            handler.path = "/api/settings/sort?context=liked-videos&value=most_watched"
+            handler.path = "/api/settings/sort?context=liked&value=most_watched"
             handler.config_data = config
             handler.send_json = Mock()
 
             handler.do_POST()
 
-            expected = {"liked-videos": "most_watched"}
+            expected = {"liked": "most_watched"}
             self.assertEqual(config["sort_preferences"], expected)
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["sort_preferences"], expected)
             handler.send_json.assert_called_once_with(
                 {
                     "ok": True,
-                    "context": "liked-videos",
+                    "context": "liked",
                     "sort": "most_watched",
                 }
             )
