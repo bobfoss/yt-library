@@ -3969,39 +3969,12 @@ def is_system_playlist(playlist_id: str) -> bool:
 def save_discovered_playlists(
     conn: sqlite3.Connection,
     records: list[dict[str, str]],
-    *,
-    group_key: str = "youtube-ungrouped",
-    group_name: str = "Uncategorized",
 ) -> dict[str, int]:
     existing_ids = {
         row["playlist_id"]
         for row in conn.execute("SELECT playlist_id FROM playlists")
     }
-    existing_groups = {
-        row["playlist_id"]
-        for row in conn.execute("SELECT DISTINCT playlist_id FROM group_playlists")
-    }
-    top_position = conn.execute(
-        "SELECT COALESCE(MAX(position), -1) + 1 FROM groups WHERE parent_key IS NULL"
-    ).fetchone()[0]
-    conn.execute(
-        """
-        INSERT INTO groups(group_key, name, parent_key, position, icon)
-        VALUES (?, ?, NULL, ?, '')
-        ON CONFLICT(group_key) DO UPDATE SET
-          name=excluded.name,
-          parent_key=NULL,
-          position=groups.position
-        """,
-        (group_key, group_name, top_position),
-    )
-    group_position = conn.execute(
-        "SELECT COALESCE(MAX(position), -1) + 1 FROM group_playlists WHERE group_key = ?",
-        (group_key,),
-    ).fetchone()[0]
-
     inserted = 0
-    grouped = 0
     for record in records:
         playlist_id = (record.get("playlist_id") or "").strip()
         if not playlist_id:
@@ -4053,22 +4026,10 @@ def save_discovered_playlists(
                 utc_now(),
             ),
         )
-        if playlist_id not in existing_groups:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO group_playlists(group_key, playlist_id, position)
-                VALUES (?, ?, ?)
-                """,
-                (group_key, playlist_id, group_position),
-            )
-            existing_groups.add(playlist_id)
-            group_position += 1
-            grouped += 1
     return {
         "discovered": len(records),
         "inserted": inserted,
         "updated": max(0, len(records) - inserted),
-        "grouped": grouped,
     }
 
 
@@ -4110,18 +4071,10 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
     conn = connect(db_path)
     try:
         with conn:
-            stats = save_discovered_playlists(
-                conn,
-                enriched_records,
-                group_key=args.group_key,
-                group_name=args.group_name,
-            )
+            save_discovered_playlists(conn, enriched_records)
     finally:
         conn.close()
-    print(
-        f"Updated {len(records)} playlists; added {stats['grouped']} "
-        f"to {args.group_name}."
-    )
+    print(f"Updated {len(records)} playlists.")
     print(f"Wrote {db_path}")
 
 

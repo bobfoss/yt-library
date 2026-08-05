@@ -1148,12 +1148,11 @@ class WorkerQueueTests(unittest.TestCase):
                     "SELECT level, message FROM playlist_scan_worker_log "
                     "WHERE run_id = 'test-playlist-discovery'"
                 ).fetchone()
-                grouped = conn.execute(
+                legacy_group = conn.execute(
                     """
-                    SELECT group_playlists.group_key, groups.name
-                    FROM group_playlists
-                    JOIN groups ON groups.group_key = group_playlists.group_key
-                    WHERE group_playlists.playlist_id = 'PLnewcurrent'
+                    SELECT 1
+                    FROM groups
+                    WHERE group_key = 'youtube-ungrouped'
                     """
                 ).fetchone()
             finally:
@@ -1173,8 +1172,7 @@ class WorkerQueueTests(unittest.TestCase):
             [("scan", "PLnewcurrent")],
         )
         self.assertTrue(queued[0]["manual"])
-        self.assertEqual(grouped["group_key"], "youtube-ungrouped")
-        self.assertEqual(grouped["name"], "Uncategorized")
+        self.assertIsNone(legacy_group)
         self.assertEqual(log["level"], "info")
         self.assertIn("1 current, 1 new, 0 existing", log["message"])
 

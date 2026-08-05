@@ -526,6 +526,14 @@ and rejects invalid projections as a contained plugin error. It namespaces keys
 as `plugin:<plugin_id>:<local-key>` so plugin and native groups cannot collide.
 Names, keys, optional icons, and revision markers are length-bounded.
 
+A plugin may mark exactly one group in a projection with
+`"include_unmatched": True`. That group must not declare explicit memberships.
+When YTL supplies its bounded set of canonical identifiers to the projection,
+the generic host derives memberships for identifiers absent from every explicit
+group in that plugin projection. The plugin owns the group key, name, and rule;
+the host owns only validation and set resolution. Without a canonical identifier
+set, no derived memberships are emitted.
+
 `/api/bootstrap` merges valid projected groups with native groups and retains
 memberships only for playlist IDs already present in YTL. Selecting a projected
 group resolves its descendants and passes the resulting explicit playlist-ID
@@ -803,8 +811,10 @@ The optional YT PocketTube plugin owns PocketTube exports, its database, and its
 import lifecycle. When separately installed and enabled, it contributes a
 read-only playlist- and channel-group hierarchy joined by YouTube playlist or
 channel ID. YT Library does not write the plugin database or ingest unmatched
-references; the legacy compatibility import and native group records remain
-separate. The generic navigation host nests projected roots beneath a count-free
+references. The plugin's playlist projection owns the derived `Uncategorized`
+rule for canonical YTL playlists absent from every explicit PocketTube group;
+YTL owns no PocketTube-specific navigation records. The generic navigation host
+nests projected roots beneath a count-free
 plugin label in each applicable section. Plugin parents and their descendant
 branches use separate disclosure nodes whose collapsed IDs persist through the
 normal YTL configuration preference endpoint.

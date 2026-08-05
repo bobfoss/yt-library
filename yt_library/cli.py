@@ -113,14 +113,12 @@ def main(argv: list[str] | None = None) -> int:
 
     discover_parser = subparsers.add_parser(
         "discover-current",
-        help="Discover current signed-in YouTube playlists and add ungrouped ones",
+        help="Discover current signed-in YouTube playlists and update library rows",
     )
     discover_parser.add_argument("--db", default=str(config_path(config, "database")))
     discover_parser.add_argument("--thumbs", default=str(config_path(config, "thumbnail_dir")))
     discover_parser.add_argument("--cookies", default=str(config_path(config, "youtube_cookies")))
     discover_parser.add_argument("--browse-id", default="FEplaylist_aggregation")
-    discover_parser.add_argument("--group-key", default="youtube-ungrouped")
-    discover_parser.add_argument("--group-name", default="Uncategorized")
     discover_parser.add_argument("--include-system", action="store_true")
     discover_parser.set_defaults(func=discover_current_playlists)
 

@@ -256,6 +256,7 @@ def _normalized_navigation_group_projection(
     groups: list[dict[str, Any]] = []
     raw_group_keys: set[str] = set()
     raw_parents: dict[str, str | None] = {}
+    unmatched_group_key: str | None = None
     for item in raw_groups:
         if len(groups) >= PLUGIN_NAVIGATION_GROUP_LIMIT:
             raise ValueError(
@@ -284,27 +285,39 @@ def _normalized_navigation_group_projection(
             raise ValueError(
                 f"Plugin {domain} group positions must be nonnegative"
             )
+        include_unmatched = item.get("include_unmatched", False)
+        if not isinstance(include_unmatched, bool):
+            raise TypeError(
+                f"Plugin {domain} group include_unmatched must be a boolean"
+            )
+        if include_unmatched:
+            if unmatched_group_key is not None:
+                raise ValueError(
+                    f"Plugin returned multiple unmatched {domain} groups"
+                )
+            unmatched_group_key = group_key
         icon = str(item.get("icon") or "")[:10_000]
         raw_group_keys.add(group_key)
         raw_parents[group_key] = parent_key
-        groups.append(
-            {
-                "group_key": _plugin_navigation_group_key(
-                    plugin_id, group_key, key_prefix
-                ),
-                "name": name,
-                "parent_key": (
-                    _plugin_navigation_group_key(
-                        plugin_id, parent_key, key_prefix
-                    )
-                    if parent_key
-                    else None
-                ),
-                "position": position,
-                "icon": icon,
-                "source_plugin_id": plugin_id,
-            }
-        )
+        group = {
+            "group_key": _plugin_navigation_group_key(
+                plugin_id, group_key, key_prefix
+            ),
+            "name": name,
+            "parent_key": (
+                _plugin_navigation_group_key(
+                    plugin_id, parent_key, key_prefix
+                )
+                if parent_key
+                else None
+            ),
+            "position": position,
+            "icon": icon,
+            "source_plugin_id": plugin_id,
+        }
+        if include_unmatched:
+            group["include_unmatched"] = True
+        groups.append(group)
     for group_key, parent_key in raw_parents.items():
         if parent_key is not None and parent_key not in raw_group_keys:
             raise ValueError(
@@ -364,12 +377,59 @@ def _normalized_navigation_group_projection(
                 "source_plugin_id": plugin_id,
             }
         )
+    if unmatched_group_key is not None and any(
+        membership[0] == unmatched_group_key for membership in seen_memberships
+    ):
+        raise ValueError(
+            f"Plugin unmatched {domain} group cannot declare memberships"
+        )
     return {
         "plugin_id": plugin_id,
         "revision": str(value.get("revision") or "")[:500],
         "groups": groups,
         "memberships": memberships,
     }
+
+
+def _navigation_memberships_for_known_identifiers(
+    projection: Mapping[str, Any],
+    known: frozenset[str] | None,
+    *,
+    identifier_field: str,
+) -> list[dict[str, Any]]:
+    memberships = [
+        dict(membership)
+        for membership in projection["memberships"]
+        if known is None or membership[identifier_field] in known
+    ]
+    if known is None:
+        return memberships
+    unmatched_groups = [
+        group for group in projection["groups"] if group.get("include_unmatched") is True
+    ]
+    if not unmatched_groups:
+        return memberships
+    assigned = {
+        str(membership[identifier_field])
+        for membership in projection["memberships"]
+        if membership[identifier_field] in known
+    }
+    unmatched_ids = sorted(known - assigned)
+    if len(memberships) + len(unmatched_ids) > PLUGIN_NAVIGATION_MEMBERSHIP_LIMIT:
+        raise ValueError(
+            "Plugin projection expands beyond the navigation membership limit"
+        )
+    unmatched_group = unmatched_groups[0]
+    memberships.extend(
+        {
+            "group_key": unmatched_group["group_key"],
+            identifier_field: identifier,
+            "position": position,
+            "source_plugin_id": unmatched_group["source_plugin_id"],
+        }
+        for position, identifier in enumerate(unmatched_ids)
+    )
+    return memberships
 
 
 def _normalized_playlist_group_projection(
@@ -1285,6 +1345,11 @@ class PluginManager:
                     continue
                 payload = getattr(instance, method_name)()
                 projection = normalizer(plugin_id, payload)
+                projected_memberships = _navigation_memberships_for_known_identifiers(
+                    projection,
+                    known,
+                    identifier_field=identifier_field,
+                )
             except Exception as exc:
                 errors.append(
                     {
@@ -1294,11 +1359,7 @@ class PluginManager:
                 )
                 continue
             groups.extend(projection["groups"])
-            memberships.extend(
-                membership
-                for membership in projection["memberships"]
-                if known is None or membership[identifier_field] in known
-            )
+            memberships.extend(projected_memberships)
         return {
             "groups": groups,
             "memberships": memberships,
@@ -1363,7 +1424,11 @@ class PluginManager:
             if membership["group_key"] in selected_groups
         )
 
-    def playlist_ids_for_group(self, group_key: str) -> frozenset[str] | None:
+    def playlist_ids_for_group(
+        self,
+        group_key: str,
+        known_playlist_ids: Collection[str] | None = None,
+    ) -> frozenset[str] | None:
         if not str(group_key or "").strip().startswith(
             PLUGIN_PLAYLIST_GROUP_KEY_PREFIX
         ):
@@ -1372,10 +1437,14 @@ class PluginManager:
             group_key,
             key_prefix=PLUGIN_PLAYLIST_GROUP_KEY_PREFIX,
             identifier_field="playlist_id",
-            projection=self.project_playlist_groups(),
+            projection=self.project_playlist_groups(known_playlist_ids),
         )
 
-    def channel_ids_for_group(self, group_key: str) -> frozenset[str] | None:
+    def channel_ids_for_group(
+        self,
+        group_key: str,
+        known_channel_ids: Collection[str] | None = None,
+    ) -> frozenset[str] | None:
         if not str(group_key or "").strip().startswith(
             PLUGIN_CHANNEL_GROUP_KEY_PREFIX
         ):
@@ -1384,7 +1453,7 @@ class PluginManager:
             group_key,
             key_prefix=PLUGIN_CHANNEL_GROUP_KEY_PREFIX,
             identifier_field="channel_id",
-            projection=self.project_channel_groups(),
+            projection=self.project_channel_groups(known_channel_ids),
         )
 
     def shutdown(self) -> None:

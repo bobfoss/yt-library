@@ -422,6 +422,79 @@ class PluginManagerTests(unittest.TestCase):
         self.assertEqual(projection["errors"][0]["pluginId"], "subtitles")
         self.assertIn("missing parent", projection["errors"][0]["message"])
 
+    def test_plugin_can_project_one_group_for_unmatched_known_playlists(self) -> None:
+        class UnmatchedGroupPlugin(FakePlugin):
+            def project_playlist_groups(self):
+                projection = super().project_playlist_groups()
+                projection["groups"].append(
+                    {
+                        "group_key": "uncategorized",
+                        "name": "Uncategorized",
+                        "parent_key": None,
+                        "position": 2,
+                        "include_unmatched": True,
+                    }
+                )
+                return projection
+
+        manager = PluginManager(
+            {"plugins": {"subtitles": {"enabled": True}}},
+            entry_points=[FakeEntryPoint(UnmatchedGroupPlugin)],
+        )
+
+        projection = manager.project_playlist_groups(
+            {"PLparent", "PLchild", "PLuncategorized"}
+        )
+        identifiers = manager.playlist_ids_for_group(
+            "plugin:subtitles:uncategorized",
+            {"PLparent", "PLchild", "PLuncategorized"},
+        )
+
+        unmatched_group = next(
+            group
+            for group in projection["groups"]
+            if group["group_key"] == "plugin:subtitles:uncategorized"
+        )
+        self.assertTrue(unmatched_group["include_unmatched"])
+        self.assertEqual(
+            [
+                membership["playlist_id"]
+                for membership in projection["memberships"]
+                if membership["group_key"] == "plugin:subtitles:uncategorized"
+            ],
+            ["PLuncategorized"],
+        )
+        self.assertEqual(identifiers, frozenset({"PLuncategorized"}))
+
+    def test_multiple_unmatched_groups_are_contained(self) -> None:
+        class InvalidGroupPlugin(FakePlugin):
+            def project_playlist_groups(self):
+                return {
+                    "groups": [
+                        {
+                            "group_key": "first",
+                            "name": "First",
+                            "include_unmatched": True,
+                        },
+                        {
+                            "group_key": "second",
+                            "name": "Second",
+                            "include_unmatched": True,
+                        },
+                    ],
+                    "memberships": [],
+                }
+
+        manager = PluginManager(
+            {"plugins": {"subtitles": {"enabled": True}}},
+            entry_points=[FakeEntryPoint(InvalidGroupPlugin)],
+        )
+
+        projection = manager.project_playlist_groups({"PLuncategorized"})
+
+        self.assertEqual(projection["groups"], [])
+        self.assertIn("multiple unmatched", projection["errors"][0]["message"])
+
     def test_invalid_channel_group_projection_is_contained(self) -> None:
         class InvalidGroupPlugin(FakePlugin):
             def project_channel_groups(self):

@@ -1008,14 +1008,41 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             params = urllib.parse.parse_qs(parsed.query)
             query = (params.get("q") or [""])[0]
             playlist_group_key = (params.get("playlist_group_key") or [""])[0]
+            channel_group_key = (params.get("channel_group_key") or [""])[0]
+            known_playlist_ids: frozenset[str] | None = None
+            known_channel_ids: frozenset[str] | None = None
+            if playlist_group_key or channel_group_key:
+                conn = connect(self.db_path)
+                try:
+                    if playlist_group_key:
+                        known_playlist_ids = frozenset(
+                            str(row[0])
+                            for row in conn.execute(
+                                "SELECT playlist_id FROM playlists WHERE playlist_id <> ''"
+                            )
+                        )
+                    if channel_group_key:
+                        known_channel_ids = frozenset(
+                            str(row[0])
+                            for row in conn.execute(
+                                "SELECT channel_id FROM channels WHERE channel_id <> ''"
+                            )
+                        )
+                finally:
+                    conn.close()
             playlist_id_filter = (
-                self.plugin_manager.playlist_ids_for_group(playlist_group_key)
+                self.plugin_manager.playlist_ids_for_group(
+                    playlist_group_key,
+                    known_playlist_ids,
+                )
                 if playlist_group_key
                 else None
             )
-            channel_group_key = (params.get("channel_group_key") or [""])[0]
             channel_id_filter = (
-                self.plugin_manager.channel_ids_for_group(channel_group_key)
+                self.plugin_manager.channel_ids_for_group(
+                    channel_group_key,
+                    known_channel_ids,
+                )
                 if channel_group_key
                 else None
             )

@@ -431,6 +431,7 @@ class AdminServerTests(unittest.TestCase):
         )
         handler.send_json = Mock()
         connection = Mock()
+        connection.execute.return_value = [("PLparent",), ("PLchild",)]
         payload = {"results": [], "total": 0}
 
         with (
@@ -448,7 +449,8 @@ class AdminServerTests(unittest.TestCase):
             )
 
         handler.plugin_manager.playlist_ids_for_group.assert_called_once_with(
-            "plugin:example:parent"
+            "plugin:example:parent",
+            frozenset({"PLparent", "PLchild"}),
         )
         self.assertEqual(
             search_data.call_args.kwargs["playlist_id_filter"],
@@ -458,7 +460,7 @@ class AdminServerTests(unittest.TestCase):
             search_data.call_args.kwargs["playlist_group_key"],
             "plugin:example:parent",
         )
-        connection.close.assert_called_once_with()
+        self.assertEqual(connection.close.call_count, 2)
         handler.send_json.assert_called_once_with(payload)
 
     def test_search_resolves_plugin_channel_group_membership(self) -> None:
@@ -471,6 +473,7 @@ class AdminServerTests(unittest.TestCase):
         )
         handler.send_json = Mock()
         connection = Mock()
+        connection.execute.return_value = [("UCparent",), ("UCchild",)]
         payload = {"results": [], "total": 0}
 
         with (
@@ -488,7 +491,8 @@ class AdminServerTests(unittest.TestCase):
             )
 
         handler.plugin_manager.channel_ids_for_group.assert_called_once_with(
-            "plugin-channel:example:parent"
+            "plugin-channel:example:parent",
+            frozenset({"UCparent", "UCchild"}),
         )
         self.assertEqual(
             search_data.call_args.kwargs["channel_id_filter"],
@@ -498,7 +502,7 @@ class AdminServerTests(unittest.TestCase):
             search_data.call_args.kwargs["channel_group_key"],
             "plugin-channel:example:parent",
         )
-        connection.close.assert_called_once_with()
+        self.assertEqual(connection.close.call_count, 2)
         handler.send_json.assert_called_once_with(payload)
 
     def test_search_passes_uploader_category_filters(self) -> None:
