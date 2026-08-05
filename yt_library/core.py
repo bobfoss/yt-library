@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import csv
 import hashlib
 import html
@@ -2882,11 +2884,57 @@ def extract_channel_id(initial_data: dict[str, Any], channel_url: str = "") -> s
     return ""
 
 
-def extract_channel_subscription_state(initial_data: dict[str, Any]) -> bool | None:
+def channel_id_from_entity_key(entity: dict[str, Any]) -> str:
+    key = urllib.parse.unquote(str(entity.get("key") or "").strip())
+    if not key:
+        return ""
+    try:
+        padded_key = key + ("=" * (-len(key) % 4))
+        decoded_key = base64.urlsafe_b64decode(padded_key).decode(
+            "utf-8",
+            errors="ignore",
+        )
+    except (binascii.Error, ValueError):
+        return ""
+    found = re.search(r"UC[A-Za-z0-9_-]{20,}", decoded_key)
+    return found.group(0) if found else ""
+
+
+def channel_entity_candidates(
+    initial_data: dict[str, Any],
+    entity_name: str,
+    channel_id: str,
+) -> list[dict[str, Any]]:
+    matching: list[dict[str, Any]] = []
+    unscoped: list[dict[str, Any]] = []
+    found_scoped = False
     for node in walk(initial_data):
-        entity = node.get("subscriptionStateEntity")
+        if not isinstance(node, dict):
+            continue
+        entity = node.get(entity_name)
         if not isinstance(entity, dict):
             continue
+        entity_channel_id = channel_id_from_entity_key(entity)
+        if entity_channel_id:
+            found_scoped = True
+            if not channel_id or entity_channel_id == channel_id:
+                matching.append(entity)
+        else:
+            unscoped.append(entity)
+    if matching:
+        return matching
+    return [] if channel_id and found_scoped else unscoped
+
+
+def extract_channel_subscription_state(
+    initial_data: dict[str, Any],
+    channel_id: str = "",
+) -> bool | None:
+    for entity in channel_entity_candidates(
+        initial_data,
+        "subscriptionStateEntity",
+        channel_id,
+    ):
         subscribed = entity.get("subscribed")
         if isinstance(subscribed, bool):
             return subscribed
@@ -2895,6 +2943,9 @@ def extract_channel_subscription_state(initial_data: dict[str, Any]) -> bool | N
         for key in ("subscriptionButtonRenderer", "subscribeButtonViewModel"):
             renderer = node.get(key)
             if not isinstance(renderer, dict):
+                continue
+            renderer_channel_id = str(renderer.get("channelId") or "").strip()
+            if channel_id and renderer_channel_id and renderer_channel_id != channel_id:
                 continue
             subscribed = renderer.get("subscribed")
             if isinstance(subscribed, bool):
@@ -2914,11 +2965,15 @@ def normalize_channel_notification_level(value: str) -> str:
     }.get(normalized, "")
 
 
-def extract_channel_notification_level(initial_data: dict[str, Any]) -> str:
-    for node in walk(initial_data):
-        entity = node.get("subscriptionNotificationStateEntity")
-        if not isinstance(entity, dict):
-            continue
+def extract_channel_notification_level(
+    initial_data: dict[str, Any],
+    channel_id: str = "",
+) -> str:
+    for entity in channel_entity_candidates(
+        initial_data,
+        "subscriptionNotificationStateEntity",
+        channel_id,
+    ):
         level = normalize_channel_notification_level(str(entity.get("state") or ""))
         if level:
             return level
@@ -2970,8 +3025,8 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
         if found:
             title = html.unescape(re.sub(r"\s+", " ", found.group(1))).strip()
             title = re.sub(r"\s+-\s+YouTube$", "", title)
-    subscribed = extract_channel_subscription_state(initial_data)
-    notification_level = extract_channel_notification_level(initial_data)
+    subscribed = extract_channel_subscription_state(initial_data, found_channel_id)
+    notification_level = extract_channel_notification_level(initial_data, found_channel_id)
     return {
         "channel_id": found_channel_id or channel_id,
         "channel": title,

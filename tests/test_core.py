@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import tempfile
 import threading
@@ -1259,6 +1260,56 @@ class CoreHelperTests(unittest.TestCase):
             False,
         )
         self.assertIsNone(core.extract_channel_subscription_state({}))
+
+    def test_channel_subscription_state_matches_requested_channel_entity(self) -> None:
+        def entity_key(channel_id: str) -> str:
+            encoded = base64.urlsafe_b64encode(
+                b"\x12\x18" + channel_id.encode() + b" 3(\x01"
+            ).decode()
+            return encoded.rstrip("=")
+
+        channel_id = "UCMGQaKbhEpkFGTk3-TTeNIA"
+        initial_data = {
+            "frameworkUpdates": {
+                "entityBatchUpdate": {
+                    "mutations": [
+                        {
+                            "payload": {
+                                "subscriptionStateEntity": {
+                                    "key": entity_key("UCbiQpdAl6P_pLWIC44EoDsg"),
+                                    "subscribed": False,
+                                }
+                            }
+                        },
+                        {
+                            "payload": {
+                                "subscriptionStateEntity": {
+                                    "key": entity_key(channel_id),
+                                    "subscribed": True,
+                                }
+                            }
+                        },
+                        {
+                            "payload": {
+                                "subscriptionNotificationStateEntity": {
+                                    "key": entity_key(channel_id),
+                                    "state": "SUBSCRIPTION_NOTIFICATION_STATE_OCCASIONAL",
+                                }
+                            }
+                        },
+                    ]
+                }
+            }
+        }
+
+        self.assertIs(
+            core.extract_channel_subscription_state(initial_data, channel_id),
+            True,
+        )
+        self.assertEqual(
+            core.extract_channel_notification_level(initial_data, channel_id),
+            "personalized",
+        )
 
     def test_channel_metadata_ignores_logged_out_subscription_state(self) -> None:
         channel_id = "UCchannel12345678901234"
