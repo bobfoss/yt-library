@@ -410,8 +410,8 @@ const searchPresetDefinitions = {
   'liked-videos': { kind: 'videos', sort: 'newest' },
   'all-playlists': { kind: 'playlists', sort: 'title' },
   channels: { kind: 'channels', sort: 'title' },
-  'subscribed-channels': { kind: 'channels', sort: 'title' },
-  'terminated-channels': { kind: 'channels', sort: 'title' },
+  subscribed: { kind: 'channels', sort: 'title' },
+  terminated: { kind: 'channels', sort: 'title' },
   'playlist-group': { kind: 'playlists', sort: 'title' },
   'channel-group': { kind: 'channels', sort: 'title' },
 };
@@ -771,8 +771,8 @@ function searchMetaPresetBaseline(groupName, preset = activeSearchPreset) {
   const presetSelections = {
     'playlist-videos': { membership: ['member'] },
     'liked-videos': { reactions: ['liked'] },
-    'subscribed-channels': { channelSubscription: ['subscribed'] },
-    'terminated-channels': { channelStatus: ['terminated'] },
+    subscribed: { channelSubscription: ['subscribed'] },
+    terminated: { channelStatus: ['terminated'] },
   };
   const selected = presetSelections[preset]?.[groupName];
   if (selected) {
@@ -974,9 +974,9 @@ function applySearchPresetState(preset, groupKey = '') {
     setSearchFacetSelection('membership', ['member']);
   } else if (preset === 'liked-videos') {
     setSearchFacetSelection('reactions', ['liked']);
-  } else if (preset === 'subscribed-channels') {
+  } else if (preset === 'subscribed') {
     setSearchFacetSelection('channelSubscription', ['subscribed']);
-  } else if (preset === 'terminated-channels') {
+  } else if (preset === 'terminated') {
     setSearchFacetSelection('channelStatus', ['terminated']);
   }
 }
@@ -1056,9 +1056,9 @@ function activeSearchSourceScopes() {
     video: activeSearchPreset === 'playlist-videos'
       ? 'playlist_member'
       : (activeSearchPreset === 'liked-videos' ? 'liked' : ''),
-    channel: activeSearchPreset === 'subscribed-channels'
+    channel: activeSearchPreset === 'subscribed'
       ? 'subscribed'
-      : (activeSearchPreset === 'terminated-channels' ? 'terminated' : ''),
+      : (activeSearchPreset === 'terminated' ? 'terminated' : ''),
   };
 }
 
@@ -1083,11 +1083,11 @@ function presetDefiningFiltersMatch() {
       && !searchMetaVisibility.reactions.none
       && !searchMetaVisibility.reactions.disliked;
   }
-  if (activeSearchPreset === 'subscribed-channels') {
+  if (activeSearchPreset === 'subscribed') {
     return searchMetaVisibility.channelSubscription.subscribed
       && !searchMetaVisibility.channelSubscription.non_subscribed;
   }
-  if (activeSearchPreset === 'terminated-channels') {
+  if (activeSearchPreset === 'terminated') {
     return searchMetaVisibility.channelStatus.terminated
       && !searchMetaVisibility.channelStatus.active;
   }
@@ -3881,8 +3881,8 @@ function renderGroups() {
 
   const channelSection = sectionFor('Channels');
   channelSection.appendChild(presetButton('channels', 'Channels', counts.channels || 0));
-  channelSection.appendChild(presetButton('subscribed-channels', 'Subscribed channels', counts.subscribed_channels || 0));
-  channelSection.appendChild(presetButton('terminated-channels', 'Terminated channels', counts.terminated_channels || 0));
+  channelSection.appendChild(presetButton('subscribed', 'Subscribed', counts.subscribed_channels || 0));
+  channelSection.appendChild(presetButton('terminated', 'Terminated', counts.terminated_channels || 0));
   for (const group of channelChildren.get('') || []) {
     appendGroupTree(
       channelSection,

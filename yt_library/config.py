@@ -80,8 +80,8 @@ SEARCH_SORT_CONTEXTS = frozenset(
         "liked-videos",
         "all-playlists",
         "channels",
-        "subscribed-channels",
-        "terminated-channels",
+        "subscribed",
+        "terminated",
         "playlist-group",
         "channel-group",
     }
