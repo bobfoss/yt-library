@@ -360,6 +360,14 @@ test('history document title includes the active page or date', () => {
   assert.match(indexSource, /setDocumentTitle\(`History \$\{historyTitleLocation\}`\)/);
 });
 
+test('channel history tabs persist in the URL from page one', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /function channelDetailParams\(\)[\s\S]*?params\.set\('tab', 'history'\)[\s\S]*?params\.set\('page', String\(currentPage\)\)/);
+  assert.match(indexSource, /function channelDetailTabFromParams\(params\)[\s\S]*?params\.get\('tab'\) === 'history'/);
+  assert.match(indexSource, /channelDetailTab = channelDetailTabFromParams\(params\)/);
+});
+
 test('theme selection normalizes, persists, and publishes changes', () => {
   const stored = new Map([['yt-library-theme', 'light']]);
   const events = [];

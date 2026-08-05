@@ -732,6 +732,24 @@ function localChannelHref(channelId, includePagination = false) {
   return includePagination ? appendHashParams(base, paginationParams()) : base;
 }
 
+function channelDetailParams() {
+  if (channelDetailTab !== 'history') return paginationParams();
+  const params = new URLSearchParams();
+  params.set('tab', 'history');
+  if (historyNavigationDate && historyDateNavigationIsActive()) {
+    params.set('date', historyNavigationDate);
+  } else {
+    params.set('page', String(currentPage));
+  }
+  return params;
+}
+
+function channelDetailTabFromParams(params) {
+  return params.get('tab') === 'history' || historyDateParam(params.get('date'))
+    ? 'history'
+    : 'playlists';
+}
+
 const viewHashBySelection = new Map([
   ['__search__', 'search'],
   ['__history__', 'history'],
@@ -1309,7 +1327,8 @@ function hrefForCurrentSelection(includePagination = false) {
     return localVideoHref(selected.slice('__video__:'.length), includePagination);
   }
   if (selected.startsWith('__channel__:')) {
-    return localChannelHref(selected.slice('__channel__:'.length), includePagination);
+    const base = localChannelHref(selected.slice('__channel__:'.length));
+    return includePagination ? appendHashParams(base, channelDetailParams()) : base;
   }
   return localViewHref(selected, includePagination);
 }
@@ -1355,7 +1374,7 @@ function selectionFromHash() {
   if (base.startsWith('#channel=')) {
     const channelId = decodeURIComponent(base.slice('#channel='.length));
     if (channelId) {
-      if (historyNavigationDate) channelDetailTab = 'history';
+      channelDetailTab = channelDetailTabFromParams(params);
       return channelSelection(channelId);
     }
   }
@@ -5448,13 +5467,8 @@ for (const input of searchFields) bindSearchField(input);
 window.addEventListener('hashchange', () => {
   const progressToken = pendingSidebarProgressToken;
   pendingSidebarProgressToken = null;
-  const previousSelection = selected;
   selected = selectionFromHash();
-  if (selected !== previousSelection || !selected.startsWith('__channel__:')) {
-    channelDetailTab = selected.startsWith('__channel__:') && historyNavigationDate
-      ? 'history'
-      : 'playlists';
-  }
+  if (!selected.startsWith('__channel__:')) channelDetailTab = 'playlists';
   if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
   if (selected === '__history__') search.value = '';
   renderGroups();
