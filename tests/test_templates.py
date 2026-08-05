@@ -167,8 +167,8 @@ class TemplateDomTests(unittest.TestCase):
 
     def test_browser_dom_preserves_primary_navigation_and_content_regions(self) -> None:
         expected_elements = {
-            "history-nav": ("button", "button"),
-            "search-nav": ("button", "button"),
+            "history-nav": ("a", None),
+            "search-nav": ("a", None),
             "search": ("input", "search"),
             "search-filters": ("div", None),
             "search-in-fields": ("div", None),
@@ -192,6 +192,8 @@ class TemplateDomTests(unittest.TestCase):
             self.index.position("history-nav"),
             self.index.position("search-nav"),
         )
+        self.assertEqual(self.index.element("history-nav")[1].get("href"), "#view=history")
+        self.assertEqual(self.index.element("search-nav")[1].get("href"), "#search")
         self.assertLess(
             self.index.position("view-meta"),
             self.index.position("refresh"),

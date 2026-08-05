@@ -51,12 +51,25 @@ test('detail navigation retains the active search state', () => {
   assert.match(indexSource, /window\.location\.hash = retainedSearchHash;/);
   assert.match(
     indexSource,
-    /searchNav\?\.addEventListener\('click', activateSearchNavigation\);/,
+    /searchNav\?\.addEventListener\('click', event => \{[\s\S]{0,120}handleSidebarLinkClick\(event, activateSearchNavigation\)/,
   );
   assert.doesNotMatch(
     indexSource,
     /if \(selected !== '__search__'\) search\.value = '';/,
   );
+});
+
+test('sidebar navigation uses real links without intercepting modified clicks', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+
+  assert.match(indexHtml, /<a id="history-nav" class="group" href="#view=history"/);
+  assert.match(indexHtml, /<a id="search-nav" class="group search-nav" href="#search"/);
+  assert.match(indexSource, /function searchPresetHref\(preset, groupKey = ''\)/);
+  assert.match(indexSource, /function handleSidebarLinkClick\(event, navigate\)[\s\S]{0,240}event\.ctrlKey[\s\S]{0,120}event\.preventDefault\(\)/);
+  assert.match(indexSource, /function groupLinkFor[\s\S]{0,160}document\.createElement\('a'\)/);
+  assert.match(indexSource, /function presetLink[\s\S]{0,160}document\.createElement\('a'\)/);
+  assert.match(indexSource, /link\.href = searchPresetHref\(preset/);
 });
 
 test('internal channel links prefer aliases while channel queries use canonical ids', () => {
@@ -276,12 +289,12 @@ test('uploader category facet requires detected categories', () => {
 test('navigation preset labels and identifiers stay concise', () => {
   const indexSource = source('index.js');
 
-  assert.match(indexSource, /presetButton\('playlisted', 'Playlisted',/);
-  assert.match(indexSource, /presetButton\('liked', 'Liked',/);
-  assert.match(indexSource, /presetButton\('subscribed', 'Subscribed',/);
-  assert.match(indexSource, /presetButton\('terminated', 'Terminated',/);
+  assert.match(indexSource, /presetLink\('playlisted', 'Playlisted',/);
+  assert.match(indexSource, /presetLink\('liked', 'Liked',/);
+  assert.match(indexSource, /presetLink\('subscribed', 'Subscribed',/);
+  assert.match(indexSource, /presetLink\('terminated', 'Terminated',/);
   assert.doesNotMatch(indexSource, /Playlist videos|Liked videos|Subscribed channels|Terminated channels/);
-  assert.doesNotMatch(indexSource, /presetButton\('(playlist-videos|liked-videos|subscribed-channels|terminated-channels)'/);
+  assert.doesNotMatch(indexSource, /presetLink\('(playlist-videos|liked-videos|subscribed-channels|terminated-channels)'/);
   assert.match(indexSource, /const invalidPreset = Boolean\(requestedPreset && !searchPresetDefinition\(requestedPreset\)\)/);
   assert.match(indexSource, /if \(invalidPreset\) updateSearchHash\(true\)/);
 });

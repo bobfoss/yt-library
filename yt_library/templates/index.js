@@ -426,6 +426,31 @@ function browserSearchPresets(section = '') {
   });
 }
 
+function searchPresetHref(preset, groupKey = '') {
+  const definition = searchPresetDefinition(preset);
+  if (!definition) return '#search';
+  const params = new URLSearchParams({ preset });
+  if (groupKey) params.set('group', groupKey);
+  if (definition.preserveQuery) {
+    const query = search.value.trim();
+    if (query) params.set('q', query);
+  }
+  return `#search?${params.toString()}`;
+}
+
+function handleSidebarLinkClick(event, navigate) {
+  if (
+    event.defaultPrevented
+    || event.button !== 0
+    || event.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || event.shiftKey
+  ) return;
+  event.preventDefault();
+  navigate();
+}
+
 function searchPresetDefinition(presetId) {
   if (searchPresetDefinitions[presetId]) return searchPresetDefinitions[presetId];
   const entry = browserSearchPresets().find(item => item.presetId === presetId);
@@ -3727,14 +3752,20 @@ async function fetchVideoCollection({
   };
 }
 
-function buttonFor(group, preset, membershipMap, childMap) {
-  const button = document.createElement('button');
-  button.className = 'group group-tree-action';
-  button.dataset.preset = preset;
-  button.dataset.groupKey = group.group_key;
-  button.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="count">${groupCount(group.group_key, membershipMap, childMap)}</span>`;
-  button.addEventListener('click', () => activateSearchPreset(preset, group.group_key));
-  return button;
+function groupLinkFor(group, preset, membershipMap, childMap) {
+  const link = document.createElement('a');
+  link.className = 'group group-tree-action';
+  link.href = searchPresetHref(preset, group.group_key);
+  link.dataset.preset = preset;
+  link.dataset.groupKey = group.group_key;
+  link.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="count">${groupCount(group.group_key, membershipMap, childMap)}</span>`;
+  link.addEventListener('click', event => {
+    handleSidebarLinkClick(
+      event,
+      () => activateSearchPreset(preset, group.group_key),
+    );
+  });
+  return link;
 }
 
 function navigationGroupTreeNodeId(preset, groupKey) {
@@ -3779,7 +3810,7 @@ function appendGroupTree(section, group, preset, membershipMap, childMap, depth 
       toggleNavigationGroupTreeNode(nodeId, toggle, childContainer, group.name);
     });
     row.appendChild(toggle);
-    row.appendChild(buttonFor(group, preset, membershipMap, childMap));
+    row.appendChild(groupLinkFor(group, preset, membershipMap, childMap));
     section.appendChild(row);
     for (const child of childGroups) {
       appendGroupTree(
@@ -3797,7 +3828,7 @@ function appendGroupTree(section, group, preset, membershipMap, childMap, depth 
     spacer.className = 'group-tree-toggle-spacer';
     spacer.setAttribute('aria-hidden', 'true');
     row.appendChild(spacer);
-    row.appendChild(buttonFor(group, preset, membershipMap, childMap));
+    row.appendChild(groupLinkFor(group, preset, membershipMap, childMap));
     section.appendChild(row);
   }
 }
@@ -3813,36 +3844,49 @@ function sectionFor(label) {
   return section;
 }
 
-function presetButton(preset, label, count) {
-  const button = document.createElement('button');
-  button.className = 'group';
-  button.dataset.preset = preset;
-  button.innerHTML = `<span>${escapeHtml(label)}</span><span class="count">${count}</span>`;
-  button.addEventListener('click', () => activateSearchPreset(preset));
-  return button;
+function presetLink(preset, label, count) {
+  const link = document.createElement('a');
+  link.className = 'group';
+  link.href = searchPresetHref(preset);
+  link.dataset.preset = preset;
+  link.innerHTML = `<span>${escapeHtml(label)}</span><span class="count">${count}</span>`;
+  link.addEventListener('click', event => {
+    handleSidebarLinkClick(event, () => activateSearchPreset(preset));
+  });
+  return link;
+}
+
+function searchNavigationHref() {
+  if (selected !== '__search__') return retainedSearchHash || '#search';
+  const params = new URLSearchParams();
+  const query = search.value.trim();
+  if (query) params.set('q', query);
+  return `#search${params.size ? `?${params.toString()}` : ''}`;
 }
 
 function syncSidebarSelection() {
+  if (historyNav) historyNav.href = localViewHref('__history__');
+  if (searchNav) searchNav.href = searchNavigationHref();
   const groupPresets = new Set(['playlist-group', 'channel-group']);
-  for (const button of groupsEl.querySelectorAll('.group')) {
+  for (const link of groupsEl.querySelectorAll('.group')) {
     const activeGroupKey = activeSearchPreset === 'channel-group'
       ? searchChannelGroupKey
       : searchPlaylistGroupKey;
     const activeGroupPreset = (
       selected === '__search__'
       && groupPresets.has(activeSearchPreset)
-      && button.dataset.preset === activeSearchPreset
-      && button.dataset.groupKey === activeGroupKey
+      && link.dataset.preset === activeSearchPreset
+      && link.dataset.groupKey === activeGroupKey
     );
     const activeNamedPreset = (
       selected === '__search__'
-      && button.dataset.preset
-      && !groupPresets.has(button.dataset.preset)
-      && button.dataset.preset === activeSearchPreset
+      && link.dataset.preset
+      && !groupPresets.has(link.dataset.preset)
+      && link.dataset.preset === activeSearchPreset
     );
-    button.classList.toggle(
+    link.classList.toggle(
       'active',
-      button.dataset.key === selected || activeGroupPreset || activeNamedPreset,
+      link.dataset.key === selected || activeGroupPreset || activeNamedPreset,
     );
   }
   searchNav?.classList.toggle('active', selected === '__search__' && !activeSearchPreset);
@@ -3857,9 +3901,9 @@ function renderGroups() {
   const historyCount = historyNav?.querySelector('.count');
   if (historyCount) historyCount.textContent = counts.history || 0;
   const videoSection = sectionFor('Videos');
-  videoSection.appendChild(presetButton('videos', 'Videos', counts.videos || 0));
-  videoSection.appendChild(presetButton('playlisted', 'Playlisted', counts.playlist_videos || 0));
-  videoSection.appendChild(presetButton('liked', 'Liked', counts.liked_videos || 0));
+  videoSection.appendChild(presetLink('videos', 'Videos', counts.videos || 0));
+  videoSection.appendChild(presetLink('playlisted', 'Playlisted', counts.playlist_videos || 0));
+  videoSection.appendChild(presetLink('liked', 'Liked', counts.liked_videos || 0));
   for (const { plugin, preset, presetId } of browserSearchPresets('videos')) {
     const status = browserPluginStatus(plugin.id);
     const count = Number(
@@ -3867,11 +3911,11 @@ function renderGroups() {
       ?? plugin.search.catalogCount?.(status)
       ?? 0
     );
-    videoSection.appendChild(presetButton(presetId, preset.label || plugin.search.label || plugin.id, count));
+    videoSection.appendChild(presetLink(presetId, preset.label || plugin.search.label || plugin.id, count));
   }
 
   const playlistSection = sectionFor('Playlists');
-  playlistSection.appendChild(presetButton('all-playlists', 'Playlists', counts.playlists || 0));
+  playlistSection.appendChild(presetLink('all-playlists', 'Playlists', counts.playlists || 0));
   for (const group of playlistChildren.get('') || []) {
     appendGroupTree(
       playlistSection,
@@ -3883,9 +3927,9 @@ function renderGroups() {
   }
 
   const channelSection = sectionFor('Channels');
-  channelSection.appendChild(presetButton('channels', 'Channels', counts.channels || 0));
-  channelSection.appendChild(presetButton('subscribed', 'Subscribed', counts.subscribed_channels || 0));
-  channelSection.appendChild(presetButton('terminated', 'Terminated', counts.terminated_channels || 0));
+  channelSection.appendChild(presetLink('channels', 'Channels', counts.channels || 0));
+  channelSection.appendChild(presetLink('subscribed', 'Subscribed', counts.subscribed_channels || 0));
+  channelSection.appendChild(presetLink('terminated', 'Terminated', counts.terminated_channels || 0));
   for (const group of channelChildren.get('') || []) {
     appendGroupTree(
       channelSection,
@@ -4669,8 +4713,12 @@ search.addEventListener('input', () => {
     render();
   }, 250);
 });
-historyNav?.addEventListener('click', () => setSelected('__history__'));
-searchNav?.addEventListener('click', activateSearchNavigation);
+historyNav?.addEventListener('click', event => {
+  handleSidebarLinkClick(event, () => setSelected('__history__'));
+});
+searchNav?.addEventListener('click', event => {
+  handleSidebarLinkClick(event, activateSearchNavigation);
+});
 viewContext.addEventListener('change', event => {
   const syncToggle = event.target.closest('[data-history-sync]');
   if (syncToggle instanceof HTMLInputElement) {

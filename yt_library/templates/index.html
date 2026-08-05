@@ -56,7 +56,7 @@
     .filter { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
     .filter input { accent-color: var(--accent); }
     .filter.dimmed { opacity: .42; }
-    .group { width: 100%; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin: 2px 0; border-radius: 6px; cursor: pointer; text-align: left; font: inherit; }
+    .group { width: 100%; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin: 2px 0; border-radius: 6px; cursor: pointer; text-align: left; text-decoration: none; font: inherit; }
     .group:hover, .group.active { background: var(--accent-soft); }
     .primary-nav-divider { border-top: 1px solid var(--line); margin: 8px 0 6px; }
     .search-nav { margin: 0 0 4px; }
@@ -472,9 +472,9 @@
         <h1><a class="home-title" href="/"><img class="library-mark" src="/favicon.svg?v=ytl" alt="">YT Library</a></h1>
         <a class="admin-link" href="/admin">Admin</a>
       </div>
-      <button id="history-nav" class="group" type="button" data-key="__history__"><span>History</span><span class="count"></span></button>
+      <a id="history-nav" class="group" href="#view=history" data-key="__history__"><span>History</span><span class="count"></span></a>
       <div class="primary-nav-divider" aria-hidden="true"></div>
-      <button id="search-nav" class="group search-nav" type="button" data-key="__search__"><span>Search</span><span class="count"></span></button>
+      <a id="search-nav" class="group search-nav" href="#search" data-key="__search__"><span>Search</span><span class="count"></span></a>
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
       <div id="search-filters" class="filters" aria-label="Search filters">
         <div class="filter-title">Search in</div>
