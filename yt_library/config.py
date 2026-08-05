@@ -42,6 +42,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "kind:playlists",
         "kind:channels",
     ],
+    "navigation_group_tree_collapsed": [],
     "update_frequency": "off",
     "update_hour_minute": 0,
     "update_time": "03:00",
@@ -82,6 +83,7 @@ SEARCH_SORT_CONTEXTS = frozenset(
         "subscribed-channels",
         "terminated-channels",
         "playlist-group",
+        "channel-group",
     }
 )
 SORT_PREFERENCE_VALUES = {
@@ -103,6 +105,10 @@ PLUGIN_FILTER_PREFERENCE_PATTERN = re.compile(
 )
 SEARCH_FILTER_TREE_NODE_PATTERN = re.compile(
     r"^(?:kind|facet):[A-Za-z][A-Za-z0-9_-]{0,79}$"
+)
+NAVIGATION_GROUP_TREE_NODE_PREFIXES = (
+    "playlist-group:",
+    "channel-group:",
 )
 DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 UPDATE_FREQUENCIES = frozenset({"off", "hourly", "daily"})
@@ -228,6 +234,32 @@ def configured_search_filter_tree_expanded(config: dict[str, Any]) -> list[str]:
 
 def valid_search_filter_tree_node(value: str) -> bool:
     return bool(SEARCH_FILTER_TREE_NODE_PATTERN.fullmatch(value or ""))
+
+
+def configured_navigation_group_tree_collapsed(
+    config: dict[str, Any],
+) -> list[str]:
+    raw_nodes = config.get("navigation_group_tree_collapsed", [])
+    if not isinstance(raw_nodes, list):
+        return []
+    nodes: list[str] = []
+    for raw_node in raw_nodes:
+        node = str(raw_node or "").strip()
+        if valid_navigation_group_tree_node(node) and node not in nodes:
+            nodes.append(node)
+    return nodes
+
+
+def valid_navigation_group_tree_node(value: str) -> bool:
+    normalized = str(value or "").strip()
+    return (
+        1 <= len(normalized) <= 1_100
+        and not any(ord(char) < 32 for char in normalized)
+        and any(
+            normalized.startswith(prefix) and len(normalized) > len(prefix)
+            for prefix in NAVIGATION_GROUP_TREE_NODE_PREFIXES
+        )
+    )
 
 
 def configured_sort_preferences(config: dict[str, Any]) -> dict[str, str]:
@@ -460,6 +492,7 @@ CONFIG_NORMALIZERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "partial_completion_min_percent": configured_partial_completion_min_percent,
     "filter_preferences": configured_filter_preferences,
     "search_filter_tree_expanded": configured_search_filter_tree_expanded,
+    "navigation_group_tree_collapsed": configured_navigation_group_tree_collapsed,
     "update_frequency": configured_update_frequency,
     "update_hour_minute": configured_update_hour_minute,
     "update_time": configured_update_time,

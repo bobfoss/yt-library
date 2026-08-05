@@ -60,7 +60,12 @@
     .group:hover, .group.active { background: var(--accent-soft); }
     .primary-nav-divider { border-top: 1px solid var(--line); margin: 8px 0 6px; }
     .search-nav { margin: 0 0 4px; }
-    .group.child { padding-left: calc(12px + (var(--group-depth, 1) * 16px)); color: var(--muted); }
+    .group-tree-row { display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; column-gap: 4px; padding-left: calc(var(--group-depth, 0) * 16px); }
+    .group-tree-row > .group { grid-column: 2; padding-left: 4px; }
+    .group-tree-row.child > .group { color: var(--muted); }
+    .group-tree-row > .group-tree-toggle, .group-tree-row > .group-tree-toggle-spacer { grid-column: 1; }
+    .group-tree-toggle-spacer { width: 14px; height: 18px; }
+    .group-tree-children[hidden] { display: none; }
     .group-section { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; }
     .group-section:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
     .group-section-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding: 0 10px 4px; }

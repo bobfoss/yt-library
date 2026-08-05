@@ -969,6 +969,61 @@ class AdminServerTests(unittest.TestCase):
         )
         self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
 
+    def test_navigation_group_tree_state_saves_without_restarting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.config_data = config
+            handler.send_json = Mock()
+            handler.path = (
+                "/api/settings/navigation-group-tree?"
+                "collapsed=playlist-group%3AParent&"
+                "collapsed=channel-group%3Aplugin-channel%3Apockettube%3AAdventure"
+            )
+
+            handler.do_POST()
+
+            expected = [
+                "playlist-group:Parent",
+                "channel-group:plugin-channel:pockettube:Adventure",
+            ]
+            self.assertEqual(config["navigation_group_tree_collapsed"], expected)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["navigation_group_tree_collapsed"], expected)
+            handler.send_json.assert_called_once_with(
+                {
+                    "ok": True,
+                    "navigationGroupTreeCollapsed": expected,
+                }
+            )
+
+            handler.send_json.reset_mock()
+            handler.path = "/api/settings/navigation-group-tree"
+            handler.do_POST()
+
+            self.assertEqual(config["navigation_group_tree_collapsed"], [])
+            handler.send_json.assert_called_once_with(
+                {
+                    "ok": True,
+                    "navigationGroupTreeCollapsed": [],
+                }
+            )
+
+    def test_navigation_group_tree_state_rejects_invalid_nodes(self) -> None:
+        config = load_config(Path("missing-test-config.json"))
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = (
+            "/api/settings/navigation-group-tree?collapsed=channel-group%3A"
+        )
+        handler.config_data = config
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        self.assertEqual(config["navigation_group_tree_collapsed"], [])
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
     def test_filter_preference_rejects_unknown_key(self) -> None:
         config = load_config(Path("missing-test-config.json"))
         handler = object.__new__(server.LibraryHandler)

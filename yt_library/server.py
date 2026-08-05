@@ -31,6 +31,7 @@ from .config import (
     configured_filter_preferences,
     configured_history_card_layout,
     configured_job_dispatch_delay,
+    configured_navigation_group_tree_collapsed,
     configured_page_size,
     configured_partial_completion_min_percent,
     configured_playlist_card_layout,
@@ -52,6 +53,7 @@ from .config import (
     save_config,
     valid_update_frequency,
     valid_filter_preference_key,
+    valid_navigation_group_tree_node,
     valid_search_filter_tree_node,
     valid_update_hour_minute,
     valid_update_time,
@@ -148,6 +150,7 @@ PREFERENCE_POST_PATHS = frozenset(
         "/api/settings/partial-completion-minimum",
         "/api/settings/filter-preference",
         "/api/settings/search-filter-tree",
+        "/api/settings/navigation-group-tree",
     }
 )
 ADMIN_CONFIGURATION_POST_PATHS = frozenset(
@@ -1333,6 +1336,26 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 }
             )
             return
+        if parsed.path == "/api/settings/navigation-group-tree":
+            raw_nodes = params.get("collapsed") or []
+            nodes = list(dict.fromkeys(node.strip() for node in raw_nodes))
+            if len(nodes) > 1_000 or any(
+                not valid_navigation_group_tree_node(node) for node in nodes
+            ):
+                self.send_json(
+                    {"error": "Invalid navigation group tree state"},
+                    status=400,
+                )
+                return
+            self.config_data["navigation_group_tree_collapsed"] = nodes
+            save_config(self.config_data)
+            self.send_json(
+                {
+                    "ok": True,
+                    "navigationGroupTreeCollapsed": nodes,
+                }
+            )
+            return
 
     def _handle_admin_configuration_post(
         self,
@@ -2019,6 +2042,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "filterPreferences": configured_filter_preferences(self.config_data),
             "searchFilterTreeExpanded": configured_search_filter_tree_expanded(
                 self.config_data
+            ),
+            "navigationGroupTreeCollapsed": (
+                configured_navigation_group_tree_collapsed(self.config_data)
             ),
         }
 

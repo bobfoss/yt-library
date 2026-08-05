@@ -38,6 +38,12 @@ const searchFilterTreeExpanded = new Set(
     : defaultSearchFilterTreeExpanded)
     .filter(node => typeof node === 'string')
 );
+const navigationGroupTreeCollapsed = new Set(
+  (Array.isArray(pageConfig.navigationGroupTreeCollapsed)
+    ? pageConfig.navigationGroupTreeCollapsed
+    : [])
+    .filter(node => typeof node === 'string')
+);
 
 function filterPreferenceEnabled(key) {
   return filterPreferences[key] === true;
@@ -55,6 +61,7 @@ let playlistMemberships = new Map();
 let playlistChildren = new Map();
 let channelMemberships = new Map();
 let channelChildren = new Map();
+let navigationGroupTreeDomId = 0;
 const browserPlugins = new Map();
 const loadedBrowserPluginAssets = new Set();
 const pluginSearchVisibility = new Map();
@@ -395,6 +402,8 @@ let filterPreferenceSaveChain = Promise.resolve();
 const filterPreferenceSaveVersions = new Map();
 let searchFilterTreeSaveChain = Promise.resolve();
 let searchFilterTreeSaveVersion = 0;
+let navigationGroupTreeSaveChain = Promise.resolve();
+let navigationGroupTreeSaveVersion = 0;
 const searchPresetDefinitions = {
   videos: { kind: 'videos', sort: 'newest' },
   'playlist-videos': { kind: 'videos', sort: 'newest' },
@@ -3655,10 +3664,9 @@ async function fetchVideoCollection({
   };
 }
 
-function buttonFor(group, preset, membershipMap, childMap, depth = 0) {
+function buttonFor(group, preset, membershipMap, childMap) {
   const button = document.createElement('button');
-  button.className = `group ${depth > 0 ? 'child' : ''}`;
-  button.style.setProperty('--group-depth', String(depth));
+  button.className = 'group group-tree-action';
   button.dataset.preset = preset;
   button.dataset.groupKey = group.group_key;
   button.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="count">${groupCount(group.group_key, membershipMap, childMap)}</span>`;
@@ -3666,10 +3674,68 @@ function buttonFor(group, preset, membershipMap, childMap, depth = 0) {
   return button;
 }
 
+function navigationGroupTreeNodeId(preset, groupKey) {
+  return `${preset}:${groupKey}`;
+}
+
+function applyNavigationGroupTreeNodeState(nodeId, toggle, childContainer, label) {
+  const expanded = !navigationGroupTreeCollapsed.has(nodeId);
+  toggle.setAttribute('aria-expanded', String(expanded));
+  toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${label}`);
+  toggle.title = `${expanded ? 'Collapse' : 'Expand'} ${label}`;
+  childContainer.hidden = !expanded;
+}
+
+function toggleNavigationGroupTreeNode(nodeId, toggle, childContainer, label) {
+  const wasCollapsed = navigationGroupTreeCollapsed.has(nodeId);
+  if (wasCollapsed) navigationGroupTreeCollapsed.delete(nodeId);
+  else navigationGroupTreeCollapsed.add(nodeId);
+  applyNavigationGroupTreeNodeState(nodeId, toggle, childContainer, label);
+  saveNavigationGroupTreePreference(nodeId, wasCollapsed);
+}
+
 function appendGroupTree(section, group, preset, membershipMap, childMap, depth = 0) {
-  section.appendChild(buttonFor(group, preset, membershipMap, childMap, depth));
-  for (const child of childMap.get(group.group_key) || []) {
-    appendGroupTree(section, child, preset, membershipMap, childMap, depth + 1);
+  const childGroups = childMap.get(group.group_key) || [];
+  const row = document.createElement('div');
+  row.className = `group-tree-row ${depth > 0 ? 'child' : ''}`;
+  row.style.setProperty('--group-depth', String(depth));
+  if (childGroups.length) {
+    const nodeId = navigationGroupTreeNodeId(preset, group.group_key);
+    const childContainer = document.createElement('div');
+    const childrenId = `navigation-group-tree-${++navigationGroupTreeDomId}`;
+    childContainer.className = 'group-tree-children';
+    childContainer.id = childrenId;
+    const toggle = document.createElement('button');
+    toggle.className = 'search-tree-toggle group-tree-toggle';
+    toggle.type = 'button';
+    toggle.dataset.groupTreeToggle = nodeId;
+    toggle.setAttribute('aria-controls', childrenId);
+    toggle.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>';
+    applyNavigationGroupTreeNodeState(nodeId, toggle, childContainer, group.name);
+    toggle.addEventListener('click', () => {
+      toggleNavigationGroupTreeNode(nodeId, toggle, childContainer, group.name);
+    });
+    row.appendChild(toggle);
+    row.appendChild(buttonFor(group, preset, membershipMap, childMap));
+    section.appendChild(row);
+    for (const child of childGroups) {
+      appendGroupTree(
+        childContainer,
+        child,
+        preset,
+        membershipMap,
+        childMap,
+        depth + 1,
+      );
+    }
+    section.appendChild(childContainer);
+  } else {
+    const spacer = document.createElement('span');
+    spacer.className = 'group-tree-toggle-spacer';
+    spacer.setAttribute('aria-hidden', 'true');
+    row.appendChild(spacer);
+    row.appendChild(buttonFor(group, preset, membershipMap, childMap));
+    section.appendChild(row);
   }
 }
 
@@ -3723,6 +3789,7 @@ function syncSidebarSelection() {
 function renderGroups() {
   if (!data) return;
   groupsEl.replaceChildren();
+  navigationGroupTreeDomId = 0;
   const counts = data.counts || {};
   const historyCount = historyNav?.querySelector('.count');
   if (historyCount) historyCount.textContent = counts.history || 0;
@@ -4954,6 +5021,36 @@ function saveSearchFilterTreePreference(nodeId, wasExpanded) {
     if (wasExpanded) searchFilterTreeExpanded.add(nodeId);
     else searchFilterTreeExpanded.delete(nodeId);
     applySearchFilterTreeNodeState(nodeId);
+    window.alert(error instanceof Error ? error.message : String(error));
+  });
+}
+
+function persistNavigationGroupTreePreference(collapsedNodes) {
+  const save = async () => {
+    const params = new URLSearchParams();
+    for (const nodeId of collapsedNodes) params.append('collapsed', nodeId);
+    const response = await fetch(
+      `/api/settings/navigation-group-tree?${params.toString()}`,
+      { method: 'POST' },
+    );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) {
+      throw new Error(result.error || `Navigation group tree save failed (${response.status})`);
+    }
+  };
+  const request = navigationGroupTreeSaveChain.catch(() => {}).then(save);
+  navigationGroupTreeSaveChain = request;
+  return request;
+}
+
+function saveNavigationGroupTreePreference(nodeId, wasCollapsed) {
+  const version = ++navigationGroupTreeSaveVersion;
+  const collapsedNodes = [...navigationGroupTreeCollapsed].sort();
+  void persistNavigationGroupTreePreference(collapsedNodes).catch(error => {
+    if (navigationGroupTreeSaveVersion !== version) return;
+    if (wasCollapsed) navigationGroupTreeCollapsed.add(nodeId);
+    else navigationGroupTreeCollapsed.delete(nodeId);
+    renderGroups();
     window.alert(error instanceof Error ? error.message : String(error));
   });
 }

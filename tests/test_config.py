@@ -23,6 +23,7 @@ from yt_library.config import (
     configured_filter_preferences,
     configured_history_card_layout,
     configured_job_dispatch_delay,
+    configured_navigation_group_tree_collapsed,
     configured_page_size,
     configured_partial_completion_min_percent,
     configured_playlist_card_layout,
@@ -47,6 +48,7 @@ from yt_library.config import (
     save_config,
     valid_update_frequency,
     valid_filter_preference_key,
+    valid_navigation_group_tree_node,
     valid_search_filter_tree_node,
     valid_update_hour_minute,
     valid_update_time,
@@ -235,6 +237,31 @@ class ConfigTests(unittest.TestCase):
             ),
             ["kind:videos", "facet:uploaderCategory"],
         )
+        self.assertEqual(configured_navigation_group_tree_collapsed({}), [])
+        self.assertEqual(
+            configured_navigation_group_tree_collapsed(
+                {
+                    "navigation_group_tree_collapsed": [
+                        "playlist-group:parent",
+                        "channel-group:plugin-channel:pockettube:Adventure",
+                        "playlist-group:parent",
+                        "bad node",
+                    ]
+                }
+            ),
+            [
+                "playlist-group:parent",
+                "channel-group:plugin-channel:pockettube:Adventure",
+            ],
+        )
+        self.assertTrue(valid_navigation_group_tree_node("playlist-group:parent"))
+        self.assertTrue(
+            valid_navigation_group_tree_node(
+                "channel-group:plugin-channel:pockettube:Adventure"
+            )
+        )
+        self.assertFalse(valid_navigation_group_tree_node("channel-group:"))
+        self.assertFalse(valid_navigation_group_tree_node("bad node"))
         self.assertTrue(valid_search_filter_tree_node("facet:plugin-subtitles"))
         self.assertFalse(valid_search_filter_tree_node("facet:bad node"))
         self.assertTrue(valid_filter_preference_key("plugins.subtitles.search"))
@@ -501,6 +528,7 @@ class ConfigTests(unittest.TestCase):
                 payload["search_filter_tree_expanded"],
                 ["kind:videos", "kind:playlists", "kind:channels"],
             )
+            self.assertEqual(payload["navigation_group_tree_collapsed"], [])
             self.assertEqual(payload["update_frequency"], "off")
             self.assertEqual(payload["update_hour_minute"], 0)
             self.assertEqual(payload["update_time"], "03:00")

@@ -219,6 +219,21 @@ test('channel group navigation is recursive and uses the generic search contract
   assert.match(indexHtml, /--group-depth/);
 });
 
+test('navigation group branches collapse with persisted disclosure state', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+
+  assert.match(indexSource, /const navigationGroupTreeCollapsed = new Set\(/);
+  assert.match(indexSource, /toggle\.dataset\.groupTreeToggle = nodeId/);
+  assert.match(indexSource, /aria-controls/);
+  assert.match(indexSource, /childContainer\.hidden = !expanded/);
+  assert.match(indexSource, /function toggleNavigationGroupTreeNode\(/);
+  assert.match(indexSource, /\/api\/settings\/navigation-group-tree/);
+  assert.match(indexSource, /navigationGroupTreeSaveChain\.catch\(\(\) => \{\}\)\.then\(save\)/);
+  assert.match(indexHtml, /\.group-tree-children\[hidden\] \{ display: none; \}/);
+  assert.match(indexHtml, /\.search-tree-toggle\[aria-expanded="true"\] svg/);
+});
+
 test('search filter tree folds facets and persists disclosure state', () => {
   const indexHtml = source('index.html');
   const indexSource = source('index.js');

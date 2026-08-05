@@ -543,6 +543,11 @@ under Channels. Selecting a group includes all descendants and filters the
 normal channel search model through an explicit channel-ID set. Unknown channel
 references remain plugin-owned and never create YTL rows.
 
+Native and projected navigation hierarchies share one disclosure model. Parent
+rows expose a separate accessible toggle, while the group label remains the
+search action. Only collapsed node IDs are saved in config, so new groups are
+expanded by default and no plugin-specific state enters the core contract.
+
 ### Host-owned worker queue
 
 A plugin may declare worker processes through a `worker_processes` iterable or

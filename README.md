@@ -126,6 +126,9 @@ The search and history card selectors save `search_card_layout` and
 `history_card_layout` immediately, without changing the current URL.
 Sort selectors save independent preferences for unscoped search, each sidebar
 preset, and playlist-detail video lists in `sort_preferences`.
+Playlist and channel groups with children have independent disclosure controls.
+Collapsed branches persist in `navigation_group_tree_collapsed`; newly imported
+groups remain expanded until the user collapses them.
 The Admin **Update** action incrementally discovers new playlists, fetches recent
 history and Liked videos, refreshes due playlist memberships, and enriches
 metadata that has never been fetched. `update_daily` and `update_time` attach
