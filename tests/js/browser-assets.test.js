@@ -199,6 +199,23 @@ test('history heatmaps track the first fully visible card', () => {
   assert.match(indexHtml, /button\.history-heatmap-day\[aria-current="date"\]/);
 });
 
+test('history year navigation keeps the selected month and day', () => {
+  const indexSource = source('index.js');
+
+  assert.match(
+    indexSource,
+    /function displayedHistoryAnchorDate\(\)[\s\S]{0,420}history-heatmap-day\[aria-current="date"\]\[data-history-date\][\s\S]{0,220}selectedDay\.dataset\.historyDate/,
+  );
+  assert.match(
+    indexSource,
+    /function displayedHistoryAnchorDate\(\)[\s\S]{0,650}firstVisibleHistoryCardDate\(\)[\s\S]{0,180}historyNavigationDate/,
+  );
+  assert.match(
+    indexSource,
+    /async function shiftHistoryActivityYear\(delta\)[\s\S]{0,700}const currentAnchorDate = displayedHistoryAnchorDate\(\)[\s\S]{0,800}shiftedHistoryDateKey\(currentAnchorDate, delta\)/,
+  );
+});
+
 test('histogram navigation uses a restorable date URL', () => {
   const indexSource = source('index.js');
 

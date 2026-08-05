@@ -2407,6 +2407,16 @@ function syncHistoryActivityYearWithRows(rows, preferredDate = '') {
 }
 
 function displayedHistoryAnchorDate() {
+  const heatmap = viewContext.querySelector('.history-heatmap');
+  const selectedDay = heatmap?.querySelector(
+    '.history-heatmap-day[aria-current="date"][data-history-date]',
+  );
+  if (selectedDay instanceof HTMLButtonElement) {
+    return selectedDay.dataset.historyDate || '';
+  }
+  const visibleDate = firstVisibleHistoryCardDate();
+  if (visibleDate) return visibleDate;
+  if (historyNavigationDate) return historyNavigationDate;
   const row = grid.querySelector('[data-watch-date]');
   return row instanceof HTMLElement ? row.dataset.watchDate || '' : '';
 }
