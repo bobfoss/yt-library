@@ -54,6 +54,7 @@ from .core import (
     enqueue_playlist_scan_item,
     external_service_block,
     extract_playlist_metadata,
+    fetch_playlist_collaboration_metadata,
     fetch_channel_metadata,
     fetch_current_youtube_playlists,
     fetch_new_channel_metadata_if_needed,
@@ -992,6 +993,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 header_page_requires_login = False
                 missing_status = ""
                 youtube_debug = ""
+                collaboration_debug = ""
                 try:
                     playlist_url = f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}"
                     header_page = request_text(opener, playlist_url)
@@ -1000,6 +1002,22 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                     header_metadata = {}
                     youtube_debug = youtube_request_error_diagnostics(exc, "playlist header")
+                if header_page:
+                    try:
+                        collaboration_metadata = fetch_playlist_collaboration_metadata(
+                            opener,
+                            cookie_file,
+                            header_page,
+                            playlist_url,
+                        )
+                        header_metadata.update(collaboration_metadata)
+                    except ProxyUnavailableError:
+                        raise
+                    except Exception as exc:
+                        collaboration_debug = youtube_request_error_diagnostics(
+                            exc,
+                            "playlist collaborators",
+                        )
                 header_count_available = bool(header_metadata.get("has_video_count"))
                 if not header_count_available and header_page_requires_login:
                     status = "error"
@@ -1044,6 +1062,8 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     "owner",
                     "owner_channel_id",
                     "owner_thumbnail_url",
+                    "collaborators",
+                    "collaborators_authoritative",
                     "thumbnail_url",
                     "url",
                 ):
@@ -1061,6 +1081,22 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         DEFAULT_VIDEO_THUMB_DIR,
                         referer_url=playlist_url,
                     )
+                collaborators = playlist_metadata.get("collaborators") or []
+                for collaborator in collaborators:
+                    if not isinstance(collaborator, dict):
+                        continue
+                    collaborator_id = str(collaborator.get("channel_id") or "").strip()
+                    collaborator_thumbnail_url = str(
+                        collaborator.get("thumbnail_url") or ""
+                    ).strip()
+                    if collaborator_id and collaborator_thumbnail_url:
+                        collaborator["thumbnail_path"] = cache_channel_thumbnail(
+                            opener,
+                            collaborator_id,
+                            collaborator_thumbnail_url,
+                            DEFAULT_VIDEO_THUMB_DIR,
+                            referer_url=playlist_url,
+                        )
                 thumbnail_url = str(playlist_metadata.get("thumbnail_url") or "").strip()
                 if thumbnail_url:
                     playlist_metadata["thumbnail_path"] = cache_thumbnail(
@@ -1277,6 +1313,14 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 + (f"; queued {metadata_queued} metadata items" if metadata_queued else "")
                                 + (f"; queued {placeholder_queued} placeholder recoveries" if placeholder_queued else "")
                             ),
+                            playlist_id,
+                        )
+                    if collaboration_debug:
+                        log_playlist_scan_event(
+                            conn,
+                            run_id,
+                            "debug",
+                            f"{title}: YouTube collaborator diagnostics: {collaboration_debug}",
                             playlist_id,
                         )
                     if queue_id:

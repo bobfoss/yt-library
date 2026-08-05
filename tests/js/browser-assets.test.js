@@ -107,6 +107,15 @@ test('playlist cards show visibility before counts and pluralize video counts', 
   assert.match(indexSource, /count === 1 \? 'video' : 'videos'/);
 });
 
+test('playlist cards render one owner separately from collaborators', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /const people = \[owner, \.\.\.collaborators\]/);
+  assert.match(indexSource, /names \+= ` and \$\{playlistPersonNameHtml\(collaborators\[0\]\)\}`/);
+  assert.match(indexSource, /names \+= ` and \$\{collaborators\.length\} others`/);
+  assert.match(indexSource, /playlist-creator-avatars/);
+});
+
 test('admin status polling clears stale running state on request failures', () => {
   const adminSource = source('admin.js');
 

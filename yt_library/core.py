@@ -1325,7 +1325,11 @@ def request_youtubei_json(
     payload: dict[str, Any],
     referer: str,
     client_version: str,
+    *,
+    api_path: str = "browse",
 ) -> dict[str, Any]:
+    if api_path not in {"browse", "get_panel"}:
+        raise ValueError(f"Unsupported YouTubei API path: {api_path}")
     origin = "https://www.youtube.com"
     headers = {
         "Content-Type": "application/json",
@@ -1343,7 +1347,7 @@ def request_youtubei_json(
     auth = sapisid_auth_header(jar, origin)
     if auth:
         headers["Authorization"] = auth
-    url = f"https://www.youtube.com/youtubei/v1/browse?key={urllib.parse.quote(api_key)}"
+    url = f"https://www.youtube.com/youtubei/v1/{api_path}?key={urllib.parse.quote(api_key)}"
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
     with open_with_request_pacing(opener, req, timeout=30) as response:
         return json.loads(response.read().decode("utf-8", "replace"))
@@ -1453,7 +1457,129 @@ def playlist_owner_from_metadata_part(part: dict[str, Any]) -> tuple[str, str]:
         text_value = avatar_text
     if not owner_text.lower().startswith("by "):
         return "", ""
-    return owner_text[3:].strip(), rich_text_channel_ref(text_value)
+    owner = owner_text[3:].strip()
+    avatar_stack = part.get("avatarStack", {}).get("avatarStackViewModel", {})
+    avatars = avatar_stack.get("avatars") or []
+    if len(avatars) > 1 or re.search(r"\s+and\s+\d+\s+others?$", owner, re.I):
+        return "", ""
+    return owner, rich_text_channel_ref(text_value)
+
+
+def playlist_collaboration_panel_request(initial_data: Any) -> dict[str, str]:
+    for node in walk(initial_data):
+        endpoint = node.get("showEngagementPanelEndpoint")
+        if not isinstance(endpoint, dict):
+            continue
+        identifier = endpoint.get("identifier") or {}
+        panel_id = str(identifier.get("tag") or "").strip()
+        configuration = endpoint.get("globalConfiguration") or {}
+        params = str(configuration.get("params") or "").strip()
+        if panel_id == "PAplaylist_collaborate" and params:
+            return {"panel_id": panel_id, "params": params}
+    return {}
+
+
+def _channel_ref_from_value(value: Any) -> str:
+    for node in walk(value):
+        if not isinstance(node, dict):
+            continue
+        ref = channel_ref_from_endpoint(node)
+        if ref:
+            return ref
+        on_tap = node.get("onTap") or {}
+        ref = channel_ref_from_endpoint(on_tap.get("innertubeCommand"))
+        if ref:
+            return ref
+    return ""
+
+
+def _playlist_participant_role(participant: dict[str, Any]) -> str:
+    for node in walk(participant.get("metadata")):
+        if not isinstance(node, dict):
+            continue
+        for key in ("text", "title", "label"):
+            value = content_text(node.get(key)).strip().lower()
+            if value == "owner":
+                return "owner"
+    return "collaborator"
+
+
+def parse_playlist_collaboration_metadata(response: Any) -> dict[str, Any]:
+    collaborators_node: dict[str, Any] | None = None
+    for node in walk(response):
+        model = node.get("playlistCollaborationViewModel")
+        if isinstance(model, dict) and isinstance(model.get("playlistCollaborators"), list):
+            collaborators_node = model
+            break
+    if collaborators_node is None:
+        return {}
+
+    participants: list[dict[str, str]] = []
+    for participant in collaborators_node.get("playlistCollaborators") or []:
+        if not isinstance(participant, dict):
+            continue
+        item = participant.get("contentListItemViewModel") or participant
+        if not isinstance(item, dict):
+            continue
+        title = content_text(item.get("title")).strip()
+        channel_id = _channel_ref_from_value(item)
+        if not title or not channel_id:
+            continue
+        participants.append(
+            {
+                "title": title,
+                "channel_id": channel_id,
+                "thumbnail_url": image_sources_thumbnail_url(item),
+                "role": _playlist_participant_role(item),
+            }
+        )
+
+    owner = next((item for item in participants if item["role"] == "owner"), None)
+    if owner is None:
+        return {}
+    collaborators = [
+        {key: value for key, value in item.items() if key != "role"}
+        for item in participants
+        if item["role"] != "owner" and item["channel_id"] != owner["channel_id"]
+    ]
+    return {
+        "owner": owner["title"],
+        "owner_channel_id": owner["channel_id"],
+        "owner_thumbnail_url": owner["thumbnail_url"],
+        "collaborators": collaborators,
+        "collaborators_authoritative": True,
+    }
+
+
+def fetch_playlist_collaboration_metadata(
+    opener: urllib.request.OpenerDirector,
+    cookie_file: Path,
+    html_text: str,
+    referer: str,
+) -> dict[str, Any]:
+    initial_data = extract_json_assignment(html_text, "ytInitialData")
+    panel_request = playlist_collaboration_panel_request(initial_data)
+    if not panel_request:
+        return {}
+    config = extract_ytcfg(html_text)
+    api_key = str(config.get("INNERTUBE_API_KEY") or "")
+    client_version = str(config.get("INNERTUBE_CLIENT_VERSION") or "")
+    if not api_key or not client_version:
+        return {}
+    response = request_youtubei_json(
+        opener,
+        load_cookie_jar(cookie_file),
+        api_key,
+        {
+            "context": youtube_web_context(config),
+            "panelId": panel_request["panel_id"],
+            "params": panel_request["params"],
+        },
+        referer,
+        client_version,
+        api_path="get_panel",
+    )
+    return parse_playlist_collaboration_metadata(response)
 
 
 def image_sources_thumbnail_url(value: Any) -> str:
@@ -1701,9 +1827,10 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any
                         metadata["owner"] = owner
                     if owner_channel_id and not metadata["owner_channel_id"]:
                         metadata["owner_channel_id"] = owner_channel_id
-                    owner_thumbnail_url = playlist_owner_thumbnail_from_metadata_part(part)
-                    if owner_thumbnail_url and not metadata["owner_thumbnail_url"]:
-                        metadata["owner_thumbnail_url"] = owner_thumbnail_url
+                    if owner:
+                        owner_thumbnail_url = playlist_owner_thumbnail_from_metadata_part(part)
+                        if owner_thumbnail_url and not metadata["owner_thumbnail_url"]:
+                            metadata["owner_thumbnail_url"] = owner_thumbnail_url
                 parts = [
                     content_text(part.get("text")).strip()
                     for part in row.get("metadataParts", []) or []
@@ -5723,6 +5850,40 @@ def save_playlist_scan(
                 source="playlist_owner",
                 updated_at=now,
             )
+        if playlist_metadata.get("collaborators_authoritative"):
+            collaborators = playlist_metadata.get("collaborators") or []
+            conn.execute(
+                "DELETE FROM playlist_collaborators WHERE playlist_id = ?",
+                (playlist_id,),
+            )
+            seen_collaborator_ids: set[str] = set()
+            for position, collaborator in enumerate(collaborators):
+                if not isinstance(collaborator, dict):
+                    continue
+                channel_id = str(collaborator.get("channel_id") or "").strip()
+                if (
+                    not channel_id
+                    or channel_id == metadata["owner_channel_id"]
+                    or channel_id in seen_collaborator_ids
+                ):
+                    continue
+                seen_collaborator_ids.add(channel_id)
+                channel_id = upsert_channel(
+                    conn,
+                    channel_id,
+                    title=str(collaborator.get("title") or "").strip(),
+                    thumbnail_url=str(collaborator.get("thumbnail_url") or "").strip(),
+                    thumbnail_path=str(collaborator.get("thumbnail_path") or "").strip(),
+                    source="playlist_collaborator",
+                    updated_at=now,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO playlist_collaborators(playlist_id, channel_id, position)
+                    VALUES (?, ?, ?)
+                    """,
+                    (playlist_id, channel_id, position),
+                )
         metadata["video_count"] = max(0, int(playlist_metadata.get("video_count") or 0))
         conn.execute(
             """

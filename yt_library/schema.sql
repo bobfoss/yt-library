@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS playlists (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS playlist_collaborators (
+  playlist_id TEXT NOT NULL REFERENCES playlists(playlist_id) ON DELETE CASCADE,
+  channel_id TEXT NOT NULL REFERENCES channels(channel_id),
+  position INTEGER NOT NULL,
+  PRIMARY KEY (playlist_id, channel_id)
+);
+
 CREATE TABLE IF NOT EXISTS groups (
   group_key TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -370,6 +377,8 @@ CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel_id);
 CREATE INDEX IF NOT EXISTS idx_videos_fetch ON videos(fetch_status, fetched_at);
 CREATE INDEX IF NOT EXISTS idx_videos_availability ON videos(is_playable, availability);
 CREATE INDEX IF NOT EXISTS idx_playlist_items_video ON playlist_items(video_id);
+CREATE INDEX IF NOT EXISTS idx_playlist_collaborators_order
+  ON playlist_collaborators(playlist_id, position);
 CREATE INDEX IF NOT EXISTS idx_my_activity_watch_video_time
   ON my_activity_watch_events(video_id, watched_at);
 CREATE INDEX IF NOT EXISTS idx_my_activity_subscription_channel_time

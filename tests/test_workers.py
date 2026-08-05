@@ -1981,6 +1981,20 @@ class WorkerQueueTests(unittest.TestCase):
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
                 patch("yt_library.workers.request_text", return_value="ServiceLogin header page"),
                 patch("yt_library.workers.extract_playlist_metadata", return_value=header),
+                patch(
+                    "yt_library.workers.fetch_playlist_collaboration_metadata",
+                    return_value={
+                        "owner": "Panel Owner",
+                        "owner_channel_id": "UCpanelowner123456789012",
+                        "collaborators_authoritative": True,
+                        "collaborators": [
+                            {
+                                "title": "Panel Collaborator",
+                                "channel_id": "UCpanelcollaborator1234567",
+                            }
+                        ],
+                    },
+                ),
                 patch("yt_library.workers.scan_playlist_ytdlp", return_value=(videos, {})) as scan_ytdlp,
                 patch("yt_library.workers.scan_playlist_videos") as scan_web,
                 patch("yt_library.workers.save_playlist_scan", return_value=(1, 0)) as save_scan,
@@ -2001,8 +2015,9 @@ class WorkerQueueTests(unittest.TestCase):
             scan_web.assert_not_called()
             saved_metadata = save_scan.call_args.kwargs["playlist_metadata"]
             self.assertEqual(saved_metadata["visibility"], "private")
-            self.assertEqual(saved_metadata["owner"], "Playlist Owner")
-            self.assertEqual(saved_metadata["owner_channel_id"], "UCplaylistowner123456789")
+            self.assertEqual(saved_metadata["owner"], "Panel Owner")
+            self.assertEqual(saved_metadata["owner_channel_id"], "UCpanelowner123456789012")
+            self.assertEqual(saved_metadata["collaborators"][0]["title"], "Panel Collaborator")
             conn = core.connect(db_path)
             try:
                 log = conn.execute(

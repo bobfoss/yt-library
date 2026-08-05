@@ -1182,6 +1182,18 @@ class SchemaTests(unittest.TestCase):
                                 "description": "New description",
                                 "owner": "New owner",
                                 "owner_channel_id": "UCnewownerchannel123456789",
+                                "collaborators_authoritative": True,
+                                "collaborators": [
+                                    {
+                                        "title": "Collaborator",
+                                        "channel_id": "UCcollaborator1234567890",
+                                        "thumbnail_url": "https://example.test/collaborator.jpg",
+                                    },
+                                    {
+                                        "title": "Duplicate owner",
+                                        "channel_id": "UCnewownerchannel123456789",
+                                    },
+                                ],
                                 "visibility": "unlisted",
                                 "video_count": 1,
                                 "thumbnail_url": "https://example.test/new.jpg",
@@ -1205,6 +1217,18 @@ class SchemaTests(unittest.TestCase):
                     self.assertIsNotNone(channel)
                     self.assertEqual(channel["title"], "New owner")
                     self.assertEqual(channel["metadata_source"], "playlist_owner")
+                    collaborators = conn.execute(
+                        """
+                        SELECT pc.channel_id, pc.position, ch.title, ch.metadata_source
+                        FROM playlist_collaborators pc
+                        JOIN channels ch ON ch.channel_id = pc.channel_id
+                        WHERE pc.playlist_id = 'PLrename'
+                        """
+                    ).fetchall()
+                    self.assertEqual(len(collaborators), 1)
+                    self.assertEqual(collaborators[0]["channel_id"], "UCcollaborator1234567890")
+                    self.assertEqual(collaborators[0]["title"], "Collaborator")
+                    self.assertEqual(collaborators[0]["metadata_source"], "playlist_collaborator")
                 finally:
                     conn.close()
             finally:

@@ -97,6 +97,18 @@ class NormalizedReadModelTests(unittest.TestCase):
             "INSERT INTO playlists(playlist_id, title, owner_channel_id) VALUES ('PLalias', 'Alias Playlist', ?)",
             (channel_id,),
         )
+        core.upsert_channel(
+            self.conn,
+            "UC_collaborator",
+            title="Playlist Friend",
+            aliases="@playlist_friend",
+        )
+        self.conn.execute(
+            """
+            INSERT INTO playlist_collaborators(playlist_id, channel_id, position)
+            VALUES ('PLalias', 'UC_collaborator', 0)
+            """
+        )
         self.conn.execute(
             "INSERT INTO history_events(event_id, video_id, watch_date, time_precision) VALUES ('alias-history', 'alias-video', '2026-08-01', 'date_only')"
         )
@@ -114,6 +126,10 @@ class NormalizedReadModelTests(unittest.TestCase):
         playlist_detail = playlist_detail_data(self.conn, "PLalias")
         self.assertEqual(playlist_detail["owner_channel_reference"], reference)
         self.assertEqual(playlist_detail["owner_channel_url"], expected)
+        self.assertEqual(
+            playlist_detail["collaborators"][0]["channel_reference"],
+            "@playlist_friend",
+        )
         self.assertEqual(
             playlist_list_data(self.conn)["results"][0]["owner_channel_url"],
             expected,
@@ -137,6 +153,10 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(by_kind["channel"]["url"], expected)
         self.assertEqual(by_kind["playlist"]["owner_channel_reference"], reference)
         self.assertEqual(by_kind["playlist"]["owner_channel_url"], expected)
+        self.assertEqual(
+            by_kind["playlist"]["collaborators"][0]["channel_url"],
+            "https://www.youtube.com/@playlist_friend",
+        )
         self.assertEqual(by_kind["video"]["metadata_channel_reference"], reference)
         self.assertEqual(by_kind["video"]["metadata_channel_url"], expected)
 

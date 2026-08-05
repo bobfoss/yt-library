@@ -122,6 +122,48 @@ def library_bootstrap_data(conn: sqlite3.Connection) -> dict[str, Any]:
     return {"groups": groups, "memberships": memberships, "counts": counts}
 
 
+def _attach_playlist_collaborators(
+    conn: sqlite3.Connection,
+    playlists: list[dict[str, Any]],
+) -> None:
+    playlist_ids = [
+        str(playlist.get("playlist_id") or "").strip()
+        for playlist in playlists
+        if str(playlist.get("playlist_id") or "").strip()
+    ]
+    collaborators_by_playlist: dict[str, list[dict[str, Any]]] = {
+        playlist_id: [] for playlist_id in playlist_ids
+    }
+    if playlist_ids:
+        placeholders = ", ".join("?" for _ in playlist_ids)
+        for row in conn.execute(
+            f"""
+            SELECT pc.playlist_id, pc.position,
+                   ch.channel_id, ch.title, ch.aliases, ch.thumbnail_path, ch.status
+            FROM playlist_collaborators pc
+            JOIN channels ch ON ch.channel_id = pc.channel_id
+            WHERE pc.playlist_id IN ({placeholders})
+            ORDER BY pc.playlist_id, pc.position, ch.channel_id
+            """,
+            playlist_ids,
+        ):
+            collaborator = dict(row)
+            collaborator["channel_reference"] = preferred_youtube_channel_reference(
+                collaborator.get("channel_id", ""),
+                collaborator.get("aliases", ""),
+            )
+            collaborator["channel_url"] = preferred_youtube_channel_url(
+                collaborator.get("channel_id", ""),
+                collaborator.get("aliases", ""),
+            )
+            collaborators_by_playlist[row["playlist_id"]].append(collaborator)
+    for playlist in playlists:
+        playlist["collaborators"] = collaborators_by_playlist.get(
+            str(playlist.get("playlist_id") or ""),
+            [],
+        )
+
+
 def _playlist_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = [
         dict(row)
@@ -153,6 +195,7 @@ def _playlist_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             playlist.get("owner_channel_id", ""),
             playlist.get("owner_channel_aliases", ""),
         )
+    _attach_playlist_collaborators(conn, rows)
     mark_library_owner_playlists(rows)
     return rows
 
@@ -405,6 +448,7 @@ def playlist_list_data(
             playlist.get("owner_channel_id", ""),
             playlist.get("owner_channel_aliases", ""),
         )
+    _attach_playlist_collaborators(conn, rows)
     return {
         "results": rows,
         "total": total,
@@ -2265,6 +2309,10 @@ def omni_search_data(
     if total and offset >= total:
         offset = ((total - 1) // limit) * limit
     page = results[offset : offset + limit]
+    _attach_playlist_collaborators(
+        conn,
+        [result["item"] for result in page if result["kind"] == "playlist"],
+    )
     for result in page:
         if result["kind"] != "video":
             continue

@@ -34,7 +34,8 @@ class PocketTubeBoundaryTests(unittest.TestCase):
                         "INSERT INTO group_playlists(group_key, playlist_id, position) "
                         "VALUES ('user-group', 'PLone', 0)"
                     )
-                    conn.execute("DELETE FROM schema_migrations WHERE version = 17")
+                    conn.execute("DROP TABLE playlist_collaborators")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 17")
             finally:
                 conn.close()
 
@@ -62,7 +63,7 @@ class PocketTubeBoundaryTests(unittest.TestCase):
         self.assertEqual(groups, {"user-group"})
         self.assertEqual(memberships, {("user-group", "PLone")})
         self.assertEqual(playlists, 1)
-        self.assertEqual(version, 17)
+        self.assertEqual(version, database.SCHEMA_VERSION)
 
 
 if __name__ == "__main__":

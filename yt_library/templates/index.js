@@ -4532,10 +4532,50 @@ function playlistOwnerHtml(playlist) {
   const owner = playlistOwnerForDisplay(playlist);
   const name = cleanPlaylistOwnerName(owner.title || '');
   if (!name) return '';
-  const href = owner.reference
-    ? localChannelHref(owner.reference)
-    : (owner.url || '');
-  return creatorHtml(owner.thumbnail_path || '', name, href);
+  const collaborators = Array.isArray(playlist.collaborators)
+    ? playlist.collaborators.map(collaborator => ({
+      title: collaborator.title || '',
+      reference: collaborator.channel_reference || collaborator.channel_id || '',
+      url: collaborator.channel_url || '',
+      thumbnail_path: collaborator.thumbnail_path || '',
+    })).filter(collaborator => collaborator.title)
+    : [];
+  const people = [owner, ...collaborators];
+  const avatars = people.slice(0, 3).map(person => playlistPersonAvatarHtml(person)).join('');
+  let names = playlistPersonNameHtml(owner);
+  if (collaborators.length === 1) {
+    names += ` and ${playlistPersonNameHtml(collaborators[0])}`;
+  } else if (collaborators.length > 1) {
+    names += ` and ${collaborators.length} others`;
+  }
+  return `${avatars ? `<span class="playlist-creator-avatars">${avatars}</span>` : ''}<span>${names}</span>`;
+}
+
+function playlistPersonHref(person) {
+  return person.reference ? localChannelHref(person.reference) : (person.url || '');
+}
+
+function playlistPersonLinkAttributes(href) {
+  return String(href || '').startsWith('#') ? '' : ' target="_blank" rel="noreferrer"';
+}
+
+function playlistPersonAvatarHtml(person) {
+  const href = playlistPersonHref(person);
+  const name = cleanPlaylistOwnerName(person.title || '');
+  const image = person.thumbnail_path
+    ? `<img class="channel-avatar" src="/${escapeHtml(person.thumbnail_path)}" alt="${escapeHtml(name)}">`
+    : '<span class="channel-avatar playlist-creator-avatar-placeholder"></span>';
+  return href
+    ? `<a class="playlist-creator-avatar" href="${escapeHtml(href)}"${playlistPersonLinkAttributes(href)}>${image}</a>`
+    : `<span class="playlist-creator-avatar">${image}</span>`;
+}
+
+function playlistPersonNameHtml(person) {
+  const href = playlistPersonHref(person);
+  const name = cleanPlaylistOwnerName(person.title || '');
+  return href
+    ? `<a class="creator-link" href="${escapeHtml(href)}"${playlistPersonLinkAttributes(href)}>${escapeHtml(name)}</a>`
+    : escapeHtml(name);
 }
 
 function playlistOwnerForDisplay(playlist) {

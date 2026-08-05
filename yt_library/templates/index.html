@@ -327,6 +327,11 @@
     .badge-lines { display: grid; gap: 2px; justify-items: start; }
     .badge-lines .badge { display: block; }
     .channel-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; vertical-align: middle; flex: 0 0 auto; }
+    .playlist-creator-avatars { display: inline-flex; align-items: center; padding-left: 4px; }
+    .playlist-creator-avatar { position: relative; display: inline-flex; margin-left: -4px; border-radius: 50%; }
+    .playlist-creator-avatar:first-child { z-index: 1; }
+    .playlist-creator-avatar .channel-avatar { border: 1px solid var(--card); box-sizing: border-box; }
+    .playlist-creator-avatar-placeholder { display: inline-block; background: var(--border); }
     .creator-link { color: var(--muted); text-decoration: none; }
     .creator-link:hover { color: var(--accent); text-decoration: underline; }
     .creator-chip { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }

@@ -35,6 +35,9 @@ class DatabaseModuleTests(unittest.TestCase):
                 plugin_run_table = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='plugin_worker_runs'"
                 ).fetchone()
+                collaborator_table = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='playlist_collaborators'"
+                ).fetchone()
                 foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
             finally:
                 conn.close()
@@ -44,6 +47,7 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertIn("payload_json", queue_columns)
         self.assertIn("plugin_subject_id", queue_columns)
         self.assertIsNotNone(plugin_run_table)
+        self.assertIsNotNone(collaborator_table)
         self.assertEqual(foreign_keys, 1)
 
     def test_database_module_migrates_uploader_category_from_version_14(self) -> None:
@@ -118,6 +122,36 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertIn("plugin_subject_id", queue_columns)
         self.assertIn("plugin_worker_runs", tables)
         self.assertIn("plugin_worker_log", tables)
+
+    def test_database_module_migrates_playlist_collaborators_from_version_17(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.execute("DROP TABLE playlist_collaborators")
+                    conn.execute("DELETE FROM schema_migrations")
+                    conn.execute(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES (17, '2026-08-05T00:00:00Z')"
+                    )
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                table = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='playlist_collaborators'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertIsNotNone(table)
 
 
 if __name__ == "__main__":

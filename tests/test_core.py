@@ -1198,6 +1198,95 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(attributed_metadata["video_count"], 361)
         self.assertFalse(core.playlist_scan_requires_exact_count(attributed_metadata))
 
+    def test_playlist_collaboration_metadata_keeps_owner_singular(self) -> None:
+        shared_part = {
+            "avatarStack": {
+                "avatarStackViewModel": {
+                    "avatars": [{"avatarViewModel": {}}, {"avatarViewModel": {}}],
+                    "text": {"content": "by Gir Bot and 1 other"},
+                }
+            }
+        }
+        self.assertEqual(core.playlist_owner_from_metadata_part(shared_part), ("", ""))
+
+        def participant(
+            title: str,
+            channel_id: str,
+            thumbnail_url: str,
+            *,
+            owner: bool = False,
+        ) -> dict[str, object]:
+            value: dict[str, object] = {
+                "title": {
+                    "content": title,
+                    "rendererContext": {
+                        "commandContext": {
+                            "onTap": {
+                                "innertubeCommand": {
+                                    "browseEndpoint": {"browseId": channel_id}
+                                }
+                            }
+                        }
+                    },
+                },
+                "avatar": {
+                    "avatarViewModel": {
+                        "image": {
+                            "sources": [
+                                {"url": thumbnail_url, "width": 88},
+                            ]
+                        }
+                    }
+                },
+            }
+            if owner:
+                value["metadata"] = {
+                    "contentMetadataViewModel": {
+                        "metadataRows": [{"metadataParts": [{"text": {"content": "Owner"}}]}]
+                    }
+                }
+            return {"contentListItemViewModel": value}
+
+        response = {
+            "content": {
+                "engagementPanelSectionListRenderer": {
+                    "content": {
+                        "playlistCollaborationViewModel": {
+                            "playlistCollaborators": [
+                                participant(
+                                    "Gir Bot",
+                                    "UCnUc4Kc09vNJ3yBu6-MJHTQ",
+                                    "https://yt3.example/gir.jpg",
+                                    owner=True,
+                                ),
+                                participant(
+                                    "alt Tabby",
+                                    "UC9M9ViKcwu5rdRwLDmernrg",
+                                    "https://yt3.example/tabby.jpg",
+                                ),
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+
+        metadata = core.parse_playlist_collaboration_metadata(response)
+
+        self.assertEqual(metadata["owner"], "Gir Bot")
+        self.assertEqual(metadata["owner_channel_id"], "UCnUc4Kc09vNJ3yBu6-MJHTQ")
+        self.assertEqual(
+            metadata["collaborators"],
+            [
+                {
+                    "title": "alt Tabby",
+                    "channel_id": "UC9M9ViKcwu5rdRwLDmernrg",
+                    "thumbnail_url": "https://yt3.example/tabby.jpg",
+                }
+            ],
+        )
+        self.assertTrue(metadata["collaborators_authoritative"])
+
     def test_channel_subscription_state_uses_active_entity_not_button_templates(self) -> None:
         initial_data = {
             "header": {
