@@ -86,7 +86,10 @@ in the generated config file:
   "port": 8765,
   "display_timezone": "",
   "search_card_layout": "grid",
+  "playlist_card_layout": "grid",
   "history_card_layout": "compact",
+  "channel_playlist_card_layout": "grid",
+  "channel_history_card_layout": "detailed",
   "sort_preferences": {},
   "search_filter_tree_expanded": [
     "kind:videos",
@@ -122,8 +125,9 @@ through Tailscale without binding other interfaces, set `host` to the machine's
 Tailscale IPv4 address.
 If `display_timezone` is empty, the browser detects an IANA timezone on first
 load and saves it to the config file.
-The search and history card selectors save `search_card_layout` and
-`history_card_layout` immediately, without changing the current URL.
+Card selectors save independent layouts for search, playlist detail, main
+history, channel playlists, and channel history immediately without changing
+the current URL.
 Sort selectors save independent preferences for unscoped search, each sidebar
 preset, and playlist-detail video lists in `sort_preferences`.
 Playlist and channel groups with children have independent disclosure controls.

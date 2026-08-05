@@ -18,6 +18,8 @@ from yt_library.config import (
     configured_archivarix_retry_attempts,
     configured_archivarix_retry_backoff,
     configured_archivarix_stream_timeout,
+    configured_channel_history_card_layout,
+    configured_channel_playlist_card_layout,
     configured_dispatch_mode,
     configured_display_timezone,
     configured_filter_preferences,
@@ -203,6 +205,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(configured_search_card_layout({}), "grid")
         self.assertEqual(configured_playlist_card_layout({}), "grid")
         self.assertEqual(configured_history_card_layout({}), "compact")
+        self.assertEqual(configured_channel_playlist_card_layout({}), "grid")
+        self.assertEqual(configured_channel_history_card_layout({}), "detailed")
         self.assertEqual(configured_page_size({}), 100)
         self.assertEqual(configured_page_size({"page_size": 250}), 250)
         self.assertEqual(configured_page_size({"page_size": 42}), 100)
@@ -326,6 +330,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             configured_history_card_layout({"history_card_layout": "invalid"}),
             "compact",
+        )
+        self.assertEqual(
+            configured_channel_playlist_card_layout(
+                {"channel_playlist_card_layout": "compact"}
+            ),
+            "compact",
+        )
+        self.assertEqual(
+            configured_channel_history_card_layout(
+                {"channel_history_card_layout": "invalid"}
+            ),
+            "detailed",
         )
         self.assertEqual(
             configured_job_dispatch_delay({"job_dispatch_delay_seconds": -1}),
@@ -530,6 +546,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["search_card_layout"], "grid")
             self.assertEqual(payload["playlist_card_layout"], "grid")
             self.assertEqual(payload["history_card_layout"], "compact")
+            self.assertEqual(payload["channel_playlist_card_layout"], "grid")
+            self.assertEqual(payload["channel_history_card_layout"], "detailed")
             self.assertEqual(payload["sort_preferences"], {})
             self.assertEqual(payload["page_size"], 100)
             self.assertEqual(payload["partial_completion_min_percent"], 1)

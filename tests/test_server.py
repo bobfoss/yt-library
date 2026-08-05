@@ -1072,6 +1072,36 @@ class AdminServerTests(unittest.TestCase):
                 {"ok": True, "context": "playlist", "layout": "compact"}
             )
 
+            handler.path = (
+                "/api/settings/layout?context=channel-playlists&value=detailed"
+            )
+            handler.send_json.reset_mock()
+            handler.do_POST()
+
+            self.assertEqual(config["channel_playlist_card_layout"], "detailed")
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["channel_playlist_card_layout"], "detailed")
+            self.assertEqual(payload["channel_history_card_layout"], "detailed")
+            handler.send_json.assert_called_once_with(
+                {
+                    "ok": True,
+                    "context": "channel-playlists",
+                    "layout": "detailed",
+                }
+            )
+
+            handler.path = "/api/settings/layout?context=channel-history&value=grid"
+            handler.send_json.reset_mock()
+            handler.do_POST()
+
+            self.assertEqual(config["channel_history_card_layout"], "grid")
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["channel_history_card_layout"], "grid")
+            self.assertEqual(payload["channel_playlist_card_layout"], "detailed")
+            handler.send_json.assert_called_once_with(
+                {"ok": True, "context": "channel-history", "layout": "grid"}
+            )
+
     def test_layout_preference_rejects_unknown_values(self) -> None:
         config = load_config(Path("missing-test-config.json"))
         handler = object.__new__(server.LibraryHandler)

@@ -379,6 +379,31 @@ test('channel history tabs persist in the URL from page one', () => {
   assert.match(indexSource, /channelDetailTab = channelDetailTabFromParams\(params\)/);
 });
 
+test('channel tabs use independent persisted card layouts', () => {
+  const indexSource = source('index.js');
+
+  assert.match(
+    indexSource,
+    /'channel-playlists': cardLayouts\.has\(pageConfig\.channelPlaylistCardLayout\)[\s\S]{0,120}: 'grid'/,
+  );
+  assert.match(
+    indexSource,
+    /'channel-history': cardLayouts\.has\(pageConfig\.channelHistoryCardLayout\)[\s\S]{0,120}: 'detailed'/,
+  );
+  assert.match(
+    indexSource,
+    /const layoutContext = 'channel-history'[\s\S]{0,900}cardLayoutHtml\(cardLayoutFor\(layoutContext\), layoutContext\)[\s\S]{0,300}historyRowsWithDayDividers\(rows, \{\s*layout: cardLayoutFor\(layoutContext\)/,
+  );
+  assert.match(
+    indexSource,
+    /const layoutContext = 'channel-playlists'[\s\S]{0,500}cardLayoutHtml\(cardLayoutFor\(layoutContext\), layoutContext\)[\s\S]{0,300}rows\.map\(playlistVideoCardFor\)/,
+  );
+  assert.doesNotMatch(
+    indexSource,
+    /grid\.className = channelDetailTab === 'history'/,
+  );
+});
+
 test('theme selection normalizes, persists, and publishes changes', () => {
   const stored = new Map([['yt-library-theme', 'light']]);
   const events = [];

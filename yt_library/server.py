@@ -26,6 +26,8 @@ from .config import (
     SORT_PREFERENCE_VALUES,
     configured_archivarix_max_in_flight,
     configured_admin_advanced,
+    configured_channel_history_card_layout,
+    configured_channel_playlist_card_layout,
     configured_dispatch_mode,
     configured_display_timezone,
     configured_filter_preferences,
@@ -1266,6 +1268,8 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 "search": "search_card_layout",
                 "playlist": "playlist_card_layout",
                 "history": "history_card_layout",
+                "channel-playlists": "channel_playlist_card_layout",
+                "channel-history": "channel_history_card_layout",
             }.get(context)
             if config_key is None or layout not in CARD_LAYOUTS:
                 self.send_json({"error": "Invalid card layout preference"}, status=400)
@@ -2061,6 +2065,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "searchCardLayout": configured_search_card_layout(self.config_data),
             "playlistCardLayout": configured_playlist_card_layout(self.config_data),
             "historyCardLayout": configured_history_card_layout(self.config_data),
+            "channelPlaylistCardLayout": configured_channel_playlist_card_layout(
+                self.config_data
+            ),
+            "channelHistoryCardLayout": configured_channel_history_card_layout(
+                self.config_data
+            ),
             "sortPreferences": configured_sort_preferences(self.config_data),
             "pageSize": configured_page_size(self.config_data),
             "partialCompletionMinPercent": (

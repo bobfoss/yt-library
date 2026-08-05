@@ -377,21 +377,23 @@ let activeSearchPreset = '';
 let searchPlaylistGroupKey = '';
 let searchChannelGroupKey = '';
 const cardLayouts = new Set(['grid', 'detailed', 'compact']);
-let searchCardLayout = cardLayouts.has(pageConfig.searchCardLayout)
-  ? pageConfig.searchCardLayout
-  : 'grid';
-let playlistCardLayout = cardLayouts.has(pageConfig.playlistCardLayout)
-  ? pageConfig.playlistCardLayout
-  : 'grid';
-let historyCardLayout = cardLayouts.has(pageConfig.historyCardLayout)
-  ? pageConfig.historyCardLayout
-  : 'compact';
-const cardLayoutSaveChains = {
-  search: Promise.resolve(),
-  playlist: Promise.resolve(),
-  history: Promise.resolve(),
+const cardLayoutPreferences = {
+  search: cardLayouts.has(pageConfig.searchCardLayout) ? pageConfig.searchCardLayout : 'grid',
+  playlist: cardLayouts.has(pageConfig.playlistCardLayout) ? pageConfig.playlistCardLayout : 'grid',
+  history: cardLayouts.has(pageConfig.historyCardLayout) ? pageConfig.historyCardLayout : 'compact',
+  'channel-playlists': cardLayouts.has(pageConfig.channelPlaylistCardLayout)
+    ? pageConfig.channelPlaylistCardLayout
+    : 'grid',
+  'channel-history': cardLayouts.has(pageConfig.channelHistoryCardLayout)
+    ? pageConfig.channelHistoryCardLayout
+    : 'detailed',
 };
-const cardLayoutSaveVersions = { search: 0, playlist: 0, history: 0 };
+const cardLayoutSaveChains = Object.fromEntries(
+  Object.keys(cardLayoutPreferences).map(context => [context, Promise.resolve()]),
+);
+const cardLayoutSaveVersions = Object.fromEntries(
+  Object.keys(cardLayoutPreferences).map(context => [context, 0]),
+);
 let sortPreferenceSaveChain = Promise.resolve();
 const sortPreferenceSaveVersions = new Map();
 let pageSizeSaveChain = Promise.resolve();
@@ -2763,7 +2765,7 @@ async function fetchHistoryLocation(channelId = '') {
 async function renderHistoryView() {
   title.textContent = 'History';
   meta.textContent = 'Loading history...';
-  applyHistoryCardLayout();
+  applyCardLayout('history');
   empty.hidden = true;
   const [payload, initialActivity] = await fetchHistoryLocation();
   const rows = payload.watch || [];
@@ -2779,13 +2781,15 @@ async function renderHistoryView() {
   setDocumentTitle(`History ${historyTitleLocation}`);
   meta.innerHTML = rightPanelListMetaHtml(`${total} watches`, {
     showLayout: true,
-    layout: historyCardLayout,
+    layout: cardLayoutFor('history'),
     layoutContext: 'history',
   });
   viewContext.hidden = false;
   viewContext.replaceChildren(historyHeatmapFor(activity));
   renderPager(pageInfo);
-  grid.replaceChildren(...historyRowsWithDayDividers(rows, { layout: historyCardLayout }));
+  grid.replaceChildren(...historyRowsWithDayDividers(rows, {
+    layout: cardLayoutFor('history'),
+  }));
   empty.hidden = rows.length !== 0;
   empty.textContent = 'No history rows match.';
   scrollToPendingHistoryDate();
@@ -3347,7 +3351,7 @@ function cardLayoutHtml(activeLayout, context) {
 
 function rightPanelListMetaHtml(
   summary,
-  { showLayout = false, layout = searchCardLayout, layoutContext = 'search', sortHtml = '' } = {},
+  { showLayout = false, layout = cardLayoutFor('search'), layoutContext = 'search', sortHtml = '' } = {},
 ) {
   return `
     <div class="search-result-meta">
@@ -3364,18 +3368,26 @@ function rightPanelListMetaHtml(
   `;
 }
 
-function applySearchCardLayout() {
-  grid.className = `grid search-grid layout-${searchCardLayout}`;
+function cardLayoutFor(context) {
+  return cardLayoutPreferences[context] || '';
 }
 
-function applyPlaylistCardLayout() {
-  grid.className = `grid search-grid layout-${playlistCardLayout}`;
+function activeCardLayoutContext() {
+  if (selected === '__search__') return 'search';
+  if (selected === '__history__') return 'history';
+  if (selected.startsWith('__playlist__:')) return 'playlist';
+  if (selected.startsWith('__channel__:')) return `channel-${channelDetailTab}`;
+  return '';
 }
 
-function applyHistoryCardLayout() {
-  grid.className = `grid search-grid history-list layout-${historyCardLayout}`;
+function applyCardLayout(context) {
+  const layout = cardLayoutFor(context);
+  if (!layout) return;
+  const historyLayout = context === 'history' || context === 'channel-history';
+  grid.className = `grid search-grid${historyLayout ? ' history-list' : ''} layout-${layout}`;
+  if (!historyLayout) return;
   for (const card of grid.querySelectorAll('.history-card')) {
-    card.classList.toggle('history-row', historyCardLayout !== 'grid');
+    card.classList.toggle('history-row', layout !== 'grid');
   }
 }
 
@@ -4332,8 +4344,8 @@ async function render() {
       channelTabsFor(channelDetailTab, playlistCount, historyCount),
       ...(currentHeatmap ? [currentHeatmap] : []),
     );
-    grid.className = channelDetailTab === 'history' ? 'history-list' : 'grid';
     if (channelDetailTab === 'history') {
+      const layoutContext = 'channel-history';
       meta.textContent = 'Loading channel history...';
       grid.replaceChildren();
       empty.hidden = true;
@@ -4351,9 +4363,12 @@ async function render() {
         historyHeatmapFor(activity),
       );
       const pageInfo = remotePageInfo(total, rows.length);
-      meta.textContent = '';
+      meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
       renderPager(pageInfo);
-      grid.replaceChildren(...historyRowsWithDayDividers(rows));
+      applyCardLayout(layoutContext);
+      grid.replaceChildren(...historyRowsWithDayDividers(rows, {
+        layout: cardLayoutFor(layoutContext),
+      }));
       empty.hidden = rows.length !== 0;
       empty.textContent = 'No history rows match this channel.';
       scrollToPendingHistoryDate();
@@ -4363,12 +4378,14 @@ async function render() {
         historyYearPagePrefetches(channelId, rows),
       );
     } else {
+      const layoutContext = 'channel-playlists';
       const payload = await fetchVideoCollection({ channelId, sort: 'title' });
       if (generation !== renderGeneration) return;
       const rows = payload.results || [];
       const pageInfo = remotePageInfo(Number(payload.total || 0), rows.length, Number(payload.limit || 100));
-      meta.textContent = '';
+      meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
       renderPager(pageInfo);
+      applyCardLayout(layoutContext);
       grid.replaceChildren(...rows.map(playlistVideoCardFor));
       empty.hidden = rows.length !== 0;
       empty.textContent = 'No playlist videos match this channel.';
@@ -4438,7 +4455,7 @@ async function render() {
     renderSearchMetaFilters(payload);
     const pageInfo = remotePageInfo(total, rows.length, remoteLimit);
     renderPager(pageInfo);
-    applySearchCardLayout();
+    applyCardLayout('search');
     grid.replaceChildren(...rows.map(result => searchResultCardFor(result, {
       query,
       searchFields: payload.searchFields,
@@ -4512,7 +4529,7 @@ async function render() {
         `<input class="playlist-search" type="search" data-playlist-page-search placeholder="Search this playlist" autocomplete="off" value="${escapeHtml(playlistPageSearch)}">`,
       )}
       <span class="result-view-controls video-collection-view-controls">
-        ${cardLayoutHtml(playlistCardLayout, 'playlist')}
+        ${cardLayoutHtml(cardLayoutFor('playlist'), 'playlist')}
         ${videoSortHtml(playlistViewSort, 'playlist')}
       </span>
     `;
@@ -4520,7 +4537,7 @@ async function render() {
     syncMetaFilterGroup('playlist-completion');
     const pageInfo = remotePayloadPageInfo(payload, rows.length);
     renderPager(pageInfo);
-    applyPlaylistCardLayout();
+    applyCardLayout('playlist');
     grid.replaceChildren(...rows.map(video => playlistVideoCardFor(video, { showPosition: true })));
     empty.hidden = rows.length !== 0;
     empty.textContent = playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.';
@@ -5172,16 +5189,9 @@ function scheduleCompletionMinimumInput(event) {
 meta.addEventListener('input', scheduleCompletionMinimumInput);
 searchForFilters.addEventListener('input', scheduleCompletionMinimumInput);
 function applyCardLayoutPreference(context, layout) {
-  if (context === 'history') {
-    historyCardLayout = layout;
-    applyHistoryCardLayout();
-  } else if (context === 'playlist') {
-    playlistCardLayout = layout;
-    applyPlaylistCardLayout();
-  } else {
-    searchCardLayout = layout;
-    applySearchCardLayout();
-  }
+  if (!Object.prototype.hasOwnProperty.call(cardLayoutPreferences, context)) return;
+  cardLayoutPreferences[context] = layout;
+  if (activeCardLayoutContext() === context) applyCardLayout(context);
   for (const option of meta.querySelectorAll(`[data-card-layout-context="${context}"]`)) {
     const active = option.dataset.cardLayout === layout;
     option.classList.toggle('active', active);
@@ -5360,10 +5370,8 @@ meta.addEventListener('click', async event => {
   if (!(button instanceof HTMLButtonElement)) return;
   const layout = button.dataset.cardLayout || '';
   const context = button.dataset.cardLayoutContext || 'search';
-  const activeLayout = context === 'history'
-    ? historyCardLayout
-    : (context === 'playlist' ? playlistCardLayout : searchCardLayout);
-  if (!cardLayouts.has(layout) || layout === activeLayout) return;
+  const activeLayout = cardLayoutFor(context);
+  if (!activeLayout || !cardLayouts.has(layout) || layout === activeLayout) return;
   const version = ++cardLayoutSaveVersions[context];
   applyCardLayoutPreference(context, layout);
   try {
