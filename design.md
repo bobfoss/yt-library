@@ -79,6 +79,39 @@ The plugin system must preserve these properties:
   shutdown failures are contained. A broken optional plugin must not prevent
   YTL from starting or rendering its core views.
 
+### Generic host rule
+
+Every concept that exists only because a plugin is installed is plugin-owned.
+This includes domain labels, default or catch-all groups, matching and
+classification rules, facets, badges, views, actions, API vocabulary, and
+configuration. The plugin declares those concepts through the versioned
+contract; YTL may validate, namespace, place, persist generic UI state for, and
+resolve them against canonical YTL identifiers.
+
+Core YTL must not create or preserve plugin semantics in native importers,
+discovery paths, tables, rows, configuration keys, routes, queries, templates,
+or styles. Disabling or uninstalling a plugin must remove its domain behavior
+and presentation without a plugin-specific condition in core and without
+requiring core data to stand in for the absent plugin.
+
+A host change for a plugin feature is valid only when it is expressed entirely
+in domain-neutral terms and is reusable by an unrelated plugin. The contract
+defines generic inputs, bounds, validation, containment, and outputs. The
+plugin supplies the domain name, labels, policy, and data. If a proposed YTL
+change cannot be specified and tested without naming the requesting plugin or
+its domain, implement it in the plugin instead.
+
+Host contract tests use generic fake plugins and prove behavior without loading
+a real plugin package. Plugin repositories separately test their declarations
+against the public contract. YTL must not import a plugin implementation merely
+to test or support it.
+
+Removing historical coupling may require a bounded, versioned YTL migration
+that deletes obsolete core-owned plugin artifacts while preserving canonical
+library data and unrelated user state. Such a migration is compatibility
+cleanup, not permission to retain plugin-specific runtime behavior. After the
+migration, no active YTL path may recreate or depend on those artifacts.
+
 The plugin object is loaded into the YTL service process and may be called from
 HTTP request threads and background worker threads. Its status, definitions,
 filters, projections, and caches must therefore be inexpensive, deterministic,
