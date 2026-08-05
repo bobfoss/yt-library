@@ -18,7 +18,7 @@ class FakePlugin:
     plugin_name = "Test Subtitles"
     plugin_version = "1.2.3"
     plugin_api_version = PLUGIN_API_VERSION
-    capabilities = {"subtitle_search"}
+    capabilities = {"subtitle_search", "playlist_groups"}
     browser_assets = (
         {"path": "browser.css", "type": "style"},
         {"path": "browser.js", "type": "script"},
@@ -86,6 +86,51 @@ class FakePlugin:
             for video_id in sorted(video_ids)
             if video_id != "unavailable"
         ]
+
+    def project_playlist_groups(self):
+        return {
+            "revision": "example-1",
+            "groups": [
+                {
+                    "group_key": "parent",
+                    "name": "Parent",
+                    "parent_key": None,
+                    "position": 0,
+                    "icon": "folder",
+                },
+                {
+                    "group_key": "child",
+                    "name": "Child",
+                    "parent_key": "parent",
+                    "position": 0,
+                    "icon": "spark",
+                },
+                {
+                    "group_key": "other",
+                    "name": "Other",
+                    "parent_key": None,
+                    "position": 1,
+                    "icon": "",
+                },
+            ],
+            "memberships": [
+                {
+                    "group_key": "parent",
+                    "playlist_id": "PLparent",
+                    "position": 0,
+                },
+                {
+                    "group_key": "child",
+                    "playlist_id": "PLchild",
+                    "position": 0,
+                },
+                {
+                    "group_key": "other",
+                    "playlist_id": "PLmissing",
+                    "position": 0,
+                },
+            ],
+        }
 
     def plan_worker(self, worker_id, context, params):
         self.planned_params = params
@@ -204,6 +249,12 @@ class PluginManagerTests(unittest.TestCase):
                 {"available", "unavailable"},
             )
             projected_video = manager.projected_video("available")
+            playlist_groups = manager.project_playlist_groups(
+                {"PLparent", "PLchild"}
+            )
+            parent_playlist_ids = manager.playlist_ids_for_group(
+                "plugin:subtitles:parent"
+            )
             self.assertEqual(asset_status, 200)
             self.assertEqual(content_type, "text/javascript; charset=utf-8")
             self.assertEqual(body, b"/* browser.js */")
@@ -226,6 +277,26 @@ class PluginManagerTests(unittest.TestCase):
                     "projection_plugin_ids": ["subtitles"],
                 },
             )
+            self.assertEqual(
+                [group["group_key"] for group in playlist_groups["groups"]],
+                [
+                    "plugin:subtitles:parent",
+                    "plugin:subtitles:child",
+                    "plugin:subtitles:other",
+                ],
+            )
+            self.assertEqual(
+                [
+                    membership["playlist_id"]
+                    for membership in playlist_groups["memberships"]
+                ],
+                ["PLparent", "PLchild"],
+            )
+            self.assertEqual(playlist_groups["errors"], [])
+            self.assertEqual(
+                parent_playlist_ids,
+                frozenset({"PLparent", "PLchild"}),
+            )
 
     def test_video_projection_contract_rejects_invalid_plugin_rows(self) -> None:
         class InvalidProjectionPlugin(FakePlugin):
@@ -239,6 +310,33 @@ class PluginManagerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "unrequested"):
             manager.project_videos("subtitles", {"requested"})
+
+    def test_invalid_playlist_group_projection_is_contained(self) -> None:
+        class InvalidGroupPlugin(FakePlugin):
+            def project_playlist_groups(self):
+                return {
+                    "groups": [
+                        {
+                            "group_key": "parent",
+                            "name": "Parent",
+                            "parent_key": "missing",
+                            "position": 0,
+                        }
+                    ],
+                    "memberships": [],
+                }
+
+        manager = PluginManager(
+            {"plugins": {"subtitles": {"enabled": True}}},
+            entry_points=[FakeEntryPoint(InvalidGroupPlugin)],
+        )
+
+        projection = manager.project_playlist_groups()
+
+        self.assertEqual(projection["groups"], [])
+        self.assertEqual(projection["memberships"], [])
+        self.assertEqual(projection["errors"][0]["pluginId"], "subtitles")
+        self.assertIn("missing parent", projection["errors"][0]["message"])
 
     def test_incompatible_and_missing_plugins_are_nonfatal(self) -> None:
         class IncompatiblePlugin(FakePlugin):

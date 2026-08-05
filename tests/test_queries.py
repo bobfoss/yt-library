@@ -244,6 +244,34 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["PLchild", "PLparent"],
         )
 
+    def test_omni_search_accepts_projected_playlist_group_ids(self) -> None:
+        self.conn.executemany(
+            "INSERT INTO playlists(playlist_id, title) VALUES (?, ?)",
+            [
+                ("PLincluded", "Included playlist"),
+                ("PLalso", "Also included"),
+                ("PLother", "Other playlist"),
+            ],
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"playlist"},
+            playlist_group_key="plugin:example:group",
+            playlist_id_filter={"PLincluded", "PLalso", "PLmissing"},
+            sort="title",
+            limit=20,
+        )
+
+        self.assertEqual(data["playlistGroupKey"], "plugin:example:group")
+        self.assertEqual(data["metaCounts"]["playlists"]["total"], 2)
+        self.assertEqual(
+            [result["item"]["playlist_id"] for result in data["results"]],
+            ["PLalso", "PLincluded"],
+        )
+
     def test_omni_search_preset_sources_scope_candidates_and_counts(self) -> None:
         self.add_video("likedsource", "Liked source", "UC_subscribed_source")
         self.add_video("membersource", "Playlist member source", "UC_regular_source")

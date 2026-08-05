@@ -330,6 +330,29 @@ are loaded from the generic `/plugins/<id>/assets/` namespace, and the core
 templates contain only generic registration, search-field, video-facet,
 search-provider, and detail-panel extension hooks.
 
+The sibling YT PocketTube project is a backend-only plugin. A local activation
+uses:
+
+```json
+{
+  "plugins": {
+    "pockettube": {
+      "enabled": true,
+      "config": "../YT PocketTube/yt_pockettube.config.json"
+    }
+  }
+}
+```
+
+YT PocketTube owns its export, database, import history, and normalized group
+catalog. With the generic `playlist_groups` capability, it contributes ordered
+playlist groups and memberships joined only by YouTube playlist ID. YT Library
+namespaces the projected group keys, includes only canonical playlists already
+in the library, and applies the resulting ID set through normal playlist
+search. It never writes the plugin database or fabricates rows for unmatched
+playlist references. No PocketTube-specific markup, schema, or queries live in
+the core application.
+
 ## Security
 
 Cookie files, Takeout archives, SQLite databases, cached thumbnails, and logs can contain personal data. Do not commit them.

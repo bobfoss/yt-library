@@ -1595,6 +1595,7 @@ def omni_search_data(
     search_fields: set[str] | None = None,
     result_kinds: set[str] | None = None,
     playlist_group_key: str = "",
+    playlist_id_filter: Collection[str] | None = None,
     video_source: str = "",
     channel_source: str = "",
     video_meta_filters: set[str] | None = None,
@@ -1642,6 +1643,54 @@ def omni_search_data(
         "video_source": video_source,
         "channel_source": channel_source,
     }
+    active_playlist_id_filter = (
+        None
+        if playlist_id_filter is None
+        else frozenset(
+            playlist_id
+            for value in playlist_id_filter
+            if (playlist_id := str(value).strip())
+        )
+    )
+    if active_playlist_id_filter is not None:
+        conn.execute("DROP TABLE IF EXISTS temp.omni_playlist_group_filter")
+        conn.execute(
+            """
+            CREATE TEMP TABLE omni_playlist_group_filter(
+              playlist_id TEXT PRIMARY KEY
+            ) WITHOUT ROWID
+            """
+        )
+        conn.executemany(
+            "INSERT INTO temp.omni_playlist_group_filter(playlist_id) VALUES (?)",
+            ((playlist_id,) for playlist_id in active_playlist_id_filter),
+        )
+    playlist_group_filter_sql = (
+        """
+        EXISTS (
+          SELECT 1
+          FROM temp.omni_playlist_group_filter plugin_group
+          WHERE plugin_group.playlist_id = p.playlist_id
+        )
+        """
+        if active_playlist_id_filter is not None
+        else """
+        :playlist_group_key = ''
+        OR EXISTS (
+          SELECT 1
+          FROM group_playlists gp
+          WHERE gp.playlist_id = p.playlist_id
+            AND (
+              gp.group_key = :playlist_group_key
+              OR gp.group_key IN (
+                SELECT group_key
+                FROM groups
+                WHERE parent_key = :playlist_group_key
+              )
+            )
+        )
+        """
+    )
     search_titles = "titles" in active_search_fields
     search_descriptions = "descriptions" in active_search_fields
     active_video_id_filters = [frozenset(values) for values in video_id_filters]
@@ -1731,22 +1780,7 @@ def omni_search_data(
               GROUP BY pi.playlist_id
             ) playlist_dates ON playlist_dates.playlist_id = p.playlist_id
             WHERE ({' OR '.join(f'({match})' for match in playlist_matches)})
-              AND (
-                :playlist_group_key = ''
-                OR EXISTS (
-                  SELECT 1
-                  FROM group_playlists gp
-                  WHERE gp.playlist_id = p.playlist_id
-                    AND (
-                      gp.group_key = :playlist_group_key
-                      OR gp.group_key IN (
-                        SELECT group_key
-                        FROM groups
-                        WHERE parent_key = :playlist_group_key
-                      )
-                    )
-                )
-              )
+              AND ({playlist_group_filter_sql})
             """,
             params,
         ):

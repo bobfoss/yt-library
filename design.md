@@ -67,7 +67,8 @@ The plugin system must preserve these properties:
 - YTL owns only host operational state: plugin activation, common queue rows,
   worker runs, worker logs, lifecycle dispatch, and generic UI placement.
 - Integration uses stable identifiers and bounded data returned through the
-  contract. For video-oriented plugins, the join key is the YouTube video ID.
+  contract. Video-oriented plugins join by YouTube video ID; playlist-oriented
+  plugins join by YouTube playlist ID.
   Do not create cross-database foreign keys or attach a plugin database to YTL.
 - YTL core code must remain domain-neutral. Plugin-specific terms, queries,
   markup, and styles belong in the plugin. If a new host hook is required, add
@@ -242,10 +243,11 @@ assets, and failure behavior predictable rather than relying on host fallbacks:
   harmless.
 
 Optional features add `browser_assets` and `handle_browser_asset`,
-`filter_videos`, `project_videos`, or the worker methods described below. A
-plugin can avoid importing YTL at runtime by using `Any` or plugin-owned typing
-protocols for host contexts. The dependency direction remains plugin to host;
-YTL must never import the plugin package directly.
+`filter_videos`, `project_videos`, `project_playlist_groups`, or the worker
+methods described below. A plugin can avoid importing YTL at runtime by using
+`Any` or plugin-owned typing protocols for host contexts. The dependency
+direction remains plugin to host; YTL must never import the plugin package
+directly.
 
 ### Namespaced backend HTTP API
 
@@ -493,6 +495,43 @@ detail. `render(videoId, host)` returns an `HTMLElement` or `null`. Failures are
 contained so the core detail card remains usable. Fetch large data only when
 the user expands or requests it, paginate it, and avoid loading full transcripts
 or other large payloads during the initial detail render.
+
+### Playlist-group projections
+
+A ready plugin advertising `playlist_groups` must implement
+`project_playlist_groups()` and return one bounded current-state projection:
+
+```python
+{
+    "revision": "optional-plugin-revision",
+    "groups": [
+        {
+            "group_key": "local-key",
+            "name": "Group name",
+            "parent_key": None,
+            "position": 0,
+            "icon": None,
+        }
+    ],
+    "memberships": [
+        {"group_key": "local-key", "playlist_id": "PL...", "position": 0}
+    ],
+}
+```
+
+The host accepts at most 10,000 groups and 250,000 memberships, requires unique
+group keys and group/playlist pairs, validates a cycle-free parent hierarchy,
+and rejects invalid projections as a contained plugin error. It namespaces keys
+as `plugin:<plugin_id>:<local-key>` so plugin and native groups cannot collide.
+Names, keys, optional icons, and revision markers are length-bounded.
+
+`/api/bootstrap` merges valid projected groups with native groups and retains
+memberships only for playlist IDs already present in YTL. Selecting a projected
+group resolves its descendants and passes the resulting explicit playlist-ID
+set through the normal playlist search model. Missing playlist IDs are not
+inserted into YTL, and the plugin never receives a YTL database connection.
+Projection failures appear in bootstrap diagnostics without preventing native
+navigation or search.
 
 ### Host-owned worker queue
 
@@ -745,7 +784,11 @@ Source parsers provide evidence for one best-known current state:
 
 Each source has different reliability. Takeout is best for exact watch timestamps, current YouTube scans are best for present playlist and metadata state, and Archivarix is best-effort recovery evidence. Source fields are consumed during import instead of being retained as parallel metadata histories.
 
-PocketTube import is intentionally deferred. The compatibility import command and existing group records remain, but PocketTube is not part of current configuration or routine ingestion. A future group-import design may use a different mechanism.
+The optional YT PocketTube plugin owns PocketTube exports, its database, and its
+import lifecycle. When separately installed and enabled, it contributes a
+read-only playlist-group hierarchy joined by YouTube playlist ID. YT Library
+does not write the plugin database or ingest unmatched playlist references; the
+legacy compatibility import and native group records remain separate.
 
 ## Storage Model
 

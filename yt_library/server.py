@@ -794,8 +794,21 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             conn = connect(self.db_path)
             try:
                 data = library_bootstrap_data(conn)
+                known_playlist_ids = frozenset(
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT playlist_id FROM playlists WHERE playlist_id <> ''"
+                    )
+                )
             finally:
                 conn.close()
+            playlist_groups = self.plugin_manager.project_playlist_groups(
+                known_playlist_ids
+            )
+            data["groups"].extend(playlist_groups["groups"])
+            data["memberships"].extend(playlist_groups["memberships"])
+            if playlist_groups["errors"]:
+                data["pluginGroupErrors"] = playlist_groups["errors"]
             data["plugins"] = self.plugin_manager.statuses()
             self.send_json(data)
             return
@@ -978,6 +991,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/api/search":
             params = urllib.parse.parse_qs(parsed.query)
             query = (params.get("q") or [""])[0]
+            playlist_group_key = (params.get("playlist_group_key") or [""])[0]
+            playlist_id_filter = (
+                self.plugin_manager.playlist_ids_for_group(playlist_group_key)
+                if playlist_group_key
+                else None
+            )
             search_fields = query_set_param(params, "search_fields")
             sort = (params.get("sort") or [None])[0]
             video_id_filters: list[frozenset[str]] = []
@@ -1053,7 +1072,8 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     query,
                     search_fields=search_fields,
                     result_kinds=query_set_param(params, "kinds"),
-                    playlist_group_key=(params.get("playlist_group_key") or [""])[0],
+                    playlist_group_key=playlist_group_key,
+                    playlist_id_filter=playlist_id_filter,
                     video_source=(params.get("video_source") or [""])[0],
                     channel_source=(params.get("channel_source") or [""])[0],
                     video_meta_filters=query_set_param(params, "video_meta"),

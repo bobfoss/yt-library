@@ -244,14 +244,33 @@ class AdminServerTests(unittest.TestCase):
         handler.plugin_manager.statuses.return_value = [
             {"id": "example", "enabled": True, "state": "ready"}
         ]
+        handler.plugin_manager.project_playlist_groups.return_value = {
+            "groups": [
+                {
+                    "group_key": "plugin:example:group",
+                    "name": "Example group",
+                    "parent_key": None,
+                    "position": 0,
+                }
+            ],
+            "memberships": [
+                {
+                    "group_key": "plugin:example:group",
+                    "playlist_id": "PLknown",
+                    "position": 0,
+                }
+            ],
+            "errors": [],
+        }
         handler.send_json = Mock()
         connection = Mock()
+        connection.execute.return_value = [("PLknown",)]
 
         with (
             patch("yt_library.server.connect", return_value=connection),
             patch(
                 "yt_library.server.library_bootstrap_data",
-                return_value={"groups": [], "memberships": {}, "counts": {}},
+                return_value={"groups": [], "memberships": [], "counts": {}},
             ),
         ):
             handler._handle_library_get(urllib.parse.urlparse("/api/bootstrap"))
@@ -259,11 +278,27 @@ class AdminServerTests(unittest.TestCase):
         connection.close.assert_called_once_with()
         handler.send_json.assert_called_once_with(
             {
-                "groups": [],
-                "memberships": {},
+                "groups": [
+                    {
+                        "group_key": "plugin:example:group",
+                        "name": "Example group",
+                        "parent_key": None,
+                        "position": 0,
+                    }
+                ],
+                "memberships": [
+                    {
+                        "group_key": "plugin:example:group",
+                        "playlist_id": "PLknown",
+                        "position": 0,
+                    }
+                ],
                 "counts": {},
                 "plugins": [{"id": "example", "enabled": True, "state": "ready"}],
             }
+        )
+        handler.plugin_manager.project_playlist_groups.assert_called_once_with(
+            frozenset({"PLknown"})
         )
 
     def test_plugin_routes_are_namespaced_and_delegated(self) -> None:
@@ -345,6 +380,46 @@ class AdminServerTests(unittest.TestCase):
                 }
             },
         )
+        handler.send_json.assert_called_once_with(payload)
+
+    def test_search_resolves_plugin_playlist_group_membership(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.config_data = {}
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.playlist_ids_for_group.return_value = frozenset(
+            {"PLparent", "PLchild"}
+        )
+        handler.send_json = Mock()
+        connection = Mock()
+        payload = {"results": [], "total": 0}
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch(
+                "yt_library.server.omni_search_data",
+                return_value=payload,
+            ) as search_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/search?kinds=playlist&playlist_group_key="
+                    "plugin%3Aexample%3Aparent&limit=1"
+                )
+            )
+
+        handler.plugin_manager.playlist_ids_for_group.assert_called_once_with(
+            "plugin:example:parent"
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["playlist_id_filter"],
+            frozenset({"PLparent", "PLchild"}),
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["playlist_group_key"],
+            "plugin:example:parent",
+        )
+        connection.close.assert_called_once_with()
         handler.send_json.assert_called_once_with(payload)
 
     def test_search_passes_uploader_category_filters(self) -> None:
