@@ -282,6 +282,8 @@ test('navigation preset labels and identifiers stay concise', () => {
   assert.match(indexSource, /presetButton\('terminated', 'Terminated',/);
   assert.doesNotMatch(indexSource, /Playlist videos|Liked videos|Subscribed channels|Terminated channels/);
   assert.doesNotMatch(indexSource, /presetButton\('(playlist-videos|liked-videos|subscribed-channels|terminated-channels)'/);
+  assert.match(indexSource, /const invalidPreset = Boolean\(requestedPreset && !searchPresetDefinition\(requestedPreset\)\)/);
+  assert.match(indexSource, /if \(invalidPreset\) updateSearchHash\(true\)/);
 });
 
 test('history heatmap can return to the current year and day', () => {

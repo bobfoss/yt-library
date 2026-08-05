@@ -1174,6 +1174,8 @@ function applySearchHash(hash) {
   pendingHistoryDate = '';
   const queryIndex = hash.indexOf('?');
   const params = new URLSearchParams(queryIndex >= 0 ? hash.slice(queryIndex + 1) : '');
+  const requestedPreset = params.get('preset') || '';
+  const invalidPreset = Boolean(requestedPreset && !searchPresetDefinition(requestedPreset));
   search.value = params.get('q') || '';
   const searchInParam = params.get('in');
   if (searchInParam !== null) {
@@ -1186,7 +1188,7 @@ function applySearchHash(hash) {
   } else {
     for (const input of searchFields) input.checked = true;
   }
-  applySearchPresetState(params.get('preset') || '', params.get('group') || '');
+  applySearchPresetState(requestedPreset, params.get('group') || '');
   const videoMetaParam = params.get(searchMetaParamNames.videos);
   const compatibleVideoMetaParam = videoMetaParam === null
     ? null
@@ -1259,6 +1261,7 @@ function applySearchHash(hash) {
   }
   const page = Number(params.get('page') || 1);
   currentPage = Number.isFinite(page) && page > 0 ? page : 1;
+  if (invalidPreset) updateSearchHash(true);
 }
 
 function updateSearchHash(replace = false) {

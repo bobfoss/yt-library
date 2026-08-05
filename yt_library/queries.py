@@ -70,8 +70,7 @@ def mark_library_owner_playlists(playlists: list[dict[str, Any]]) -> None:
         owner_name = clean_playlist_owner_name(playlist.get("owner_channel_title") or "")
         playlist["owner_channel_title"] = owner_name
         playlist["is_library_owner"] = int(
-            bool(int(playlist.get("is_library_playlist") or 0))
-            or bool(library_channel_id and owner_channel_id == library_channel_id)
+            bool(library_channel_id and owner_channel_id == library_channel_id)
             or bool(library_owner_name and owner_name.casefold() == library_owner_name)
         )
 
@@ -166,7 +165,7 @@ def _playlist_visibility_category(playlist: dict[str, Any]) -> str:
 
 
 def _playlist_ownership_category(playlist: dict[str, Any]) -> str:
-    if int(playlist.get("is_library_playlist") or 0) or int(playlist.get("is_library_owner") or 0):
+    if int(playlist.get("is_library_owner") or 0):
         return "mine"
     if str(playlist.get("owner_channel_id") or playlist.get("owner_channel_title") or "").strip():
         return "others"
@@ -275,7 +274,6 @@ def playlist_list_data(
                  COALESCE(ch.thumbnail_path, '') AS owner_channel_thumbnail_path,
                  COALESCE(ch.status, '') AS owner_channel_status,
                  CASE
-                   WHEN p.is_library_playlist = 1 THEN 1
                    WHEN :library_channel_id <> ''
                     AND COALESCE(p.owner_channel_id, '') = :library_channel_id THEN 1
                    WHEN :library_owner_name <> ''

@@ -1102,17 +1102,18 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.conn.executemany(
             """
             INSERT INTO playlists(
-              playlist_id, title, visibility, owner_channel_id, fetch_status
-            ) VALUES (?, ?, ?, ?, ?)
+              playlist_id, title, visibility, owner_channel_id, fetch_status,
+              is_library_playlist
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
-                ("PLprivate", "Needle private", "private", None, ""),
-                ("PLpublic", "Needle public", "public", None, ""),
-                ("PLunlisted", "Needle unlisted", "unlisted", None, ""),
-                ("PLremoved", "Needle removed playlist", "private", None, "removed"),
-                ("PLother", "Needle other playlist", "unlisted", "UC_playlist_other", ""),
+                ("PLprivate", "Needle private", "private", None, "", 1),
+                ("PLpublic", "Needle public", "public", None, "", 1),
+                ("PLunlisted", "Needle unlisted", "unlisted", None, "", 1),
+                ("PLremoved", "Needle removed playlist", "private", None, "removed", 1),
+                ("PLother", "Needle other playlist", "unlisted", "UC_playlist_other", "", 1),
                 *[
-                    (f"PLunknown{index}", f"Needle unknown {index}", "", "UC_library_owner", "")
+                    (f"PLunknown{index}", f"Needle unknown {index}", "", "UC_library_owner", "", 1)
                     for index in range(5)
                 ],
             ],
