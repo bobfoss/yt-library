@@ -241,6 +241,18 @@ test('history heatmaps honor the configured week start and label the top row', (
   assert.match(adminSource, /week_start: fields\.weekStartMonday\.checked \? 'monday' : 'sunday'/);
 });
 
+test('zero-count filters use the config-backed shared visibility path', () => {
+  const indexSource = source('index.js');
+  const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
+
+  assert.match(indexSource, /const hideEmptyFilters = pageConfig\.hideEmptyFilters !== false/);
+  assert.match(indexSource, /function visibleMetaFilterDefinitions\(visibility, counts, definitions\)/);
+  assert.match(indexSource, /!hideEmptyFilters \|\| counts === null \|\| counts === undefined \|\| metaFilterCount\(counts, key\) !== 0/);
+  assert.match(adminHtml, /id="hideEmptyFilters" type="checkbox" checked>Hide empty filters/);
+  assert.match(adminSource, /hide_empty_filters: fields\.hideEmptyFilters\.checked \? '1' : '0'/);
+});
+
 test('admin parameter posts use the shared transport with caller-owned effects', () => {
   const adminSource = source('admin.js');
 

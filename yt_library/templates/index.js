@@ -21,6 +21,7 @@ const defaultDocumentTitle = 'YT Library';
 const pageConfig = window.YT_LIBRARY_CONFIG || {};
 const historyWeekStart = pageConfig.weekStart === 'monday' ? 'monday' : 'sunday';
 const historyWeekStartDay = historyWeekStart === 'monday' ? 1 : 0;
+const hideEmptyFilters = pageConfig.hideEmptyFilters !== false;
 const filterPreferenceKeys = {
   unavailableVideos: 'videos.unavailable',
   lowPartialCompletion: 'completion.partial_below_minimum',
@@ -1647,6 +1648,11 @@ function setMetaFilterGroup(groupName, checked) {
 function allMetaFilterChildrenChecked(groupName) {
   const group = metaFilterGroupVisibility(groupName);
   if (!group) return false;
+  const root = groupName.startsWith('search-') ? searchForFilters : meta;
+  const visibleChildren = [
+    ...root.querySelectorAll(`[data-meta-child-filter="${groupName}"]`),
+  ];
+  if (visibleChildren.length) return visibleChildren.every(input => input.checked);
   const excludedKeys = metaFilterGroupExcludedKeys(groupName);
   const children = Object.entries(group).filter(([key]) => !excludedKeys.has(key));
   return children.length > 0 && children.every(([, checked]) => checked);
@@ -1731,16 +1737,20 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true) {
   }
   const facetKeys = searchKindFacetKeys(kind);
   if (!facetKeys.length) return;
-  const facetSelections = facetKeys.map(
-    key => Object.values(searchMetaVisibility[key])
-  );
+  const facetSelections = facetKeys.map(key => (
+    [...searchForFilters.querySelectorAll(`[data-meta-child-filter="search-${key}"]`)]
+      .map(input => input.checked)
+  )).filter(values => values.length);
   if (kind === 'videos') {
     facetSelections.push(
       ...browserVideoFilterPlugins().map(plugin => (
-        Object.values(browserVideoFacetState(plugin))
-      )),
+        [...searchForFilters.querySelectorAll(
+          `[data-meta-child-filter="search-plugin-${plugin.id}"]`
+        )].map(input => input.checked)
+      )).filter(values => values.length),
     );
   }
+  if (!facetSelections.length) return;
   const everyFacetHasSelection = facetSelections.every(values => values.some(Boolean));
   const allChildrenSelected = facetSelections.every(values => values.every(Boolean));
   parent.checked = everyFacetHasSelection;
@@ -3016,6 +3026,13 @@ const playlistOwnershipMetaFilterDefinitions = [
   { key: 'others', label: 'others' },
   { key: 'ownership_unknown', label: 'unknown' },
 ];
+function visibleMetaFilterDefinitions(visibility, counts, definitions) {
+  return definitions.filter(({ key }) => (
+    Object.prototype.hasOwnProperty.call(visibility, key)
+    && (!hideEmptyFilters || counts === null || counts === undefined || metaFilterCount(counts, key) !== 0)
+  ));
+}
+
 function metaFilterChildrenHtml({
   groupName,
   filterAttribute,
@@ -3024,8 +3041,10 @@ function metaFilterChildrenHtml({
   definitions,
   filterValuePrefix = '',
 }) {
-  const applicableDefinitions = definitions.filter(({ key }) =>
-    Object.prototype.hasOwnProperty.call(visibility, key)
+  const applicableDefinitions = visibleMetaFilterDefinitions(
+    visibility,
+    counts,
+    definitions,
   );
   return applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '', minimumPercent = null, minimumAttribute = '' }) => minimumPercent === null ? `
         <label class="meta-filter meta-filter-child">
@@ -3070,6 +3089,12 @@ function metaFilterControlsHtml({
   allLabel = 'All',
   showAll = true,
 }) {
+  const visibleDefinitions = visibleMetaFilterDefinitions(
+    visibility,
+    counts,
+    definitions,
+  );
+  if (!visibleDefinitions.length) return '';
   return `
     ${showAll ? `<label class="meta-filter meta-filter-parent">${parentFilterCheckboxHtml('data-meta-all-filter', groupName)} <span>${escapeHtml(allLabel)}</span></label>` : ''}
     ${metaFilterChildrenHtml({
@@ -3077,7 +3102,7 @@ function metaFilterControlsHtml({
       filterAttribute,
       visibility,
       counts,
-      definitions,
+      definitions: visibleDefinitions,
       filterValuePrefix,
     })}
   `;
@@ -3114,6 +3139,27 @@ function playlistVideoFiltersHtml(
   duplicateCount,
   searchHtml = '',
 ) {
+  const removedFiltersHtml = metaFilterControlsHtml({
+    groupName: 'playlist-removed',
+    filterAttribute: 'playlist-filter',
+    visibility: playlistVisibility,
+    counts,
+    definitions: playlistVideoRemovedFilterDefinitions,
+    showAll: false,
+  });
+  const duplicateFiltersHtml = Number(duplicateCount || 0) > 0 ? `
+    <span class="video-duplicates-filter">
+      <span class="video-filter-separator" aria-hidden="true">|</span>
+      ${metaFilterControlsHtml({
+        groupName: 'playlist-duplicates',
+        filterAttribute: 'playlist-duplicates-filter',
+        visibility: { duplicates: playlistDuplicatesOnly },
+        counts: { duplicates: Number(duplicateCount || 0) },
+        definitions: playlistDuplicateFilterDefinitions,
+        showAll: false,
+      })}
+    </span>
+  ` : '';
   return `
     <span class="video-filter-groups${searchHtml ? ' has-search' : ''}">
       ${searchHtml ? `<span class="video-filter-search">${searchHtml}</span>` : ''}
@@ -3126,30 +3172,12 @@ function playlistVideoFiltersHtml(
             counts,
             definitions: visibleVideoMetaFilterDefinitions(counts, { includeRemoved: false }),
           })}
-          <span class="video-removed-filter">
-            <span class="video-filter-separator" aria-hidden="true">|</span>
-            ${metaFilterControlsHtml({
-              groupName: 'playlist-removed',
-              filterAttribute: 'playlist-filter',
-              visibility: playlistVisibility,
-              counts,
-              definitions: playlistVideoRemovedFilterDefinitions,
-              showAll: false,
-            })}
-            ${Number(duplicateCount || 0) > 0 ? `
-              <span class="video-duplicates-filter">
-                <span class="video-filter-separator" aria-hidden="true">|</span>
-                ${metaFilterControlsHtml({
-                  groupName: 'playlist-duplicates',
-                  filterAttribute: 'playlist-duplicates-filter',
-                  visibility: { duplicates: playlistDuplicatesOnly },
-                  counts: { duplicates: Number(duplicateCount || 0) },
-                  definitions: playlistDuplicateFilterDefinitions,
-                  showAll: false,
-                })}
-              </span>
-            ` : ''}
-          </span>
+          ${removedFiltersHtml || duplicateFiltersHtml ? `
+            <span class="video-removed-filter">
+              ${removedFiltersHtml ? `<span class="video-filter-separator" aria-hidden="true">|</span>${removedFiltersHtml}` : ''}
+              ${duplicateFiltersHtml}
+            </span>
+          ` : ''}
         </span>
         <span class="video-filter-facet video-filter-completion">
           ${metaFilterControlsHtml({
@@ -3209,6 +3237,12 @@ function searchMetaFiltersHtml(
     filterAttribute = 'search-meta-filter',
     filterValuePrefix = `${key}:`,
   }) => {
+    const visibleDefinitions = visibleMetaFilterDefinitions(
+      visibility,
+      searchKindEnabled(kind) ? counts : null,
+      definitions,
+    );
+    if (!visibleDefinitions.length) return '';
     const nodeId = `facet:${key}`;
     const expanded = searchFilterTreeExpanded.has(nodeId);
     return `
@@ -3232,7 +3266,7 @@ function searchMetaFiltersHtml(
               filterValuePrefix,
               visibility,
               counts: searchKindEnabled(kind) ? counts : null,
-              definitions,
+              definitions: visibleDefinitions,
             })}
           </div>
         </div>
@@ -3257,6 +3291,7 @@ function searchMetaFiltersHtml(
     });
   };
   const kindHtml = (titleText, kind, count, facetsHtml) => {
+    if (hideEmptyFilters && count !== null && count !== undefined && Number(count) === 0) return '';
     const kindEnabled = searchKindEnabled(kind);
     const hasChildren = Boolean(facetsHtml.trim());
     const nodeId = `kind:${kind}`;
@@ -3287,6 +3322,8 @@ function searchMetaFiltersHtml(
   const uploaderCategoryDefinitions = uploaderCategoryMetaFilterDefinitions(
     uploaderCategoryCounts,
   );
+  const clipCount = metaCounts?.clips?.total;
+  const showClips = !hideEmptyFilters || Number(clipCount ?? data?.counts?.clips ?? 0) > 0;
   return [
     kindHtml('Videos', 'videos', metaCounts?.videos?.total, [
       facetHtml({ key: 'videos', visibility: searchMetaVisibility.videos, definitions: visibleVideoMetaFilterDefinitions(metaCounts?.videos), counts: metaCounts?.videos, allLabel: 'Availability', kind: 'videos' }),
@@ -3298,8 +3335,7 @@ function searchMetaFiltersHtml(
       ] : []),
       ...browserVideoFilterPlugins().map(pluginVideoFacetHtml),
     ].join('')),
-    Number(data?.counts?.clips || 0) > 0
-      ? kindHtml('Clips', 'clips', metaCounts?.clips?.total, [
+    showClips ? kindHtml('Clips', 'clips', clipCount, [
         facetHtml({
           key: 'clipOwnership',
           visibility: searchMetaVisibility.clipOwnership,
@@ -3308,8 +3344,7 @@ function searchMetaFiltersHtml(
           allLabel: 'Ownership',
           kind: 'clips',
         }),
-      ].join(''))
-      : '',
+      ].join('')) : '',
     kindHtml('Playlists', 'playlists', metaCounts?.playlists?.total, [
       facetHtml({ key: 'playlistAvailability', visibility: searchMetaVisibility.playlistAvailability, definitions: playlistAvailabilityMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Availability', kind: 'playlists' }),
       facetHtml({ key: 'playlistOwnership', visibility: searchMetaVisibility.playlistOwnership, definitions: playlistOwnershipMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Ownership', kind: 'playlists' }),

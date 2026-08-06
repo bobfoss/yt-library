@@ -36,6 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "port": 8765,
     "display_timezone": "",
     "week_start": "sunday",
+    "hide_empty_filters": True,
     "search_card_layout": "grid",
     "playlist_card_layout": "grid",
     "history_card_layout": "compact",
@@ -174,6 +175,13 @@ def effective_display_timezone(config: dict[str, Any]) -> str:
 def configured_week_start(config: dict[str, Any]) -> str:
     value = str(config.get("week_start") or "").strip().lower()
     return value if value in WEEK_STARTS else "sunday"
+
+
+def configured_hide_empty_filters(config: dict[str, Any]) -> bool:
+    value = config.get("hide_empty_filters", DEFAULT_CONFIG["hide_empty_filters"])
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def configured_card_layout(
@@ -507,6 +515,7 @@ def configured_archivarix_retry_backoff(config: dict[str, Any]) -> float:
 CONFIG_NORMALIZERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "display_timezone": configured_display_timezone,
     "week_start": configured_week_start,
+    "hide_empty_filters": configured_hide_empty_filters,
     "search_card_layout": configured_search_card_layout,
     "playlist_card_layout": configured_playlist_card_layout,
     "history_card_layout": configured_history_card_layout,

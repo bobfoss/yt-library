@@ -25,6 +25,7 @@ from yt_library.config import (
     configured_dispatch_mode,
     configured_display_timezone,
     configured_filter_preferences,
+    configured_hide_empty_filters,
     configured_history_card_layout,
     configured_job_dispatch_delay,
     configured_navigation_group_tree_collapsed,
@@ -287,6 +288,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(configured_week_start({}), "sunday")
         self.assertEqual(configured_week_start({"week_start": "Monday"}), "monday")
         self.assertEqual(configured_week_start({"week_start": "tuesday"}), "sunday")
+        self.assertTrue(configured_hide_empty_filters({}))
+        self.assertTrue(configured_hide_empty_filters({"hide_empty_filters": "yes"}))
+        self.assertFalse(configured_hide_empty_filters({"hide_empty_filters": False}))
         self.assertEqual(configured_search_card_layout({}), "grid")
         self.assertEqual(configured_playlist_card_layout({}), "grid")
         self.assertEqual(configured_history_card_layout({}), "compact")

@@ -71,6 +71,7 @@ const fields = {
   displayTimezone: document.getElementById('displayTimezone'),
   weekStartSunday: document.getElementById('weekStartSunday'),
   weekStartMonday: document.getElementById('weekStartMonday'),
+  hideEmptyFilters: document.getElementById('hideEmptyFilters'),
   useProxy: document.getElementById('useProxy'),
   proxyUrl: document.getElementById('proxyUrl'),
   saveSettings: document.getElementById('saveSettings'),
@@ -770,6 +771,7 @@ function render(data) {
     fields.displayTimezone.value = settings.displayTimezone || window.YTLibraryTime.detected();
     fields.weekStartMonday.checked = settings.weekStart === 'monday';
     fields.weekStartSunday.checked = !fields.weekStartMonday.checked;
+    fields.hideEmptyFilters.checked = settings.hideEmptyFilters !== false;
     fields.useProxy.checked = Boolean(settings.useProxy);
     fields.proxyUrl.value = settings.proxy || '';
   }
@@ -1047,6 +1049,7 @@ async function saveAdminSettings() {
     const payload = await AdminTransport.postJson('/api/admin/settings', {
       display_timezone: fields.displayTimezone.value.trim(),
       week_start: fields.weekStartMonday.checked ? 'monday' : 'sunday',
+      hide_empty_filters: fields.hideEmptyFilters.checked ? '1' : '0',
       use_proxy: fields.useProxy.checked ? '1' : '0',
       proxy: fields.proxyUrl.value.trim(),
     });
@@ -1054,6 +1057,7 @@ async function saveAdminSettings() {
     fields.displayTimezone.value = settings.displayTimezone || fields.displayTimezone.value.trim();
     fields.weekStartMonday.checked = settings.weekStart === 'monday';
     fields.weekStartSunday.checked = !fields.weekStartMonday.checked;
+    fields.hideEmptyFilters.checked = settings.hideEmptyFilters !== false;
     fields.useProxy.checked = Boolean(settings.useProxy);
     fields.proxyUrl.value = settings.proxy || '';
     window.YTLibraryTime.apply(settings.displayTimezone || fields.displayTimezone.value);
@@ -1534,6 +1538,7 @@ fields.themeToggle.addEventListener('change', () => {
 fields.displayTimezone.addEventListener('input', () => { settingsDirty = true; });
 fields.weekStartSunday.addEventListener('change', () => { settingsDirty = true; });
 fields.weekStartMonday.addEventListener('change', () => { settingsDirty = true; });
+fields.hideEmptyFilters.addEventListener('change', () => { settingsDirty = true; });
 fields.useProxy.addEventListener('change', () => { settingsDirty = true; });
 fields.proxyUrl.addEventListener('input', () => { settingsDirty = true; });
 fields.saveSettings.addEventListener('click', saveAdminSettings);

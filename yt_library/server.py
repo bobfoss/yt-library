@@ -33,6 +33,7 @@ from .config import (
     configured_dispatch_mode,
     configured_display_timezone,
     configured_filter_preferences,
+    configured_hide_empty_filters,
     configured_history_card_layout,
     configured_job_dispatch_delay,
     configured_navigation_group_tree_collapsed,
@@ -1539,6 +1540,14 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 params.get("week_start")
                 or [configured_week_start(self.config_data)]
             )[0].strip().lower()
+            hide_empty_filters = (
+                params.get("hide_empty_filters")
+                or [
+                    "1"
+                    if configured_hide_empty_filters(self.config_data)
+                    else "0"
+                ]
+            )[0].strip().lower() in {"1", "true", "yes", "on"}
             use_proxy = (params.get("use_proxy") or ["0"])[0].strip().lower() in {
                 "1",
                 "true",
@@ -1578,6 +1587,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 )
                 config["display_timezone"] = timezone_name
                 config["week_start"] = week_start
+                config["hide_empty_filters"] = hide_empty_filters
                 config["use_proxy"] = use_proxy
                 config["proxy"] = proxy_url
                 return previous_timezone, proxy_changed
@@ -2198,6 +2208,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def layout_settings(self) -> dict[str, Any]:
         return {
             "weekStart": configured_week_start(self.config_data),
+            "hideEmptyFilters": configured_hide_empty_filters(self.config_data),
             "searchCardLayout": configured_search_card_layout(self.config_data),
             "playlistCardLayout": configured_playlist_card_layout(self.config_data),
             "historyCardLayout": configured_history_card_layout(self.config_data),
@@ -2247,6 +2258,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         return {
             "displayTimezone": configured_display_timezone(self.config_data),
             "weekStart": configured_week_start(self.config_data),
+            "hideEmptyFilters": configured_hide_empty_filters(self.config_data),
             "useProxy": configured_use_proxy(self.config_data),
             "proxy": configured_proxy_address(self.config_data),
             "updateFrequency": configured_update_frequency(self.config_data),

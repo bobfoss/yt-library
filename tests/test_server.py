@@ -1412,6 +1412,7 @@ class AdminServerTests(unittest.TestCase):
                 {
                     "display_timezone": "America/Los_Angeles",
                     "week_start": "monday",
+                    "hide_empty_filters": "0",
                     "use_proxy": "1",
                     "proxy": "socks5h://127.0.0.1:1081",
                 }
@@ -1428,6 +1429,7 @@ class AdminServerTests(unittest.TestCase):
             request_restart.assert_called_once_with()
             self.assertEqual(config["display_timezone"], "America/Los_Angeles")
             self.assertEqual(config["week_start"], "monday")
+            self.assertFalse(config["hide_empty_filters"])
             self.assertTrue(config["use_proxy"])
             self.assertEqual(config["proxy"], "socks5h://127.0.0.1:1081")
             payload = json.loads(config_path.read_text(encoding="utf-8"))
@@ -1441,6 +1443,7 @@ class AdminServerTests(unittest.TestCase):
             response = handler.send_json.call_args.args[0]
             self.assertTrue(response["restartScheduled"])
             self.assertEqual(response["settings"]["weekStart"], "monday")
+            self.assertFalse(response["settings"]["hideEmptyFilters"])
             self.assertEqual(response["service"]["status"], "restarting")
 
     def test_admin_settings_reject_invalid_week_start(self) -> None:

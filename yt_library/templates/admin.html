@@ -95,6 +95,7 @@
     .week-start-options { display: flex; align-items: center; gap: 16px; }
     .week-start-options label { display: flex; flex-direction: row; align-items: center; gap: 6px; color: var(--ink); }
     .week-start-options input { width: auto; margin: 0; }
+    .hide-empty-filters-setting { grid-column: 1; grid-row: 3; margin-top: 2px; }
     .proxy-input { width: 320px; }
     .delay-input { width: 150px; }
     .settings-status { align-self: center; min-width: 64px; }
@@ -248,6 +249,7 @@
               <label><input id="weekStartMonday" type="radio" name="weekStart" value="monday">Monday</label>
             </div>
           </fieldset>
+          <label class="checkbox hide-empty-filters-setting"><input id="hideEmptyFilters" type="checkbox" checked>Hide empty filters</label>
         </div>
         <div class="header-settings-row advanced-only">
           <label class="checkbox"><input id="useProxy" type="checkbox">Use proxy</label>
