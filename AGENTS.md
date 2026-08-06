@@ -27,6 +27,13 @@ source for unfinished or deferred work.
   service through `cmd.exe`, `powershell.exe`, or `pwsh.exe`, and do not omit
   `-WindowStyle Hidden`; either can leave a visible empty console. Verify the
   replacement PID and project-venv launch after every restart.
+- Perform Windows restarts as small sequential PowerShell calls, not one large
+  discovery/stop/start script. First record queue state and resolve the port's
+  listener plus its project-venv parent. Stop the listener, then stop the parent
+  only if it still exists; an already-exited parent is normal. Confirm the port
+  is closed before launching the hidden replacement. Finally poll the status
+  endpoint, verify the new listener's parent is the project venv, and restore
+  the queue only when it was previously running.
 - Restart after server, worker, served HTML/JS, schema/bootstrap, or source
   config changes. Database-only updates normally do not require a restart.
 - Run the full local checks below for code changes. UI and settings changes also
