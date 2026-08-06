@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from .config import (
     CARD_LAYOUTS,
+    ConfigStore,
     PAGE_SIZES,
     SORT_PREFERENCE_VALUES,
     configured_archivarix_max_in_flight,
@@ -52,7 +53,6 @@ from .config import (
     ensure_config_file,
     ensure_directory,
     next_update_at,
-    save_config,
     valid_update_frequency,
     valid_filter_preference_key,
     valid_navigation_group_tree_node,
@@ -446,6 +446,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         service_started_at: str,
         restart_pending: Callable[[], bool],
         request_restart: Callable[[], bool],
+        config_store: ConfigStore | None = None,
         directory: str | None = None,
         **kwargs,
     ):
@@ -454,11 +455,45 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         self.video_thumbs = video_thumbs
         self.takeout_dir = takeout_dir
         self.config_data = config_data
+        self.config_store = config_store or ConfigStore(config_data)
         self.plugin_manager = plugin_manager
         self.service_started_at = service_started_at
         self.restart_pending = restart_pending
         self.request_restart = request_restart
         super().__init__(*args, directory=directory, **kwargs)
+
+    def _update_config(
+        self,
+        mutation: Callable[[dict[str, Any]], Any],
+    ) -> Any:
+        store = getattr(self, "config_store", None)
+        if store is None or store.config is not self.config_data:
+            store = ConfigStore(self.config_data)
+            self.config_store = store
+        return store.update(mutation)
+
+    def _apply_timezone_change(self, previous: str, current: str) -> None:
+        if previous == current:
+            return
+        UPDATE_SCHEDULER.schedule_changed(self.config_data)
+        conn = connect(self.db_path)
+        try:
+            with conn:
+                refresh_exact_history_dates(
+                    conn,
+                    effective_display_timezone(self.config_data),
+                )
+        finally:
+            conn.close()
+
+    def _set_display_timezone(self, value: str) -> None:
+        def update_timezone(config: dict[str, Any]) -> str:
+            previous = configured_display_timezone(config)
+            config["display_timezone"] = value
+            return previous
+
+        previous = self._update_config(update_timezone)
+        self._apply_timezone_change(previous, value)
 
     def _run_transaction(
         self,
@@ -1311,8 +1346,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             if config_key is None or layout not in CARD_LAYOUTS:
                 self.send_json({"error": "Invalid card layout preference"}, status=400)
                 return
-            self.config_data[config_key] = layout
-            save_config(self.config_data)
+            self._update_config(lambda config: config.__setitem__(config_key, layout))
             self.send_json({"ok": True, "context": context, "layout": layout})
             return
         if parsed.path == "/api/settings/sort":
@@ -1321,10 +1355,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             if sort not in SORT_PREFERENCE_VALUES.get(context, frozenset()):
                 self.send_json({"error": "Invalid sort preference"}, status=400)
                 return
-            preferences = configured_sort_preferences(self.config_data)
-            preferences[context] = sort
-            self.config_data["sort_preferences"] = preferences
-            save_config(self.config_data)
+            def update_sort(config: dict[str, Any]) -> None:
+                preferences = configured_sort_preferences(config)
+                preferences[context] = sort
+                config["sort_preferences"] = preferences
+
+            self._update_config(update_sort)
             self.send_json({"ok": True, "context": context, "sort": sort})
             return
         if parsed.path == "/api/settings/page-size":
@@ -1335,8 +1371,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             if page_size not in PAGE_SIZES:
                 self.send_json({"error": "Invalid page size preference"}, status=400)
                 return
-            self.config_data["page_size"] = page_size
-            save_config(self.config_data)
+            self._update_config(
+                lambda config: config.__setitem__("page_size", page_size)
+            )
             self.send_json({"ok": True, "pageSize": page_size})
             return
         if parsed.path == "/api/settings/partial-completion-minimum":
@@ -1350,8 +1387,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     status=400,
                 )
                 return
-            self.config_data["partial_completion_min_percent"] = minimum_percent
-            save_config(self.config_data)
+            self._update_config(
+                lambda config: config.__setitem__(
+                    "partial_completion_min_percent",
+                    minimum_percent,
+                )
+            )
             self.send_json(
                 {
                     "ok": True,
@@ -1369,13 +1410,16 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"error": "Invalid filter preference value"}, status=400)
                 return
             enabled = enabled_value in {"1", "true"}
-            preferences = configured_filter_preferences(self.config_data)
-            if enabled:
-                preferences[preference_key] = True
-            else:
-                preferences.pop(preference_key, None)
-            self.config_data["filter_preferences"] = preferences
-            save_config(self.config_data)
+            def update_filter_preferences(config: dict[str, Any]) -> dict[str, bool]:
+                preferences = configured_filter_preferences(config)
+                if enabled:
+                    preferences[preference_key] = True
+                else:
+                    preferences.pop(preference_key, None)
+                config["filter_preferences"] = preferences
+                return preferences
+
+            preferences = self._update_config(update_filter_preferences)
             self.send_json(
                 {
                     "ok": True,
@@ -1395,8 +1439,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             ):
                 self.send_json({"error": "Invalid search filter tree state"}, status=400)
                 return
-            self.config_data["search_filter_tree_expanded"] = nodes
-            save_config(self.config_data)
+            self._update_config(
+                lambda config: config.__setitem__("search_filter_tree_expanded", nodes)
+            )
             self.send_json(
                 {
                     "ok": True,
@@ -1415,8 +1460,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     status=400,
                 )
                 return
-            self.config_data["navigation_group_tree_collapsed"] = nodes
-            save_config(self.config_data)
+            self._update_config(
+                lambda config: config.__setitem__(
+                    "navigation_group_tree_collapsed",
+                    nodes,
+                )
+            )
             self.send_json(
                 {
                     "ok": True,
@@ -1449,12 +1498,14 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     status=400,
                 )
                 return
-            self.config_data["update_frequency"] = frequency
-            if valid_update_time(update_time):
-                self.config_data["update_time"] = update_time
-            if valid_update_hour_minute(hour_minute):
-                self.config_data["update_hour_minute"] = int(hour_minute)
-            save_config(self.config_data)
+            def update_schedule(config: dict[str, Any]) -> None:
+                config["update_frequency"] = frequency
+                if valid_update_time(update_time):
+                    config["update_time"] = update_time
+                if valid_update_hour_minute(hour_minute):
+                    config["update_hour_minute"] = int(hour_minute)
+
+            self._update_config(update_schedule)
             UPDATE_SCHEDULER.schedule_changed(self.config_data)
             self.send_json({"ok": True, "settings": self.admin_settings()})
             return
@@ -1465,8 +1516,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 "yes",
                 "on",
             }
-            self.config_data["admin_advanced"] = enabled
-            save_config(self.config_data)
+            self._update_config(
+                lambda config: config.__setitem__("admin_advanced", enabled)
+            )
             self.send_json({"ok": True, "settings": self.admin_settings()})
             return
         if parsed.path == "/api/admin/settings":
@@ -1496,26 +1548,21 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 )
                 return
 
-            previous_timezone = configured_display_timezone(self.config_data)
-            previous_use_proxy = configured_use_proxy(self.config_data)
-            previous_proxy = configured_proxy_address(self.config_data)
-            proxy_changed = (
-                previous_use_proxy != use_proxy
-                or previous_proxy != proxy_url
+            def update_admin_settings(config: dict[str, Any]) -> tuple[str, bool]:
+                previous_timezone = configured_display_timezone(config)
+                proxy_changed = (
+                    configured_use_proxy(config) != use_proxy
+                    or configured_proxy_address(config) != proxy_url
+                )
+                config["display_timezone"] = timezone_name
+                config["use_proxy"] = use_proxy
+                config["proxy"] = proxy_url
+                return previous_timezone, proxy_changed
+
+            previous_timezone, proxy_changed = self._update_config(
+                update_admin_settings
             )
-            self.config_data["display_timezone"] = timezone_name
-            self.config_data["use_proxy"] = use_proxy
-            self.config_data["proxy"] = proxy_url
-            save_config(self.config_data)
-            if previous_timezone != timezone_name:
-                UPDATE_SCHEDULER.schedule_changed(self.config_data)
-            if previous_timezone != timezone_name:
-                conn = connect(self.db_path)
-                try:
-                    with conn:
-                        refresh_exact_history_dates(conn, timezone_name)
-                finally:
-                    conn.close()
+            self._apply_timezone_change(previous_timezone, timezone_name)
             if proxy_changed:
                 conn = connect(self.db_path)
                 try:
@@ -1548,15 +1595,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             if not valid_timezone_name(value):
                 self.send_json({"error": f"Invalid IANA timezone: {value}"}, status=400)
                 return
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    self.config_data["display_timezone"] = value
-                    save_config(self.config_data)
-                    UPDATE_SCHEDULER.schedule_changed(self.config_data)
-                    refresh_exact_history_dates(conn, value)
-            finally:
-                conn.close()
+            self._set_display_timezone(value)
             self.send_json({"ok": True, "displayTimezone": value})
             return
         if parsed.path == "/api/admin/dispatch-settings":
@@ -1623,13 +1662,15 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     status=400,
                 )
                 return
-            self.config_data["dispatch_mode"] = dispatch_mode
-            self.config_data["job_dispatch_delay_seconds"] = job_dispatch_delay
-            self.config_data["request_delay_min_seconds"] = request_delay_min
-            self.config_data["request_delay_max_seconds"] = request_delay_max
-            self.config_data["youtube_max_in_flight"] = youtube_max_in_flight
-            self.config_data["archivarix_max_in_flight"] = archivarix_max_in_flight
-            save_config(self.config_data)
+            def update_dispatch_settings(config: dict[str, Any]) -> None:
+                config["dispatch_mode"] = dispatch_mode
+                config["job_dispatch_delay_seconds"] = job_dispatch_delay
+                config["request_delay_min_seconds"] = request_delay_min
+                config["request_delay_max_seconds"] = request_delay_max
+                config["youtube_max_in_flight"] = youtube_max_in_flight
+                config["archivarix_max_in_flight"] = archivarix_max_in_flight
+
+            self._update_config(update_dispatch_settings)
             WORKER_QUEUE_DISPATCHER.update_dispatch_settings(
                 dispatch_mode,
                 job_dispatch_delay,
@@ -1706,10 +1747,18 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 {},
             )
             display_name = str(current_status.get("name") or "").strip()
-            if display_name:
-                plugin_config["name"] = display_name
-            plugin_config["enabled"] = enabled
-            save_config(self.config_data)
+            def update_plugin_state(config: dict[str, Any]) -> None:
+                plugins = config.get("plugins")
+                current_plugin = (
+                    plugins.get(plugin_id) if isinstance(plugins, dict) else None
+                )
+                if not isinstance(current_plugin, dict):
+                    raise KeyError(f"Plugin is not configured: {plugin_id}")
+                if display_name:
+                    current_plugin["name"] = display_name
+                current_plugin["enabled"] = enabled
+
+            self._update_config(update_plugin_state)
             scheduled = self.request_restart()
             self.send_json(
                 {
@@ -2130,8 +2179,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404, "Not found")
             return
         value = ""
-        self.config_data["display_timezone"] = value
-        save_config(self.config_data)
+        self._set_display_timezone(value)
         self.send_json({"ok": True, "displayTimezone": value})
 
     def render_page(self, template: str) -> bytes:
@@ -2382,6 +2430,7 @@ def serve(args: argparse.Namespace) -> None:
         PLACEHOLDER_RECOVERY_WORKER,
     )
     plugin_manager = PluginManager(args.config_data, db_path=db_path)
+    config_store = ConfigStore(args.config_data)
     service_started_at = utc_now()
     restart_requested = threading.Event()
     server: http.server.ThreadingHTTPServer | None = None
@@ -2414,6 +2463,7 @@ def serve(args: argparse.Namespace) -> None:
             service_started_at=service_started_at,
             restart_pending=restart_pending,
             request_restart=request_restart,
+            config_store=config_store,
             directory=str(ROOT),
             **handler_kwargs,
         )

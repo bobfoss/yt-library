@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import io
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from unittest.mock import patch
 from yt_library import cli
 from yt_library.config import (
     CONFIG_NORMALIZERS,
+    ConfigStore,
     DEFAULT_CONFIG,
     configured_admin_advanced,
     configured_archivarix_max_in_flight,
@@ -58,6 +60,85 @@ from yt_library.config import (
 
 
 class ConfigTests(unittest.TestCase):
+    def test_config_store_serializes_and_merges_nested_mutations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            store = ConfigStore(config)
+            first_entered = threading.Event()
+            release_first = threading.Event()
+            second_started = threading.Event()
+            second_entered = threading.Event()
+            errors: list[BaseException] = []
+
+            def run(mutation) -> None:
+                try:
+                    store.update(mutation)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            def update_search(updated: dict[str, object]) -> None:
+                preferences = configured_sort_preferences(updated)
+                preferences["search"] = "newest"
+                updated["sort_preferences"] = preferences
+                first_entered.set()
+                release_first.wait(2)
+
+            def update_liked(updated: dict[str, object]) -> None:
+                second_entered.set()
+                preferences = configured_sort_preferences(updated)
+                preferences["liked"] = "most_watched"
+                updated["sort_preferences"] = preferences
+
+            def run_second() -> None:
+                second_started.set()
+                run(update_liked)
+
+            first = threading.Thread(target=run, args=(update_search,))
+            second = threading.Thread(target=run_second)
+            first.start()
+            self.assertTrue(first_entered.wait(1))
+            second.start()
+            self.assertTrue(second_started.wait(1))
+            try:
+                self.assertFalse(second_entered.wait(0.1))
+            finally:
+                release_first.set()
+            first.join(2)
+            second.join(2)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            expected = {"search": "newest", "liked": "most_watched"}
+            self.assertEqual(config["sort_preferences"], expected)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["sort_preferences"], expected)
+
+    def test_config_store_preserves_memory_and_file_when_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            save_config(config)
+            original_file = config_path.read_text(encoding="utf-8")
+            store = ConfigStore(config)
+
+            with patch(
+                "yt_library.config.os.replace",
+                side_effect=OSError("replace failed"),
+            ):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    store.update(
+                        lambda updated: updated.__setitem__("page_size", 250)
+                    )
+
+            self.assertEqual(config["page_size"], 100)
+            self.assertEqual(config_path.read_text(encoding="utf-8"), original_file)
+            self.assertEqual(
+                list(Path(temp_dir).glob(".yt_library.config.json.*.tmp")),
+                [],
+            )
+
     def test_plugin_configuration_is_explicit_and_preserves_plugin_settings(self) -> None:
         normalized = configured_plugins(
             {

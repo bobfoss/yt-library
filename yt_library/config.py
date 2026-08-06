@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
+import tempfile
+import threading
+from copy import deepcopy
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .network import validated_socks5_proxy_url
@@ -15,6 +19,7 @@ from .network import validated_socks5_proxy_url
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = ROOT / "yt_library.config.json"
+ConfigMutationResult = TypeVar("ConfigMutationResult")
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "database": "yt_library.sqlite3",
@@ -629,17 +634,62 @@ def ensure_config_file(config: dict[str, Any]) -> Path:
     path = Path(str(config.get("_config_path") or DEFAULT_CONFIG_PATH))
     if path.exists():
         return path
-    payload = {key: config[key] for key in DEFAULT_CONFIG}
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    save_config(config)
     ensure_directory(config_path(config, "takeout_dir"))
     return path
 
 
+def _config_payload(config: dict[str, Any]) -> dict[str, Any]:
+    return {key: config.get(key, DEFAULT_CONFIG[key]) for key in DEFAULT_CONFIG}
+
+
+def _atomic_write_config(path: Path, payload: dict[str, Any]) -> None:
+    serialized = json.dumps(payload, indent=2) + "\n"
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
 def save_config(config: dict[str, Any]) -> Path:
     path = Path(str(config.get("_config_path") or DEFAULT_CONFIG_PATH))
-    payload = {key: config.get(key, DEFAULT_CONFIG[key]) for key in DEFAULT_CONFIG}
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_config(path, _config_payload(config))
     return path
+
+
+class ConfigStore:
+    """Serialize copy-on-write runtime configuration changes and persistence."""
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        self.config = config
+        self._lock = threading.RLock()
+
+    def update(
+        self,
+        mutation: Callable[[dict[str, Any]], ConfigMutationResult],
+    ) -> ConfigMutationResult:
+        with self._lock:
+            updated = deepcopy(self.config)
+            result = mutation(updated)
+            save_config(updated)
+            for key in tuple(self.config):
+                if key not in updated:
+                    del self.config[key]
+            for key, value in updated.items():
+                if key not in self.config or self.config[key] != value:
+                    self.config[key] = value
+            return deepcopy(result)
 
 
 def config_path(config: dict[str, Any], key: str) -> Path:

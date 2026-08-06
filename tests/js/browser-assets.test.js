@@ -44,6 +44,16 @@ test('all served browser assets have valid JavaScript syntax', () => {
   }
 });
 
+test('timezone reset persists the detected zone in one request', () => {
+  const timezoneSource = source('timezone.js');
+
+  assert.match(
+    timezoneSource,
+    /async reset\(\) \{\s*return persist\(detected\(\)\);\s*\}/,
+  );
+  assert.doesNotMatch(timezoneSource, /method: 'DELETE'/);
+});
+
 test('detail navigation retains the active search state', () => {
   const indexSource = source('index.js');
 

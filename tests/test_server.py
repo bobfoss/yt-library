@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 import urllib.error
 import urllib.parse
@@ -10,7 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from yt_library import core, server, workers
-from yt_library.config import load_config
+from yt_library.config import ConfigStore, load_config
 
 from tests.support import migrated_connection
 
@@ -886,6 +887,50 @@ class AdminServerTests(unittest.TestCase):
                 }
             )
 
+    def test_parallel_preference_handlers_share_serialized_config_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            store = ConfigStore(config)
+            paths = (
+                "/api/settings/sort?context=search&value=newest",
+                "/api/settings/sort?context=liked&value=most_watched",
+            )
+            handlers = []
+            for path in paths:
+                handler = object.__new__(server.LibraryHandler)
+                handler.path = path
+                handler.config_data = config
+                handler.config_store = store
+                handler.send_json = Mock()
+                handlers.append(handler)
+
+            errors: list[BaseException] = []
+
+            def submit(handler: server.LibraryHandler) -> None:
+                try:
+                    handler.do_POST()
+                except BaseException as exc:
+                    errors.append(exc)
+
+            threads = [
+                threading.Thread(target=submit, args=(handler,))
+                for handler in handlers
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(2)
+
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            expected = {"search": "newest", "liked": "most_watched"}
+            self.assertEqual(config["sort_preferences"], expected)
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["sort_preferences"], expected)
+            for handler in handlers:
+                handler.send_json.assert_called_once()
+
     def test_sort_preference_rejects_mismatched_regime(self) -> None:
         config = load_config(Path("missing-test-config.json"))
         handler = object.__new__(server.LibraryHandler)
@@ -1266,6 +1311,52 @@ class AdminServerTests(unittest.TestCase):
         response = handler.send_json.call_args.args[0]
         self.assertIn("maximum", response["error"])
         self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
+    def test_timezone_post_and_delete_share_transition_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            db_path = Path(temp_dir) / "library.sqlite3"
+            config = load_config(config_path)
+            core.migrate_database(db_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.config_data = config
+            handler.db_path = db_path
+            handler.send_json = Mock()
+
+            with (
+                patch.object(
+                    server.UPDATE_SCHEDULER,
+                    "schedule_changed",
+                ) as schedule_changed,
+                patch.object(
+                    server,
+                    "refresh_exact_history_dates",
+                ) as refresh_dates,
+            ):
+                handler.path = (
+                    "/api/settings/timezone?value=America%2FLos_Angeles"
+                )
+                handler.do_POST()
+
+                self.assertEqual(config["display_timezone"], "America/Los_Angeles")
+                schedule_changed.assert_called_once_with(config)
+                self.assertEqual(refresh_dates.call_args.args[1], "America/Los_Angeles")
+
+                schedule_changed.reset_mock()
+                refresh_dates.reset_mock()
+                handler.send_json.reset_mock()
+                handler.path = "/api/settings/timezone"
+                handler.do_DELETE()
+
+                self.assertEqual(config["display_timezone"], "")
+                schedule_changed.assert_called_once_with(config)
+                self.assertEqual(refresh_dates.call_args.args[1], "UTC")
+
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["display_timezone"], "")
+            handler.send_json.assert_called_once_with(
+                {"ok": True, "displayTimezone": ""}
+            )
 
     def test_admin_settings_save_proxy_and_schedule_restart(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

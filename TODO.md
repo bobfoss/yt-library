@@ -35,6 +35,12 @@ versioned migrations as well as creating a fresh current schema.
 ### Configuration And Queue Operations
 
 - Runtime defaults live in `yt_library.config.json`; the database no longer contains `app_settings`.
+- Browser and Admin settings share a serialized copy-on-write configuration
+  store that atomically replaces the JSON file, preventing overlapping threaded
+  requests from losing unrelated preference changes.
+- Timezone set and reset routes share scheduler notification and history-date
+  reconciliation; browser timezone reset persists the detected zone in one
+  request.
 - New installs bind to `127.0.0.1` by default, while a specific Tailscale address can be configured for remote access.
 - YouTube and Archivarix cookie paths, launch intervals, and concurrency limits have explicit config keys.
 - The persistent queue dispatches tasks by priority and applies independent YouTube and Archivarix launch cadence and concurrency limits.

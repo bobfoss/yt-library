@@ -76,9 +76,6 @@
     get timeZone() { return config.displayTimezone || ''; },
     persist,
     async reset() {
-      const response = await fetch('/api/settings/timezone', { method: 'DELETE' });
-      if (!response.ok) throw new Error(`Could not reset timezone (${response.status})`);
-      config.displayTimezone = '';
       return persist(detected());
     },
   };
