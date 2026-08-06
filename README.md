@@ -66,6 +66,21 @@ challenge scripts.
 .\.venv\Scripts\python.exe yt_library_manager.py
 ```
 
+For persistent background operation on Windows, use the checked-in service
+utility:
+
+```powershell
+.\scripts\service.ps1 status
+.\scripts\service.ps1 start
+.\scripts\service.ps1 restart
+.\scripts\service.ps1 stop
+```
+
+The restart action preserves the worker queue's running state, launches the
+project venv without a visible console window, redirects service output under
+`.codex\service-logs`, verifies the replacement process, and records control
+transitions in `.codex\service-logs\service-control.log`.
+
 With no command, the app creates `yt_library.config.json` if needed, initializes
 or migrates `yt_library.sqlite3`, and serves the local UI. Defaults can be edited
 in the generated config file:

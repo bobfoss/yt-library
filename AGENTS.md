@@ -15,25 +15,10 @@ source for unfinished or deferred work.
   Use a substantive commit body. Push only when explicitly requested.
 - Use the configured host and port. Runtime work is complete only after a live
   status or smoke check succeeds; include the PID when reporting a restart.
-- Before restarting, record whether the persistent queue is running and its
-  count. Stop it cleanly, restart to a new healthy PID, and resume it only if it
-  was running before. Never clear queued work just to restart the service.
-- For Codex-operated Windows restarts, stop the existing service and launch
-  `.venv\Scripts\python.exe` directly with
-  `Start-Process -WindowStyle Hidden -PassThru`, set the repository working
-  directory, and redirect stdout/stderr to `.codex\service-logs`. Do not use
-  the admin restart endpoint as a substitute for this procedure because it
-  inherits the current service interpreter. Do not launch the background
-  service through `cmd.exe`, `powershell.exe`, or `pwsh.exe`, and do not omit
-  `-WindowStyle Hidden`; either can leave a visible empty console. Verify the
-  replacement PID and project-venv launch after every restart.
-- Perform Windows restarts as small sequential PowerShell calls, not one large
-  discovery/stop/start script. First record queue state and resolve the port's
-  listener plus its project-venv parent. Stop the listener, then stop the parent
-  only if it still exists; an already-exited parent is normal. Confirm the port
-  is closed before launching the hidden replacement. Finally poll the status
-  endpoint, verify the new listener's parent is the project venv, and restore
-  the queue only when it was previously running.
+- Use `scripts\service.ps1` for Windows service status, start, restart, and stop
+  operations. Its comment-based help is the source of truth for process and
+  queue handling; do not assemble an ad hoc replacement or use the Admin
+  restart endpoint.
 - Restart after server, worker, served HTML/JS, schema/bootstrap, or source
   config changes. Database-only updates normally do not require a restart.
 - Run the full local checks below for code changes. UI and settings changes also
@@ -126,12 +111,10 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 $code | & "C:\Users\michael.keenan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -B -
 ```
 
-When using `Start-Process`, pass a single quoted argument string or otherwise
-verify that paths containing spaces remain intact. For the background service,
-also use `-WindowStyle Hidden`, launch the Python executable directly, redirect
-both output streams to `.codex\service-logs`, and retain the `-PassThru` PID for
-the health check. A successful restart has a new healthy PID and no visible
-console window.
+For service process troubleshooting, use `scripts\service.ps1 status` and read
+`.codex\service-logs\service-control.log` plus the timestamped stdout/stderr
+paths it reports. Keep service-operation fixes in that utility so future chats
+share one verified procedure.
 
 SQLite can be held open by long-running ad hoc probes. If schema initialization or imports fail with `database is locked`, inspect local `python.exe`/`pwsh.exe` processes for stale diagnostic scripts before changing application code. Stop only the stale probe, not the active server, unless a server restart is needed.
 
