@@ -470,7 +470,7 @@ test('history heatmap can return to the current year and day', () => {
   assert.match(indexSource, /current\.dataset\.historyCurrent = ''/);
   assert.match(indexSource, /current\.title = 'Today'/);
   assert.match(indexSource, /current\.setAttribute\('aria-label', 'Today'\)/);
-  assert.match(indexSource, /current\.textContent = '>\|'/);
+  assert.match(indexSource, /current\.innerHTML = historyHeatmapNavigationIcon/);
   assert.match(indexSource, /async function jumpToCurrentHistoryActivity\(\)/);
   assert.match(indexSource, /historyActivityYearOffset = 0/);
   assert.match(

@@ -2519,6 +2519,10 @@ function restoreHistoryNavigationButtons(container) {
   }
 }
 
+function historyHeatmapNavigationIcon(paths) {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
+}
+
 function historyHeatmapFor(payload) {
   const range = historyActivityRange();
   const activity = new Map((payload.activity || []).map(day => [day.watch_date, day]));
@@ -2549,7 +2553,7 @@ function historyHeatmapFor(payload) {
   previous.dataset.historyYearShift = '1';
   previous.title = 'Previous year';
   previous.setAttribute('aria-label', 'Previous year');
-  previous.textContent = '<';
+  previous.innerHTML = historyHeatmapNavigationIcon('<path d="m15 18-6-6 6-6"></path>');
   const rangeLabel = document.createElement('span');
   rangeLabel.className = 'history-heatmap-range';
   const rangeDateLabel = date => date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
@@ -2559,14 +2563,14 @@ function historyHeatmapFor(payload) {
   next.dataset.historyYearShift = '-1';
   next.title = 'Next year';
   next.setAttribute('aria-label', 'Next year');
-  next.textContent = '>';
+  next.innerHTML = historyHeatmapNavigationIcon('<path d="m9 18 6-6-6-6"></path>');
   next.disabled = historyActivityYearOffset === 0;
   const current = document.createElement('button');
   current.type = 'button';
   current.dataset.historyCurrent = '';
   current.title = 'Today';
   current.setAttribute('aria-label', 'Today');
-  current.textContent = '>|';
+  current.innerHTML = historyHeatmapNavigationIcon('<path d="m8 18 6-6-6-6"></path><path d="M18 6v12"></path>');
   current.disabled = historyActivityYearOffset === 0 && currentPage === 1;
   nav.append(syncLabel, previous, rangeLabel, next, current);
   header.append(heading, nav);
