@@ -204,6 +204,22 @@ test('history day keys use the configured display timezone', () => {
   assert.equal(time.dateKey('2026-08-01'), '2026-08-01');
 });
 
+test('history heatmaps honor the configured week start and label the top row', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+  const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
+
+  assert.match(indexSource, /const historyWeekStart = pageConfig\.weekStart === 'monday' \? 'monday' : 'sunday'/);
+  assert.match(indexSource, /const daysSinceWeekStart = \(start\.getDay\(\) - historyWeekStartDay \+ 7\) % 7/);
+  assert.match(indexSource, /weekStartLabel\.textContent = historyWeekStart === 'monday' \? 'Mon' : 'Sun'/);
+  assert.match(indexHtml, /\.history-heatmap-week-start/);
+  assert.match(adminHtml, /<legend>Week start<\/legend>/);
+  assert.match(adminHtml, /name="weekStart" value="sunday" checked/);
+  assert.match(adminHtml, /name="weekStart" value="monday"/);
+  assert.match(adminSource, /week_start: fields\.weekStartMonday\.checked \? 'monday' : 'sunday'/);
+});
+
 test('admin parameter posts use the shared transport with caller-owned effects', () => {
   const adminSource = source('admin.js');
 

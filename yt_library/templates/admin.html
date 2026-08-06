@@ -71,6 +71,8 @@
     .update-time-label[hidden], .update-time-label [hidden] { display: none; }
     .header-settings { display: grid; justify-items: end; gap: 8px; }
     .header-settings-row { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: end; gap: 8px; }
+    .timezone-settings-row { display: grid; grid-template-columns: 260px auto; justify-items: start; }
+    .timezone-settings-row > button { grid-column: 2; grid-row: 1; align-self: end; }
     .header-settings label { text-align: left; }
     .service-controls { display: flex; align-items: center; gap: 8px; min-height: 36px; }
     .service-controls strong { font-size: 14px; }
@@ -88,6 +90,11 @@
     input, select { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 8px 10px; font: inherit; width: 120px; }
     .wide-input { width: min(720px, calc(100vw - 360px)); }
     .timezone-input { width: 260px; }
+    .week-start-setting { grid-column: 1; grid-row: 2; width: 260px; margin: 0; padding: 0; border: 0; }
+    .week-start-setting legend { margin-bottom: 5px; color: var(--muted); font-size: 13px; }
+    .week-start-options { display: flex; align-items: center; gap: 16px; }
+    .week-start-options label { display: flex; flex-direction: row; align-items: center; gap: 6px; color: var(--ink); }
+    .week-start-options input { width: auto; margin: 0; }
     .proxy-input { width: 320px; }
     .delay-input { width: 150px; }
     .settings-status { align-self: center; min-width: 64px; }
@@ -167,6 +174,8 @@
       .header-settings { justify-items: start; margin-top: 12px; }
       .service-controls { flex-wrap: wrap; }
       .header-settings-row { justify-content: flex-start; }
+      .timezone-settings-row { display: flex; }
+      .week-start-setting { flex-basis: 100%; }
       .header-settings label { text-align: left; }
       .proxy-input { width: min(100%, 320px); }
       .wide-input { width: min(100%, 720px); }
@@ -229,9 +238,16 @@
             <span>Dark</span>
           </div>
         </div>
-        <div class="header-settings-row advanced-only">
+        <div class="header-settings-row timezone-settings-row advanced-only">
           <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>
           <button id="detectTimezone" type="button">Use browser time zone</button>
+          <fieldset class="week-start-setting">
+            <legend>Week start</legend>
+            <div class="week-start-options" role="radiogroup" aria-label="Week start">
+              <label><input id="weekStartSunday" type="radio" name="weekStart" value="sunday" checked>Sunday</label>
+              <label><input id="weekStartMonday" type="radio" name="weekStart" value="monday">Monday</label>
+            </div>
+          </fieldset>
         </div>
         <div class="header-settings-row advanced-only">
           <label class="checkbox"><input id="useProxy" type="checkbox">Use proxy</label>

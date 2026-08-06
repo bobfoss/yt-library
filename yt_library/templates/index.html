@@ -422,7 +422,7 @@
     .history-row .details.playlist-sources { margin-top: 5px; }
     .history-list.layout-detailed .history-row .description { -webkit-line-clamp: 6; }
     .history-card.history-jump-target { outline: 2px solid var(--accent); outline-offset: 2px; }
-    .history-heatmap { width: min(100%, 760px); min-width: 0; margin: 0 auto; }
+    .history-heatmap { width: min(100%, 790px); min-width: 0; margin: 0 auto; }
     .history-heatmap-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
     .history-heatmap-title { color: var(--muted); font-size: 12px; }
     .history-heatmap-nav { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
@@ -433,10 +433,14 @@
     .history-heatmap-nav button:disabled { opacity: .4; cursor: default; }
     .history-heatmap-range { min-width: 112px; text-align: center; font-variant-numeric: tabular-nums; }
     .history-heatmap-scroll { max-width: 100%; overflow-x: auto; padding: 2px 1px 5px; }
+    .history-heatmap-calendar { display: grid; grid-template-columns: 27px max-content; grid-template-rows: 17px auto; column-gap: 4px; width: max-content; min-width: 100%; }
     .history-heatmap-months,
-    .history-heatmap-weeks { display: grid; grid-template-columns: repeat(53, 11px); column-gap: 3px; width: max-content; min-width: 100%; }
+    .history-heatmap-weeks { display: grid; grid-template-columns: repeat(53, 11px); column-gap: 3px; width: max-content; }
+    .history-heatmap-months { grid-column: 2; grid-row: 1; }
+    .history-heatmap-weeks { grid-column: 2; grid-row: 2; }
     .history-heatmap-months { min-height: 17px; color: var(--muted); font-size: 11px; }
     .history-heatmap-month { white-space: nowrap; }
+    .history-heatmap-week-start { grid-column: 1; grid-row: 2; align-self: start; color: var(--muted); font-size: 11px; line-height: 11px; white-space: nowrap; }
     .history-heatmap-week { display: grid; grid-template-rows: repeat(7, 11px); gap: 3px; }
     .history-heatmap-day { width: 11px; height: 11px; border: 0; border-radius: 2px; padding: 0; background: color-mix(in srgb, var(--line) 48%, transparent); }
     button.history-heatmap-day { cursor: pointer; }

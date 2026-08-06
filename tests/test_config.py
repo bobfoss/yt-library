@@ -42,6 +42,7 @@ from yt_library.config import (
     configured_update_hour_minute,
     configured_update_time,
     configured_use_proxy,
+    configured_week_start,
     configured_youtube_max_in_flight,
     effective_display_timezone,
     ensure_config_file,
@@ -283,6 +284,9 @@ class ConfigTests(unittest.TestCase):
             "UTC",
         )
         self.assertEqual(effective_display_timezone({"display_timezone": ""}), "UTC")
+        self.assertEqual(configured_week_start({}), "sunday")
+        self.assertEqual(configured_week_start({"week_start": "Monday"}), "monday")
+        self.assertEqual(configured_week_start({"week_start": "tuesday"}), "sunday")
         self.assertEqual(configured_search_card_layout({}), "grid")
         self.assertEqual(configured_playlist_card_layout({}), "grid")
         self.assertEqual(configured_history_card_layout({}), "compact")

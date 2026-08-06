@@ -25,6 +25,7 @@ from .config import (
     ConfigStore,
     PAGE_SIZES,
     SORT_PREFERENCE_VALUES,
+    WEEK_STARTS,
     configured_archivarix_max_in_flight,
     configured_admin_advanced,
     configured_channel_history_card_layout,
@@ -47,6 +48,7 @@ from .config import (
     configured_update_hour_minute,
     configured_update_time,
     configured_use_proxy,
+    configured_week_start,
     configured_youtube_max_in_flight,
     config_path,
     effective_display_timezone,
@@ -1533,6 +1535,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/admin/settings":
             timezone_name = (params.get("display_timezone") or [""])[0].strip()
+            week_start = (
+                params.get("week_start")
+                or [configured_week_start(self.config_data)]
+            )[0].strip().lower()
             use_proxy = (params.get("use_proxy") or ["0"])[0].strip().lower() in {
                 "1",
                 "true",
@@ -1543,6 +1549,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             if not valid_timezone_name(timezone_name):
                 self.send_json(
                     {"error": f"Invalid IANA timezone: {timezone_name}"},
+                    status=400,
+                )
+                return
+            if week_start not in WEEK_STARTS:
+                self.send_json(
+                    {"error": f"Invalid week start: {week_start}"},
                     status=400,
                 )
                 return
@@ -1565,6 +1577,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     or configured_proxy_address(config) != proxy_url
                 )
                 config["display_timezone"] = timezone_name
+                config["week_start"] = week_start
                 config["use_proxy"] = use_proxy
                 config["proxy"] = proxy_url
                 return previous_timezone, proxy_changed
@@ -2216,6 +2229,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
 
     def layout_settings(self) -> dict[str, Any]:
         return {
+            "weekStart": configured_week_start(self.config_data),
             "searchCardLayout": configured_search_card_layout(self.config_data),
             "playlistCardLayout": configured_playlist_card_layout(self.config_data),
             "historyCardLayout": configured_history_card_layout(self.config_data),
@@ -2264,6 +2278,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def admin_settings(self) -> dict[str, Any]:
         return {
             "displayTimezone": configured_display_timezone(self.config_data),
+            "weekStart": configured_week_start(self.config_data),
             "useProxy": configured_use_proxy(self.config_data),
             "proxy": configured_proxy_address(self.config_data),
             "updateFrequency": configured_update_frequency(self.config_data),

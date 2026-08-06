@@ -100,6 +100,7 @@ in the generated config file:
   "host": "127.0.0.1",
   "port": 8765,
   "display_timezone": "",
+  "week_start": "sunday",
   "search_card_layout": "grid",
   "playlist_card_layout": "grid",
   "history_card_layout": "compact",
@@ -140,6 +141,8 @@ through Tailscale without binding other interfaces, set `host` to the machine's
 Tailscale IPv4 address.
 If `display_timezone` is empty, the browser detects an IANA timezone on first
 load and saves it to the config file.
+`week_start` controls whether history heatmaps place Sunday or Monday in the
+top row.
 Card selectors save independent layouts for search, playlist detail, main
 history, channel playlists, and channel history immediately without changing
 the current URL.

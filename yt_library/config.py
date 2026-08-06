@@ -35,6 +35,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "host": "127.0.0.1",
     "port": 8765,
     "display_timezone": "",
+    "week_start": "sunday",
     "search_card_layout": "grid",
     "playlist_card_layout": "grid",
     "history_card_layout": "compact",
@@ -72,6 +73,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 _LEGACY_YOUTUBE_REQUEST_INTERVAL_SECONDS = 5.0
 _LEGACY_ARCHIVARIX_REQUEST_INTERVAL_SECONDS = 3.0
 CARD_LAYOUTS = frozenset({"grid", "detailed", "compact"})
+WEEK_STARTS = frozenset({"sunday", "monday"})
 PAGE_SIZES = frozenset({50, 100, 250, 500})
 SEARCH_SORTS = frozenset(
     {"relevance", "title", "title_desc", "newest", "oldest", "most_watched", "type"}
@@ -167,6 +169,11 @@ def configured_display_timezone(config: dict[str, Any]) -> str:
 
 def effective_display_timezone(config: dict[str, Any]) -> str:
     return configured_display_timezone(config) or "UTC"
+
+
+def configured_week_start(config: dict[str, Any]) -> str:
+    value = str(config.get("week_start") or "").strip().lower()
+    return value if value in WEEK_STARTS else "sunday"
 
 
 def configured_card_layout(
@@ -499,6 +506,7 @@ def configured_archivarix_retry_backoff(config: dict[str, Any]) -> float:
 
 CONFIG_NORMALIZERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "display_timezone": configured_display_timezone,
+    "week_start": configured_week_start,
     "search_card_layout": configured_search_card_layout,
     "playlist_card_layout": configured_playlist_card_layout,
     "history_card_layout": configured_history_card_layout,

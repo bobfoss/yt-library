@@ -1411,6 +1411,7 @@ class AdminServerTests(unittest.TestCase):
             handler.path = "/api/admin/settings?" + urllib.parse.urlencode(
                 {
                     "display_timezone": "America/Los_Angeles",
+                    "week_start": "monday",
                     "use_proxy": "1",
                     "proxy": "socks5h://127.0.0.1:1081",
                 }
@@ -1426,6 +1427,7 @@ class AdminServerTests(unittest.TestCase):
 
             request_restart.assert_called_once_with()
             self.assertEqual(config["display_timezone"], "America/Los_Angeles")
+            self.assertEqual(config["week_start"], "monday")
             self.assertTrue(config["use_proxy"])
             self.assertEqual(config["proxy"], "socks5h://127.0.0.1:1081")
             payload = json.loads(config_path.read_text(encoding="utf-8"))
@@ -1438,7 +1440,32 @@ class AdminServerTests(unittest.TestCase):
                 conn.close()
             response = handler.send_json.call_args.args[0]
             self.assertTrue(response["restartScheduled"])
+            self.assertEqual(response["settings"]["weekStart"], "monday")
             self.assertEqual(response["service"]["status"], "restarting")
+
+    def test_admin_settings_reject_invalid_week_start(self) -> None:
+        config = load_config(Path("missing-test-config.json"))
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = (
+            "/api/admin/settings?"
+            + urllib.parse.urlencode(
+                {
+                    "display_timezone": "UTC",
+                    "week_start": "tuesday",
+                    "use_proxy": "0",
+                    "proxy": "",
+                }
+            )
+        )
+        handler.config_data = config
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        handler.send_json.assert_called_once_with(
+            {"error": "Invalid week start: tuesday"},
+            status=400,
+        )
 
     def test_admin_settings_reject_enabled_proxy_without_an_address(self) -> None:
         config = load_config(Path("missing-test-config.json"))

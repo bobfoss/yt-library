@@ -18,6 +18,8 @@ const watchedLineHtml = VideoCard.watchedLineHtml;
 const watchSparklineHtml = (video, detail = false) => VideoCard.watchSparklineHtml(video, { detail });
 const defaultDocumentTitle = 'YT Library';
 const pageConfig = window.YT_LIBRARY_CONFIG || {};
+const historyWeekStart = pageConfig.weekStart === 'monday' ? 'monday' : 'sunday';
+const historyWeekStartDay = historyWeekStart === 'monday' ? 1 : 0;
 const filterPreferenceKeys = {
   unavailableVideos: 'videos.unavailable',
   lowPartialCompletion: 'completion.partial_below_minimum',
@@ -2387,7 +2389,8 @@ function historyActivityRange(yearOffset = historyActivityYearOffset) {
   const lastDayOfTargetMonth = new Date(targetYear, today.getMonth() + 1, 0).getDate();
   const displayEnd = new Date(targetYear, today.getMonth(), Math.min(today.getDate(), lastDayOfTargetMonth));
   const start = new Date(displayEnd);
-  start.setDate(start.getDate() - start.getDay() - (52 * 7));
+  const daysSinceWeekStart = (start.getDay() - historyWeekStartDay + 7) % 7;
+  start.setDate(start.getDate() - daysSinceWeekStart - (52 * 7));
   const end = new Date(start);
   end.setDate(end.getDate() + (53 * 7) - 1);
   return { start, end, displayEnd, startKey: localDateKey(start), endKey: localDateKey(end) };
@@ -2569,6 +2572,11 @@ function historyHeatmapFor(payload) {
   header.append(heading, nav);
   const scroll = document.createElement('div');
   scroll.className = 'history-heatmap-scroll';
+  const calendar = document.createElement('div');
+  calendar.className = 'history-heatmap-calendar';
+  const weekStartLabel = document.createElement('span');
+  weekStartLabel.className = 'history-heatmap-week-start';
+  weekStartLabel.textContent = historyWeekStart === 'monday' ? 'Mon' : 'Sun';
   const months = document.createElement('div');
   months.className = 'history-heatmap-months';
   const weeks = document.createElement('div');
@@ -2617,7 +2625,8 @@ function historyHeatmapFor(payload) {
     }
     weeks.append(week);
   }
-  scroll.append(months, weeks);
+  calendar.append(weekStartLabel, months, weeks);
+  scroll.append(calendar);
   heatmap.append(header, scroll);
   scheduleHistoryHeatmapCurrentDay();
   return heatmap;
