@@ -5213,6 +5213,7 @@ function channelCardFor(channel, options = {}) {
     channelReference ? localChannelHref(channelReference) : ''
   );
   return CollectionCard.create({
+    className: 'channel-card',
     resultKind: options.resultKind,
     thumbnailPath: channel.thumbnail_path,
     titleHtml: `<div class="playlist-title">${titleHtml || escapeHtml(titleText)}</div>`,
@@ -5222,8 +5223,8 @@ function channelCardFor(channel, options = {}) {
       <span>${subscribedLabel}</span>
       ${channelNotificationHtml(channel)}
       ${status ? `<span class="badge">${escapeHtml(status)}</span>` : ''}
-      ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
-      ${channel.archivarix_channel_id ? `<span>Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
+      ${channel.channel_id ? `<span class="channel-id">${escapeHtml(channel.channel_id)}</span>` : ''}
+      ${channel.archivarix_channel_id ? `<span class="channel-archivarix-id">Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
     </div>
     ${channelDatesHtml(channel)}
     ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
@@ -5231,9 +5232,9 @@ function channelCardFor(channel, options = {}) {
     `,
     tailHtml: `
     ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : ''}
-    <div class="details">
-      ${youtubeUrl ? `<a class="playlist-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">YouTube</a>` : ''}
-      ${archivarixUrl ? `<a class="playlist-link" href="${escapeHtml(archivarixUrl)}" target="_blank" rel="noreferrer">Archivarix</a>` : ''}
+    <div class="details channel-card-links">
+      ${youtubeUrl ? `<a class="playlist-link channel-youtube-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">YouTube</a>` : ''}
+      ${archivarixUrl ? `<a class="playlist-link channel-archivarix-link" href="${escapeHtml(archivarixUrl)}" target="_blank" rel="noreferrer">Archivarix</a>` : ''}
     </div>
     `,
   });

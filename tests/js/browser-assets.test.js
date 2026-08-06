@@ -141,6 +141,24 @@ test('compact playlist cards hide playlist ids without removing them from other 
   assert.match(indexHtml, /\.search-grid\.layout-compact \.playlist-id,/);
 });
 
+test('compact channel cards retain only a right-aligned YouTube link', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+  const channelCardSource = indexSource.slice(
+    indexSource.indexOf('function channelCardFor('),
+    indexSource.indexOf('function externalLinkSvg('),
+  );
+
+  assert.match(channelCardSource, /className: 'channel-card'/);
+  assert.match(channelCardSource, /class="channel-id">\$\{escapeHtml\(channel\.channel_id\)\}/);
+  assert.match(channelCardSource, /class="channel-archivarix-id">Archivarix/);
+  assert.match(channelCardSource, /class="playlist-link channel-youtube-link"/);
+  assert.match(channelCardSource, /class="playlist-link channel-archivarix-link"/);
+  assert.match(indexHtml, /\.search-grid\.layout-compact \.channel-id,/);
+  assert.match(indexHtml, /\.search-grid\.layout-compact \.channel-archivarix-link \{ display: none; \}/);
+  assert.match(indexHtml, /\.search-grid\.layout-compact \.channel-card-links \{ justify-content: flex-end; \}/);
+});
+
 test('playlist cards render one owner separately from collaborators', () => {
   const indexSource = source('index.js');
 
