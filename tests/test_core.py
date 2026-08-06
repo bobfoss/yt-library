@@ -368,6 +368,88 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_dispatcher_start_probes_configured_proxy_without_existing_hold(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            config = load_config(Path(temp_dir) / "config.json")
+            config["use_proxy"] = True
+            config["proxy"] = "socks5h://127.0.0.1:1081"
+            dispatcher = WorkerQueueDispatcher()
+
+            with (
+                patch(
+                    "yt_library.workers.probe_socks5_proxy",
+                    return_value=(True, ""),
+                ) as probe,
+                patch.object(
+                    dispatcher,
+                    "_start_background",
+                    return_value={"started": True},
+                ) as start_background,
+            ):
+                result = dispatcher.start(
+                    db_path,
+                    Path(temp_dir) / "youtube-cookies.txt",
+                    Path(temp_dir) / "video-thumbs",
+                    config,
+                )
+
+            self.assertTrue(result["started"])
+            probe.assert_called_once_with("socks5h://127.0.0.1:1081")
+            start_background.assert_called_once()
+            conn = core.connect(db_path)
+            try:
+                self.assertFalse(core.external_service_block(conn, "proxy")["blocked"])
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM metadata_worker_log"
+                    ).fetchone()[0],
+                    0,
+                )
+            finally:
+                conn.close()
+
+    def test_dispatcher_start_sets_proxy_hold_after_fresh_failed_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            config = load_config(Path(temp_dir) / "config.json")
+            config["use_proxy"] = True
+            config["proxy"] = "socks5h://127.0.0.1:1081"
+            dispatcher = WorkerQueueDispatcher()
+            failure = "SOCKS5 proxy 127.0.0.1:1081 is unavailable"
+
+            with (
+                patch(
+                    "yt_library.workers.probe_socks5_proxy",
+                    return_value=(False, failure),
+                ) as probe,
+                patch.object(dispatcher, "_start_background") as start_background,
+            ):
+                result = dispatcher.start(
+                    db_path,
+                    Path(temp_dir) / "youtube-cookies.txt",
+                    Path(temp_dir) / "video-thumbs",
+                    config,
+                )
+
+            self.assertFalse(result["started"])
+            self.assertTrue(result["blocked"])
+            self.assertEqual(result["message"], failure)
+            probe.assert_called_once_with("socks5h://127.0.0.1:1081")
+            start_background.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                block = core.external_service_block(conn, "proxy")
+                self.assertTrue(block["blocked"])
+                self.assertEqual(block["reason_code"], "proxy_unavailable")
+                self.assertEqual(block["message"], failure)
+            finally:
+                conn.close()
+
     def test_dispatcher_start_retains_proxy_hold_after_failed_probe(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

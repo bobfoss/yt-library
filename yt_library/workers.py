@@ -2643,17 +2643,24 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         conn = connect(db_path)
         try:
             proxy_block = external_service_block(conn, "proxy")
-            if proxy_block["blocked"]:
+            if proxy_url or proxy_block["blocked"]:
                 proxy_available, proxy_message = probe_socks5_proxy(proxy_url)
                 with conn:
                     if proxy_available:
-                        clear_external_service_block(conn, "proxy")
-                        log_worker_queue_event(
-                            conn,
-                            "info",
-                            "Proxy connectivity restored; worker queue hold cleared.",
-                        )
+                        if proxy_block["blocked"]:
+                            clear_external_service_block(conn, "proxy")
+                            log_worker_queue_event(
+                                conn,
+                                "info",
+                                "Proxy connectivity restored; worker queue hold cleared.",
+                            )
                     else:
+                        set_external_service_block(
+                            conn,
+                            "proxy",
+                            "proxy_unavailable",
+                            proxy_message,
+                        )
                         log_worker_queue_event(
                             conn,
                             "error",
@@ -2668,7 +2675,6 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         "blocked": True,
                         "message": proxy_message,
                     }
-                self.allow_proxy_retry()
         finally:
             conn.close()
 
