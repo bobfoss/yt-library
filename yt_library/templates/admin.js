@@ -17,6 +17,11 @@ const fields = {
   historyVideos: document.getElementById('historyVideos'),
   liveHistoryRows: document.getElementById('liveHistoryRows'),
   videoMetadataCounts: document.getElementById('videoMetadataCounts'),
+  clipCounts: document.getElementById('clipCounts'),
+  discoverClips: document.getElementById('discoverClips'),
+  clipTarget: document.getElementById('clipTarget'),
+  fetchClipMetadata: document.getElementById('fetchClipMetadata'),
+  clipStatus: document.getElementById('clipStatus'),
   channelCounts: document.getElementById('channelCounts'),
   backfillVideoVisibility: document.getElementById('backfillVideoVisibility'),
   videoBackfillStatus: document.getElementById('videoBackfillStatus'),
@@ -262,6 +267,10 @@ function updateQueueTimingDisplay() {
 }
 
 function workerSubject(row) {
+  if (row.worker_type === 'clip') {
+    return [row.known_clip_title, row.current_title]
+      .find(value => value && value !== row.clip_id) || '';
+  }
   if (row.video_id && ['metadata', 'placeholder'].includes(row.worker_type)) {
     return row.current_title && row.current_title !== row.video_id ? row.current_title : '';
   }
@@ -293,8 +302,10 @@ function normalizedLogs(data) {
       identifier: log.display_id || '',
       source: String(log.level || '').startsWith('queue ')
         ? 'queue'
-        : (String(log.level || '').startsWith('placeholder ') ? 'placeholder' : 'metadata'),
-      level: String(log.level || '').replace(/^(?:queue|placeholder)\s+/, ''),
+        : (String(log.level || '').startsWith('placeholder ')
+          ? 'placeholder'
+          : (String(log.level || '').startsWith('clip ') ? 'clip' : 'metadata')),
+      level: String(log.level || '').replace(/^(?:queue|placeholder|clip)\s+/, ''),
     })),
     ...(data.placeholderRecoveryLogs || []).map(log => ({
       ...log,
@@ -475,6 +486,9 @@ function workerLabel(row) {
 }
 
 function workerId(row) {
+  if (row.worker_type === 'clip') {
+    return row.clip_id || '';
+  }
   if (row.worker_type === 'metadata' && row.task_type === 'channel') {
     return row.channel_id || row.video_id || '';
   }
@@ -892,6 +906,16 @@ function render(data) {
     return div;
   });
   fields.videoMetadataCounts.replaceChildren(...metricCards(videoMetadataCards));
+  const clipCounts = data.clipCounts || {};
+  fields.clipCounts.replaceChildren(...metricCards([
+    { label: 'Clips', count: clipCounts.total || 0 },
+    { label: 'Mine', count: clipCounts.mine || 0 },
+    { label: 'Others', count: clipCounts.others || 0 },
+    { label: 'Ownership unknown', count: clipCounts.ownership_unknown || 0 },
+    { label: 'Active', count: clipCounts.active || 0 },
+    { label: 'Unavailable', count: clipCounts.unavailable || 0 },
+    { label: 'Metadata pending', count: clipCounts.metadata_pending || 0 },
+  ]));
   fields.channelCounts.replaceChildren(...metricCards(channelCards));
 
 }
@@ -1251,7 +1275,7 @@ function scheduleUpdateScheduleSave() {
 }
 
 fields.initializeLibrary.addEventListener('click', async () => {
-  const warning = 'Initialize the library? This queues a full YouTube history verification, collects personal activity and YouTube library dates, scans Liked videos and every known playlist, and fetches missing or stale video and channel metadata. This will usually take a significant amount of time.';
+  const warning = 'Initialize the library? This queues a full YouTube history verification, discovers clips, collects personal activity and YouTube library dates, scans Liked videos and every known playlist, and fetches missing or stale video and channel metadata. This will usually take a significant amount of time.';
   if (!confirm(warning)) return;
   fields.initializeLibrary.disabled = true;
   fields.initializeStatus.textContent = 'Queueing';
@@ -1286,6 +1310,36 @@ document.getElementById('fetchVideoMetadata').addEventListener('click', () => po
   stale_days: fields.videoMetadataStaleDays.value,
   force: fields.videoMetadataForce.checked ? '1' : '0',
 }).catch(error => alert(error.message)));
+fields.discoverClips.addEventListener('click', async () => {
+  fields.discoverClips.disabled = true;
+  fields.clipStatus.textContent = 'Queueing';
+  try {
+    await post('/api/admin/clips/discover');
+    fields.clipStatus.textContent = 'Clip discovery queued';
+  } catch (error) {
+    fields.clipStatus.textContent = error.message;
+  } finally {
+    fields.discoverClips.disabled = false;
+  }
+});
+fields.fetchClipMetadata.addEventListener('click', async () => {
+  const target = fields.clipTarget.value.trim();
+  if (!target) {
+    fields.clipStatus.textContent = 'Enter a clip URL or ID';
+    fields.clipTarget.focus();
+    return;
+  }
+  fields.fetchClipMetadata.disabled = true;
+  fields.clipStatus.textContent = 'Queueing';
+  try {
+    await post('/api/admin/clips/fetch', { target });
+    fields.clipStatus.textContent = 'Clip metadata queued';
+  } catch (error) {
+    fields.clipStatus.textContent = error.message;
+  } finally {
+    fields.fetchClipMetadata.disabled = false;
+  }
+});
 document.getElementById('fetchChannelMetadata').addEventListener('click', () => post('/api/admin/metadata/start', {
   kind: 'channel',
   stale_days: fields.channelMetadataStaleDays.value,

@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -721,6 +721,54 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (18, utc_now()),
+        )
+    if current_version < 19:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS clips (
+              clip_id TEXT PRIMARY KEY,
+              title TEXT NOT NULL DEFAULT '',
+              owner_channel_id TEXT REFERENCES channels(channel_id),
+              owner_title TEXT NOT NULL DEFAULT '',
+              owner_thumbnail_url TEXT NOT NULL DEFAULT '',
+              owner_thumbnail_path TEXT NOT NULL DEFAULT '',
+              ownership TEXT NOT NULL DEFAULT 'unknown'
+                CHECK (ownership IN ('mine', 'others', 'unknown')),
+              source_video_id TEXT REFERENCES videos(video_id),
+              start_ms INTEGER,
+              end_ms INTEGER,
+              view_count INTEGER,
+              view_count_text TEXT NOT NULL DEFAULT '',
+              clipped_at TEXT,
+              clipped_at_text TEXT NOT NULL DEFAULT '',
+              clipped_at_observed_at TEXT,
+              thumbnail_url TEXT NOT NULL DEFAULT '',
+              availability TEXT NOT NULL DEFAULT 'unknown'
+                CHECK (availability IN ('active', 'unavailable', 'unknown')),
+              fetch_status TEXT NOT NULL DEFAULT '',
+              fetch_error TEXT NOT NULL DEFAULT '',
+              fetched_at TEXT,
+              last_seen_at TEXT,
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_clips_owner
+              ON clips(ownership, owner_channel_id);
+            CREATE INDEX IF NOT EXISTS idx_clips_source_video
+              ON clips(source_video_id);
+            CREATE INDEX IF NOT EXISTS idx_clips_fetch
+              ON clips(fetch_status, fetched_at);
+            """
+        )
+        worker_queue_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(worker_queue)")
+        }
+        if "clip_id" not in worker_queue_columns:
+            conn.execute(
+                "ALTER TABLE worker_queue ADD COLUMN clip_id TEXT NOT NULL DEFAULT ''"
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (19, utc_now()),
         )
 
 

@@ -107,6 +107,9 @@ class TemplateDomTests(unittest.TestCase):
             "updateHourMinute": ("select", None),
             "fetchVideoMetadata": ("button", "button"),
             "videoPluginProcesses": ("div", None),
+            "discoverClips": ("button", "button"),
+            "clipTarget": ("input", "text"),
+            "fetchClipMetadata": ("button", "button"),
             "scanPlaylists": ("button", "button"),
             "fetchChannelMetadata": ("button", "button"),
             "startLiveHistory": ("button", "button"),
@@ -127,6 +130,7 @@ class TemplateDomTests(unittest.TestCase):
                 "Update",
                 "Cookies",
                 "Videos",
+                "Clips",
                 "Playlists",
                 "Channels",
                 "History",
@@ -149,7 +153,7 @@ class TemplateDomTests(unittest.TestCase):
             for element in self.admin.matching(tag="section", class_name="advanced-only")
             if "workstream" in (element[1].get("class") or "").split()
         ]
-        self.assertEqual(len(advanced_workstreams), 5)
+        self.assertEqual(len(advanced_workstreams), 6)
 
         tabs = {
             attributes["data-advanced-tab"]

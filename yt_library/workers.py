@@ -45,9 +45,12 @@ from .core import (
     archivarix_timeout_error,
     cache_channel_thumbnail,
     cache_thumbnail,
+    cache_video_thumbnail,
     clear_external_service_block,
     connect,
     enqueue_new_history_metadata_targets,
+    enqueue_clip_item,
+    enqueue_metadata_item,
     enqueue_placeholder_recovery_item,
     enqueue_placeholder_recovery_targets,
     enqueue_playlist_metadata_targets,
@@ -56,6 +59,8 @@ from .core import (
     extract_playlist_metadata,
     fetch_playlist_collaboration_metadata,
     fetch_channel_metadata,
+    fetch_clip_metadata,
+    fetch_current_youtube_clips,
     fetch_current_youtube_playlists,
     fetch_new_channel_metadata_if_needed,
     fetch_watch_metadata,
@@ -83,6 +88,8 @@ from .core import (
     remove_worker_queue_entry,
     request_text,
     save_discovered_playlists,
+    save_discovered_clips,
+    save_clip_metadata,
     save_liked_video_reactions,
     save_my_activity_events,
     save_playlist_missing_status,
@@ -759,6 +766,207 @@ class MetadataWorker(_ThreadWorkerLifecycle):
 
 
 METADATA_WORKER = MetadataWorker()
+
+
+class ClipWorker(_ThreadWorkerLifecycle):
+    def start(
+        self,
+        db_path: Path,
+        cookie_file: Path,
+        row: dict[str, Any],
+        *,
+        proxy_url: str = "",
+    ) -> dict[str, Any]:
+        return self._start_background(
+            self._run,
+            lambda run_id: (run_id, db_path, cookie_file, dict(row), proxy_url),
+            started_message="Clip worker started",
+            already_running_message="Clip worker already running",
+            reset_blocked_reason=True,
+        )
+
+    def stop(self) -> dict[str, Any]:
+        return self._request_stop(
+            not_running_message="Clip worker is not running",
+            requested_message="Stop requested",
+        )
+
+    def _run(
+        self,
+        run_id: str,
+        db_path: Path,
+        cookie_file: Path,
+        row: dict[str, Any],
+        proxy_url: str,
+    ) -> None:
+        queue_id = int(row.get("queue_id") or 0)
+        clip_id = str(row.get("clip_id") or "").strip()
+        task_type = str(row.get("task_type") or "scan").strip()
+        conn = connect(db_path)
+        try:
+            if cookie_file.exists():
+                session_valid, session_message = youtube_session_status(
+                    cookie_file,
+                    verify_remote=False,
+                    proxy_url=proxy_url,
+                )
+                if not session_valid:
+                    message = f"Clip worker stopped: {session_message}"
+                    self._set_blocked_reason(message)
+                    with conn:
+                        log_worker_event(conn, run_id, "clip error", message, clip_id)
+                    return
+            if task_type == "discover":
+                _opener, records = fetch_current_youtube_clips(cookie_file, proxy_url)
+                with conn:
+                    saved = save_discovered_clips(conn, records)
+                    scan_ids = (
+                        [str(record.get("clip_id") or "") for record in records]
+                        if str(row.get("source_key") or "") == "all"
+                        else list(saved["new_ids"])
+                    )
+                    titles = {
+                        str(record.get("clip_id") or ""): str(record.get("title") or "")
+                        for record in records
+                    }
+                    for index, discovered_clip_id in enumerate(scan_ids, start=1):
+                        enqueue_clip_item(
+                            conn,
+                            clip_id=discovered_clip_id,
+                            task_type="scan",
+                            title=titles.get(discovered_clip_id, ""),
+                            priority=100_000 + index,
+                            manual=False,
+                        )
+                    remove_worker_queue_entry(conn, queue_id)
+                    log_worker_event(
+                        conn,
+                        run_id,
+                        "clip info",
+                        (
+                            f"Clip discovery complete: {saved['discovered']} found, "
+                            f"{saved['inserted']} new, {len(scan_ids)} metadata queued"
+                        ),
+                    )
+                return
+
+            opener = load_cookie_opener(cookie_file, proxy_url)
+            metadata = fetch_clip_metadata(opener, clip_id)
+            source_video_id = str(metadata.get("source_video_id") or "").strip()
+            source_thumbnail_url = str(metadata.get("source_thumbnail_url") or "").strip()
+            if source_video_id and source_thumbnail_url:
+                metadata["source_thumbnail_path"] = cache_video_thumbnail(
+                    opener,
+                    source_video_id,
+                    source_thumbnail_url,
+                    DEFAULT_VIDEO_THUMB_DIR,
+                )
+            owner_thumbnail_url = str(metadata.get("owner_thumbnail_url") or "").strip()
+            if owner_thumbnail_url:
+                metadata["owner_thumbnail_path"] = cache_channel_thumbnail(
+                    opener,
+                    str(metadata.get("owner_channel_id") or f"clip-{clip_id}"),
+                    owner_thumbnail_url,
+                    DEFAULT_VIDEO_THUMB_DIR,
+                    referer_url=f"https://www.youtube.com/clip/{clip_id}",
+                )
+            source_channel_thumbnail_url = str(
+                metadata.get("source_channel_thumbnail_url") or ""
+            ).strip()
+            if source_channel_thumbnail_url:
+                metadata["source_channel_thumbnail_path"] = cache_channel_thumbnail(
+                    opener,
+                    str(metadata.get("source_channel_id") or f"clip-source-{clip_id}"),
+                    source_channel_thumbnail_url,
+                    DEFAULT_VIDEO_THUMB_DIR,
+                    referer_url=f"https://www.youtube.com/clip/{clip_id}",
+                )
+            with conn:
+                existing = conn.execute(
+                    "SELECT source_video_id FROM clips WHERE clip_id = ?",
+                    (clip_id,),
+                ).fetchone()
+                if not source_video_id and existing:
+                    metadata["source_video_id"] = existing["source_video_id"] or ""
+                    source_video_id = str(metadata["source_video_id"] or "")
+                save_clip_metadata(conn, metadata, fetched=True)
+                if source_video_id:
+                    source_video = conn.execute(
+                        "SELECT title, fetch_status FROM videos WHERE video_id = ?",
+                        (source_video_id,),
+                    ).fetchone()
+                    if source_video and not str(source_video["fetch_status"] or "").strip():
+                        enqueue_metadata_item(
+                            conn,
+                            video_id=source_video_id,
+                            current_title=source_video["title"] or "",
+                            metadata_source="clip",
+                            source_key=clip_id,
+                            priority=200_000,
+                            manual=False,
+                        )
+                remove_worker_queue_entry(conn, queue_id)
+                log_worker_event(
+                    conn,
+                    run_id,
+                    "clip info",
+                    f"ok: {metadata.get('title') or clip_id}",
+                    clip_id,
+                )
+        except YouTubeAuthenticationError as exc:
+            message = f"Clip worker stopped: {exc}"
+            self._set_blocked_reason(message)
+            with conn:
+                log_worker_event(conn, run_id, "clip error", message, clip_id)
+        except ProxyUnavailableError as exc:
+            with conn:
+                message = record_proxy_hold(
+                    conn,
+                    self,
+                    exc,
+                    run_id=run_id,
+                    queue_id=queue_id,
+                )
+                log_worker_event(
+                    conn,
+                    run_id,
+                    "clip proxy error",
+                    f"Clip worker paused: {message}",
+                    clip_id,
+                )
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, RuntimeError, ValueError) as exc:
+            with conn:
+                if clip_id:
+                    existing = conn.execute(
+                        "SELECT source_video_id FROM clips WHERE clip_id = ?",
+                        (clip_id,),
+                    ).fetchone()
+                    save_clip_metadata(
+                        conn,
+                        {
+                            "clip_id": clip_id,
+                            "source_video_id": (
+                                existing["source_video_id"] or "" if existing else ""
+                            ),
+                            "availability": "unavailable",
+                            "fetch_status": "error",
+                            "fetch_error": str(exc),
+                        },
+                        fetched=True,
+                    )
+                remove_worker_queue_entry(conn, queue_id)
+                log_worker_event(
+                    conn,
+                    run_id,
+                    "clip error",
+                    youtube_request_error_diagnostics(exc, "clip metadata"),
+                    clip_id,
+                )
+        finally:
+            conn.close()
+
+
+CLIP_WORKER = ClipWorker()
 
 
 class PlaylistScanWorker(_ThreadWorkerLifecycle):
@@ -2264,6 +2472,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         self._initial_count = 0
         self._completed_count = 0
         self._metadata_workers: dict[int, tuple[MetadataWorker, str]] = {}
+        self._clip_workers: dict[int, tuple[ClipWorker, str]] = {}
         self._placeholder_workers: dict[int, tuple[PlaceholderRecoveryWorker, str]] = {}
         self._plugin_workers: dict[
             int, tuple[PluginTaskWorker, str, str, str]
@@ -2288,8 +2497,10 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 service
                 for _worker, service, _plugin_id, _worker_id in self._plugin_workers.values()
             ]
-            youtube_in_flight = len(self._metadata_workers) + plugin_services.count(
-                "youtube"
+            youtube_in_flight = (
+                len(self._metadata_workers)
+                + len(self._clip_workers)
+                + plugin_services.count("youtube")
             )
             archivarix_in_flight = len(self._placeholder_workers) + plugin_services.count(
                 "archivarix"
@@ -2365,6 +2576,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
             self._initial_count = 0
             self._completed_count = 0
             self._metadata_workers = {}
+            self._clip_workers = {}
             self._placeholder_workers = {}
             self._plugin_workers = {}
             self._plugin_manager = plugin_manager
@@ -2406,11 +2618,14 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 return {"stopping": False, "running": False, "message": "Worker queue dispatcher is not running"}
             self._stop.set()
             metadata_workers = [worker for worker, _run_id in self._metadata_workers.values()]
+            clip_workers = [worker for worker, _run_id in self._clip_workers.values()]
             placeholder_workers = [worker for worker, _run_id in self._placeholder_workers.values()]
             plugin_workers = [
                 worker for worker, _service, _plugin_id, _worker_id in self._plugin_workers.values()
             ]
             for worker in metadata_workers:
+                worker.stop()
+            for worker in clip_workers:
                 worker.stop()
             for worker in placeholder_workers:
                 worker.stop()
@@ -2629,6 +2844,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 detected_proxy_block = ""
                 with self._lock:
                     metadata_workers = dict(self._metadata_workers)
+                    clip_workers = dict(self._clip_workers)
                 placeholder_workers = dict(self._placeholder_workers)
                 plugin_workers = dict(self._plugin_workers)
 
@@ -2642,6 +2858,18 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         authentication_blocked = True
                     with self._lock:
                         self._metadata_workers.pop(queue_id, None)
+
+                for queue_id, (worker, _run_id) in clip_workers.items():
+                    if worker.is_alive():
+                        continue
+                    if worker.proxy_block_reason():
+                        detected_proxy_block = worker.proxy_block_reason()
+                    elif worker.blocked_reason():
+                        authentication_blocked = True
+                    else:
+                        self._mark_completed()
+                    with self._lock:
+                        self._clip_workers.pop(queue_id, None)
 
                 for queue_id, (worker, _run_id) in placeholder_workers.items():
                     if worker.is_alive():
@@ -2676,13 +2904,18 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         active_metadata_workers = [
                             worker for worker, _run_id in self._metadata_workers.values()
                         ]
-                    for worker in active_metadata_workers:
+                        active_clip_workers = [
+                            worker for worker, _run_id in self._clip_workers.values()
+                        ]
+                    for worker in [*active_metadata_workers, *active_clip_workers]:
                         worker.stop()
                 if detected_proxy_block:
                     proxy_blocked = True
                     with self._lock:
                         active_network_workers = [
                             worker for worker, _run_id in self._metadata_workers.values()
+                        ] + [
+                            worker for worker, _run_id in self._clip_workers.values()
                         ] + [
                             worker for worker, _run_id in self._placeholder_workers.values()
                         ]
@@ -2692,6 +2925,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 now = time.monotonic()
                 with self._lock:
                     metadata_queue_ids = set(self._metadata_workers)
+                    clip_queue_ids = set(self._clip_workers)
                     placeholder_queue_ids = set(self._placeholder_workers)
                     plugin_queue_ids = set(self._plugin_workers)
                     active_plugin_workers = list(self._plugin_workers.values())
@@ -2736,7 +2970,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     if service == "youtube" and (
                         proxy_blocked
                         or youtube_blocked
-                        or len(metadata_queue_ids) + plugin_youtube_in_flight
+                        or len(metadata_queue_ids) + len(clip_queue_ids) + plugin_youtube_in_flight
                         >= youtube_max_in_flight
                     ):
                         continue
@@ -2753,10 +2987,10 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 if (
                     not proxy_blocked
                     and not youtube_blocked
-                    and len(metadata_queue_ids) + plugin_youtube_in_flight
+                    and len(metadata_queue_ids) + len(clip_queue_ids) + plugin_youtube_in_flight
                     < youtube_max_in_flight
                 ):
-                    eligible_worker_types.append("metadata")
+                    eligible_worker_types.extend(("metadata", "clip"))
                 if (
                     not proxy_blocked
                     and not archivarix_blocked
@@ -2767,7 +3001,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 if eligible_plugin_processes:
                     eligible_worker_types.append("plugin")
                 has_active = bool(
-                    metadata_queue_ids or placeholder_queue_ids or plugin_queue_ids
+                    metadata_queue_ids or clip_queue_ids or placeholder_queue_ids or plugin_queue_ids
                 )
                 if not proxy_blocked and not has_active and not youtube_blocked:
                     eligible_worker_types.extend(("account", "playlist", "history"))
@@ -2779,7 +3013,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 row = self._next_row(
                     db_path,
                     tuple(eligible_worker_types),
-                    metadata_queue_ids | placeholder_queue_ids | plugin_queue_ids,
+                    metadata_queue_ids | clip_queue_ids | placeholder_queue_ids | plugin_queue_ids,
                     eligible_plugin_processes,
                 )
                 if not row:
@@ -2814,6 +3048,22 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     if result.get("started"):
                         with self._lock:
                             self._metadata_workers[queue_id] = (
+                                worker,
+                                str(result.get("run_id") or ""),
+                            )
+                        launched = True
+                        launched_at = time.monotonic()
+                elif worker_type == "clip":
+                    worker = ClipWorker()
+                    result = worker.start(
+                        db_path,
+                        cookie_file,
+                        row,
+                        proxy_url=proxy_url,
+                    )
+                    if result.get("started"):
+                        with self._lock:
+                            self._clip_workers[queue_id] = (
                                 worker,
                                 str(result.get("run_id") or ""),
                             )
@@ -2942,6 +3192,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         finally:
             with self._lock:
                 metadata_workers = [worker for worker, _run_id in self._metadata_workers.values()]
+                clip_workers = [worker for worker, _run_id in self._clip_workers.values()]
                 placeholder_workers = [worker for worker, _run_id in self._placeholder_workers.values()]
                 plugin_workers = [
                     worker
@@ -2949,17 +3200,20 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 ]
             for worker in metadata_workers:
                 worker.stop()
+            for worker in clip_workers:
+                worker.stop()
             for worker in placeholder_workers:
                 worker.stop()
             for worker in plugin_workers:
                 worker.stop()
             while any(
                 worker.is_alive()
-                for worker in [*metadata_workers, *placeholder_workers, *plugin_workers]
+                for worker in [*metadata_workers, *clip_workers, *placeholder_workers, *plugin_workers]
             ):
                 time.sleep(0.05)
             with self._lock:
                 self._metadata_workers.clear()
+                self._clip_workers.clear()
                 self._placeholder_workers.clear()
                 self._plugin_workers.clear()
 

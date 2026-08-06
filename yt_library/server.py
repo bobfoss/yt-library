@@ -76,6 +76,7 @@ from .core import (
     connect,
     enqueue_account_sync_task,
     enqueue_all_playlist_scan_items,
+    enqueue_clip_item,
     enqueue_feature_backfill,
     enqueue_history_task,
     enqueue_initialization_tasks,
@@ -113,6 +114,7 @@ from .plugins import PluginManager
 from .queries import (
     channel_detail_data,
     channel_list_data,
+    clip_detail_data,
     history_activity_data,
     history_search_data,
     library_bootstrap_data,
@@ -860,6 +862,35 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 conn.close()
             self.send_json(data)
             return
+        if parsed.path.startswith("/api/clips/"):
+            clip_id = urllib.parse.unquote(parsed.path[len("/api/clips/") :]).strip()
+            params = urllib.parse.parse_qs(parsed.query)
+            conn = connect(self.db_path)
+            try:
+                data = clip_detail_data(conn, clip_id)
+            finally:
+                conn.close()
+            if data is not None and data.get("source_video_id"):
+                facets: dict[str, bool] = {}
+                try:
+                    for plugin_id in dict.fromkeys(params.get("video_facet_plugin") or []):
+                        video_ids, _search_matches = self.plugin_manager.filter_videos(
+                            plugin_id,
+                            "",
+                        )
+                        facets[plugin_id] = str(data["source_video_id"]) in video_ids
+                except (LookupError, RuntimeError, TypeError, ValueError) as exc:
+                    self.send_json(
+                        {"error": "Clip source filter unavailable", "message": str(exc)},
+                        status=503,
+                    )
+                    return
+                data["pluginFacets"] = facets
+            if data is None:
+                self.send_json({"error": "Clip not found"}, status=404)
+            else:
+                self.send_json(data)
+            return
         if parsed.path.startswith("/api/playlists/"):
             suffix = parsed.path[len("/api/playlists/") :]
             is_videos = suffix.endswith("/videos")
@@ -1155,6 +1186,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         "channel_subscription",
                     ),
                     channel_status_filters=query_set_param(params, "channel_status"),
+                    clip_ownership_filters=query_set_param(params, "clip_ownership"),
                     playlist_meta_filters=query_set_param(params, "playlist_meta"),
                     playlist_ownership_filters=query_set_param(
                         params,
@@ -1730,6 +1762,46 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/admin/metadata/start":
             self._handle_metadata_start(params)
+            return
+        if parsed.path == "/api/admin/clips/discover":
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    subject_key = enqueue_clip_item(
+                        conn,
+                        task_type="discover",
+                        mode="all",
+                        priority=0,
+                        manual=True,
+                    )
+            finally:
+                conn.close()
+            dispatcher = self._start_worker_queue()
+            self.send_json(
+                {
+                    "ok": True,
+                    "subject_key": subject_key,
+                    "dispatcher": dispatcher,
+                }
+            )
+            return
+        if parsed.path == "/api/admin/clips/fetch":
+            target = (params.get("target") or [""])[0].strip()
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    try:
+                        result = enqueue_worker_queue_target(conn, target)
+                    except ValueError as exc:
+                        self.send_json({"error": str(exc)}, status=400)
+                        return
+                    if result.get("worker_type") != "clip":
+                        self.send_json({"error": "Enter a YouTube clip URL or clip ID"}, status=400)
+                        return
+            finally:
+                conn.close()
+            dispatcher = self._start_worker_queue()
+            self.send_json({"ok": True, **result, "dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/feature-backfill/start":
             self._handle_feature_backfill_start(params)

@@ -8,6 +8,7 @@ from yt_library import core
 from yt_library.queries import (
     channel_detail_data,
     channel_list_data,
+    clip_detail_data,
     history_activity_data,
     history_search_data,
     library_bootstrap_data,
@@ -85,6 +86,85 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(detail["uploader_category"], "Music")
         self.assertEqual(search_item["uploader_category"], "Music")
         self.assertEqual(history_item["uploader_category"], "Music")
+
+    def test_clip_search_uses_clip_identity_and_inherits_source_video_facets(self) -> None:
+        core.upsert_channel(
+            self.conn,
+            "UC_clip_owner",
+            title="Clip owner",
+            aliases="@clip-owner",
+        )
+        core.upsert_channel(
+            self.conn,
+            "UC_clip_source",
+            title="Source uploader",
+            aliases="@source-uploader",
+        )
+        core.upsert_video(
+            self.conn,
+            "sourceclip1",
+            title="Full source video",
+            channel_id="UC_clip_source",
+            reaction="L",
+            uploader_category="Music",
+            thumbnail_path="video_thumbs/sourceclip1.jpg",
+            source="youtube",
+        )
+        core.save_clip_metadata(
+            self.conn,
+            {
+                "clip_id": "UgkxClipExample123",
+                "title": "Distinct clip title",
+                "owner_channel_id": "UC_clip_owner",
+                "owner_title": "Clip owner",
+                "ownership": "mine",
+                "source_video_id": "sourceclip1",
+                "start_ms": 10_000,
+                "end_ms": 31_000,
+                "view_count": 12,
+                "view_count_text": "12 views",
+                "clipped_at_text": "Clipped 4 months ago",
+                "availability": "active",
+                "fetch_status": "ok",
+            },
+            observed_at="2026-08-05T12:00:00Z",
+            fetched=True,
+        )
+        self.conn.commit()
+
+        data = omni_search_data(
+            self.conn,
+            "Distinct clip",
+            result_kinds={"clip"},
+            clip_ownership_filters={"mine"},
+            video_facet_memberships={"subtitles": {"sourceclip1"}},
+        )
+
+        self.assertEqual(data["counts"]["clips"], 1)
+        self.assertEqual(data["metaCounts"]["clips"]["mine"], 1)
+        result = data["results"][0]
+        self.assertEqual(result["kind"], "clip")
+        self.assertEqual(result["clipOwnership"], "mine")
+        self.assertEqual(result["pluginFacets"], {"subtitles": True})
+        clip = result["item"]
+        self.assertEqual(clip["title"], "Distinct clip title")
+        self.assertEqual(clip["source_video_title"], "Full source video")
+        self.assertEqual(clip["source_channel_reference"], "@source-uploader")
+        self.assertEqual(clip["reaction"], "L")
+        self.assertEqual(clip["uploader_category"], "Music")
+        self.assertEqual(clip["source_thumbnail_path"], "video_thumbs/sourceclip1.jpg")
+
+        hidden = omni_search_data(
+            self.conn,
+            "Distinct clip",
+            result_kinds={"clip"},
+            clip_ownership_filters={"others"},
+        )
+        self.assertEqual(hidden["total"], 0)
+
+        detail = clip_detail_data(self.conn, "UgkxClipExample123")
+        self.assertEqual(detail["title"], "Distinct clip title")
+        self.assertEqual(detail["source_video_id"], "sourceclip1")
 
     def test_channel_aliases_drive_all_external_channel_links(self) -> None:
         channel_id = "UC_alias_owner"
@@ -189,7 +269,10 @@ class NormalizedReadModelTests(unittest.TestCase):
 
         data = omni_search_data(self.conn, "needle", sort="type", limit=20)
 
-        self.assertEqual(data["counts"], {"videos": 2, "channels": 1, "playlists": 1})
+        self.assertEqual(
+            data["counts"],
+            {"videos": 2, "clips": 0, "channels": 1, "playlists": 1},
+        )
         self.assertEqual(data["total"], 4)
         self.assertEqual([result["kind"] for result in data["results"]], ["video", "video", "playlist", "channel"])
         video_ids = [result["item"]["video_id"] for result in data["results"] if result["kind"] == "video"]
@@ -218,7 +301,10 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
 
         self.assertEqual(data["resultKinds"], ["playlist"])
-        self.assertEqual(data["counts"], {"videos": 0, "playlists": 1, "channels": 0})
+        self.assertEqual(
+            data["counts"],
+            {"videos": 0, "clips": 0, "playlists": 1, "channels": 0},
+        )
         self.assertEqual([result["kind"] for result in data["results"]], ["playlist"])
 
     def test_omni_search_playlist_group_includes_child_groups(self) -> None:
@@ -424,7 +510,10 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
 
         all_data = omni_search_data(self.conn, "", limit=20)
-        self.assertEqual(all_data["counts"], {"videos": 2, "playlists": 0, "channels": 2})
+        self.assertEqual(
+            all_data["counts"],
+            {"videos": 2, "clips": 0, "playlists": 0, "channels": 2},
+        )
         self.assertEqual(all_data["total"], 4)
 
     def test_omni_search_newest_sorts_playlists_by_newest_member_upload_date(self) -> None:
@@ -1154,6 +1243,12 @@ class NormalizedReadModelTests(unittest.TestCase):
                     "members_only": 1,
                     "unknown": 1,
                 },
+                "clips": {
+                    "total": 0,
+                    "mine": 0,
+                    "others": 0,
+                    "ownership_unknown": 0,
+                },
                 "channels": {
                     "total": 3,
                     "subscribed": 2,
@@ -1226,7 +1321,10 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
 
         self.assertEqual(filtered["metaCounts"], unfiltered["metaCounts"])
-        self.assertEqual(filtered["counts"], {"videos": 1, "channels": 1, "playlists": 1})
+        self.assertEqual(
+            filtered["counts"],
+            {"videos": 1, "clips": 0, "playlists": 1, "channels": 1},
+        )
         self.assertEqual(filtered["total"], 3)
         self.assertEqual(
             [

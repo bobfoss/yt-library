@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import urllib.parse
 from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, time, timezone
 from typing import Any
@@ -105,6 +106,7 @@ def library_bootstrap_data(conn: sqlite3.Connection) -> dict[str, Any]:
             """
             SELECT
               (SELECT COUNT(*) FROM videos) AS videos,
+              (SELECT COUNT(*) FROM clips) AS clips,
               (SELECT COUNT(*) FROM playlists) AS playlists,
               (SELECT COUNT(*) FROM playlists p
                  JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
@@ -1176,7 +1178,7 @@ def video_summaries_data(
 
 OMNI_SEARCH_FIELDS = {"titles", "descriptions"}
 OMNI_SEARCH_SORTS = {"relevance", "title", "newest", "oldest", "most_watched", "type"}
-OMNI_SEARCH_KIND_ORDER = ("video", "playlist", "channel")
+OMNI_SEARCH_KIND_ORDER = ("video", "clip", "playlist", "channel")
 OMNI_SEARCH_META_FILTERS = {
     "video": VIDEO_AVAILABILITY_CATEGORIES,
     "playlist": ("private", "public", "unlisted", "unknown"),
@@ -1188,6 +1190,7 @@ OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS = ("mine", "others", "ownership_unknown")
 OMNI_SEARCH_PLAYLIST_STATUS_FILTERS = ("active", "removed")
 OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS = ("subscribed", "non_subscribed")
 OMNI_SEARCH_CHANNEL_STATUS_FILTERS = ("active", "terminated")
+OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS = ("mine", "others", "ownership_unknown")
 NO_UPLOADER_CATEGORY_FILTER = "__no_category__"
 
 
@@ -1230,6 +1233,12 @@ def _omni_result(
         )
         sort_date_fallback = not bool(latest_watch_at)
         watch_count = int(item.get("watch_count") or 0)
+    elif kind == "clip":
+        title = item.get("title") or item.get("clip_id") or ""
+        clipped_at = item.get("clipped_at") or ""
+        sort_date = clipped_at or item.get("clipped_at_observed_at") or item.get("updated_at") or ""
+        sort_date_fallback = not bool(clipped_at)
+        watch_count = 0
     elif kind == "channel":
         title = item.get("title") or item.get("channel_id") or ""
         subscribed_at = item.get("subscribed_at") or ""
@@ -1302,6 +1311,13 @@ def _assign_omni_meta_categories(
         item = result["item"]
         if result["kind"] == "video":
             category = _video_availability_category(item)
+        elif result["kind"] == "clip":
+            result["clipOwnership"] = (
+                "ownership_unknown"
+                if str(item.get("ownership") or "unknown") == "unknown"
+                else str(item.get("ownership") or "unknown")
+            )
+            continue
         elif result["kind"] == "channel":
             result["channelSubscription"] = _channel_subscription_category(item)
             result["channelStatus"] = _channel_status_category(item)
@@ -1333,6 +1349,10 @@ def _omni_meta_counts(results: list[dict[str, Any]]) -> dict[str, dict[str, int]
         **{category: 0 for category in OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS},
         **{category: 0 for category in OMNI_SEARCH_CHANNEL_STATUS_FILTERS},
     }
+    counts["clips"] = {
+        "total": 0,
+        **{category: 0 for category in OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS},
+    }
     counts["playlists"].update(
         {
             **{category: 0 for category in OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS},
@@ -1349,6 +1369,8 @@ def _omni_meta_counts(results: list[dict[str, Any]]) -> dict[str, dict[str, int]
             group[result["metaCategory"]] += 1
             group[result["playlistOwnership"]] += 1
             group[result["playlistStatus"]] += 1
+        elif result["kind"] == "clip":
+            group[result["clipOwnership"]] += 1
         else:
             group[result["metaCategory"]] += 1
     return counts
@@ -1656,6 +1678,7 @@ def omni_search_data(
     video_projections: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
     channel_subscription_filters: set[str] | None = None,
     channel_status_filters: set[str] | None = None,
+    clip_ownership_filters: set[str] | None = None,
     playlist_meta_filters: set[str] | None = None,
     playlist_ownership_filters: set[str] | None = None,
     playlist_status_filters: set[str] | None = None,
@@ -1817,6 +1840,70 @@ def omni_search_data(
         else "0"
     )
     results: list[dict[str, Any]] = []
+
+    if "clip" in active_result_kinds and (not query or search_titles):
+        clip_title_match = """
+            lower(
+              c.title || ' ' || c.clip_id || ' ' || c.owner_title || ' ' ||
+              COALESCE(owner.title, '') || ' ' || COALESCE(source.title, '') || ' ' ||
+              COALESCE(source_channel.title, '') || ' ' || COALESCE(c.source_video_id, '')
+            ) LIKE :pattern ESCAPE '\\'
+        """
+        clip_matches = clip_title_match if query else "1 = 1"
+        for row in conn.execute(
+            f"""
+            SELECT c.*,
+                   COALESCE(owner.title, c.owner_title) AS resolved_owner_title,
+                   COALESCE(owner.aliases, '') AS owner_aliases,
+                   COALESCE(owner.thumbnail_path, c.owner_thumbnail_path) AS resolved_owner_thumbnail_path,
+                   COALESCE(source.title, '') AS source_video_title,
+                   COALESCE(source.thumbnail_path, '') AS source_thumbnail_path,
+                   COALESCE(source.reaction, '') AS reaction,
+                   COALESCE(source.uploader_category, '') AS uploader_category,
+                   COALESCE(source.availability, 'unknown') AS source_availability,
+                   source.is_playable AS source_is_playable,
+                   COALESCE(source.channel_id, '') AS source_channel_id,
+                   COALESCE(source_channel.title, '') AS source_channel_title,
+                   COALESCE(source_channel.aliases, '') AS source_channel_aliases,
+                   COALESCE(source_channel.thumbnail_path, '') AS source_channel_thumbnail_path,
+                   CASE WHEN {clip_title_match} THEN 1 ELSE 0 END AS title_hit
+            FROM clips c
+            LEFT JOIN channels owner ON owner.channel_id = c.owner_channel_id
+            LEFT JOIN videos source ON source.video_id = c.source_video_id
+            LEFT JOIN channels source_channel ON source_channel.channel_id = source.channel_id
+            WHERE ({clip_matches})
+            """,
+            params,
+        ):
+            item = dict(row)
+            title_hit = bool(item.pop("title_hit"))
+            item["video_id"] = item.get("source_video_id") or ""
+            item["url"] = f"https://www.youtube.com/clip/{urllib.parse.quote(item['clip_id'])}"
+            item["owner_channel_reference"] = preferred_youtube_channel_reference(
+                item.get("owner_channel_id") or "",
+                item.get("owner_aliases") or "",
+            )
+            item["owner_channel_url"] = preferred_youtube_channel_url(
+                item.get("owner_channel_id") or "",
+                item.get("owner_aliases") or "",
+            )
+            source_channel_id = str(item.get("source_channel_id") or "")
+            item["source_channel_reference"] = preferred_youtube_channel_reference(
+                source_channel_id,
+                item.get("source_channel_aliases") or "",
+            )
+            item["source_channel_url"] = preferred_youtube_channel_url(
+                source_channel_id,
+                item.get("source_channel_aliases") or "",
+            )
+            results.append(
+                _omni_result(
+                    "clip",
+                    1 if title_hit else 4,
+                    item,
+                    matched_description=False,
+                )
+            )
 
     if "playlist" in active_result_kinds and (not query or search_titles or search_descriptions):
         playlist_title_match = """
@@ -2219,6 +2306,11 @@ def omni_search_data(
         if channel_status_filters is None
         else set(channel_status_filters) & set(OMNI_SEARCH_CHANNEL_STATUS_FILTERS)
     )
+    selected_clip_ownership_filters = (
+        set(OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS)
+        if clip_ownership_filters is None
+        else set(clip_ownership_filters) & set(OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS)
+    )
 
     def matches_native_filters(result: dict[str, Any]) -> bool:
         if result["kind"] == "channel":
@@ -2232,6 +2324,8 @@ def omni_search_data(
                 and result["playlistOwnership"] in selected_playlist_ownership_filters
                 and result["playlistStatus"] in selected_playlist_status_filters
             )
+        if result["kind"] == "clip":
+            return result["clipOwnership"] in selected_clip_ownership_filters
         if result["kind"] == "video":
             return (
                 result["metaCategory"] in selected_meta_filters[result["kind"]]
@@ -2314,7 +2408,7 @@ def omni_search_data(
         [result["item"] for result in page if result["kind"] == "playlist"],
     )
     for result in page:
-        if result["kind"] != "video":
+        if result["kind"] not in {"video", "clip"}:
             continue
         video_id = str(result["item"].get("video_id") or "")
         result["pluginFacets"] = {
@@ -2325,6 +2419,7 @@ def omni_search_data(
     _add_omni_video_links(conn, page)
     counts = {
         "videos": sum(1 for result in results if result["kind"] == "video"),
+        "clips": sum(1 for result in results if result["kind"] == "clip"),
         "playlists": sum(1 for result in results if result["kind"] == "playlist"),
         "channels": sum(1 for result in results if result["kind"] == "channel"),
     }
@@ -2354,6 +2449,22 @@ def omni_search_data(
         "uploaderCategoryCounts": uploader_category_counts,
         "results": page,
     }
+
+
+def clip_detail_data(conn: sqlite3.Connection, clip_id: str) -> dict[str, Any] | None:
+    payload = omni_search_data(
+        conn,
+        clip_id,
+        search_fields={"titles"},
+        result_kinds={"clip"},
+        limit=10,
+    )
+    for result in payload["results"]:
+        if result["kind"] == "clip" and result["item"].get("clip_id") == clip_id:
+            item = result["item"]
+            item["pluginFacets"] = result.get("pluginFacets", {})
+            return item
+    return None
 
 
 def history_search_data(

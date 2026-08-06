@@ -38,6 +38,9 @@ class DatabaseModuleTests(unittest.TestCase):
                 collaborator_table = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='playlist_collaborators'"
                 ).fetchone()
+                clips_table = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='clips'"
+                ).fetchone()
                 foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
             finally:
                 conn.close()
@@ -46,8 +49,10 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertIn("uploader_category", video_columns)
         self.assertIn("payload_json", queue_columns)
         self.assertIn("plugin_subject_id", queue_columns)
+        self.assertIn("clip_id", queue_columns)
         self.assertIsNotNone(plugin_run_table)
         self.assertIsNotNone(collaborator_table)
+        self.assertIsNotNone(clips_table)
         self.assertEqual(foreign_keys, 1)
 
     def test_database_module_migrates_uploader_category_from_version_14(self) -> None:
@@ -152,6 +157,39 @@ class DatabaseModuleTests(unittest.TestCase):
 
         self.assertEqual(version, database.SCHEMA_VERSION)
         self.assertIsNotNone(table)
+
+    def test_database_module_migrates_clips_from_version_18(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.execute("DROP TABLE clips")
+                    conn.execute("ALTER TABLE worker_queue DROP COLUMN clip_id")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 19")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                clip_table = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='clips'"
+                ).fetchone()
+                queue_columns = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(worker_queue)")
+                }
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertIsNotNone(clip_table)
+        self.assertIn("clip_id", queue_columns)
 
 
 if __name__ == "__main__":

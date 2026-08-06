@@ -937,13 +937,14 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(stats["playlists"], 2)
         self.assertEqual(stats["history"], 1)
         self.assertEqual(stats["account"], 1)
-        self.assertEqual(stats["selected"], 6)
-        self.assertEqual(stats["inserted"], 6)
+        self.assertEqual(stats["clips"], 1)
+        self.assertEqual(stats["selected"], 7)
+        self.assertEqual(stats["inserted"], 7)
         self.assertEqual(stats["already_queued"], 0)
-        self.assertEqual(stats["queued"], 7)
+        self.assertEqual(stats["queued"], 8)
         self.assertEqual(repeated_stats["inserted"], 0)
-        self.assertEqual(repeated_stats["already_queued"], 6)
-        self.assertEqual(repeated_stats["queued"], 7)
+        self.assertEqual(repeated_stats["already_queued"], 7)
+        self.assertEqual(repeated_stats["queued"], 8)
         self.assertIn(existing["subject_key"], subjects)
         self.assertIn("metadata:channel:UCinitialize", subjects)
         self.assertIn("metadata:video:initvideo01", subjects)
@@ -951,6 +952,7 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("playlist:scan:PLinitialize", subjects)
         self.assertIn("history:verify", subjects)
         self.assertIn("account:sync", subjects)
+        self.assertIn("clip:discover", subjects)
 
     def test_update_queues_incremental_discovery_and_never_fetched_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -994,16 +996,17 @@ class SchemaTests(unittest.TestCase):
             finally:
                 conn.close()
 
-        self.assertEqual(stats["selected"], 7)
-        self.assertEqual(stats["inserted"], 7)
+        self.assertEqual(stats["selected"], 8)
+        self.assertEqual(stats["inserted"], 8)
         self.assertEqual(stats["already_queued"], 0)
-        self.assertEqual(stats["queued"], 8)
+        self.assertEqual(stats["queued"], 9)
         self.assertEqual(repeated_stats["inserted"], 0)
-        self.assertEqual(repeated_stats["already_queued"], 7)
+        self.assertEqual(repeated_stats["already_queued"], 8)
         self.assertIn(existing["subject_key"], subjects)
         self.assertIn("playlist:discover-current", subjects)
         self.assertIn("history:recent", subjects)
         self.assertIn("account:sync", subjects)
+        self.assertIn("clip:discover", subjects)
         self.assertIn("playlist:scan:LL", subjects)
         self.assertIn("playlist:scan:PLupdate", subjects)
         self.assertNotIn("playlist:scan:PLremoved", subjects)
@@ -1074,6 +1077,34 @@ class SchemaTests(unittest.TestCase):
                     self.assertEqual(
                         [row["playlist_id"] for row in queued_local_rows],
                         ["PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4"],
+                    )
+                    with conn:
+                        core.clear_worker_queue(conn)
+                        clip_target = core.enqueue_worker_queue_target(
+                            conn,
+                            "https://www.youtube.com/clip/UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s",
+                        )
+                    self.assertEqual(clip_target["worker_type"], "clip")
+                    self.assertEqual(clip_target["source"], "youtube")
+                    clip_row = conn.execute(
+                        "SELECT worker_type, clip_id FROM worker_queue"
+                    ).fetchone()
+                    self.assertEqual(clip_row["worker_type"], "clip")
+                    self.assertEqual(
+                        clip_row["clip_id"],
+                        "UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s",
+                    )
+                    with conn:
+                        core.clear_worker_queue(conn)
+                        local_clip_target = core.enqueue_worker_queue_target(
+                            conn,
+                            "http://127.0.0.1:8765/#clip=UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s",
+                        )
+                    self.assertEqual(local_clip_target["worker_type"], "clip")
+                    self.assertEqual(local_clip_target["source"], "local")
+                    self.assertEqual(
+                        local_clip_target["clip_id"],
+                        "UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s",
                     )
                     playlist_video_rows = [
                         row

@@ -306,6 +306,19 @@
 
       <section class="workstream advanced-only">
         <div class="workstream-header">
+          <h2>Clips</h2>
+        </div>
+        <div class="controls">
+          <button id="discoverClips" class="primary" type="button">Discover clips</button>
+          <label>Clip URL or ID<input id="clipTarget" class="wide-input" type="text" placeholder="https://www.youtube.com/clip/..."></label>
+          <button id="fetchClipMetadata" type="button">Fetch clip metadata</button>
+          <span id="clipStatus" class="metric" aria-live="polite"></span>
+        </div>
+        <div class="grid" id="clipCounts"></div>
+      </section>
+
+      <section class="workstream advanced-only">
+        <div class="workstream-header">
           <h2>Playlists</h2>
         </div>
         <div class="grid">
@@ -454,6 +467,7 @@
             <option value="all">All sources</option>
             <option value="queue">Queue</option>
             <option value="metadata">Metadata</option>
+            <option value="clip">Clips</option>
             <option value="playlist">Playlist</option>
             <option value="history">History</option>
             <option value="placeholder">Placeholder</option>

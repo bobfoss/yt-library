@@ -978,6 +978,12 @@ class CoreHelperTests(unittest.TestCase):
             core.local_queue_target_from_url("http://127.0.0.1:8765/#video=abc12345678"),
             ("video", "abc12345678"),
         )
+        self.assertEqual(
+            core.local_queue_target_from_url(
+                "http://127.0.0.1:8765/#clip=UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s"
+            ),
+            ("clip", "UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s"),
+        )
         self.assertEqual(core.format_duration(65), "1:05")
         self.assertEqual(core.format_duration(3661), "1:01:01")
         self.assertEqual(core.bounded_int("140"), 100)
@@ -998,6 +1004,125 @@ class CoreHelperTests(unittest.TestCase):
         self.assertFalse(core.playlist_scan_requires_exact_count({"owner_channel_id": "UCother"}))
         self.assertFalse(core.playlist_scan_requires_exact_count({}, known_owner_channel_id="UCother"))
         self.assertTrue(core.playlist_scan_requires_exact_count({}, known_visibility="private"))
+
+    def test_clip_parsers_keep_clip_and_source_video_metadata_distinct(self) -> None:
+        clip_id = "UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s"
+        grid = {
+            "videoId": "source12345",
+            "title": {"simpleText": "My clip title"},
+            "shortBylineText": {
+                "runs": [
+                    {
+                        "text": "Source uploader",
+                        "navigationEndpoint": {
+                            "browseEndpoint": {
+                                "browseId": "UC_source",
+                                "canonicalBaseUrl": "/@source-uploader",
+                            }
+                        },
+                    }
+                ]
+            },
+            "viewCountText": {"simpleText": "12 views"},
+            "publishedTimeText": {"simpleText": "Clipped 4 months ago"},
+            "thumbnail": {"thumbnails": [{"url": "https://example/clip.jpg"}]},
+            "navigationEndpoint": {
+                "watchEndpoint": {
+                    "clipConfig": {
+                        "postId": clip_id,
+                        "startTimeMs": "1000",
+                        "endTimeMs": "22000",
+                    }
+                }
+            },
+            "menu": {"simpleText": "Delete clip"},
+        }
+
+        discovered = core.parse_clip_grid_renderer(grid)
+
+        self.assertEqual(core.extract_clip_id(f"https://www.youtube.com/clip/{clip_id}"), clip_id)
+        self.assertEqual(discovered["title"], "My clip title")
+        self.assertEqual(discovered["source_video_id"], "source12345")
+        self.assertEqual(discovered["source_channel_id"], "UC_source")
+        self.assertEqual(discovered["ownership"], "mine")
+        self.assertEqual(discovered["view_count"], 12)
+        self.assertEqual(discovered["end_ms"] - discovered["start_ms"], 21000)
+
+        initial_data = {
+            "clipAttributionRenderer": {
+                "title": {"simpleText": "My clip title"},
+                "clipAuthor": {"simpleText": "Gir Bot"},
+                "authorAvatar": {
+                    "thumbnails": [{"url": "https://example/clip-owner.jpg"}]
+                },
+                "createdText": {"simpleText": "12 views · 4 months ago"},
+            },
+            "videoPrimaryInfoRenderer": {
+                "title": {"simpleText": "Full source video title"}
+            },
+            "videoOwnerRenderer": {
+                "title": {"simpleText": "Source uploader"},
+                "thumbnail": {
+                    "thumbnails": [{"url": "https://example/source-owner.jpg"}]
+                },
+                "navigationEndpoint": {
+                    "browseEndpoint": {
+                        "browseId": "UC_source",
+                        "canonicalBaseUrl": "/@source-uploader",
+                    }
+                },
+            },
+            "menu": {"simpleText": "Delete clip"},
+            "frameworkUpdates": {
+                "entityBatchUpdate": {
+                    "mutations": [
+                        {"payload": {"likeStatusEntity": {"likeStatus": "LIKE"}}}
+                    ]
+                }
+            },
+        }
+        player_response = {
+            "clipConfig": {
+                "postId": clip_id,
+                "startTimeMs": "1000",
+                "endTimeMs": "22000",
+            },
+            "videoDetails": {
+                "videoId": "source12345",
+                "title": "Full source video title",
+                "author": "Source uploader",
+                "channelId": "UC_source",
+                "lengthSeconds": "3661",
+                "viewCount": "9876",
+                "thumbnail": {"thumbnails": [{"url": "https://example/source.jpg"}]},
+            },
+            "microformat": {
+                "playerMicroformatRenderer": {
+                    "uploadDate": "2026-01-02",
+                    "category": "Travel & Events",
+                }
+            },
+            "playabilityStatus": {"status": "OK"},
+        }
+
+        detail = core.parse_clip_page(initial_data, player_response, clip_id)
+
+        self.assertEqual(detail["title"], "My clip title")
+        self.assertEqual(detail["owner_title"], "Gir Bot")
+        self.assertEqual(detail["owner_thumbnail_url"], "https://example/clip-owner.jpg")
+        self.assertEqual(detail["source_title"], "Full source video title")
+        self.assertEqual(detail["source_channel_id"], "UC_source")
+        self.assertEqual(detail["source_channel_url"], "/@source-uploader")
+        self.assertEqual(
+            detail["source_channel_thumbnail_url"],
+            "https://example/source-owner.jpg",
+        )
+        self.assertEqual(detail["source_duration_text"], "1:01:01")
+        self.assertEqual(detail["source_uploader_category"], "Travel & Events")
+        self.assertEqual(detail["source_reaction"], "L")
+        self.assertEqual(detail["view_count"], 12)
+        self.assertEqual(detail["clipped_at_text"], "Clipped 4 months ago")
+        self.assertEqual(detail["ownership"], "mine")
 
     def test_playlist_owner_visibility_helpers(self) -> None:
         self.assertEqual(core.normalize_playlist_visibility(" Public playlist "), "public")

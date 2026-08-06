@@ -93,6 +93,33 @@ CREATE TABLE IF NOT EXISTS videos (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS clips (
+  clip_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL DEFAULT '',
+  owner_channel_id TEXT REFERENCES channels(channel_id),
+  owner_title TEXT NOT NULL DEFAULT '',
+  owner_thumbnail_url TEXT NOT NULL DEFAULT '',
+  owner_thumbnail_path TEXT NOT NULL DEFAULT '',
+  ownership TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (ownership IN ('mine', 'others', 'unknown')),
+  source_video_id TEXT REFERENCES videos(video_id),
+  start_ms INTEGER,
+  end_ms INTEGER,
+  view_count INTEGER,
+  view_count_text TEXT NOT NULL DEFAULT '',
+  clipped_at TEXT,
+  clipped_at_text TEXT NOT NULL DEFAULT '',
+  clipped_at_observed_at TEXT,
+  thumbnail_url TEXT NOT NULL DEFAULT '',
+  availability TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (availability IN ('active', 'unavailable', 'unknown')),
+  fetch_status TEXT NOT NULL DEFAULT '',
+  fetch_error TEXT NOT NULL DEFAULT '',
+  fetched_at TEXT,
+  last_seen_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
 CREATE TABLE IF NOT EXISTS playlist_scans (
   playlist_id TEXT PRIMARY KEY REFERENCES playlists(playlist_id) ON DELETE CASCADE,
   scanned_at TEXT NOT NULL,
@@ -202,6 +229,7 @@ CREATE TABLE IF NOT EXISTS worker_queue (
   worker_type TEXT NOT NULL DEFAULT '',
   task_type TEXT NOT NULL DEFAULT '',
   video_id TEXT NOT NULL DEFAULT '',
+  clip_id TEXT NOT NULL DEFAULT '',
   channel_id TEXT NOT NULL DEFAULT '',
   playlist_id TEXT NOT NULL DEFAULT '',
   channel_title TEXT NOT NULL DEFAULT '',
@@ -376,6 +404,9 @@ CREATE INDEX IF NOT EXISTS idx_videos_title ON videos(title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel_id);
 CREATE INDEX IF NOT EXISTS idx_videos_fetch ON videos(fetch_status, fetched_at);
 CREATE INDEX IF NOT EXISTS idx_videos_availability ON videos(is_playable, availability);
+CREATE INDEX IF NOT EXISTS idx_clips_owner ON clips(ownership, owner_channel_id);
+CREATE INDEX IF NOT EXISTS idx_clips_source_video ON clips(source_video_id);
+CREATE INDEX IF NOT EXISTS idx_clips_fetch ON clips(fetch_status, fetched_at);
 CREATE INDEX IF NOT EXISTS idx_playlist_items_video ON playlist_items(video_id);
 CREATE INDEX IF NOT EXISTS idx_playlist_collaborators_order
   ON playlist_collaborators(playlist_id, position);

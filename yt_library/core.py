@@ -1201,6 +1201,18 @@ def extract_playlist_id(value: str) -> str | None:
     return None
 
 
+def extract_clip_id(value: str) -> str:
+    value = (value or "").strip().rstrip(",")
+    if re.fullmatch(r"Ugk[A-Za-z0-9_-]+", value):
+        return value
+    parsed = urllib.parse.urlparse(value)
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) >= 2 and parts[0] == "clip":
+        candidate = parts[1]
+        return candidate if re.fullmatch(r"Ugk[A-Za-z0-9_-]+", candidate) else ""
+    return ""
+
+
 def load_pockettube(path: Path) -> tuple[dict[str, Any], list[GroupNode], dict[str, list[str]]]:
     with path.open("r", encoding="utf-8") as handle:
         export = json.load(handle)
@@ -4089,6 +4101,448 @@ def fetch_current_youtube_playlists(
     return opener, records
 
 
+def _clip_config(value: Any) -> dict[str, Any]:
+    for node in walk(value):
+        if not isinstance(node, dict):
+            continue
+        config = node.get("clipConfig")
+        if isinstance(config, dict) and config.get("postId"):
+            return config
+    return {}
+
+
+def _channel_from_runs(value: Any) -> tuple[str, str, str]:
+    runs = value.get("runs") if isinstance(value, dict) else None
+    if not isinstance(runs, list):
+        return text_from_runs(value).strip(), "", ""
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        title = str(run.get("text") or "").strip()
+        endpoint = run.get("navigationEndpoint")
+        endpoint = endpoint if isinstance(endpoint, dict) else {}
+        browse = endpoint.get("browseEndpoint")
+        browse = browse if isinstance(browse, dict) else {}
+        channel_id = str(browse.get("browseId") or "").strip()
+        canonical = str(browse.get("canonicalBaseUrl") or "").strip()
+        if title or channel_id or canonical:
+            return title, channel_id, canonical
+    return text_from_runs(value).strip(), "", ""
+
+
+def _clip_view_count(value: str) -> int | None:
+    text = (value or "").strip().lower()
+    if text.startswith("no view"):
+        return 0
+    found = re.search(r"([\d,]+)\s+views?", text)
+    return int(found.group(1).replace(",", "")) if found else None
+
+
+def _clip_created_metadata(attribution: dict[str, Any]) -> tuple[str, str]:
+    view_count_text = text_from_runs(
+        attribution.get("viewCountText") or attribution.get("viewCount") or {}
+    ).strip()
+    clipped_at_text = text_from_runs(attribution.get("publishedTimeText") or {}).strip()
+    created_text = text_from_runs(attribution.get("createdText") or {}).strip()
+    if created_text:
+        parts = [part.strip() for part in created_text.split("·") if part.strip()]
+        if not view_count_text and parts and _clip_view_count(parts[0]) is not None:
+            view_count_text = parts.pop(0)
+        if not clipped_at_text and parts:
+            clipped_at_text = " · ".join(parts)
+        elif not clipped_at_text and not view_count_text:
+            clipped_at_text = created_text
+    if clipped_at_text and not clipped_at_text.casefold().startswith("clipped "):
+        clipped_at_text = f"Clipped {clipped_at_text}"
+    return view_count_text, clipped_at_text
+
+
+def _first_youtube_renderer(value: Any, renderer_name: str) -> dict[str, Any]:
+    for node in walk(value):
+        candidate = node.get(renderer_name) if isinstance(node, dict) else None
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _clip_ownership(value: Any) -> str:
+    labels = {
+        text_from_runs(node).strip().lower()
+        for node in walk(value)
+        if isinstance(node, dict)
+    }
+    if "delete clip" in labels:
+        return "mine"
+    if "report" in labels:
+        return "others"
+    return "unknown"
+
+
+def parse_clip_grid_renderer(renderer: dict[str, Any]) -> dict[str, Any] | None:
+    config = _clip_config(renderer)
+    clip_id = str(config.get("postId") or "").strip()
+    source_video_id = str(renderer.get("videoId") or "").strip()
+    if not clip_id or not source_video_id:
+        return None
+    source_channel, source_channel_id, source_channel_url = _channel_from_runs(
+        renderer.get("shortBylineText") or renderer.get("longBylineText") or {}
+    )
+    view_count_text = text_from_runs(renderer.get("viewCountText") or {}).strip()
+    clipped_at_text = text_from_runs(renderer.get("publishedTimeText") or {}).strip()
+    thumbnail = renderer.get("thumbnail")
+    thumbnails = thumbnail.get("thumbnails", []) if isinstance(thumbnail, dict) else []
+    return {
+        "clip_id": clip_id,
+        "title": text_from_runs(renderer.get("title") or {}).strip(),
+        "ownership": _clip_ownership(renderer),
+        "source_video_id": source_video_id,
+        "source_title": "",
+        "source_channel": source_channel,
+        "source_channel_id": source_channel_id,
+        "source_channel_url": source_channel_url,
+        "start_ms": int(config.get("startTimeMs") or 0),
+        "end_ms": int(config.get("endTimeMs") or 0),
+        "view_count": _clip_view_count(view_count_text),
+        "view_count_text": view_count_text,
+        "clipped_at": "",
+        "clipped_at_text": clipped_at_text,
+        "thumbnail_url": pick_thumbnail(thumbnails),
+        "availability": "active",
+        "fetch_status": "discovered",
+        "fetch_error": "",
+    }
+
+
+def parse_clip_page(
+    initial_data: dict[str, Any],
+    player_response: dict[str, Any],
+    clip_id: str,
+) -> dict[str, Any]:
+    attribution = _first_youtube_renderer(initial_data, "clipAttributionRenderer")
+    primary_info = _first_youtube_renderer(initial_data, "videoPrimaryInfoRenderer")
+    source_owner = _first_youtube_renderer(initial_data, "videoOwnerRenderer")
+    config = _clip_config(player_response) or _clip_config(initial_data)
+    details = player_response.get("videoDetails")
+    details = details if isinstance(details, dict) else {}
+    microformat = player_response.get("microformat", {}).get("playerMicroformatRenderer", {})
+    microformat = microformat if isinstance(microformat, dict) else {}
+    playability = player_response.get("playabilityStatus")
+    playability = playability if isinstance(playability, dict) else {}
+    source_video_id = str(details.get("videoId") or "").strip()
+    owner_title, owner_channel_id, owner_channel_url = _channel_from_runs(
+        attribution.get("author")
+        or attribution.get("authorText")
+        or attribution.get("clipAuthor")
+        or {}
+    )
+    owner_thumbnail = attribution.get("authorThumbnail") or attribution.get("authorAvatar")
+    owner_thumbnails = (
+        owner_thumbnail.get("thumbnails", []) if isinstance(owner_thumbnail, dict) else []
+    )
+    source_channel_title, rendered_source_channel_id, source_channel_url = (
+        _channel_from_runs(source_owner.get("title") or {})
+    )
+    source_endpoint = source_owner.get("navigationEndpoint")
+    source_endpoint = source_endpoint if isinstance(source_endpoint, dict) else {}
+    source_browse = source_endpoint.get("browseEndpoint")
+    source_browse = source_browse if isinstance(source_browse, dict) else {}
+    rendered_source_channel_id = str(
+        source_browse.get("browseId") or rendered_source_channel_id
+    ).strip()
+    source_channel_url = str(
+        source_browse.get("canonicalBaseUrl") or source_channel_url
+    ).strip()
+    source_owner_thumbnail = source_owner.get("thumbnail")
+    source_owner_thumbnails = (
+        source_owner_thumbnail.get("thumbnails", [])
+        if isinstance(source_owner_thumbnail, dict)
+        else []
+    )
+    source_thumbnail = details.get("thumbnail")
+    source_thumbnails = (
+        source_thumbnail.get("thumbnails", []) if isinstance(source_thumbnail, dict) else []
+    )
+    view_count_text, clipped_at_text = _clip_created_metadata(attribution)
+    availability = "active" if attribution and source_video_id else "unavailable"
+    return {
+        "clip_id": clip_id,
+        "title": text_from_runs(attribution.get("title") or {}).strip(),
+        "owner_title": owner_title,
+        "owner_channel_id": owner_channel_id,
+        "owner_channel_url": owner_channel_url,
+        "owner_thumbnail_url": pick_thumbnail(owner_thumbnails),
+        "ownership": _clip_ownership(initial_data),
+        "source_video_id": source_video_id,
+        "source_title": text_from_runs(primary_info.get("title") or {}).strip(),
+        "source_channel": source_channel_title or str(details.get("author") or "").strip(),
+        "source_channel_id": rendered_source_channel_id or str(details.get("channelId") or "").strip(),
+        "source_channel_url": source_channel_url,
+        "source_description": str(details.get("shortDescription") or "").strip(),
+        "source_duration_text": format_duration(details.get("lengthSeconds")),
+        "source_view_count": str(details.get("viewCount") or "").strip(),
+        "source_upload_date": str(microformat.get("uploadDate") or "").strip(),
+        "source_uploader_category": str(microformat.get("category") or "").strip(),
+        "source_reaction": extract_reaction_from_initial_data(initial_data),
+        "source_thumbnail_url": pick_thumbnail(source_thumbnails),
+        "source_channel_thumbnail_url": (
+            pick_thumbnail(source_owner_thumbnails)
+            or extract_channel_thumbnail_url(initial_data)
+        ),
+        "source_is_playable": 1 if str(playability.get("status") or "").upper() == "OK" else 0,
+        "source_availability": watch_playability_availability(
+            playability,
+            microformat,
+            details,
+        ),
+        "start_ms": int(config.get("startTimeMs") or 0),
+        "end_ms": int(config.get("endTimeMs") or 0),
+        "view_count": _clip_view_count(view_count_text),
+        "view_count_text": view_count_text,
+        "clipped_at": "",
+        "clipped_at_text": clipped_at_text,
+        "thumbnail_url": pick_thumbnail(source_thumbnails),
+        "availability": availability,
+        "fetch_status": "ok" if availability == "active" else "unavailable",
+        "fetch_error": "" if availability == "active" else "Clip metadata unavailable",
+    }
+
+
+def fetch_current_youtube_clips(
+    cookie_file: Path,
+    proxy_url: str = "",
+) -> tuple[urllib.request.OpenerDirector, list[dict[str, Any]]]:
+    jar = load_cookie_jar(cookie_file)
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+        *socks5_proxy_handlers(proxy_url),
+    )
+    referer = "https://www.youtube.com/feed/clips"
+    page = request_text(opener, referer)
+    if not youtube_page_is_authenticated(page):
+        raise youtube_authentication_error(page, "clips feed")
+    config = extract_ytcfg(page)
+    initial_data = extract_json_assignment(page, "ytInitialData")
+    pages = [initial_data] if initial_data else []
+    api_key = config.get("INNERTUBE_API_KEY", "")
+    client_version = config.get("INNERTUBE_CLIENT_VERSION", "")
+    if not pages and api_key and client_version:
+        pages.append(
+            request_youtubei_json(
+                opener,
+                jar,
+                api_key,
+                {"context": youtube_web_context(config), "browseId": "FEclips"},
+                referer,
+                client_version,
+            )
+        )
+    if not pages:
+        raise RuntimeError("Could not find YouTube clips feed data.")
+    token = continuation_token(pages[0])
+    seen_tokens: set[str] = set()
+    while token and token not in seen_tokens and api_key and client_version:
+        seen_tokens.add(token)
+        pages.append(
+            request_youtubei_json(
+                opener,
+                jar,
+                api_key,
+                {"context": youtube_web_context(config), "continuation": token},
+                referer,
+                client_version,
+            )
+        )
+        token = continuation_token(pages[-1])
+    records: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for page_data in pages:
+        for node in walk(page_data):
+            renderer = node.get("gridVideoRenderer") if isinstance(node, dict) else None
+            if not isinstance(renderer, dict):
+                continue
+            record = parse_clip_grid_renderer(renderer)
+            if not record or record["clip_id"] in seen_ids:
+                continue
+            seen_ids.add(record["clip_id"])
+            records.append(record)
+    return opener, records
+
+
+def fetch_clip_metadata(
+    opener: urllib.request.OpenerDirector,
+    clip_id: str,
+) -> dict[str, Any]:
+    clip_id = extract_clip_id(clip_id) or clip_id.strip()
+    url = f"https://www.youtube.com/clip/{urllib.parse.quote(clip_id)}"
+    page = request_text(opener, url)
+    return parse_clip_page(
+        extract_json_assignment(page, "ytInitialData"),
+        extract_json_assignment(page, "ytInitialPlayerResponse"),
+        clip_id,
+    )
+
+
+def _library_owner_identity(conn: sqlite3.Connection) -> dict[str, str]:
+    row = conn.execute(
+        """
+        SELECT p.owner_channel_id,
+               COALESCE(c.title, '') AS title,
+               COALESCE(c.thumbnail_url, '') AS thumbnail_url,
+               COALESCE(c.thumbnail_path, '') AS thumbnail_path,
+               COUNT(*) AS playlist_count
+        FROM playlists p
+        LEFT JOIN channels c ON c.channel_id = p.owner_channel_id
+        WHERE p.is_library_playlist = 1 AND p.owner_channel_id IS NOT NULL
+        GROUP BY p.owner_channel_id
+        ORDER BY playlist_count DESC, p.owner_channel_id
+        LIMIT 1
+        """
+    ).fetchone()
+    return dict(row) if row else {}
+
+
+def save_clip_metadata(
+    conn: sqlite3.Connection,
+    record: dict[str, Any],
+    *,
+    observed_at: str | None = None,
+    fetched: bool = False,
+) -> None:
+    clip_id = str(record.get("clip_id") or "").strip()
+    source_video_id = str(record.get("source_video_id") or "").strip()
+    if not clip_id:
+        raise ValueError("Clip metadata needs a clip ID")
+    now = observed_at or utc_now()
+    if source_video_id:
+        source_channel_id = upsert_channel(
+            conn,
+            str(record.get("source_channel_id") or "").strip(),
+            title=str(record.get("source_channel") or "").strip(),
+            url=str(record.get("source_channel_url") or "").strip(),
+            thumbnail_url=str(record.get("source_channel_thumbnail_url") or "").strip(),
+            thumbnail_path=str(record.get("source_channel_thumbnail_path") or "").strip(),
+            source="youtube",
+            updated_at=now,
+        )
+        upsert_video(
+            conn,
+            source_video_id,
+            title=str(record.get("source_title") or "").strip(),
+            description=str(record.get("source_description") or "").strip(),
+            channel_id=source_channel_id,
+            channel_title=str(record.get("source_channel") or "").strip(),
+            duration_text=str(record.get("source_duration_text") or "").strip(),
+            view_count=str(record.get("source_view_count") or "").strip(),
+            upload_date=str(record.get("source_upload_date") or "").strip(),
+            uploader_category=str(record.get("source_uploader_category") or "").strip(),
+            thumbnail_url=str(record.get("source_thumbnail_url") or record.get("thumbnail_url") or "").strip(),
+            thumbnail_path=str(record.get("source_thumbnail_path") or "").strip(),
+            reaction=str(record.get("source_reaction") or "").strip(),
+            is_playable=record.get("source_is_playable"),
+            availability=str(record.get("source_availability") or "").strip(),
+            source="youtube",
+            updated_at=now,
+        )
+    owner = _library_owner_identity(conn) if record.get("ownership") == "mine" else {}
+    owner_channel_id = str(record.get("owner_channel_id") or owner.get("owner_channel_id") or "").strip()
+    owner_title = str(record.get("owner_title") or owner.get("title") or "").strip()
+    if owner_channel_id:
+        owner_channel_id = upsert_channel(
+            conn,
+            owner_channel_id,
+            title=owner_title,
+            url=str(record.get("owner_channel_url") or "").strip(),
+            thumbnail_url=str(record.get("owner_thumbnail_url") or owner.get("thumbnail_url") or "").strip(),
+            thumbnail_path=str(record.get("owner_thumbnail_path") or owner.get("thumbnail_path") or "").strip(),
+            source="youtube",
+            updated_at=now,
+        )
+    conn.execute(
+        """
+        INSERT INTO clips(
+          clip_id, title, owner_channel_id, owner_title, owner_thumbnail_url,
+          owner_thumbnail_path, ownership, source_video_id, start_ms, end_ms,
+          view_count, view_count_text, clipped_at, clipped_at_text,
+          clipped_at_observed_at, thumbnail_url, availability, fetch_status,
+          fetch_error, fetched_at, last_seen_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(clip_id) DO UPDATE SET
+          title=COALESCE(NULLIF(excluded.title, ''), clips.title),
+          owner_channel_id=COALESCE(excluded.owner_channel_id, clips.owner_channel_id),
+          owner_title=COALESCE(NULLIF(excluded.owner_title, ''), clips.owner_title),
+          owner_thumbnail_url=COALESCE(NULLIF(excluded.owner_thumbnail_url, ''), clips.owner_thumbnail_url),
+          owner_thumbnail_path=COALESCE(NULLIF(excluded.owner_thumbnail_path, ''), clips.owner_thumbnail_path),
+          ownership=CASE WHEN excluded.ownership <> 'unknown' THEN excluded.ownership ELSE clips.ownership END,
+          source_video_id=COALESCE(excluded.source_video_id, clips.source_video_id),
+          start_ms=COALESCE(excluded.start_ms, clips.start_ms),
+          end_ms=COALESCE(excluded.end_ms, clips.end_ms),
+          view_count=COALESCE(excluded.view_count, clips.view_count),
+          view_count_text=COALESCE(NULLIF(excluded.view_count_text, ''), clips.view_count_text),
+          clipped_at=COALESCE(excluded.clipped_at, clips.clipped_at),
+          clipped_at_text=COALESCE(NULLIF(excluded.clipped_at_text, ''), clips.clipped_at_text),
+          clipped_at_observed_at=COALESCE(
+            clips.clipped_at_observed_at,
+            excluded.clipped_at_observed_at
+          ),
+          thumbnail_url=COALESCE(NULLIF(excluded.thumbnail_url, ''), clips.thumbnail_url),
+          availability=CASE WHEN excluded.availability <> 'unknown' THEN excluded.availability ELSE clips.availability END,
+          fetch_status=COALESCE(NULLIF(excluded.fetch_status, ''), clips.fetch_status),
+          fetch_error=excluded.fetch_error,
+          fetched_at=COALESCE(excluded.fetched_at, clips.fetched_at),
+          last_seen_at=COALESCE(excluded.last_seen_at, clips.last_seen_at),
+          updated_at=excluded.updated_at
+        """,
+        (
+            clip_id,
+            str(record.get("title") or "").strip(),
+            owner_channel_id or None,
+            owner_title,
+            str(record.get("owner_thumbnail_url") or "").strip(),
+            str(record.get("owner_thumbnail_path") or "").strip(),
+            str(record.get("ownership") or "unknown").strip(),
+            source_video_id or None,
+            int(record.get("start_ms") or 0) or None,
+            int(record.get("end_ms") or 0) or None,
+            record.get("view_count"),
+            str(record.get("view_count_text") or "").strip(),
+            str(record.get("clipped_at") or "").strip() or None,
+            str(record.get("clipped_at_text") or "").strip(),
+            now if record.get("clipped_at_text") else None,
+            str(record.get("thumbnail_url") or "").strip(),
+            str(record.get("availability") or "unknown").strip(),
+            str(record.get("fetch_status") or "").strip(),
+            str(record.get("fetch_error") or "").strip(),
+            now if fetched else None,
+            now if record.get("availability") == "active" else None,
+            now,
+        ),
+    )
+
+
+def save_discovered_clips(
+    conn: sqlite3.Connection,
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    existing_ids = {row["clip_id"] for row in conn.execute("SELECT clip_id FROM clips")}
+    new_ids: list[str] = []
+    now = utc_now()
+    for record in records:
+        clip_id = str(record.get("clip_id") or "").strip()
+        if not clip_id:
+            continue
+        if clip_id not in existing_ids:
+            existing_ids.add(clip_id)
+            new_ids.append(clip_id)
+        save_clip_metadata(conn, record, observed_at=now, fetched=False)
+    return {
+        "discovered": len(records),
+        "inserted": len(new_ids),
+        "updated": max(0, len(records) - len(new_ids)),
+        "new_ids": new_ids,
+    }
+
+
 def is_system_playlist(playlist_id: str) -> bool:
     return playlist_id in {"LL", "LM", "WL"} or playlist_id.startswith("RD")
 
@@ -6176,6 +6630,7 @@ def worker_queue_rows(
                w.worker_type,
                w.task_type,
                w.video_id,
+               w.clip_id,
                w.channel_id,
                w.playlist_id,
                w.channel_title,
@@ -6190,6 +6645,7 @@ def worker_queue_rows(
                w.updated_at,
                p.title AS playlist_title,
                COALESCE(NULLIF(c.title, ''), '') AS known_channel_title,
+               COALESCE(NULLIF(clip.title, ''), '') AS known_clip_title,
                p.video_count AS playlist_video_count,
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
@@ -6203,6 +6659,7 @@ def worker_queue_rows(
               THEN COALESCE(NULLIF(w.channel_id, ''), w.video_id)
             ELSE ''
           END
+        LEFT JOIN clips clip ON clip.clip_id = w.clip_id
         ORDER BY {worker_queue_order_sql("w")}
     """
     params: list[Any] = []
@@ -6230,6 +6687,7 @@ def worker_queue_rows_by_id(
                w.worker_type,
                w.task_type,
                w.video_id,
+               w.clip_id,
                w.channel_id,
                w.playlist_id,
                w.channel_title,
@@ -6244,6 +6702,7 @@ def worker_queue_rows_by_id(
                w.updated_at,
                p.title AS playlist_title,
                COALESCE(NULLIF(c.title, ''), '') AS known_channel_title,
+               COALESCE(NULLIF(clip.title, ''), '') AS known_clip_title,
                p.video_count AS playlist_video_count,
                COALESCE(ps.scan_status, '') AS scan_status,
                COALESCE(ps.video_count, 0) AS video_count,
@@ -6257,6 +6716,7 @@ def worker_queue_rows_by_id(
               THEN COALESCE(NULLIF(w.channel_id, ''), w.video_id)
             ELSE ''
           END
+        LEFT JOIN clips clip ON clip.clip_id = w.clip_id
         WHERE w.queue_id IN ({placeholders})
         ORDER BY {worker_queue_order_sql("w")}
         """,
@@ -6317,6 +6777,7 @@ def worker_log_select(name: str) -> str:
     if name == "metadataLogs":
         identifier_condition = """
             v.video_id IS NOT NULL
+            OR clip.clip_id IS NOT NULL
             OR c.channel_id IS NOT NULL
             OR legacy_c.channel_id IS NOT NULL
             OR (
@@ -6332,6 +6793,8 @@ def worker_log_select(name: str) -> str:
                    CASE
                      WHEN v.video_id IS NOT NULL
                        THEN COALESCE(NULLIF(v.title, ''), '')
+                     WHEN clip.clip_id IS NOT NULL
+                       THEN COALESCE(NULLIF(clip.title, ''), '')
                      WHEN c.channel_id IS NOT NULL
                        THEN COALESCE(NULLIF(c.title, ''), l.video_id)
                      WHEN legacy_c.channel_id IS NOT NULL
@@ -6347,6 +6810,7 @@ def worker_log_select(name: str) -> str:
                    END AS display_id
             FROM {table} l
             LEFT JOIN videos v ON v.video_id = l.video_id
+            LEFT JOIN clips clip ON clip.clip_id = l.video_id
             LEFT JOIN channels c ON c.channel_id = l.video_id
             LEFT JOIN channels legacy_c
               ON legacy_c.channel_id = (
@@ -6410,6 +6874,8 @@ def _worker_log_source(name: str, level: str) -> str:
             return "queue"
         if normalized_level.startswith("placeholder "):
             return "placeholder"
+        if normalized_level.startswith("clip "):
+            return "clip"
         return "metadata"
     if name == "pluginWorkerLogs":
         raise ValueError("Plugin log sources require the log row")
@@ -6428,6 +6894,8 @@ def _worker_log_display_level(name: str, level: str) -> str:
             return value[6:]
         if lowered.startswith("placeholder "):
             return value[12:]
+        if lowered.startswith("clip "):
+            return value[5:]
     return value
 
 
@@ -6458,8 +6926,11 @@ def _worker_log_filter_sql(
         clauses.append("LOWER(l.level) LIKE 'placeholder %'")
     elif source == "metadata":
         clauses.append(
-            "LOWER(l.level) NOT LIKE 'queue %' AND LOWER(l.level) NOT LIKE 'placeholder %'"
+            "LOWER(l.level) NOT LIKE 'queue %' AND LOWER(l.level) NOT LIKE 'placeholder %' "
+            "AND LOWER(l.level) NOT LIKE 'clip %'"
         )
+    elif source == "clip":
+        clauses.append("LOWER(l.level) LIKE 'clip %'")
     elif source:
         return None
 
@@ -6522,7 +6993,7 @@ def worker_log_page(
     row_offset = max(0, int(offset))
     source_filter = str(source or "").strip().lower()
     severity_filter = str(severity or "").strip().lower()
-    if source_filter not in {"", "queue", "metadata", "playlist", "history", "placeholder"} and not re.fullmatch(
+    if source_filter not in {"", "queue", "metadata", "clip", "playlist", "history", "placeholder"} and not re.fullmatch(
         r"plugin:[a-z][a-z0-9_-]*", source_filter
     ):
         raise ValueError(f"Unknown log source: {source}")
@@ -7217,6 +7688,58 @@ def playlist_queue_subject_key(playlist_id: str) -> str:
     return f"playlist:scan:{(playlist_id or '').strip()}"
 
 
+def clip_queue_subject_key(clip_id: str = "", task_type: str = "scan") -> str:
+    return "clip:discover" if task_type == "discover" else f"clip:scan:{clip_id.strip()}"
+
+
+def enqueue_clip_item(
+    conn: sqlite3.Connection,
+    *,
+    clip_id: str = "",
+    task_type: str = "scan",
+    mode: str = "new",
+    title: str = "",
+    priority: int = 0,
+    manual: bool = False,
+) -> str:
+    task_type = (task_type or "scan").strip().lower()
+    clip_id = extract_clip_id(clip_id) or clip_id.strip()
+    if task_type not in {"discover", "scan"}:
+        raise ValueError("Clip task type must be discover or scan")
+    if task_type == "scan" and not clip_id:
+        raise ValueError("Clip scan needs a clip ID")
+    now = utc_now()
+    subject_key = clip_queue_subject_key(clip_id, task_type)
+    conn.execute(
+        """
+        INSERT INTO worker_queue(
+          subject_key, worker_type, task_type, video_id, clip_id, channel_id,
+          playlist_id, channel_title, current_title, source_key,
+          playlist_count, priority, manual, created_at, updated_at
+        )
+        VALUES (?, 'clip', ?, '', ?, '', '', '', ?, ?, 0, ?, ?, ?, ?)
+        ON CONFLICT(subject_key) DO UPDATE SET
+          current_title=COALESCE(NULLIF(excluded.current_title, ''), worker_queue.current_title),
+          source_key=excluded.source_key,
+          priority=MIN(worker_queue.priority, excluded.priority),
+          manual=MAX(worker_queue.manual, excluded.manual),
+          updated_at=excluded.updated_at
+        """,
+        (
+            subject_key,
+            task_type,
+            clip_id,
+            title,
+            mode if task_type == "discover" else "manual" if manual else "clip",
+            int(priority),
+            1 if manual else 0,
+            now,
+            now,
+        ),
+    )
+    return subject_key
+
+
 def metadata_queue_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
@@ -7439,6 +7962,7 @@ def library_has_data(conn: sqlite3.Connection) -> bool:
         SELECT
           EXISTS(SELECT 1 FROM videos)
           OR EXISTS(SELECT 1 FROM playlists)
+          OR EXISTS(SELECT 1 FROM clips)
           OR EXISTS(SELECT 1 FROM channels WHERE channel_id <> '')
           OR EXISTS(SELECT 1 FROM history_events)
         """
@@ -7461,14 +7985,15 @@ def enqueue_update_tasks(conn: sqlite3.Connection) -> dict[str, int]:
     )
 
     enqueue_account_sync_task(conn, priority=-4, manual=False)
-    enqueue_playlist_discovery_item(conn, priority=-3, mode="new")
-    enqueue_history_task(conn, "recent", priority=-2, manual=False)
+    enqueue_clip_item(conn, task_type="discover", mode="new", priority=-3, manual=False)
+    enqueue_playlist_discovery_item(conn, priority=-2, mode="new")
+    enqueue_history_task(conn, "recent", priority=-1, manual=False)
     enqueue_playlist_scan_item(
         conn,
         LIKED_VIDEOS_PLAYLIST_ID,
         title="Liked videos",
         source_key="update",
-        priority=-1,
+        priority=0,
         manual=False,
     )
 
@@ -7503,10 +8028,11 @@ def enqueue_update_tasks(conn: sqlite3.Connection) -> dict[str, int]:
         )
 
     queued_after = worker_queue_count(conn)
-    selected = 4 + playlist_count + len(metadata_rows)
+    selected = 5 + playlist_count + len(metadata_rows)
     inserted = max(0, queued_after - queued_before)
     return {
         "account": 1,
+        "clips": 1,
         "discovery": 1,
         "history": 1,
         "liked_videos": 1,
@@ -7523,6 +8049,7 @@ def enqueue_initialization_tasks(conn: sqlite3.Connection) -> dict[str, int | bo
     had_data = library_has_data(conn)
     queued_before = worker_queue_count(conn)
     enqueue_account_sync_task(conn, priority=-1, manual=False)
+    enqueue_clip_item(conn, task_type="discover", mode="all", priority=-1, manual=False)
 
     metadata_rows = metadata_queue_candidate_rows(
         conn,
@@ -7576,13 +8103,14 @@ def enqueue_initialization_tasks(conn: sqlite3.Connection) -> dict[str, int | bo
     enqueue_history_task(conn, "verify", priority=0, manual=True)
 
     queued_after = worker_queue_count(conn)
-    selected = len(metadata_rows) + playlist_count + 2
+    selected = len(metadata_rows) + playlist_count + 3
     inserted = max(0, queued_after - queued_before)
     return {
         "had_data": had_data,
         "metadata": len(metadata_rows),
         "playlists": playlist_count,
         "account": 1,
+        "clips": 1,
         "history": 1,
         "selected": selected,
         "inserted": inserted,
@@ -7639,7 +8167,7 @@ def local_queue_target_from_url(target: str) -> tuple[str, str]:
         return "", ""
 
     fragment_params = urllib.parse.parse_qs(parsed.fragment)
-    for key, kind in (("playlist", "playlist"), ("video", "video"), ("channel", "channel")):
+    for key, kind in (("playlist", "playlist"), ("video", "video"), ("clip", "clip"), ("channel", "channel")):
         value = (fragment_params.get(key) or [""])[0]
         if value:
             return kind, urllib.parse.unquote(value).strip()
@@ -7651,7 +8179,7 @@ def local_queue_target_from_url(target: str) -> tuple[str, str]:
         return "video", (query_params.get("v") or [""])[0].strip()
 
     parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if len(parts) >= 2 and parts[0] in {"playlist", "video", "channel"}:
+    if len(parts) >= 2 and parts[0] in {"playlist", "video", "clip", "channel"}:
         return parts[0], urllib.parse.unquote(parts[1]).strip()
     return "", ""
 
@@ -7668,6 +8196,22 @@ def enqueue_worker_queue_target(conn: sqlite3.Connection, target: str) -> dict[s
     )
 
     if is_youtube_url:
+        clip_id = extract_clip_id(target)
+        if clip_id:
+            subject_key = enqueue_clip_item(
+                conn,
+                clip_id=clip_id,
+                task_type="scan",
+                title=target,
+                priority=0,
+                manual=True,
+            )
+            return {
+                "subject_key": subject_key,
+                "worker_type": "clip",
+                "clip_id": clip_id,
+                "source": "youtube",
+            }
         video_id = extract_video_id(target)
         playlist_id = extract_playlist_id(target) or ""
         channel_id = "" if video_id else youtube_channel_ref_from_url(target)
@@ -7771,8 +8315,23 @@ def enqueue_worker_queue_target(conn: sqlite3.Connection, target: str) -> dict[s
         }
 
     video_id = extract_video_id(target) or target.strip()
+    if local_kind == "clip":
+        clip_id = extract_clip_id(target) or target.strip()
+        subject_key = enqueue_clip_item(
+            conn,
+            clip_id=clip_id,
+            task_type="scan",
+            priority=0,
+            manual=True,
+        )
+        return {
+            "subject_key": subject_key,
+            "worker_type": "clip",
+            "clip_id": clip_id,
+            "source": "local",
+        }
     if local_kind and local_kind != "video":
-        raise ValueError("Could not identify a video, channel, or playlist from that local URL.")
+        raise ValueError("Could not identify a video, clip, channel, or playlist from that local URL.")
     if not video_id:
         raise ValueError("Enter a video ID, channel ID, @handle, playlist ID, or URL.")
     subject_key = enqueue_metadata_item(
@@ -7873,6 +8432,21 @@ def admin_status(
                   0 AS url_missing
                 FROM channels
                 WHERE channel_id <> ''
+                """
+            ).fetchone()
+        )
+        clip_counts = dict(
+            conn.execute(
+                """
+                SELECT
+                  COUNT(*) AS total,
+                  SUM(CASE WHEN ownership = 'mine' THEN 1 ELSE 0 END) AS mine,
+                  SUM(CASE WHEN ownership = 'others' THEN 1 ELSE 0 END) AS others,
+                  SUM(CASE WHEN ownership = 'unknown' THEN 1 ELSE 0 END) AS ownership_unknown,
+                  SUM(CASE WHEN availability = 'active' THEN 1 ELSE 0 END) AS active,
+                  SUM(CASE WHEN availability = 'unavailable' THEN 1 ELSE 0 END) AS unavailable,
+                  SUM(CASE WHEN fetch_status IN ('', 'discovered') THEN 1 ELSE 0 END) AS metadata_pending
+                FROM clips
                 """
             ).fetchone()
         )
@@ -7978,6 +8552,7 @@ def admin_status(
         "playlistCounts": playlist_counts,
         "metadataCounts": metadata_counts,
         "channelCounts": channel_counts,
+        "clipCounts": clip_counts,
         "hasLibraryData": has_library_data,
         "featureBackfillCounts": backfill_counts,
         "workerQueueCount": worker_queue_count_value,

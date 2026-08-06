@@ -213,6 +213,83 @@ class AdminServerTests(unittest.TestCase):
         connection.close.assert_called_once_with()
         handler.send_json.assert_called_once_with(videos)
 
+    def test_clip_detail_route_inherits_source_video_plugin_facets(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.filter_videos.return_value = (
+            frozenset({"source12345"}),
+            frozenset(),
+        )
+        handler.send_json = Mock()
+        connection = Mock()
+        detail = {
+            "clip_id": "UgkxClipRoute123",
+            "source_video_id": "source12345",
+        }
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch("yt_library.server.clip_detail_data", return_value=detail),
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/clips/UgkxClipRoute123?video_facet_plugin=subtitles"
+                )
+            )
+
+        handler.plugin_manager.filter_videos.assert_called_once_with("subtitles", "")
+        self.assertEqual(detail["pluginFacets"], {"subtitles": True})
+        handler.send_json.assert_called_once_with(detail)
+
+    def test_clip_admin_endpoints_enqueue_discovery_and_manual_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            handler = object.__new__(server.LibraryHandler)
+            handler.db_path = db_path
+            handler._start_worker_queue = Mock(return_value={"started": True})
+            handler.send_json = Mock()
+
+            handler._handle_admin_action_post(
+                urllib.parse.urlparse("/api/admin/clips/discover"),
+                {},
+            )
+            handler._handle_admin_action_post(
+                urllib.parse.urlparse("/api/admin/clips/fetch"),
+                {
+                    "target": [
+                        "https://www.youtube.com/clip/UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s"
+                    ]
+                },
+            )
+
+            conn = core.connect(db_path)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT worker_type, task_type, clip_id
+                    FROM worker_queue
+                    ORDER BY queue_id
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            [tuple(row) for row in rows],
+            [
+                ("clip", "discover", ""),
+                (
+                    "clip",
+                    "scan",
+                    "UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s",
+                ),
+            ],
+        )
+        self.assertEqual(handler._start_worker_queue.call_count, 2)
+
     def test_plugin_browser_assets_are_namespaced_and_delegated(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.plugin_manager = Mock()
@@ -1380,10 +1457,16 @@ class AdminServerTests(unittest.TestCase):
                 conn.close()
 
         self.assertEqual(result["dispatcher"], {"started": True})
-        self.assertEqual(result["queue"]["inserted"], 4)
+        self.assertEqual(result["queue"]["inserted"], 5)
         self.assertEqual(
             {row["subject_key"] for row in queue_rows},
-            {"account:sync", "history:recent", "playlist:discover-current", "playlist:scan:LL"},
+            {
+                "account:sync",
+                "clip:discover",
+                "history:recent",
+                "playlist:discover-current",
+                "playlist:scan:LL",
+            },
         )
         self.assertEqual(tuple(log)[0], "queue info")
         self.assertIn("Scheduled update queued", tuple(log)[1])
@@ -1549,8 +1632,11 @@ class AdminServerTests(unittest.TestCase):
 
         self.assertTrue(response["ok"])
         self.assertFalse(response["queue"]["had_data"])
-        self.assertEqual(response["queue"]["inserted"], 3)
-        self.assertEqual(subjects, {"account:sync", "history:verify", "playlist:scan:LL"})
+        self.assertEqual(response["queue"]["inserted"], 4)
+        self.assertEqual(
+            subjects,
+            {"account:sync", "clip:discover", "history:verify", "playlist:scan:LL"},
+        )
         start_dispatcher.assert_called_once_with(
             db_path,
             handler.cookie_file,

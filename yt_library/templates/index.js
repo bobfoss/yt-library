@@ -305,6 +305,7 @@ const defaultSearchMetaVisibility = {
   },
   membership: { member: true, non_member: true },
   uploaderCategory: { [noUploaderCategoryFilter]: true },
+  clipOwnership: { mine: true, others: true, ownership_unknown: true },
   channelSubscription: { subscribed: true, non_subscribed: true },
   channelStatus: {
     active: true,
@@ -330,6 +331,7 @@ const searchMetaParamNames = {
   completion: 'vc',
   membership: 'vpm',
   uploaderCategory: 'vuc',
+  clipOwnership: 'co',
   channelSubscription: 'csub',
   channelStatus: 'cstatus',
   playlistVisibility: 'pm',
@@ -410,6 +412,7 @@ const searchPresetDefinitions = {
   videos: { kind: 'videos', sort: 'newest' },
   playlisted: { kind: 'videos', sort: 'newest' },
   liked: { kind: 'videos', sort: 'newest' },
+  clips: { kind: 'clips', sort: 'newest' },
   playlists: { kind: 'playlists', sort: 'title' },
   channels: { kind: 'channels', sort: 'title' },
   subscribed: { kind: 'channels', sort: 'title' },
@@ -662,6 +665,10 @@ function videoSelection(videoId) {
   return `__video__:${videoId}`;
 }
 
+function clipSelection(clipId) {
+  return `__clip__:${clipId}`;
+}
+
 function channelSelection(channelId) {
   return `__channel__:${channelId}`;
 }
@@ -766,6 +773,10 @@ function localPlaylistHref(playlistId, includePagination = false) {
 function localVideoHref(videoId, includePagination = false) {
   const base = `#video=${encodeURIComponent(videoId)}`;
   return includePagination ? appendHashParams(base, paginationParams()) : base;
+}
+
+function localClipHref(clipId) {
+  return `#clip=${encodeURIComponent(clipId)}`;
 }
 
 function encodeChannelReference(channelReference) {
@@ -1124,6 +1135,7 @@ function searchKindEnabled(kind) {
 function selectedSearchKinds() {
   return [
     'videos',
+    'clips',
     'playlists',
     'channels',
     ...browserResultSearchPlugins().map(plugin => plugin.id),
@@ -1133,6 +1145,7 @@ function selectedSearchKinds() {
 function selectedSearchResultKinds() {
   const resultKindByFilterKind = {
     videos: 'video',
+    clips: 'clip',
     playlists: 'playlist',
     channels: 'channel',
   };
@@ -1287,6 +1300,7 @@ function applySearchHash(hash) {
     completion: params.get(searchMetaParamNames.completion),
     membership: params.get(searchMetaParamNames.membership),
     uploaderCategory: params.get(searchMetaParamNames.uploaderCategory),
+    clipOwnership: params.get(searchMetaParamNames.clipOwnership),
     channelSubscription: params.get(searchMetaParamNames.channelSubscription),
     channelStatus: params.get(searchMetaParamNames.channelStatus),
     playlistVisibility: params.get(searchMetaParamNames.playlistVisibility),
@@ -1371,6 +1385,9 @@ function hrefForCurrentSelection(includePagination = false) {
   if (selected.startsWith('__video__:')) {
     return localVideoHref(selected.slice('__video__:'.length), includePagination);
   }
+  if (selected.startsWith('__clip__:')) {
+    return localClipHref(selected.slice('__clip__:'.length));
+  }
   if (selected.startsWith('__channel__:')) {
     const base = localChannelHref(selected.slice('__channel__:'.length));
     return includePagination ? appendHashParams(base, channelDetailParams()) : base;
@@ -1415,6 +1432,10 @@ function selectionFromHash() {
   if (base.startsWith('#video=')) {
     const videoId = decodeURIComponent(base.slice('#video='.length));
     if (videoId) return videoSelection(videoId);
+  }
+  if (base.startsWith('#clip=')) {
+    const clipId = decodeURIComponent(base.slice('#clip='.length));
+    if (clipId) return clipSelection(clipId);
   }
   if (base.startsWith('#channel=')) {
     const channelId = decodeURIComponent(base.slice('#channel='.length));
@@ -1512,6 +1533,12 @@ function setSelected(value) {
     const videoId = value.slice('__video__:'.length);
     if (window.location.hash !== localVideoHref(videoId)) {
       window.location.hash = localVideoHref(videoId);
+      return;
+    }
+  } else if (value.startsWith('__clip__:')) {
+    const clipId = value.slice('__clip__:'.length);
+    if (window.location.hash !== localClipHref(clipId)) {
+      window.location.hash = localClipHref(clipId);
       return;
     }
   } else if (value.startsWith('__channel__:')) {
@@ -1643,9 +1670,11 @@ const searchVideoFacetKeys = [
 ];
 const searchPlaylistFacetKeys = ['playlistVisibility', 'playlistOwnership', 'playlistStatus'];
 const searchChannelFacetKeys = ['channelSubscription', 'channelStatus'];
+const searchClipFacetKeys = ['clipOwnership'];
 
 function searchKindFacetKeys(kind) {
   if (kind === 'videos') return searchVideoFacetKeys;
+  if (kind === 'clips') return searchClipFacetKeys;
   if (kind === 'playlists') return searchPlaylistFacetKeys;
   if (kind === 'channels') return searchChannelFacetKeys;
   return [];
@@ -1735,6 +1764,7 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true) {
 
 function searchKindForFacet(facetKey) {
   if (searchVideoFacetKeys.includes(facetKey)) return 'videos';
+  if (searchClipFacetKeys.includes(facetKey)) return 'clips';
   if (searchPlaylistFacetKeys.includes(facetKey)) return 'playlists';
   if (searchChannelFacetKeys.includes(facetKey)) return 'channels';
   return facetKey;
@@ -3225,6 +3255,18 @@ function searchMetaFiltersHtml(
       ] : []),
       ...browserVideoFilterPlugins().map(pluginVideoFacetHtml),
     ].join('')),
+    Number(data?.counts?.clips || 0) > 0
+      ? kindHtml('Clips', 'clips', metaCounts?.clips?.total, [
+        facetHtml({
+          key: 'clipOwnership',
+          visibility: searchMetaVisibility.clipOwnership,
+          definitions: playlistOwnershipMetaFilterDefinitions,
+          counts: metaCounts?.clips,
+          allLabel: 'Ownership',
+          kind: 'clips',
+        }),
+      ].join(''))
+      : '',
     kindHtml('Playlists', 'playlists', metaCounts?.playlists?.total, [
       facetHtml({ key: 'playlistVisibility', visibility: searchMetaVisibility.playlistVisibility, definitions: playlistVisibilityMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Visibility', kind: 'playlists' }),
       facetHtml({ key: 'playlistOwnership', visibility: searchMetaVisibility.playlistOwnership, definitions: playlistOwnershipMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Ownership', kind: 'playlists' }),
@@ -3261,7 +3303,7 @@ function renderSearchMetaFilters({
     uploaderCategoryCounts,
     counts,
   );
-  for (const key of ['videos', 'reactions', 'completion', 'membership', 'uploaderCategory', 'playlistVisibility', 'playlistOwnership', 'playlistStatus', 'channelSubscription', 'channelStatus']) {
+  for (const key of ['videos', 'reactions', 'completion', 'membership', 'uploaderCategory', 'clipOwnership', 'playlistVisibility', 'playlistOwnership', 'playlistStatus', 'channelSubscription', 'channelStatus']) {
     syncMetaFilterGroup(`search-${key}`);
   }
   for (const plugin of browserVideoFilterPlugins()) {
@@ -3597,7 +3639,10 @@ async function fetchBrowserPluginSearches(query, limit, offset) {
 }
 
 async function decorateCoreSearchResults(results, errors, query) {
-  for (const plugin of browserSearchPlugins().filter(item => searchKindEnabled(item.id))) {
+  for (const plugin of browserSearchPlugins().filter(item => (
+    searchKindEnabled(item.id)
+    || results.some(result => result.kind === 'clip' && result.pluginFacets?.[item.id])
+  ))) {
     if (typeof plugin.search.decorateCoreResults !== 'function') continue;
     try {
       await plugin.search.decorateCoreResults(
@@ -3655,6 +3700,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     video_completion: metaFilterParamValue(searchMetaVisibility.completion),
     video_completion_min_percent: String(partialCompletionMinimumPercent),
     video_playlist_membership: metaFilterParamValue(searchMetaVisibility.membership),
+    clip_ownership: metaFilterParamValue(searchMetaVisibility.clipOwnership),
     channel_subscription: metaFilterParamValue(searchMetaVisibility.channelSubscription),
     channel_status: metaFilterParamValue(searchMetaVisibility.channelStatus),
     playlist_meta: metaFilterParamValue(searchMetaVisibility.playlistVisibility),
@@ -4069,6 +4115,9 @@ function renderGroups() {
   videoSection.appendChild(presetLink('videos', 'Videos', counts.videos || 0));
   videoSection.appendChild(presetLink('playlisted', 'Playlisted', counts.playlist_videos || 0));
   videoSection.appendChild(presetLink('liked', 'Liked', counts.liked_videos || 0));
+  if (Number(counts.clips || 0) > 0) {
+    videoSection.appendChild(presetLink('clips', 'Clips', counts.clips));
+  }
   for (const { plugin, preset, presetId } of browserSearchPresets('videos')) {
     const status = browserPluginStatus(plugin.id);
     const count = Number(
@@ -4290,6 +4339,44 @@ async function render() {
     viewContext.hidden = true;
   }
   syncSidebarSelection();
+  if (selected.startsWith('__clip__:')) {
+    const clipId = selected.slice('__clip__:'.length);
+    title.textContent = 'Clip';
+    meta.textContent = '';
+    let clip;
+    try {
+      const clipParams = new URLSearchParams();
+      for (const plugin of browserVideoFilterPlugins()) {
+        clipParams.append('video_facet_plugin', plugin.id);
+      }
+      const query = clipParams.toString();
+      clip = await fetchViewData(
+        `/api/clips/${encodeURIComponent(clipId)}${query ? `?${query}` : ''}`
+      );
+    } catch (error) {
+      if (generation !== renderGeneration) return;
+      title.textContent = 'Clip not found';
+      meta.textContent = clipId;
+      grid.replaceChildren();
+      empty.hidden = false;
+      empty.textContent = error.message;
+      return;
+    }
+    if (generation !== renderGeneration) return;
+    const result = {
+      kind: 'clip',
+      item: clip,
+      pluginFacets: clip.pluginFacets || {},
+    };
+    await decorateCoreSearchResults([result], [], clipId);
+    if (generation !== renderGeneration) return;
+    setDocumentTitle(clip.title || clipId);
+    hidePager();
+    grid.className = 'grid search-grid layout-detailed';
+    grid.replaceChildren(searchResultCardFor(result));
+    empty.hidden = true;
+    return;
+  }
   if (selected.startsWith('__video__:')) {
     const videoId = selected.slice('__video__:'.length);
     title.textContent = 'Video';
@@ -4641,6 +4728,23 @@ function playlistOwnerHtml(playlist) {
   return `${avatars ? `<span class="playlist-creator-avatars">${avatars}</span>` : ''}<span>${names}</span>`;
 }
 
+function clipPeopleHtml(clip) {
+  return playlistOwnerHtml({
+    owner_channel_title: clip.resolved_owner_title || clip.owner_title || '',
+    owner_channel_id: clip.owner_channel_id || '',
+    owner_channel_reference: clip.owner_channel_reference || clip.owner_channel_id || '',
+    owner_channel_url: clip.owner_channel_url || '',
+    owner_channel_thumbnail_path: clip.resolved_owner_thumbnail_path || clip.owner_thumbnail_path || '',
+    collaborators: clip.source_channel_title ? [{
+      title: clip.source_channel_title,
+      channel_id: clip.source_channel_id || '',
+      channel_reference: clip.source_channel_reference || clip.source_channel_id || '',
+      channel_url: clip.source_channel_url || '',
+      thumbnail_path: clip.source_channel_thumbnail_path || '',
+    }] : [],
+  });
+}
+
 function playlistPersonHref(person) {
   return person.reference ? localChannelHref(person.reference) : (person.url || '');
 }
@@ -4795,6 +4899,67 @@ function historyRowsWithDayDividers(rows, options = {}) {
   return elements;
 }
 
+function clipDurationLabel(clip) {
+  const milliseconds = Number(clip.end_ms || 0) - Number(clip.start_ms || 0);
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return '';
+  const totalSeconds = Math.max(1, Math.round(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    : `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function clipViewsLabel(clip) {
+  const raw = String(clip.view_count_text || '').trim();
+  if (raw) return raw;
+  const count = Number(clip.view_count);
+  if (!Number.isFinite(count)) return '';
+  return `${count.toLocaleString()} ${count === 1 ? 'view' : 'views'}`;
+}
+
+function clipCardFor(clip, options = {}) {
+  const localHref = localClipHref(clip.clip_id || '');
+  const clipUrl = clip.url || `https://www.youtube.com/clip/${encodeURIComponent(clip.clip_id || '')}`;
+  const sourceHref = clip.source_video_id ? localVideoHref(clip.source_video_id) : '';
+  const sourceTitle = clip.source_video_title || clip.source_video_id || '';
+  const titleText = clip.title || clip.clip_id || '';
+  const people = clipPeopleHtml(clip);
+  const clippedAt = clip.clipped_at
+    ? window.YTLibraryTime.format(clip.clipped_at)
+    : String(clip.clipped_at_text || '');
+  const availability = String(clip.availability || 'unknown').toLowerCase();
+  const availabilityHtml = availability === 'active'
+    ? ''
+    : `<span class="${availability === 'unavailable' ? 'status' : ''}">${escapeHtml(availability === 'unavailable' ? 'Unavailable' : 'Unknown')}</span>`;
+  return CollectionCard.create({
+    resultKind: options.resultKind || 'Clip',
+    className: 'clip-card',
+    thumbnailPath: clip.source_thumbnail_path || '',
+    thumbnailHref: localHref,
+    placeholderThumbnail: true,
+    headerHtml: people ? `<div class="details video-card-channel">${people}</div>` : '',
+    titleHtml: `<a class="playlist-title" href="${localHref}">${options.titleHtml === undefined ? escapeHtml(titleText) : options.titleHtml}</a>`,
+    actionsHtml: `<a class="external-link" href="${escapeHtml(clipUrl)}" target="_blank" rel="noreferrer" title="Open clip on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>`,
+    bodyHtml: `
+      ${badgeRowsHtml(Array.isArray(clip.plugin_badges) ? clip.plugin_badges : [])}
+      <div class="details">
+        ${clipDurationLabel(clip) ? `<span>${escapeHtml(clipDurationLabel(clip))}</span>` : ''}
+        ${clip.clip_id ? `<span>${escapeHtml(clip.clip_id)}</span>` : ''}
+        ${availabilityHtml}
+      </div>
+      <div class="details">
+        ${clipViewsLabel(clip) ? `<span>${escapeHtml(clipViewsLabel(clip))}</span>` : ''}
+        ${clippedAt ? `<span>${escapeHtml(clippedAt)}</span>` : ''}
+      </div>
+      ${sourceHref && sourceTitle ? `<div class="details"><a class="playlist-link" href="${sourceHref}">Source video: ${escapeHtml(sourceTitle)}</a></div>` : ''}
+      ${reactionIconsHtml(clip)}
+      ${uploaderCategoryHtml(clip.uploader_category)}
+    `,
+  });
+}
+
 function historyRowCardFor(video, { layout = 'detailed' } = {}) {
   const watched = historyWatchedAtLabel(video);
   const article = playlistVideoCardFor(video, {
@@ -4827,23 +4992,39 @@ function searchResultCardFor(result, options = {}) {
   if (result.kind === 'playlist') {
     return cardFor(result.item, { resultKind: 'Playlist' });
   }
+  let card;
+  if (result.kind === 'clip') {
+    const clip = result.item;
+    const query = String(options.query || '');
+    const searchFields = new Set(options.searchFields || []);
+    card = clipCardFor(clip, {
+      titleHtml: query && searchFields.has('titles')
+        ? searchHighlight.textHtml(clip.title || clip.clip_id || '', query)
+        : undefined,
+    });
+  }
   if (result.kind === 'channel') {
     return channelCardFor(result.item, { resultKind: 'Channel' });
   }
-  const video = result.item;
-  const query = String(options.query || '');
-  const searchFields = new Set(options.searchFields || []);
-  const titleText = displayVideoTitle(video);
-  const descriptionText = String(video.metadata_description || '');
-  const card = searchVideoCardFor(video, {
-    titleHtml: query && searchFields.has('titles')
-      ? searchHighlight.textHtml(titleText, query)
-      : undefined,
-    descriptionHtml: query && descriptionText && searchFields.has('descriptions')
-      ? searchHighlight.excerptHtml(descriptionText, query)
-      : undefined,
-  });
-  for (const plugin of browserSearchPlugins().filter(item => searchKindEnabled(item.id))) {
+  if (!card) {
+    const video = result.item;
+    const query = String(options.query || '');
+    const searchFields = new Set(options.searchFields || []);
+    const titleText = displayVideoTitle(video);
+    const descriptionText = String(video.metadata_description || '');
+    card = searchVideoCardFor(video, {
+      titleHtml: query && searchFields.has('titles')
+        ? searchHighlight.textHtml(titleText, query)
+        : undefined,
+      descriptionHtml: query && descriptionText && searchFields.has('descriptions')
+        ? searchHighlight.excerptHtml(descriptionText, query)
+        : undefined,
+    });
+  }
+  for (const plugin of browserSearchPlugins().filter(item => (
+    searchKindEnabled(item.id)
+    || (result.kind === 'clip' && result.pluginFacets?.[item.id])
+  ))) {
     if (typeof plugin.search.decorateCoreResultCard !== 'function') continue;
     try {
       plugin.search.decorateCoreResultCard(card, result, browserPluginHost(plugin.id));

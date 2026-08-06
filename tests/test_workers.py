@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 from yt_library import core, network, workers
 from yt_library.config import load_config
 from yt_library.workers import (
+    ClipWorker,
     LiveHistoryWorker,
     MetadataWorker,
     PlaceholderRecoveryWorker,
@@ -24,6 +25,79 @@ from tests.support import migrated_connection
 
 
 class WorkerQueueTests(unittest.TestCase):
+    def test_clip_worker_saves_clip_identity_and_queues_source_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_clip_item(
+                        conn,
+                        clip_id="UgkxWorkerClip123",
+                        title="Clip title",
+                        manual=True,
+                    )
+                row = dict(core.worker_queue_rows(conn)[0])
+            finally:
+                conn.close()
+
+            metadata = {
+                "clip_id": "UgkxWorkerClip123",
+                "title": "Clip title",
+                "owner_channel_id": "UC_clip_owner",
+                "owner_title": "Clip owner",
+                "ownership": "others",
+                "source_video_id": "sourceworker1",
+                "source_title": "Source video title",
+                "source_channel_id": "UC_source_owner",
+                "source_channel": "Source uploader",
+                "source_duration_text": "0:21",
+                "source_uploader_category": "Music",
+                "source_reaction": "L",
+                "start_ms": 1_000,
+                "end_ms": 22_000,
+                "view_count": 4,
+                "view_count_text": "4 views",
+                "clipped_at_text": "Clipped 2 months ago",
+                "availability": "active",
+                "fetch_status": "ok",
+            }
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.fetch_clip_metadata", return_value=metadata),
+            ):
+                ClipWorker()._run(
+                    "clip-run",
+                    db_path,
+                    Path(temp_dir) / "missing-cookies.txt",
+                    row,
+                    "",
+                )
+
+            conn = core.connect(db_path)
+            try:
+                clip = conn.execute(
+                    "SELECT * FROM clips WHERE clip_id = 'UgkxWorkerClip123'"
+                ).fetchone()
+                source = conn.execute(
+                    "SELECT * FROM videos WHERE video_id = 'sourceworker1'"
+                ).fetchone()
+                queue = conn.execute(
+                    "SELECT subject_key FROM worker_queue ORDER BY subject_key"
+                ).fetchall()
+                log = conn.execute(
+                    "SELECT level, video_id, message FROM metadata_worker_log ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(clip["title"], "Clip title")
+        self.assertEqual(clip["source_video_id"], "sourceworker1")
+        self.assertEqual(source["reaction"], "L")
+        self.assertEqual(source["uploader_category"], "Music")
+        self.assertEqual([row["subject_key"] for row in queue], ["metadata:video:sourceworker1"])
+        self.assertEqual(tuple(log), ("clip info", "UgkxWorkerClip123", "ok: Clip title"))
+
     def test_worker_log_wrappers_write_to_their_owned_tables(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
