@@ -223,7 +223,7 @@
     if (options.titleHref) {
       const target = options.titleTarget ? ` target="${escapeHtml(options.titleTarget)}"` : '';
       const rel = options.titleTarget === '_blank' ? ' rel="noreferrer"' : '';
-      return `<a class="${escapeHtml(options.titleClass || 'video-title')}" href="${escapeHtml(options.titleHref)}"${target}${rel}>${title}</a>`;
+      return `<div class="title-row"><a class="${escapeHtml(options.titleClass || 'video-title')}" href="${escapeHtml(options.titleHref)}"${target}${rel}>${title}</a><span class="entity-card-slot entity-card-actions" data-entity-card-slot="actions"></span></div>`;
     }
     const localTitle = options.localUrl
       ? `<a class="playlist-title" href="${escapeHtml(options.localUrl)}">${title}</a>`
@@ -232,9 +232,9 @@
       ? `<a class="external-link" href="${escapeHtml(options.externalUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${options.externalIconHtml}</a>`
       : '';
     if (localTitle || externalTitle) {
-      return `<div class="title-row">${localTitle || `<div class="video-title">${title}</div>`}${externalTitle}</div>`;
+      return `<div class="title-row">${localTitle || `<div class="video-title">${title}</div>`}${externalTitle}<span class="entity-card-slot entity-card-actions" data-entity-card-slot="actions"></span></div>`;
     }
-    return `<div class="video-title">${title}</div>`;
+    return `<div class="title-row"><div class="video-title">${title}</div><span class="entity-card-slot entity-card-actions" data-entity-card-slot="actions"></span></div>`;
   }
 
   function create(options) {
@@ -262,6 +262,7 @@
       ${options.sparklineHtml || ''}
       ${options.reactionHtml || ''}
       ${uploaderCategoryHtml(options.uploaderCategory)}
+      <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
       ${options.descriptionHtml
         ? `<div class="description">${options.descriptionHtml}</div>`
         : (options.description ? `<div class="description">${escapeHtml(options.description)}</div>` : '')}

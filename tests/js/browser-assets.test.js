@@ -10,6 +10,7 @@ const assetNames = [
   'timezone.js',
   'video-card.js',
   'collection-card.js',
+  'entity-card-extensions.js',
   'index.js',
   'admin.js',
 ];
@@ -441,11 +442,11 @@ test('channel tabs use independent persisted card layouts', () => {
   );
   assert.match(
     indexSource,
-    /const layoutContext = 'channel-history'[\s\S]{0,900}cardLayoutHtml\(cardLayoutFor\(layoutContext\), layoutContext\)[\s\S]{0,300}historyRowsWithDayDividers\(rows, \{\s*layout: cardLayoutFor\(layoutContext\)/,
+    /const layoutContext = 'channel-history'[\s\S]{0,1200}historyRowsWithDayDividers\(rows, \{\s*layout: cardLayoutFor\(layoutContext\)[\s\S]{0,700}cardLayoutHtml\(cardLayoutFor\(layoutContext\), layoutContext\)/,
   );
   assert.match(
     indexSource,
-    /const layoutContext = 'channel-playlists'[\s\S]{0,500}cardLayoutHtml\(cardLayoutFor\(layoutContext\), layoutContext\)[\s\S]{0,300}rows\.map\(playlistVideoCardFor\)/,
+    /const layoutContext = 'channel-playlists'[\s\S]{0,500}cardLayoutHtml\(cardLayoutFor\(layoutContext\), layoutContext\)[\s\S]{0,500}rows\.map\(playlistVideoCardFor\)/,
   );
   assert.doesNotMatch(
     indexSource,

@@ -310,12 +310,18 @@
     .watch-progress { position: absolute; left: 0; right: auto; bottom: 0; height: 4px; background: #ff0033; }
     .body { padding: 11px 12px 13px; }
     .title-row { display: flex; align-items: flex-start; gap: 8px; }
+    .title-row > .video-title { flex: 1; min-width: 0; }
     .playlist-title { display: block; color: var(--ink); font-weight: 650; line-height: 1.25; text-decoration: none; overflow-wrap: anywhere; }
     .playlist-title:hover { color: var(--accent); }
     .title-row .playlist-title { flex: 1; min-width: 0; }
     .external-link { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 6px; color: var(--accent); text-decoration: none; }
     .external-link:hover { background: var(--accent-soft); }
     .external-link svg { width: 15px; height: 15px; }
+    .entity-card-actions { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+    .entity-card-secondary-metadata { display: grid; gap: 5px; margin-top: 7px; }
+    .entity-card-plugin-actions { display: inline-flex; align-items: center; gap: 5px; }
+    .entity-card-plugin-secondary-metadata { display: grid; gap: 5px; }
+    .entity-card-slot:empty, .entity-card-plugin-contribution[hidden] { display: none; }
     .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
     .visibility-label { display: inline-flex; align-items: center; gap: 4px; }
     .visibility-label svg { width: 14px; height: 14px; flex: 0 0 auto; }

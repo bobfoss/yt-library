@@ -394,6 +394,85 @@ Use `textContent` for ordinary plugin data. When markup is required, use host
 escaping and highlighting helpers. Never insert an untrusted API string through
 raw `innerHTML`.
 
+### Native entity-card extensions
+
+Browser API version 1 includes the additive `entityCards` feature. Plugins
+should feature-detect it with `api.features?.entityCards === 1`; the browser API
+version remains 1 because plugins that use only the earlier optional `search`
+and `videoDetail` surfaces continue to register unchanged.
+
+`entityCards` decorates native cards without requiring the plugin to implement
+search. It is capability-gated and supports the canonical native kinds
+`video`, `clip`, `playlist`, and `channel`:
+
+```javascript
+(() => {
+  'use strict';
+  const api = window.YTLibraryBrowserPlugins;
+  if (!api || api.apiVersion !== 1 || api.features?.entityCards !== 1) return;
+
+  api.register({
+    id: 'example',
+    entityCards: {
+      capability: 'example_cards',
+      kinds: ['video', 'clip'],
+      prepare: async (entities, host, context) => {
+        const ids = entities.map(entity => entity.id);
+        return host.requestJson('card-summaries', {
+          id: ids,
+          view: context.view,
+        });
+      },
+      render: (entity, preparedState, _host, context) => {
+        const summary = preparedState?.summaries?.[entity.id];
+        if (!summary) return null;
+        const action = document.createElement('button');
+        action.type = 'button';
+        action.textContent = String(summary.actionLabel || 'Open');
+        action.dataset.view = context.view;
+        const metadata = document.createElement('span');
+        metadata.textContent = String(summary.label || '');
+        return {
+          actions: [action],
+          secondaryMetadata: [metadata],
+        };
+      },
+    },
+  });
+})();
+```
+
+Each descriptor is a frozen `{kind, id, item}` object. `id` is the canonical
+YT Library identity (`video_id`, `clip_id`, `playlist_id`, or `channel_id`), and
+`item` is the bounded read model already used to render that card. Cards without
+a canonical ID are not offered to extensions. `context` is a frozen
+`{view, layout}` object. Current views include `search`, `playlist`, `history`,
+`channel-history`, `channel-playlists`, `video-detail`, and `clip-detail`; layout
+is `grid`, `compact`, or `detailed` where the view supports it.
+
+The host deduplicates descriptors by kind and ID, then calls `prepare` at most
+once per plugin for the rendered batch. A repeated history occurrence is still
+rendered separately, but it does not cause another preparation request. Do all
+bounded I/O in `prepare`; `render` must return synchronously with `actions` and
+`secondaryMetadata` arrays containing plugin-owned `HTMLElement` instances, or
+return `null`. Actions are placed beside native title actions. Secondary
+metadata follows native facts such as uploader category and precedes native
+descriptions and source lists.
+
+Plugins compose in browser registration order. The host wraps contributions by
+plugin ID, replaces a plugin's previous contribution on re-decoration, contains
+preparation and per-card rendering failures, and rejects stale asynchronous
+work after navigation. Readiness and the declared capability are checked before
+preparation, so disabled, unavailable, and capability-missing plugins do not
+decorate. One plugin's asset, preparation, or rendering failure does not block
+native cards or another plugin.
+
+The older `search.decorateCoreResults` and
+`search.decorateCoreResultCard` hooks remain supported for query-specific read
+model decoration and presentation. The per-card compatibility hook now runs
+through the same card batch path as `entityCards`. Existing
+`videoDetail: {capability, render}` panels also remain independent and supported.
+
 ### Search, facets, cards, and virtual videos
 
 There are two browser search patterns. Choose one deliberately.

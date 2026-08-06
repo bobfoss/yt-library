@@ -1,5 +1,6 @@
 const VideoCard = window.YTLibraryVideoCard;
 const CollectionCard = window.YTLibraryCollectionCard;
+const EntityCardExtensions = window.YTLibraryEntityCardExtensions;
 const badgeRowsHtml = VideoCard.badgeRowsHtml;
 const creatorHtml = VideoCard.creatorHtml;
 const detailRowHtml = VideoCard.detailRowHtml;
@@ -82,18 +83,9 @@ function browserPluginSearchFieldEnabled(plugin) {
   return Boolean(key && activeSearchFields().has(key));
 }
 
-function registerBrowserPluginSearchField(plugin) {
-  const definition = browserSearchFieldDefinition(plugin);
-  if (!definition) return;
-  const key = browserSearchFieldKey(plugin);
-  const labelText = String(definition.label || '').trim();
-  if (!/^[a-z][a-z0-9_-]*$/.test(key)) {
-    throw new TypeError(`Plugin search field key is invalid: ${key}`);
-  }
-  if (!labelText) throw new TypeError(`Plugin search field label is required: ${plugin.id}`);
-  if (searchFields.some(input => input.dataset.searchField === key)) {
-    throw new Error(`Search field is already registered: ${key}`);
-  }
+function registerBrowserPluginSearchField(plugin, registration) {
+  if (!registration) return;
+  const { definition, key, labelText } = registration;
   const label = document.createElement('label');
   label.className = 'filter';
   label.dataset.browserPluginSearchField = plugin.id;
@@ -106,6 +98,21 @@ function registerBrowserPluginSearchField(plugin) {
   searchInFields.append(label);
   searchFields.push(input);
   bindSearchField(input);
+}
+
+function validateBrowserPluginSearchField(plugin) {
+  const definition = browserSearchFieldDefinition(plugin);
+  if (!definition) return null;
+  const key = browserSearchFieldKey(plugin);
+  const labelText = String(definition.label || '').trim();
+  if (!/^[a-z][a-z0-9_-]*$/.test(key)) {
+    throw new TypeError(`Plugin search field key is invalid: ${key}`);
+  }
+  if (!labelText) throw new TypeError(`Plugin search field label is required: ${plugin.id}`);
+  if (searchFields.some(input => input.dataset.searchField === key)) {
+    throw new Error(`Search field is already registered: ${key}`);
+  }
+  return { definition, key, labelText };
 }
 
 function browserVideoFacetDefinition(plugin) {
@@ -126,9 +133,10 @@ function registerBrowserPlugin(plugin) {
   const pluginId = String(plugin.id || '');
   if (!/^[a-z][a-z0-9_-]*$/.test(pluginId)) throw new TypeError('Plugin id is invalid');
   if (browserPlugins.has(pluginId)) throw new Error(`Plugin is already registered: ${pluginId}`);
-  browserPlugins.set(pluginId, plugin);
+  const searchFieldRegistration = validateBrowserPluginSearchField(plugin);
+  if (plugin.entityCards) EntityCardExtensions.validateDefinition(plugin.entityCards);
   if (plugin.search) {
-    registerBrowserPluginSearchField(plugin);
+    registerBrowserPluginSearchField(plugin, searchFieldRegistration);
     if (browserVideoFacetDefinition(plugin)) {
       pluginVideoFacetVisibility.set(
         pluginId,
@@ -141,10 +149,12 @@ function registerBrowserPlugin(plugin) {
       );
     }
   }
+  browserPlugins.set(pluginId, plugin);
 }
 
 window.YTLibraryBrowserPlugins = Object.freeze({
   apiVersion: 1,
+  features: Object.freeze({ entityCards: 1 }),
   register: registerBrowserPlugin,
 });
 
@@ -251,7 +261,11 @@ async function loadBrowserPlugins(statuses) {
   for (const status of statuses || []) {
     if (!status.enabled || status.state !== 'ready') continue;
     for (const asset of status.browserAssets || []) {
-      await loadBrowserPluginAsset(status.id, asset, status.version);
+      try {
+        await loadBrowserPluginAsset(status.id, asset, status.version);
+      } catch (error) {
+        console.error(`Plugin asset failed: ${status.id}`, error);
+      }
     }
   }
 }
@@ -2785,17 +2799,19 @@ async function fetchHistoryLocation(channelId = '') {
   return [await fetchHistoryPage(channelId), activity];
 }
 
-async function renderHistoryView() {
+async function renderHistoryView(generation) {
   title.textContent = 'History';
   meta.textContent = 'Loading history...';
   applyCardLayout('history');
   empty.hidden = true;
   const [payload, initialActivity] = await fetchHistoryLocation();
+  if (generation !== renderGeneration) return;
   const rows = payload.watch || [];
   const activity = historyActivitySyncEnabled
     && syncHistoryActivityYearWithRows(rows, pendingHistoryDate)
     ? await fetchHistoryActivity()
     : initialActivity;
+  if (generation !== renderGeneration) return;
   const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
   const pageInfo = remotePageInfo(total, rows.length);
   const historyTitleLocation = historyNavigationDate
@@ -2810,9 +2826,18 @@ async function renderHistoryView() {
   viewContext.hidden = false;
   viewContext.replaceChildren(historyHeatmapFor(activity));
   renderPager(pageInfo);
-  grid.replaceChildren(...historyRowsWithDayDividers(rows, {
+  const historyBatch = historyRowsWithDayDividers(rows, {
     layout: cardLayoutFor('history'),
-  }));
+  });
+  const decoration = decorateEntityCardBatch(
+    historyBatch.entries,
+    'history',
+    cardLayoutFor('history'),
+    generation,
+  );
+  grid.replaceChildren(...historyBatch.elements);
+  await decoration;
+  if (generation !== renderGeneration) return;
   empty.hidden = rows.length !== 0;
   empty.textContent = 'No history rows match.';
   scrollToPendingHistoryDate();
@@ -3568,6 +3593,46 @@ function browserPluginHost(pluginId) {
   };
 }
 
+function entityCardEntry(kind, item, card, legacyResult = null) {
+  return {
+    card,
+    entity: EntityCardExtensions.descriptor(kind, item),
+    legacyResult,
+  };
+}
+
+function decorateLegacySearchCard(entry) {
+  const result = entry.legacyResult;
+  if (!result || !['video', 'clip'].includes(result.kind)) return;
+  for (const plugin of browserSearchPlugins().filter(item => (
+    searchKindEnabled(item.id)
+    || (result.kind === 'clip' && result.pluginFacets?.[item.id])
+  ))) {
+    if (typeof plugin.search.decorateCoreResultCard !== 'function') continue;
+    try {
+      plugin.search.decorateCoreResultCard(
+        entry.card,
+        result,
+        browserPluginHost(plugin.id),
+      );
+    } catch (error) {
+      console.error(`Plugin card decoration failed: ${plugin.id}`, error);
+    }
+  }
+}
+
+function decorateEntityCardBatch(entries, view, layout, generation, options = {}) {
+  return EntityCardExtensions.decorateBatch({
+    entries,
+    plugins: [...browserPlugins.values()],
+    context: Object.freeze({ view, layout }),
+    supports: browserPluginSupports,
+    hostFor: browserPluginHost,
+    isCurrent: () => generation === renderGeneration,
+    decorateEntry: options.legacySearch ? decorateLegacySearchCard : null,
+  });
+}
+
 async function fetchBrowserPluginSearches(query, limit, offset) {
   const counts = {};
   const errors = [];
@@ -4168,6 +4233,7 @@ function videoDetailCardFor(video) {
         <div class="title-row">
           <div class="video-title">${escapeHtml(titleText)}</div>
           ${watchUrl ? `<a class="external-link" href="${escapeHtml(watchUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
+          <span class="entity-card-slot entity-card-actions" data-entity-card-slot="actions"></span>
         </div>
         ${badgeRowsHtml([
           { label: video.virtual_video ? 'Not in library' : '' },
@@ -4187,6 +4253,7 @@ function videoDetailCardFor(video) {
         ${watchSparklineHtml(video, true)}
         ${reactionIconsHtml(video)}
         ${uploaderCategoryHtml(video.uploader_category)}
+        <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
         ${playlistSourceLinksHtml(video)}
         ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : '<div class="empty">No description captured for this video.</div>'}
       </div>
@@ -4220,6 +4287,7 @@ function channelDetailCardFor(channel) {
             ${youtubeUrl ? `<a class="playlist-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">YouTube</a><a class="external-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
             ${archivarixUrl ? `<a class="playlist-link" href="${escapeHtml(archivarixUrl)}" target="_blank" rel="noreferrer">Archivarix</a><a class="external-link" href="${escapeHtml(archivarixUrl)}" target="_blank" rel="noreferrer" title="Open on Archivarix" aria-label="Open ${escapeHtml(titleText)} on Archivarix">${externalLinkSvg()}</a>` : ''}
           </div>
+          <span class="entity-card-slot entity-card-actions" data-entity-card-slot="actions"></span>
         </div>
         <div class="details">
           <span>${subscribedLabel}</span>
@@ -4231,6 +4299,7 @@ function channelDetailCardFor(channel) {
         ${channelDatesHtml(channel)}
         ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
         ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
+        <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
         ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : '<div class="empty">No channel description captured.</div>'}
       </div>
     </div>
@@ -4354,7 +4423,17 @@ async function render() {
     setDocumentTitle(clip.title || clipId);
     hidePager();
     grid.className = 'grid search-grid layout-detailed';
-    grid.replaceChildren(searchResultCardFor(result));
+    const card = searchResultCardFor(result);
+    const decoration = decorateEntityCardBatch(
+      [entityCardEntry('clip', clip, card, result)],
+      'clip-detail',
+      'detailed',
+      generation,
+      { legacySearch: true },
+    );
+    grid.replaceChildren(card);
+    await decoration;
+    if (generation !== renderGeneration) return;
     empty.hidden = true;
     return;
   }
@@ -4382,10 +4461,19 @@ async function render() {
     setDocumentTitle(displayVideoTitle(video) || videoId);
     hidePager();
     grid.className = 'grid';
+    const videoCard = videoDetailCardFor(video);
+    const decoration = decorateEntityCardBatch(
+      [entityCardEntry('video', video, videoCard)],
+      'video-detail',
+      'detailed',
+      generation,
+    );
     grid.replaceChildren(
-      videoDetailCardFor(video),
+      videoCard,
       ...pluginPanels,
     );
+    await decoration;
+    if (generation !== renderGeneration) return;
     empty.hidden = true;
     return;
   }
@@ -4416,9 +4504,11 @@ async function render() {
     const currentHeatmap = channelDetailTab === 'history'
       ? viewContext.querySelector(`.history-heatmap[data-history-channel-id="${CSS.escape(channelId)}"]`)
       : null;
+    const channelCard = channelDetailCardFor(channel);
+    const channelEntry = entityCardEntry('channel', channel, channelCard);
     viewContext.hidden = false;
     viewContext.replaceChildren(
-      channelDetailCardFor(channel),
+      channelCard,
       channelTabsFor(channelDetailTab, playlistCount, historyCount),
       ...(currentHeatmap ? [currentHeatmap] : []),
     );
@@ -4435,8 +4525,17 @@ async function render() {
         : initialActivity;
       const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
       if (generation !== renderGeneration) return;
+      const historyBatch = historyRowsWithDayDividers(rows, {
+        layout: cardLayoutFor(layoutContext),
+      });
+      const decoration = decorateEntityCardBatch(
+        [channelEntry, ...historyBatch.entries],
+        layoutContext,
+        cardLayoutFor(layoutContext),
+        generation,
+      );
       viewContext.replaceChildren(
-        channelDetailCardFor(channel),
+        channelCard,
         channelTabsFor('history', playlistCount, total),
         historyHeatmapFor(activity),
       );
@@ -4444,9 +4543,9 @@ async function render() {
       meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
       renderPager(pageInfo);
       applyCardLayout(layoutContext);
-      grid.replaceChildren(...historyRowsWithDayDividers(rows, {
-        layout: cardLayoutFor(layoutContext),
-      }));
+      grid.replaceChildren(...historyBatch.elements);
+      await decoration;
+      if (generation !== renderGeneration) return;
       empty.hidden = rows.length !== 0;
       empty.textContent = 'No history rows match this channel.';
       scrollToPendingHistoryDate();
@@ -4464,7 +4563,23 @@ async function render() {
       meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
       renderPager(pageInfo);
       applyCardLayout(layoutContext);
-      grid.replaceChildren(...rows.map(playlistVideoCardFor));
+      const cards = rows.map(playlistVideoCardFor);
+      const decoration = decorateEntityCardBatch(
+        [
+          channelEntry,
+          ...rows.map((video, index) => entityCardEntry('video', video, cards[index])),
+        ],
+        layoutContext,
+        cardLayoutFor(layoutContext),
+        generation,
+      );
+      viewContext.replaceChildren(
+        channelCard,
+        channelTabsFor('playlists', playlistCount, historyCount),
+      );
+      grid.replaceChildren(...cards);
+      await decoration;
+      if (generation !== renderGeneration) return;
       empty.hidden = rows.length !== 0;
       empty.textContent = 'No playlist videos match this channel.';
       scheduleAdjacentPagePrefetch(pageInfo, page => (
@@ -4534,10 +4649,25 @@ async function render() {
     const pageInfo = remotePageInfo(total, rows.length, remoteLimit);
     renderPager(pageInfo);
     applyCardLayout('search');
-    grid.replaceChildren(...rows.map(result => searchResultCardFor(result, {
+    const cards = rows.map(result => searchResultCardFor(result, {
       query,
       searchFields: payload.searchFields,
-    })));
+    }));
+    const entries = rows.flatMap((result, index) => (
+      result.kind === 'plugin'
+        ? []
+        : [entityCardEntry(result.kind, result.item, cards[index], result)]
+    ));
+    const decoration = decorateEntityCardBatch(
+      entries,
+      'search',
+      cardLayoutFor('search'),
+      generation,
+      { legacySearch: true },
+    );
+    grid.replaceChildren(...cards);
+    await decoration;
+    if (generation !== renderGeneration) return;
     empty.hidden = rows.length !== 0;
     empty.textContent = searchPresetEmptyMessage(query) || 'No results match.';
     scheduleAdjacentPagePrefetch(pageInfo, page => fetchOmniSearch(query, page));
@@ -4616,7 +4746,16 @@ async function render() {
     const pageInfo = remotePayloadPageInfo(payload, rows.length);
     renderPager(pageInfo);
     applyCardLayout('playlist');
-    grid.replaceChildren(...rows.map(video => playlistVideoCardFor(video, { showPosition: true })));
+    const cards = rows.map(video => playlistVideoCardFor(video, { showPosition: true }));
+    const decoration = decorateEntityCardBatch(
+      rows.map((video, index) => entityCardEntry('video', video, cards[index])),
+      'playlist',
+      cardLayoutFor('playlist'),
+      generation,
+    );
+    grid.replaceChildren(...cards);
+    await decoration;
+    if (generation !== renderGeneration) return;
     empty.hidden = rows.length !== 0;
     empty.textContent = playlist.scanned_at ? 'No videos match.' : 'This playlist has not been scanned yet.';
     scheduleAdjacentPagePrefetch(pageInfo, page => fetchVideoCollection({
@@ -4631,7 +4770,7 @@ async function render() {
     return;
   }
   if (selected === '__history__') {
-    await renderHistoryView();
+    await renderHistoryView(generation);
     return;
   }
 }
@@ -4868,16 +5007,19 @@ function historyDayDividerFor(label, date) {
 
 function historyRowsWithDayDividers(rows, options = {}) {
   const elements = [];
+  const entries = [];
   let previousLabel = '';
   for (const row of rows) {
     const label = historyDayLabel(row);
     if (label && label !== previousLabel) {
       elements.push(historyDayDividerFor(label, historyRowDateKey(row)));
     }
-    elements.push(historyRowCardFor(row, options));
+    const card = historyRowCardFor(row, options);
+    elements.push(card);
+    entries.push(entityCardEntry('video', row, card));
     previousLabel = label;
   }
-  return elements;
+  return { elements, entries };
 }
 
 function clipDurationLabel(clip) {
@@ -4934,10 +5076,12 @@ function clipCardFor(clip, options = {}) {
         ${clipViewsLabel(clip) ? `<span>${escapeHtml(clipViewsLabel(clip))}</span>` : ''}
         ${clippedAt ? `<span>${escapeHtml(clippedAt)}</span>` : ''}
       </div>
-      ${sourceHref && sourceTitle ? `<div class="details"><a class="playlist-link" href="${sourceHref}">Source video: ${escapeHtml(sourceTitle)}</a></div>` : ''}
       ${reactionIconsHtml(clip)}
       ${uploaderCategoryHtml(clip.uploader_category)}
     `,
+    tailHtml: sourceHref && sourceTitle
+      ? `<div class="details"><a class="playlist-link" href="${sourceHref}">Source video: ${escapeHtml(sourceTitle)}</a></div>`
+      : '',
   });
 }
 
@@ -5002,17 +5146,6 @@ function searchResultCardFor(result, options = {}) {
         : undefined,
     });
   }
-  for (const plugin of browserSearchPlugins().filter(item => (
-    searchKindEnabled(item.id)
-    || (result.kind === 'clip' && result.pluginFacets?.[item.id])
-  ))) {
-    if (typeof plugin.search.decorateCoreResultCard !== 'function') continue;
-    try {
-      plugin.search.decorateCoreResultCard(card, result, browserPluginHost(plugin.id));
-    } catch (error) {
-      console.error(`Plugin card decoration failed: ${plugin.id}`, error);
-    }
-  }
   return card;
 }
 
@@ -5044,6 +5177,8 @@ function channelCardFor(channel, options = {}) {
     ${channelDatesHtml(channel)}
     ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
     ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
+    `,
+    tailHtml: `
     ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : ''}
     <div class="details">
       ${youtubeUrl ? `<a class="playlist-link" href="${escapeHtml(youtubeUrl)}" target="_blank" rel="noreferrer">YouTube</a>` : ''}

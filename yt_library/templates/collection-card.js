@@ -35,8 +35,11 @@
       <div class="title-row">
         ${options.titleHtml || ''}
         ${options.actionsHtml || ''}
+        <span class="entity-card-slot entity-card-actions" data-entity-card-slot="actions"></span>
       </div>
       ${options.bodyHtml || ''}
+      <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
+      ${options.tailHtml || ''}
     `;
     article.append(body);
     return article;
