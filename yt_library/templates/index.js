@@ -2680,6 +2680,15 @@ async function shiftHistoryActivityYear(delta) {
 async function jumpToCurrentHistoryActivity() {
   const heatmap = viewContext.querySelector('.history-heatmap');
   if (!(heatmap instanceof HTMLElement)) return;
+  if (historyActivitySyncEnabled && selected === '__history__') {
+    historyActivityYearOffset = 0;
+    currentPage = 1;
+    pendingHistoryDate = '';
+    historyNavigationDate = '';
+    if (updateCurrentHash(false)) return;
+    await render();
+    return;
+  }
   const previousOffset = historyActivityYearOffset;
   const previousPage = currentPage;
   const previousPendingDate = pendingHistoryDate;
