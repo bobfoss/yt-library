@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import random
 import sqlite3
 import threading
@@ -11,7 +12,7 @@ import urllib.error
 import urllib.parse
 import uuid
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,7 @@ from .core import (
     video_metadata_channel_id,
     worker_queue_count,
     worker_queue_order_sql,
+    worker_queue_rows_by_id,
     worker_queue_type_count,
     youtube_cookie_diagnostics,
     youtube_history_day_counts,
@@ -220,6 +222,15 @@ def youtube_authentication_debug_message(
 def archivarix_retry_delay(base_seconds: float, retry_number: int) -> float:
     cap = min(30.0, max(0.0, base_seconds) * (2 ** max(0, retry_number - 1)))
     return random.uniform(cap / 2, cap) if cap else 0.0
+
+
+def worker_queue_payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    values = dict(row)
+    try:
+        payload = json.loads(str(values.get("payload_json") or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def record_proxy_hold(
@@ -979,6 +990,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
         force: bool,
         stale_days: int,
         record_summary: bool = True,
+        queue_id: int = 0,
         proxy_url: str = "",
     ) -> dict[str, Any]:
         return self._start_background(
@@ -992,6 +1004,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 force,
                 stale_days,
                 record_summary,
+                queue_id,
                 proxy_url,
             ),
             started_message="Playlist scan started",
@@ -1014,14 +1027,19 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
         force: bool,
         stale_days: int,
         record_summary: bool,
+        queue_id: int = 0,
         proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
-        opener = load_cookie_opener(cookie_file, proxy_url)
+        requested_queue_id = queue_id
         current_queue_id = 0
         current_playlist_id = ""
         try:
-            initial_total = worker_queue_type_count(conn, "playlist")
+            initial_total = (
+                len(playlist_scan_queue_rows(conn, queue_id=requested_queue_id))
+                if requested_queue_id
+                else worker_queue_type_count(conn, "playlist")
+            )
             run_total = min(initial_total, limit) if limit else initial_total
             with conn:
                 conn.execute(
@@ -1050,7 +1068,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
             found = 0
             failed = 0
             while True:
-                rows = playlist_scan_queue_rows(conn)
+                rows = playlist_scan_queue_rows(conn, queue_id=requested_queue_id)
                 if not rows:
                     break
                 if limit and processed >= limit:
@@ -1072,6 +1090,11 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 queue_id = int(row["queue_id"]) if "queue_id" in row.keys() else 0
                 playlist_id = row["playlist_id"]
                 title = row["title"] or playlist_id
+                payload = worker_queue_payload(row)
+                row_cookie_file = Path(
+                    str(payload.get("cookie_file") or cookie_file)
+                )
+                opener = load_cookie_opener(row_cookie_file, proxy_url)
                 current_queue_id = queue_id
                 current_playlist_id = playlist_id
                 if row["task_type"] == "discover":
@@ -1084,7 +1107,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         if discovery_mode not in {"all", "new"}:
                             discovery_mode = "all"
                         _opener, discovered_records = fetch_current_youtube_playlists(
-                            cookie_file,
+                            row_cookie_file,
                             proxy_url=proxy_url,
                         )
                         discovered_records = [
@@ -1214,7 +1237,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     try:
                         collaboration_metadata = fetch_playlist_collaboration_metadata(
                             opener,
-                            cookie_file,
+                            row_cookie_file,
                             header_page,
                             playlist_url,
                         )
@@ -1233,13 +1256,13 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     youtube_debug = (
                         youtube_page_diagnostics(header_page, "playlist header")
                         + " | "
-                        + youtube_cookie_diagnostics(cookie_file)
+                        + youtube_cookie_diagnostics(row_cookie_file)
                     )
                 else:
                     try:
                         videos, playlist_metadata = scan_playlist_ytdlp(
                             playlist_id,
-                            cookie_file,
+                            row_cookie_file,
                             proxy_url,
                         )
                     except ProxyUnavailableError:
@@ -1343,21 +1366,21 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         error += "; request diagnostics logged at debug level"
                 if status == "ok" and (ytdlp_error or playlist_scan_is_incomplete(ytdlp_count, expected_count)):
                     session_valid, session_message = youtube_session_status(
-                        cookie_file,
+                        row_cookie_file,
                         verify_remote=True,
                         proxy_url=proxy_url,
                     )
                     if not session_valid:
                         status = "error"
                         error = f"skipping: {session_message}"
-                        youtube_debug = youtube_cookie_diagnostics(cookie_file)
+                        youtube_debug = youtube_cookie_diagnostics(row_cookie_file)
                     else:
                         web_attempted = True
                         try:
                             web_videos = scan_playlist_videos(
                                 opener,
                                 playlist_id,
-                                cookie_file,
+                                row_cookie_file,
                             )
                             web_count = len(web_videos)
                             if web_count >= ytdlp_count:
@@ -1936,6 +1959,31 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
 LIVE_HISTORY_WORKER = LiveHistoryWorker()
 
 
+def placeholder_recovery_options(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    values = dict(row)
+    task_type = str(values.get("task_type") or "recover")
+    payload = worker_queue_payload(values)
+    refresh_metadata = payload.get("refresh_metadata")
+    no_api = payload.get("no_api")
+    try:
+        delay_seconds = float(payload.get("delay_seconds", 0.0))
+    except (TypeError, ValueError):
+        delay_seconds = 0.0
+    return {
+        "refresh_metadata": (
+            refresh_metadata if isinstance(refresh_metadata, bool) else True
+        ),
+        "no_api": task_type == "thumbnail" or (
+            no_api if isinstance(no_api, bool) else False
+        ),
+        "delay_seconds": (
+            max(0.0, delay_seconds) if math.isfinite(delay_seconds) else 0.0
+        ),
+        "cookie_file": str(payload.get("cookie_file") or ""),
+        "thumbnail_dir": str(payload.get("thumbnail_dir") or ""),
+    }
+
+
 class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
     def start(
         self,
@@ -2043,6 +2091,11 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                     )
                 return
             row = rows[0]
+            recovery_options = placeholder_recovery_options(row)
+            if recovery_options["cookie_file"]:
+                archivarix_cookie_file = Path(recovery_options["cookie_file"])
+            if recovery_options["thumbnail_dir"]:
+                thumb_dir = Path(recovery_options["thumbnail_dir"])
             queue_id = int(row["queue_id"] or 0)
             playlist_id = row["playlist_id"] or ""
             video_id = row["video_id"]
@@ -2061,7 +2114,11 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                     self._finish_run(conn, run_id, status="stopped", message="Stop requested")
                     log_placeholder_recovery_event(conn, run_id, "warn", "Stop requested", video_id)
                 return
-            session_valid, session_message = archivarix_session_status(archivarix_cookie_file)
+            session_valid, session_message = (
+                (True, "")
+                if recovery_options["no_api"]
+                else archivarix_session_status(archivarix_cookie_file)
+            )
             if not session_valid:
                 self._set_blocked_reason(session_message)
                 with conn:
@@ -2089,7 +2146,9 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
             video: dict[str, Any] | None = None
             thumbnail_url = ""
             thumbnail_path = ""
-            attempts = max(1, int(retry_attempts))
+            attempts = (
+                1 if recovery_options["no_api"] else max(1, int(retry_attempts))
+            )
             for attempt in range(1, attempts + 1):
                 with conn:
                     conn.execute(
@@ -2105,9 +2164,9 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                         video_id,
                         thumb_dir,
                         archivarix_opener,
-                        refresh_metadata=True,
-                        no_api=False,
-                        delay=0.0,
+                        refresh_metadata=recovery_options["refresh_metadata"],
+                        no_api=recovery_options["no_api"],
+                        delay=recovery_options["delay_seconds"],
                         channel_cache={},
                         stop_event=self._stop,
                         request_timeout=request_timeout,
@@ -2222,6 +2281,34 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                     log_placeholder_recovery_event(conn, run_id, "warn", message, video_id)
                     return
                 if status in {"timeout", "error"}:
+                    if recovery_options["no_api"]:
+                        message = (
+                            "Direct thumbnail recovery failed: "
+                            f"{error or status}"
+                        )
+                        if queue_id:
+                            conn.execute(
+                                "DELETE FROM worker_queue WHERE queue_id = ?",
+                                (queue_id,),
+                            )
+                        rebuild_playlist_reconciliation(conn, playlist_id)
+                        self._finish_run(
+                            conn,
+                            run_id,
+                            status="complete",
+                            message=message,
+                            recovery_status=status,
+                            processed=1,
+                            failed=1,
+                        )
+                        log_placeholder_recovery_event(
+                            conn,
+                            run_id,
+                            "error",
+                            message,
+                            video_id,
+                        )
+                        return
                     if status == "timeout":
                         message = (
                             f"Archivarix timed out after {attempts} attempts; "
@@ -2530,6 +2617,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         thumb_dir: Path,
         config_data: dict[str, Any] | None = None,
         plugin_manager: PluginManager | None = None,
+        queue_ids: Collection[int] | None = None,
     ) -> dict[str, Any]:
         config = config_data or {}
         dispatch_mode = configured_dispatch_mode(config)
@@ -2604,6 +2692,11 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 configured_archivarix_retry_backoff(config),
                 proxy_url,
                 dict(config),
+                (
+                    frozenset(int(queue_id) for queue_id in queue_ids)
+                    if queue_ids is not None
+                    else None
+                ),
             ),
             started_message="Worker queue dispatcher started",
             already_running_message="Worker queue dispatcher already running",
@@ -2732,6 +2825,8 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         worker_types: tuple[str, ...] = (),
         excluded_queue_ids: set[int] | None = None,
         plugin_process_keys: set[tuple[str, str]] | None = None,
+        included_queue_ids: frozenset[int] | None = None,
+        placeholder_thumbnail_only: bool = False,
     ) -> dict[str, Any] | None:
         conn = connect(db_path)
         try:
@@ -2741,6 +2836,17 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 placeholders = ", ".join("?" for _ in worker_types)
                 clauses.append(f"worker_type IN ({placeholders})")
                 params.extend(worker_types)
+            if included_queue_ids is not None:
+                included = sorted(included_queue_ids)
+                if not included:
+                    return None
+                placeholders = ", ".join("?" for _ in included)
+                clauses.append(f"queue_id IN ({placeholders})")
+                params.extend(included)
+            if placeholder_thumbnail_only:
+                clauses.append(
+                    "(worker_type <> 'placeholder' OR task_type = 'thumbnail')"
+                )
             if "plugin" in worker_types and plugin_process_keys is not None:
                 allowed = sorted(plugin_process_keys)
                 if allowed:
@@ -2797,11 +2903,16 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         archivarix_retry_backoff_seconds: float = 2.0,
         proxy_url: str = "",
         config: dict[str, Any] | None = None,
+        target_queue_ids: frozenset[int] | None = None,
     ) -> None:
         plugin_manager = self._plugin_manager
         conn = connect(db_path)
         try:
-            self._mark_initial_count(worker_queue_count(conn))
+            self._mark_initial_count(
+                len(worker_queue_rows_by_id(conn, target_queue_ids))
+                if target_queue_ids is not None
+                else worker_queue_count(conn)
+            )
         finally:
             conn.close()
         last_dispatch: float | None = None
@@ -2993,7 +3104,6 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     eligible_worker_types.extend(("metadata", "clip"))
                 if (
                     not proxy_blocked
-                    and not archivarix_blocked
                     and len(placeholder_queue_ids) + plugin_archivarix_in_flight
                     < archivarix_max_in_flight
                 ):
@@ -3015,6 +3125,8 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     tuple(eligible_worker_types),
                     metadata_queue_ids | clip_queue_ids | placeholder_queue_ids | plugin_queue_ids,
                     eligible_plugin_processes,
+                    target_queue_ids,
+                    archivarix_blocked,
                 )
                 if not row:
                     if has_active:
@@ -3117,6 +3229,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         force=False,
                         stale_days=7,
                         record_summary=False,
+                        queue_id=queue_id,
                         proxy_url=proxy_url,
                     )
                     launched = bool(result.get("started"))

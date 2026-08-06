@@ -303,8 +303,9 @@ class CoreHelperTests(unittest.TestCase):
                 )
                 self.assertTrue(result["started"])
                 self.assertTrue(entered.wait(1))
-                self.assertEqual(captured_args[-2], "socks5h://127.0.0.1:1080")
-                self.assertEqual(captured_args[-1]["proxy"], "socks5h://127.0.0.1:1080")
+                self.assertEqual(captured_args[-3], "socks5h://127.0.0.1:1080")
+                self.assertEqual(captured_args[-2]["proxy"], "socks5h://127.0.0.1:1080")
+                self.assertIsNone(captured_args[-1])
                 release.set()
                 deadline = time.time() + 1
                 while dispatcher.is_alive() and time.time() < deadline:

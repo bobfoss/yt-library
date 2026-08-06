@@ -3577,6 +3577,251 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_playlist_worker_targets_one_queue_row_and_uses_its_cookie_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            default_cookie = Path(temp_dir) / "default-cookies.txt"
+            selected_cookie = Path(temp_dir) / "selected-cookies.txt"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.executemany(
+                        "INSERT INTO playlists(playlist_id, title) VALUES (?, ?)",
+                        (("PLother", "Other"), ("PLselected", "Selected")),
+                    )
+                    core.enqueue_playlist_scan_item(conn, "PLother", priority=0)
+                    core.enqueue_playlist_scan_item(
+                        conn,
+                        "PLselected",
+                        priority=1,
+                        manual=True,
+                        payload={"cookie_file": str(selected_cookie)},
+                    )
+                selected_queue_id = int(
+                    conn.execute(
+                        "SELECT queue_id FROM worker_queue WHERE playlist_id = 'PLselected'"
+                    ).fetchone()["queue_id"]
+                )
+            finally:
+                conn.close()
+
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()) as load_opener,
+                patch("yt_library.workers.request_text", return_value="playlist header"),
+                patch(
+                    "yt_library.workers.extract_playlist_metadata",
+                    return_value={"video_count": 1, "has_video_count": True},
+                ),
+                patch(
+                    "yt_library.workers.scan_playlist_ytdlp",
+                    return_value=([{"video_id": "selectedvid1"}], {}),
+                ) as scan_ytdlp,
+                patch("yt_library.workers.save_playlist_scan", return_value=(1, 0)),
+                patch(
+                    "yt_library.workers.enqueue_playlist_metadata_targets",
+                    return_value={"queued_count": 0},
+                ),
+                patch(
+                    "yt_library.workers.enqueue_placeholder_recovery_targets",
+                    return_value={"inserted": 0},
+                ),
+            ):
+                worker._run(
+                    "targeted-playlist-run",
+                    db_path,
+                    default_cookie,
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                    queue_id=selected_queue_id,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                queued = core.playlist_scan_queue_rows(conn)
+            finally:
+                conn.close()
+
+        self.assertEqual([row["playlist_id"] for row in queued], ["PLother"])
+        load_opener.assert_called_once_with(selected_cookie, "")
+        scan_ytdlp.assert_called_once_with("PLselected", selected_cookie, "")
+
+    def test_placeholder_worker_honors_manual_no_api_options_and_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            default_cookie = Path(temp_dir) / "default-cookies.txt"
+            default_thumbs = Path(temp_dir) / "default-thumbs"
+            selected_cookie = Path(temp_dir) / "selected-cookies.txt"
+            selected_thumbs = Path(temp_dir) / "selected-thumbs"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLone', 'One')"
+                    )
+                    core.upsert_video(
+                        conn,
+                        "recoveropts1",
+                        title="Recovery options",
+                        is_playable=False,
+                        source="test",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_items(
+                          playlist_id, position, video_id, membership_state
+                        ) VALUES ('PLone', 1, 'recoveropts1', 'retained_unavailable')
+                        """
+                    )
+                    core.enqueue_placeholder_recovery_item(
+                        conn,
+                        video_id="recoveropts1",
+                        playlist_id="PLone",
+                        current_title="Recovery options",
+                        manual=True,
+                        task_type="thumbnail",
+                        payload={
+                            "cookie_file": str(selected_cookie),
+                            "thumbnail_dir": str(selected_thumbs),
+                            "refresh_metadata": False,
+                            "no_api": True,
+                            "delay_seconds": 1.5,
+                        },
+                    )
+                queue_id = int(
+                    conn.execute("SELECT queue_id FROM worker_queue").fetchone()["queue_id"]
+                )
+            finally:
+                conn.close()
+
+            worker = PlaceholderRecoveryWorker()
+            with (
+                patch("yt_library.workers.archivarix_session_status") as session_status,
+                patch("yt_library.workers.load_cookie_opener", return_value=object()) as load_opener,
+                patch(
+                    "yt_library.workers.recover_archivarix_video",
+                    return_value=(None, "", "", "not_found", ""),
+                ) as recover,
+            ):
+                worker._run(
+                    "manual-placeholder-options",
+                    db_path,
+                    default_cookie,
+                    default_thumbs,
+                    queue_id=queue_id,
+                    retry_attempts=4,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 0)
+                run = conn.execute(
+                    """
+                    SELECT status, recovery_status, request_count
+                    FROM placeholder_recovery_worker_runs
+                    WHERE run_id = 'manual-placeholder-options'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        session_status.assert_not_called()
+        load_opener.assert_called_once_with(selected_cookie, "")
+        self.assertEqual(recover.call_args.args[:2], ("recoveropts1", selected_thumbs))
+        self.assertFalse(recover.call_args.kwargs["refresh_metadata"])
+        self.assertTrue(recover.call_args.kwargs["no_api"])
+        self.assertEqual(recover.call_args.kwargs["delay"], 1.5)
+        self.assertEqual(tuple(run), ("complete", "not_found", 1))
+
+    def test_manual_no_api_error_does_not_block_later_archivarix_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_placeholder_recovery_item(
+                        conn,
+                        video_id="thumbnailerr1",
+                        manual=True,
+                        task_type="thumbnail",
+                        payload={"no_api": True},
+                    )
+                queue_id = int(
+                    conn.execute("SELECT queue_id FROM worker_queue").fetchone()["queue_id"]
+                )
+            finally:
+                conn.close()
+
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.recover_archivarix_video",
+                    return_value=(None, "", "", "error", "thumbnail request failed"),
+                ),
+            ):
+                PlaceholderRecoveryWorker()._run(
+                    "manual-thumbnail-error",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    queue_id=queue_id,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 0)
+                self.assertFalse(core.external_service_block(conn, "archivarix")["blocked"])
+                run = conn.execute(
+                    """
+                    SELECT status, recovery_status, failed, message
+                    FROM placeholder_recovery_worker_runs
+                    WHERE run_id = 'manual-thumbnail-error'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(tuple(run)[:3], ("complete", "error", 1))
+        self.assertIn("Direct thumbnail recovery failed", run["message"])
+
+    def test_dispatcher_can_select_targeted_thumbnail_work_through_api_block(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_placeholder_recovery_item(
+                        conn,
+                        video_id="normalrecover1",
+                        task_type="recover",
+                    )
+                    core.enqueue_placeholder_recovery_item(
+                        conn,
+                        video_id="thumbnailonly1",
+                        task_type="thumbnail",
+                        manual=True,
+                        payload={"no_api": True},
+                    )
+                rows = {
+                    row["video_id"]: int(row["queue_id"])
+                    for row in core.worker_queue_rows(conn)
+                }
+            finally:
+                conn.close()
+
+            selected = WorkerQueueDispatcher()._next_row(
+                db_path,
+                worker_types=("placeholder",),
+                included_queue_ids=frozenset(rows.values()),
+                placeholder_thumbnail_only=True,
+            )
+
+        self.assertEqual(selected["video_id"], "thumbnailonly1")
+        self.assertEqual(selected["queue_id"], rows["thumbnailonly1"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,6 +47,11 @@ versioned migrations as well as creating a fresh current schema.
 - Initialize, Update, and Rebuild share a declarative library queue planner;
   Rebuild regenerates automatic core plan rows while preserving Clip,
   Archivarix-recovery, plugin, and future non-plan work.
+- The compatibility `scan-hidden` and `recover-missing-thumbnails` commands now
+  enqueue and wait on the same playlist-scan and placeholder-recovery workers as
+  the Admin UI. Per-command filters, delays, cookie paths, thumbnail paths, and
+  direct-thumbnail-only mode travel in task payloads instead of invoking legacy
+  orchestration code.
 - YouTube authentication is checked throughout metadata work so an expired cookie stops the run instead of silently degrading later tasks.
 - Admin queue and log views use incremental polling rather than repeatedly transferring full snapshots.
 

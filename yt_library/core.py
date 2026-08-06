@@ -1200,7 +1200,6 @@ def extract_playlist_id(value: str) -> str | None:
         return params["list"][0]
     return None
 
-
 def extract_clip_id(value: str) -> str:
     value = (value or "").strip().rstrip(",")
     if re.fullmatch(r"Ugk[A-Za-z0-9_-]+", value):
@@ -4740,25 +4739,53 @@ def log_placeholder_recovery_event(
     _log_typed_worker_event(conn, "placeholder", run_id, level, message, video_id)
 
 
-def playlist_placeholder_recovery_rows(
+def placeholder_recovery_candidate_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
     offset: int = 0,
-    force: bool = False,
+    include_completed: bool = False,
     playlist_id: str = "",
+    video_id: str = "",
+    only_missing_thumbnails: bool = False,
+    likely_unavailable_only: bool = False,
+    order_by: str = "playlist",
 ) -> list[sqlite3.Row]:
+    if order_by not in {"playlist", "video"}:
+        raise ValueError(f"Unsupported placeholder recovery order: {order_by}")
     where = [
         "pi.video_id IS NOT NULL",
         "(pi.membership_state = 'retained_unavailable' OR v.is_playable = 0)",
     ]
-    if not force:
+    if not include_completed:
         where.append("(r.video_id IS NULL OR r.search_status = 'error')")
     params: list[Any] = []
     if playlist_id:
         where.append("pi.playlist_id = ?")
         params.append(playlist_id)
+    if video_id:
+        where.append("pi.video_id = ?")
+        params.append(video_id)
+    if only_missing_thumbnails:
+        where.append("(r.video_id IS NULL OR v.thumbnail_path = '')")
+    if likely_unavailable_only:
+        where.append(
+            """
+            EXISTS (
+              SELECT 1
+              FROM playlist_scans likely_scan
+              WHERE likely_scan.playlist_id = pi.playlist_id
+                AND likely_scan.unavailable_count > 0
+            )
+            """
+        )
+    ordering = (
+        "pi.video_id"
+        if order_by == "video"
+        else "MIN(p.title) COLLATE NOCASE, MIN(pi.position), pi.video_id"
+    )
     sql = f"""
         SELECT pi.video_id,
+               MIN(pi.playlist_id) AS playlist_id,
                MIN(pi.position) AS display_position,
                MIN(p.title) AS playlist_title,
                MIN(v.title) AS title,
@@ -4770,7 +4797,7 @@ def playlist_placeholder_recovery_rows(
         LEFT JOIN video_recovery r ON r.video_id = pi.video_id
         WHERE {" AND ".join(where)}
         GROUP BY pi.video_id, COALESCE(r.search_status, '')
-        ORDER BY MIN(p.title) COLLATE NOCASE, MIN(pi.position), pi.video_id
+        ORDER BY {ordering}
     """
     if limit:
         sql += " LIMIT ?"
@@ -4779,6 +4806,22 @@ def playlist_placeholder_recovery_rows(
             sql += " OFFSET ?"
             params.append(max(0, offset))
     return conn.execute(sql, params).fetchall()
+
+
+def playlist_placeholder_recovery_rows(
+    conn: sqlite3.Connection,
+    limit: int = 0,
+    offset: int = 0,
+    force: bool = False,
+    playlist_id: str = "",
+) -> list[sqlite3.Row]:
+    return placeholder_recovery_candidate_rows(
+        conn,
+        limit=limit,
+        offset=offset,
+        include_completed=force,
+        playlist_id=playlist_id,
+    )
 
 
 def placeholder_queue_subject_key(video_id: str) -> str:
@@ -4829,11 +4872,21 @@ def enqueue_placeholder_recovery_item(
     playlist_count: int = 0,
     priority: int = 100,
     updated_at: str = "",
+    manual: bool = False,
+    task_type: str = "recover",
+    payload: dict[str, Any] | None = None,
 ) -> bool:
     video_id = (video_id or "").strip()
     if not video_id:
         return False
     subject_key = placeholder_queue_subject_key(video_id)
+    task_type = "thumbnail" if task_type == "thumbnail" else "recover"
+    payload_json = json.dumps(
+        payload or {},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
     queued = conn.execute(
         "SELECT 1 FROM worker_queue WHERE subject_key = ?",
         (subject_key,),
@@ -4843,25 +4896,38 @@ def enqueue_placeholder_recovery_item(
         """
         INSERT INTO worker_queue(
           subject_key, worker_type, task_type, video_id, channel_id, playlist_id,
-          channel_title, current_title, source_key, playlist_count, priority, manual, created_at, updated_at
+          channel_title, current_title, source_key, playlist_count, priority, manual,
+          payload_json, created_at, updated_at
         )
-        VALUES (?, 'placeholder', 'recover', ?, '', ?, '', ?, ?, ?, ?, 0, ?, ?)
+        VALUES (?, 'placeholder', ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(subject_key) DO UPDATE SET
+          task_type=CASE
+            WHEN excluded.manual = 1 THEN excluded.task_type
+            ELSE worker_queue.task_type
+          END,
           playlist_id=COALESCE(NULLIF(excluded.playlist_id, ''), worker_queue.playlist_id),
           current_title=COALESCE(NULLIF(excluded.current_title, ''), worker_queue.current_title),
           source_key=COALESCE(NULLIF(excluded.source_key, ''), worker_queue.source_key),
           playlist_count=MAX(worker_queue.playlist_count, excluded.playlist_count),
           priority=MIN(worker_queue.priority, excluded.priority),
+          manual=MAX(worker_queue.manual, excluded.manual),
+          payload_json=CASE
+            WHEN excluded.manual = 1 THEN excluded.payload_json
+            ELSE worker_queue.payload_json
+          END,
           updated_at=excluded.updated_at
         """,
         (
             subject_key,
+            task_type,
             video_id,
             playlist_id or "",
             current_title or "",
             source_key or "",
             max(0, int(playlist_count or 0)),
             int(priority),
+            1 if manual else 0,
+            payload_json,
             now,
             now,
         ),
@@ -4875,7 +4941,8 @@ def placeholder_worker_queue_rows(
     queue_id: int = 0,
 ) -> list[sqlite3.Row]:
     sql = f"""
-        SELECT queue_id, video_id, playlist_id, current_title, source_key, priority
+        SELECT queue_id, task_type, video_id, playlist_id, current_title,
+               source_key, priority, payload_json
         FROM worker_queue
         WHERE worker_type = 'placeholder'
         ORDER BY {worker_queue_order_sql()}
@@ -7193,6 +7260,7 @@ def enqueue_playlist_scan_item(
     source_key: str = "",
     priority: int = 100,
     manual: bool = False,
+    payload: dict[str, Any] | None = None,
 ) -> str:
     now = utc_now()
     playlist_id = (playlist_id or "").strip()
@@ -7208,13 +7276,20 @@ def enqueue_playlist_scan_item(
         if row:
             title = title or row["title"] or ""
     subject_key = playlist_queue_subject_key(playlist_id)
+    payload_json = json.dumps(
+        payload or {},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
     conn.execute(
         """
         INSERT INTO worker_queue(
           subject_key, worker_type, task_type, video_id, channel_id, playlist_id,
-          channel_title, current_title, source_key, playlist_count, priority, manual, created_at, updated_at
+          channel_title, current_title, source_key, playlist_count, priority, manual,
+          payload_json, created_at, updated_at
         )
-        VALUES (?, 'playlist', 'scan', '', '', ?, '', ?, ?, 0, ?, ?, ?, ?)
+        VALUES (?, 'playlist', 'scan', '', '', ?, '', ?, ?, 0, ?, ?, ?, ?, ?)
         ON CONFLICT(subject_key) DO UPDATE SET
           worker_type='playlist',
           task_type='scan',
@@ -7223,6 +7298,10 @@ def enqueue_playlist_scan_item(
           source_key=COALESCE(NULLIF(excluded.source_key, ''), worker_queue.source_key),
           priority=MIN(worker_queue.priority, excluded.priority),
           manual=MAX(worker_queue.manual, excluded.manual),
+          payload_json=CASE
+            WHEN excluded.manual = 1 THEN excluded.payload_json
+            ELSE worker_queue.payload_json
+          END,
           updated_at=excluded.updated_at
         """,
         (
@@ -7232,6 +7311,7 @@ def enqueue_playlist_scan_item(
             source_key or (playlist_id if manual else ""),
             int(priority),
             1 if manual else 0,
+            payload_json,
             now,
             now,
         ),
@@ -7278,6 +7358,7 @@ def playlist_scan_queue_rows(
     conn: sqlite3.Connection,
     limit: int = 0,
     offset: int = 0,
+    queue_id: int = 0,
 ) -> list[sqlite3.Row]:
     sql = f"""
         SELECT w.queue_id,
@@ -7293,6 +7374,7 @@ def playlist_scan_queue_rows(
                w.source_key,
                w.priority,
                w.manual,
+               w.payload_json,
                w.created_at,
                w.updated_at
         FROM worker_queue w
@@ -7302,6 +7384,12 @@ def playlist_scan_queue_rows(
         ORDER BY {worker_queue_order_sql("w")}
     """
     params: list[Any] = []
+    if queue_id:
+        sql = sql.replace(
+            "WHERE w.worker_type = 'playlist'",
+            "WHERE w.worker_type = 'playlist' AND w.queue_id = ?",
+        )
+        params.append(queue_id)
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
@@ -8712,40 +8800,6 @@ def reconcile_worker_runs(
         conn.close()
 
 
-def scan_hidden(args: argparse.Namespace) -> None:
-    db_path = Path(args.db)
-    conn = connect(db_path)
-    proxy_url = configured_proxy(getattr(args, "config_data", {}))
-    opener = load_cookie_opener(Path(args.cookies), proxy_url)
-    rows = conn.execute(
-        "SELECT playlist_id, title FROM playlists ORDER BY title COLLATE NOCASE"
-    ).fetchall()
-    if args.limit:
-        rows = rows[: args.limit]
-    print(f"Scanning {len(rows)} playlists for unavailable videos...")
-    total_hidden = 0
-    for index, row in enumerate(rows, start=1):
-        playlist_id = row["playlist_id"]
-        title = row["title"]
-        status = "ok"
-        error = ""
-        videos: list[dict[str, Any]] = []
-        try:
-            videos = scan_playlist_videos(opener, playlist_id, Path(args.cookies))
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-            status = "error"
-            error = str(exc)
-        unavailable_count = sum(1 for video in videos if not video["is_playable"])
-        total_hidden += unavailable_count
-        with conn:
-            save_playlist_scan(conn, playlist_id, videos, status, error)
-        suffix = f"{unavailable_count} unavailable / {len(videos)} videos"
-        if status != "ok":
-            suffix = f"ERROR {error}"
-        print(f"[{index:03d}/{len(rows):03d}] {suffix} - {title}")
-    print(f"Found {total_hidden} unavailable videos.")
-
-
 def recover_archivarix_thumbnails(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     thumb_dir = Path(args.thumbs)
@@ -9359,102 +9413,3 @@ def import_history(args: argparse.Namespace) -> dict[str, Any]:
         f"Loaded {playlist_stats['playlists']} playlists and {playlist_stats['items']} playlist items."
     )
     return result
-
-
-def recover_unavailable_videos(args: argparse.Namespace) -> None:
-    db_path = Path(args.db)
-    thumb_dir = Path(args.thumbs)
-    conn = connect(db_path)
-    proxy_url = configured_proxy(getattr(args, "config_data", {}))
-    archivarix_opener = load_cookie_opener(
-        Path(args.archivarix_cookies),
-        proxy_url,
-    )
-    where_clauses = [
-        "pi.video_id IS NOT NULL",
-        "(pi.membership_state = 'retained_unavailable' OR v.is_playable = 0)",
-    ]
-    params: list[Any] = []
-    if args.likely_unavailable_only:
-        where_clauses.append(
-            """
-            EXISTS (
-              SELECT 1
-              FROM playlist_scans ps
-              WHERE ps.playlist_id = pi.playlist_id
-                AND ps.unavailable_count > 0
-            )
-            """
-        )
-    rows = conn.execute(
-        f"""
-        SELECT DISTINCT pi.video_id
-        FROM playlist_items pi
-        JOIN playlists p ON p.playlist_id = pi.playlist_id
-        JOIN videos v ON v.video_id = pi.video_id
-        WHERE {" AND ".join(where_clauses)}
-        ORDER BY sv.video_id
-        """,
-        params,
-    ).fetchall()
-    if args.video_id:
-        rows = [row for row in rows if row["video_id"] == args.video_id]
-    if args.only_missing:
-        rows = [
-            row
-            for row in rows
-            if conn.execute(
-                """
-                SELECT 1
-                FROM video_recovery vr
-                JOIN videos v ON v.video_id = vr.video_id
-                WHERE vr.video_id = ? AND v.thumbnail_path <> ''
-                """,
-                (row["video_id"],),
-            ).fetchone()
-            is None
-        ]
-    if args.limit:
-        rows = rows[: args.limit]
-    scope = "likely unavailable" if args.likely_unavailable_only else "unavailable"
-    print(f"Recovering Archivarix thumbnails for {len(rows)} {scope} video IDs...")
-    found = 0
-    cached = 0
-    channel_cache: dict[str, dict[str, Any]] = {}
-    for index, row in enumerate(rows, start=1):
-        video_id = row["video_id"]
-        video, thumbnail_url, thumbnail_path, status, error = recover_archivarix_video(
-            video_id,
-            thumb_dir,
-            archivarix_opener,
-            refresh_metadata=args.refresh_metadata,
-            no_api=args.no_api,
-            delay=args.delay,
-            channel_cache=channel_cache,
-        )
-        if status == "thumbnail_only":
-            cached += 1
-        if video:
-            found += 1
-            if thumbnail_path:
-                cached += 1
-        with conn:
-            save_video_recovery(
-                conn,
-                video_id,
-                video,
-                status,
-                error,
-                thumbnail_url,
-                thumbnail_path,
-            )
-        label = (video or {}).get("title") or video_id
-        suffix = "thumbnail" if thumbnail_path else status
-        print(f"[{index:03d}/{len(rows):03d}] {suffix} - {label}")
-    with conn:
-        reconcile_stats = rebuild_playlist_reconciliation(conn)
-    print(f"Found {found} Archivarix records and cached {cached} thumbnails.")
-    print(
-        f"Reconciled {reconcile_stats['rows']} playlist rows across "
-        f"{reconcile_stats['playlists']} playlists."
-    )
