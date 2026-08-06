@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from yt_library import core, workers
 from yt_library.config import load_config
+from yt_library.my_activity import MyActivityError
 from yt_library.queries import channel_list_data
 from yt_library.youtube_data_api import (
     YouTubeAccountSnapshot,
@@ -250,6 +251,40 @@ class YouTubeDataApiTests(unittest.TestCase):
         self.assertEqual(remaining, 0)
         self.assertTrue(any("My Activity cookies are not configured" in value for value in messages))
         self.assertTrue(any("OAuth is not configured" in value for value in messages))
+
+    def test_optional_account_sync_retains_queue_item_when_configured_source_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "library.sqlite3"
+            core.migrate_database(db_path)
+            config = load_config(root / "config.json")
+            (root / "my_activity_cookies.txt").write_text("provided", encoding="utf-8")
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    core.enqueue_account_sync_task(conn, manual=True)
+                queue_id = conn.execute(
+                    "SELECT queue_id FROM worker_queue WHERE subject_key='account:sync'"
+                ).fetchone()[0]
+                with patch(
+                    "yt_library.workers.fetch_my_activity_pages",
+                    side_effect=MyActivityError("refresh the cookie export"),
+                ):
+                    result = workers.run_optional_account_sync(
+                        db_path,
+                        config,
+                        "UTC",
+                        queue_id,
+                    )
+                remaining = conn.execute(
+                    "SELECT COUNT(*) FROM worker_queue WHERE subject_key='account:sync'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertFalse(result["completed"])
+        self.assertIsNone(result["proxy_error"])
+        self.assertEqual(remaining, 1)
 
     def test_channel_date_sort_prefers_subscription_date(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -124,7 +124,7 @@ from .core import (
     youtube_takeout_match_count,
 )
 from .my_activity import MyActivityError, fetch_my_activity_pages
-from .network import ProxyUnavailableError, probe_socks5_proxy
+from .network import ProxyUnavailableError, probe_socks5_proxy, proxy_unavailable_error
 from .plugins import PluginManager, PluginTaskWorker
 from .request_pacing import pace_outbound_request
 from .youtube_data_api import (
@@ -2411,9 +2411,12 @@ def run_optional_account_sync(
     config: dict[str, Any],
     timezone_name: str,
     queue_id: int,
-) -> None:
+) -> dict[str, Any]:
     """Collect optional account-level timestamp sources without blocking other work."""
 
+    retry_required = False
+    detected_proxy_error: ProxyUnavailableError | None = None
+    proxy_url = configured_proxy(config)
     my_activity_cookie = config_path(config, "my_activity_cookies")
     if not my_activity_cookie.is_file():
         conn = connect(db_path)
@@ -2431,7 +2434,7 @@ def run_optional_account_sync(
             pages = fetch_my_activity_pages(
                 my_activity_cookie,
                 max_pages=25,
-                proxy_url=configured_proxy(config),
+                proxy_url=proxy_url,
             )
             watch_events = sorted(
                 {event.event_id: event for page in pages for event in page.events}.values(),
@@ -2479,6 +2482,8 @@ def run_optional_account_sync(
             finally:
                 conn.close()
         except (MyActivityError, OSError, RuntimeError) as exc:
+            retry_required = True
+            detected_proxy_error = proxy_unavailable_error(exc, proxy_url)
             conn = connect(db_path)
             try:
                 with conn:
@@ -2507,7 +2512,7 @@ def run_optional_account_sync(
             service = build_youtube_data_service(
                 config_path(config, "youtube_oauth_client_secrets"),
                 token_path,
-                configured_proxy(config),
+                proxy_url,
             )
             snapshot = fetch_youtube_account_snapshot(
                 service,
@@ -2531,6 +2536,10 @@ def run_optional_account_sync(
             finally:
                 conn.close()
         except (YouTubeDataApiNotConfigured, YouTubeDataApiError, OSError, RuntimeError) as exc:
+            retry_required = True
+            detected_proxy_error = (
+                detected_proxy_error or proxy_unavailable_error(exc, proxy_url)
+            )
             conn = connect(db_path)
             try:
                 with conn:
@@ -2542,12 +2551,17 @@ def run_optional_account_sync(
             finally:
                 conn.close()
 
-    conn = connect(db_path)
-    try:
-        with conn:
-            remove_worker_queue_entry(conn, queue_id)
-    finally:
-        conn.close()
+    if not retry_required:
+        conn = connect(db_path)
+        try:
+            with conn:
+                remove_worker_queue_entry(conn, queue_id)
+        finally:
+            conn.close()
+    return {
+        "completed": not retry_required,
+        "proxy_error": detected_proxy_error,
+    }
 
 
 class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
@@ -2927,6 +2941,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
         archivarix_blocked = bool(archivarix_block["blocked"])
         proxy_blocked = bool(proxy_block["blocked"])
         youtube_blocked = False
+        deferred_queue_ids: set[int] = set()
         self._placeholder_block_reason = str(archivarix_block["message"])
         if proxy_blocked:
             conn = connect(db_path)
@@ -3123,7 +3138,11 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                 row = self._next_row(
                     db_path,
                     tuple(eligible_worker_types),
-                    metadata_queue_ids | clip_queue_ids | placeholder_queue_ids | plugin_queue_ids,
+                    metadata_queue_ids
+                    | clip_queue_ids
+                    | placeholder_queue_ids
+                    | plugin_queue_ids
+                    | deferred_queue_ids,
                     eligible_plugin_processes,
                     target_queue_ids,
                     archivarix_blocked,
@@ -3286,7 +3305,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                             launched = True
                             launched_at = time.monotonic()
                 elif worker_type == "account":
-                    run_optional_account_sync(
+                    account_result = run_optional_account_sync(
                         db_path,
                         config or {},
                         timezone_name,
@@ -3294,8 +3313,24 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     )
                     launched = True
                     launched_at = time.monotonic()
-                    if not self._stop.is_set():
+                    if account_result["completed"] and not self._stop.is_set():
                         self._mark_completed()
+                    else:
+                        deferred_queue_ids.add(queue_id)
+                        proxy_error = account_result.get("proxy_error")
+                        if isinstance(proxy_error, ProxyUnavailableError):
+                            conn = connect(db_path)
+                            try:
+                                with conn:
+                                    record_proxy_hold(
+                                        conn,
+                                        self,
+                                        proxy_error,
+                                        queue_id=queue_id,
+                                    )
+                            finally:
+                                conn.close()
+                            proxy_blocked = True
                 else:
                     self._drop_unknown_row(db_path, row)
                     self._mark_completed()

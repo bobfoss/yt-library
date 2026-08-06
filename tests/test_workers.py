@@ -3577,6 +3577,110 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_account_proxy_failure_stops_dispatch_and_retains_account_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "library.sqlite3"
+            (root / "my_activity_cookies.txt").write_text("provided", encoding="utf-8")
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_account_sync_task(conn, priority=-4, manual=False)
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="after-account-proxy",
+                        current_title="After account proxy",
+                        priority=0,
+                    )
+                account_queue_id = conn.execute(
+                    "SELECT queue_id FROM worker_queue WHERE subject_key='account:sync'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+            dispatcher = WorkerQueueDispatcher()
+            config = load_config(root / "config.json")
+            config.update(
+                {
+                    "use_proxy": True,
+                    "proxy": "socks5h://127.0.0.1:1081",
+                    "job_dispatch_delay_seconds": 0,
+                }
+            )
+            with patch(
+                "yt_library.workers.fetch_my_activity_pages",
+                side_effect=network.ProxyUnavailableError(
+                    "SOCKS5 proxy 127.0.0.1:1081 is unavailable"
+                ),
+            ) as fetch_activity:
+                dispatcher._run(
+                    db_path,
+                    root / "youtube-cookies.txt",
+                    root / "video-thumbs",
+                    "UTC",
+                    root / "archivarix-cookies.txt",
+                    root / "archivarix-thumbs",
+                    proxy_url=config["proxy"],
+                    config=config,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "account"), 1)
+                self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 1)
+                block = core.external_service_block(conn, "proxy")
+                self.assertTrue(block["blocked"])
+                self.assertEqual(block["queue_id"], account_queue_id)
+                messages = [
+                    row["message"]
+                    for row in conn.execute(
+                        "SELECT message FROM metadata_worker_log ORDER BY id"
+                    )
+                ]
+            finally:
+                conn.close()
+
+            self.assertEqual(fetch_activity.call_count, 1)
+            self.assertTrue(
+                any("pending items were retained" in message for message in messages)
+            )
+
+    def test_account_failure_is_deferred_until_the_next_queue_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "library.sqlite3"
+            (root / "my_activity_cookies.txt").write_text("provided", encoding="utf-8")
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_account_sync_task(conn, priority=-4, manual=False)
+            finally:
+                conn.close()
+
+            dispatcher = WorkerQueueDispatcher()
+            config = load_config(root / "config.json")
+            with patch(
+                "yt_library.workers.fetch_my_activity_pages",
+                side_effect=workers.MyActivityError("refresh the cookie export"),
+            ) as fetch_activity:
+                dispatcher._run(
+                    db_path,
+                    root / "youtube-cookies.txt",
+                    root / "video-thumbs",
+                    "UTC",
+                    root / "archivarix-cookies.txt",
+                    root / "archivarix-thumbs",
+                    config=config,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "account"), 1)
+                self.assertFalse(core.external_service_block(conn, "proxy")["blocked"])
+            finally:
+                conn.close()
+            self.assertEqual(fetch_activity.call_count, 1)
+
     def test_playlist_worker_targets_one_queue_row_and_uses_its_cookie_override(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
