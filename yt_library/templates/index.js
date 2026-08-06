@@ -1730,35 +1730,26 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true) {
     return;
   }
   const facetKeys = searchKindFacetKeys(kind);
-  if (facetKeys.length > 1) {
-    const facetSelections = facetKeys.map(
-      key => Object.values(searchMetaVisibility[key])
-    );
-    if (kind === 'videos') {
-      facetSelections.push(
-        ...browserVideoFilterPlugins().map(plugin => (
-          Object.values(browserVideoFacetState(plugin))
-        )),
-      );
-    }
-    const everyFacetHasSelection = facetSelections.every(values => values.some(Boolean));
-    const allChildrenSelected = facetSelections.every(values => values.every(Boolean));
-    parent.checked = everyFacetHasSelection;
-    parent.indeterminate = everyFacetHasSelection && !allChildrenSelected;
-    if (applyDisabledStyles) {
-      for (const row of searchForFilters.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
-        row.classList.toggle('dimmed', !everyFacetHasSelection);
-      }
-      parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !everyFacetHasSelection);
-    }
-    return;
-  }
-  syncFilterGroup(
-    parent,
-    [...searchForFilters.querySelectorAll(`[data-meta-child-filter="search-${kind}"]`)],
+  if (!facetKeys.length) return;
+  const facetSelections = facetKeys.map(
+    key => Object.values(searchMetaVisibility[key])
   );
+  if (kind === 'videos') {
+    facetSelections.push(
+      ...browserVideoFilterPlugins().map(plugin => (
+        Object.values(browserVideoFacetState(plugin))
+      )),
+    );
+  }
+  const everyFacetHasSelection = facetSelections.every(values => values.some(Boolean));
+  const allChildrenSelected = facetSelections.every(values => values.every(Boolean));
+  parent.checked = everyFacetHasSelection;
+  parent.indeterminate = everyFacetHasSelection && !allChildrenSelected;
   if (applyDisabledStyles) {
-    parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !parent.checked);
+    for (const row of searchForFilters.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
+      row.classList.toggle('dimmed', !everyFacetHasSelection);
+    }
+    parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !everyFacetHasSelection);
   }
 }
 
@@ -3311,6 +3302,7 @@ function renderSearchMetaFilters({
   }
   for (const kind of [
     'videos',
+    'clips',
     'playlists',
     'channels',
     ...browserResultSearchPlugins().map(plugin => plugin.id),

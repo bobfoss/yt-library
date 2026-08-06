@@ -263,6 +263,23 @@ test('search filters share deferred category dimming until refreshed results ren
   assert.match(indexSource, /function renderSearchMetaFilters[\s\S]*?for \(const kind of \[[\s\S]*?syncSearchKindFilter\(kind\)/);
 });
 
+test('single-facet result kinds use the same parent state calculation', () => {
+  const indexSource = source('index.js');
+  const start = indexSource.indexOf('function syncSearchKindFilter(');
+  const end = indexSource.indexOf('\nfunction searchKindForFacet(', start);
+  const functionSource = indexSource.slice(start, end);
+
+  assert.match(functionSource, /const facetSelections = facetKeys\.map/);
+  assert.match(functionSource, /parent\.checked = everyFacetHasSelection/);
+  assert.match(functionSource, /parent\.indeterminate = everyFacetHasSelection && !allChildrenSelected/);
+  assert.doesNotMatch(functionSource, /facetKeys\.length > 1/);
+  assert.doesNotMatch(functionSource, /data-meta-child-filter="search-\$\{kind\}"/);
+  assert.match(
+    indexSource,
+    /for \(const kind of \[[\s\S]{0,100}'videos',[\s\S]{0,40}'clips',[\s\S]{0,40}'playlists',[\s\S]{0,40}'channels'/,
+  );
+});
+
 test('video presets restore plugin-provided facets', () => {
   const indexSource = source('index.js');
 
