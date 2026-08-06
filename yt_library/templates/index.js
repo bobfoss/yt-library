@@ -4805,7 +4805,7 @@ function cardFor(playlist, options = {}) {
       ${playlistStatusLabelHtml(playlist)}
     </div>
     <div class="details">
-      ${playlist.playlist_id ? `<span>${escapeHtml(playlist.playlist_id)}</span>` : ''}
+      ${playlist.playlist_id ? `<span class="playlist-id">${escapeHtml(playlist.playlist_id)}</span>` : ''}
       ${playlistCreatedHtml(playlist)}
     </div>
     `,

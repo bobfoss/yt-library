@@ -133,6 +133,14 @@ test('playlist cards show visibility before counts and pluralize video counts', 
   assert.match(indexSource, /count === 1 \? 'video' : 'videos'/);
 });
 
+test('compact playlist cards hide playlist ids without removing them from other layouts', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+
+  assert.match(indexSource, /class="playlist-id">\$\{escapeHtml\(playlist\.playlist_id\)\}/);
+  assert.match(indexHtml, /\.search-grid\.layout-compact \.playlist-id,/);
+});
+
 test('playlist cards render one owner separately from collaborators', () => {
   const indexSource = source('index.js');
 
