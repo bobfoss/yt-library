@@ -830,6 +830,14 @@ class AdminServerTests(unittest.TestCase):
         )
 
         handler._send_bytes.reset_mock()
+        self.assertTrue(handler._handle_page_get("/admin-transport.js"))
+        handler._send_bytes.assert_called_once_with(
+            server.ADMIN_TRANSPORT_JS.encode("utf-8"),
+            "text/javascript; charset=utf-8",
+            cache_control="no-cache",
+        )
+
+        handler._send_bytes.reset_mock()
         self.assertTrue(handler._handle_page_get("/admin.js"))
         handler._send_bytes.assert_called_once_with(
             server.ADMIN_JS.encode("utf-8"),

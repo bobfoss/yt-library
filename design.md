@@ -23,7 +23,8 @@ The app is intentionally compact but no longer single-file. `yt_library_manager.
 - `yt_library/queries.py` owns read models for browser and history views.
 - `yt_library/schema.sql` is the canonical SQLite schema for fresh local databases.
 - `yt_library/templates/` contains the browser and admin HTML plus shared
-  browser-side modules for timezone, card rendering, and History workflow state.
+  browser-side modules for timezone, card rendering, History workflow state,
+  and Admin request transport.
 
 Primary surfaces:
 
@@ -40,6 +41,13 @@ page and activity loading, occurrence-card rendering, pagination, adjacent-page
 prefetch, and stale-generation rejection. `history-workflow.js` also owns the
 transaction boundary for heatmap year, Today, and Sync changes so a failed or
 superseded transition restores the complete prior date, page, and sync state.
+
+Admin actions that send URL-parameter POST requests share one JSON/error
+transport. Callers continue to own their distinct user-interface policy:
+ordinary actions refresh status and schedule follow-up polling, queue stop
+updates its controls before the request, and restart-sensitive settings wait
+for a replacement service. Cookie replacement remains a separate raw-text
+request because its body and security handling are meaningfully different.
 
 SQLite is the source of truth for local state. Cached thumbnails and avatars are derived local assets. Cookie files, Takeout zips, databases, logs, and thumbnail folders are private runtime data and should remain uncommitted.
 

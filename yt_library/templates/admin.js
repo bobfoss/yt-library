@@ -1,3 +1,5 @@
+const AdminTransport = window.YTLibraryAdminTransport;
+
 const fields = {
   initializeControls: document.getElementById('initializeControls'),
   initializeLibrary: document.getElementById('initializeLibrary'),
@@ -993,30 +995,9 @@ async function post(path, params = {}) {
   if (path === '/api/admin/queue/start') {
     fields.startWorkerQueue.classList.remove('primary');
   }
-  const response = await fetch(`${path}?${new URLSearchParams(params)}`, { method: 'POST' });
-  let payload = {};
-  try {
-    payload = await response.json();
-  } catch (error) {
-    // A process restart can close the connection immediately after a valid response.
-  }
-  if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
+  const payload = await AdminTransport.postJson(path, params);
   await loadStatus({ force: true });
   scheduleActionPolls();
-  return payload;
-}
-
-async function requestJson(path, params = {}) {
-  const response = await fetch(`${path}?${new URLSearchParams(params)}`, { method: 'POST' });
-  let payload = {};
-  try {
-    payload = await response.json();
-  } catch (error) {
-    // A process restart can close the connection immediately after a valid response.
-  }
-  if (!response.ok) {
-    throw new Error(payload.error || `Request failed: ${response.status}`);
-  }
   return payload;
 }
 
@@ -1059,7 +1040,7 @@ async function saveAdminSettings() {
   fields.settingsStatus.textContent = 'Saving';
   const previousPid = currentServicePid;
   try {
-    const payload = await requestJson('/api/admin/settings', {
+    const payload = await AdminTransport.postJson('/api/admin/settings', {
       display_timezone: fields.displayTimezone.value.trim(),
       use_proxy: fields.useProxy.checked ? '1' : '0',
       proxy: fields.proxyUrl.value.trim(),
@@ -1093,7 +1074,7 @@ async function saveAdvancedMode() {
   advancedSaving = true;
   advancedDirty = false;
   try {
-    const payload = await requestJson('/api/admin/advanced', {
+    const payload = await AdminTransport.postJson('/api/admin/advanced', {
       enabled: enabled ? '1' : '0',
     });
     savedAdvanced = Boolean(payload.settings?.adminAdvanced);
@@ -1120,7 +1101,7 @@ async function restartServiceNow() {
   const previousPid = currentServicePid;
   fields.settingsStatus.textContent = 'Restarting';
   try {
-    const payload = await requestJson('/api/admin/service/restart');
+    const payload = await AdminTransport.postJson('/api/admin/service/restart');
     await waitForServiceRestart(payload.service?.pid || previousPid);
     fields.settingsStatus.textContent = '';
   } catch (error) {
@@ -1133,10 +1114,9 @@ async function stopWorkersNow() {
   fields.commonWorkerState.textContent = 'stopping';
   fields.startWorkerQueue.classList.remove('primary');
   fields.stopWorkerQueue.classList.add('danger');
-  const response = await fetch('/api/admin/queue/stop', { method: 'POST' });
-  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+  const payload = await AdminTransport.postJson('/api/admin/queue/stop');
   scheduleActionPolls();
-  return response.json();
+  return payload;
 }
 
 async function saveDispatchSettings() {
@@ -1173,7 +1153,7 @@ async function saveDispatchSettings() {
   dispatchSettingsSaving = true;
   fields.dispatchSettingsStatus.textContent = 'Saving';
   try {
-    const payload = await requestJson('/api/admin/dispatch-settings', {
+    const payload = await AdminTransport.postJson('/api/admin/dispatch-settings', {
       dispatch_mode: dispatchMode,
       job_dispatch_delay_seconds: jobDispatchDelay,
       request_delay_min_seconds: requestDelayMin,
@@ -1241,7 +1221,7 @@ async function saveUpdateSchedule() {
   fields.updateScheduleStatus.textContent = 'Saving';
   fields.updateScheduleStatus.className = 'metric';
   try {
-    await requestJson('/api/admin/update-schedule', {
+    await AdminTransport.postJson('/api/admin/update-schedule', {
       frequency,
       at,
       minute,
@@ -1427,7 +1407,7 @@ async function enqueuePluginProcess(event) {
   button.disabled = true;
   if (status) status.textContent = 'Planning tasks';
   try {
-    const result = await requestJson(
+    const result = await AdminTransport.postJson(
       `/api/admin/plugins/${encodeURIComponent(pluginId)}/processes/${encodeURIComponent(workerId)}/enqueue`,
       params,
     );
@@ -1454,7 +1434,7 @@ async function savePluginEnabled(event) {
   toggle.disabled = true;
   if (status) status.textContent = 'Saving';
   try {
-    const payload = await requestJson(
+    const payload = await AdminTransport.postJson(
       `/api/admin/plugins/${encodeURIComponent(pluginId)}/enabled`,
       { enabled: enabled ? '1' : '0' },
     );

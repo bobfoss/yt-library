@@ -54,6 +54,9 @@ versioned migrations as well as creating a fresh current schema.
   orchestration code.
 - YouTube authentication is checked throughout metadata work so an expired cookie stops the run instead of silently degrading later tasks.
 - Admin queue and log views use incremental polling rather than repeatedly transferring full snapshots.
+- Admin parameter POSTs share one JSON/error transport. Action refresh and
+  polling, immediate queue-stop controls, and restart waiting remain explicit
+  caller policies; raw cookie-file uploads retain their separate text body.
 
 ### Browser Workflow
 

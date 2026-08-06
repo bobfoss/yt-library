@@ -13,6 +13,7 @@ const assetNames = [
   'entity-card-extensions.js',
   'history-workflow.js',
   'index.js',
+  'admin-transport.js',
   'admin.js',
 ];
 
@@ -201,6 +202,23 @@ test('history day keys use the configured display timezone', () => {
 
   assert.equal(time.dateKey('2026-08-01T06:59:45.594617Z'), '2026-07-31');
   assert.equal(time.dateKey('2026-08-01'), '2026-08-01');
+});
+
+test('admin parameter posts use the shared transport with caller-owned effects', () => {
+  const adminSource = source('admin.js');
+
+  assert.match(adminSource, /const AdminTransport = window\.YTLibraryAdminTransport;/);
+  assert.doesNotMatch(adminSource, /async function requestJson\(/);
+  assert.match(
+    adminSource,
+    /async function post\(path, params = \{\}\)[\s\S]{0,320}AdminTransport\.postJson\(path, params\)[\s\S]{0,180}loadStatus\(\{ force: true \}\)[\s\S]{0,100}scheduleActionPolls\(\)/,
+  );
+  assert.match(
+    adminSource,
+    /async function stopWorkersNow\(\)[\s\S]{0,400}AdminTransport\.postJson\('\/api\/admin\/queue\/stop'\)[\s\S]{0,100}scheduleActionPolls\(\)/,
+  );
+  assert.match(adminSource, /AdminTransport\.postJson\('\/api\/admin\/service\/restart'\)/);
+  assert.equal((adminSource.match(/method: 'POST'/g) || []).length, 1);
 });
 
 test('history heatmaps track the first fully visible card', () => {

@@ -145,6 +145,7 @@ COLLECTION_CARD_JS = load_template("collection-card.js")
 ENTITY_CARD_EXTENSIONS_JS = load_template("entity-card-extensions.js")
 HISTORY_WORKFLOW_JS = load_template("history-workflow.js")
 INDEX_JS = load_template("index.js")
+ADMIN_TRANSPORT_JS = load_template("admin-transport.js")
 ADMIN_JS = load_template("admin.js")
 FAVICON_SVG = load_template("favicon.svg")
 
@@ -644,6 +645,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 "text/javascript; charset=utf-8",
             ),
             "/index.js": (INDEX_JS, "text/javascript; charset=utf-8"),
+            "/admin-transport.js": (
+                ADMIN_TRANSPORT_JS,
+                "text/javascript; charset=utf-8",
+            ),
             "/admin.js": (ADMIN_JS, "text/javascript; charset=utf-8"),
         }
         asset = static_assets.get(path)
