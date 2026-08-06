@@ -604,4 +604,12 @@ test('video-card helpers escape markup and clamp watch progress', () => {
     source('index.js'),
     /const compactWatchCountHtml = VideoCard\.compactWatchCountHtml;/,
   );
+  assert.match(
+    source('video-card.js'),
+    /class="video-availability-row"[^`]+compactAvailabilityHtml/,
+  );
+  assert.match(
+    source('index.js'),
+    /class="compact-video-duration"/,
+  );
 });

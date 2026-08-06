@@ -261,9 +261,12 @@
       ${options.channelHtml ? `<div class="details video-card-channel">${options.channelHtml}</div>` : ''}
       ${options.position ? `<div class="position">#${escapeHtml(options.position)}</div>` : ''}
       ${titleHtml(options)}
-      ${options.availabilityHtml || ''}
+      ${options.availabilityHtml
+        ? `<div class="video-availability-row">${options.availabilityHtml}${options.compactAvailabilityHtml || ''}</div>`
+        : ''}
       ${badgeRowsHtml(options.badges)}
       ${detailRowHtml(options.details)}
+      ${detailRowHtml(options.durationDetails, 'details video-duration-details')}
       ${detailRowHtml(options.identifiers, 'details video-identifiers')}
       ${options.recoveryHtml || ''}
       ${options.watchDateHtml || ''}

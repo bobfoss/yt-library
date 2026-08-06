@@ -4936,6 +4936,7 @@ function playlistVideoCardFor(video, options = {}) {
   const watchUrl = youtubeWatchUrl(video);
   const channelName = displayVideoChannel(video);
   const channelUrl = displayVideoChannelLocalUrl(video);
+  const duration = displayVideoDuration(video);
   return videoCardFor({
     thumbnailPath: video.metadata_thumbnail_path,
     progressVideo: video,
@@ -4952,7 +4953,9 @@ function playlistVideoCardFor(video, options = {}) {
     ],
     details: [
       ...(options.details || []),
-      displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : '',
+    ],
+    durationDetails: [
+      duration ? `<span>${escapeHtml(duration)}</span>` : '',
     ],
     identifiers: [
       video.video_id ? `<span class="video-id">${escapeHtml(video.video_id)}</span>` : '',
@@ -4965,6 +4968,9 @@ function playlistVideoCardFor(video, options = {}) {
     watchDateHtml: options.watchDateHtml || '',
     latestWatchDateHtml: options.latestWatchDateHtml || '',
     availabilityHtml: videoAvailabilityHtml(video),
+    compactAvailabilityHtml: duration
+      ? `<span class="compact-video-duration">${escapeHtml(duration)}</span>`
+      : '',
     watchedHtml: watchedLineHtml(video),
     sparklineHtml: watchSparklineHtml(video),
     reactionHtml: reactionIconsHtml(video),

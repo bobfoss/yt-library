@@ -300,8 +300,29 @@
     .search-grid.layout-compact .reaction-line,
     .search-grid.layout-compact .uploader-category,
     .search-grid.layout-compact .video-identifiers,
+    .search-grid.layout-compact .video-duration-details,
     .search-grid.layout-compact .archivarix-status,
     .search-grid.layout-compact .playlist-sources { display: none; }
+    .video-availability-row { display: contents; }
+    .compact-video-duration { display: none; }
+    .search-grid.layout-compact .video-availability-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 7px;
+    }
+    .search-grid.layout-compact .video-availability-row .video-availability {
+      display: flex;
+      align-items: center;
+      margin-top: 0;
+    }
+    .search-grid.layout-compact .video-availability-row > .badge-lines { margin-top: 0; }
+    .search-grid.layout-compact .compact-video-duration {
+      display: inline;
+      color: var(--muted);
+      font-size: 13px;
+    }
     .compact-watch-count { display: none; }
     .search-grid.layout-compact .compact-watch-count { display: inline; }
     .search-grid.layout-compact .watched-count { display: none; }
