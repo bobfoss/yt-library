@@ -9,10 +9,14 @@ stops the listener and its venv launcher, confirms that the port is closed,
 launches .venv\Scripts\python.exe directly with a hidden window, redirects the
 service streams to .codex\service-logs, verifies the listener/venv process
 chain, and resumes the queue only when it was running before a restart.
+Repository-scoped locking serializes mutating operations from concurrent chats.
+When a call encounters an active operation, it emits a warning before waiting
+and reports the lock wait in the returned result.
 
-Operational transitions and failures are appended to
-.codex\service-logs\service-control.log. Each launch also gets timestamped
-stdout and stderr files in that directory.
+Mutating operations write transitions and failures to the bounded rolling
+.codex\service-logs\service-control.log. The current service run writes to the
+fixed service.stdout.log and service.stderr.log paths in that directory. New
+launches replace the stream logs and remove legacy service-launch files.
 
 .PARAMETER Action
 status, start, restart, or stop. The default is status.
@@ -61,7 +65,14 @@ $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
 $managerScript = "yt_library_manager.py"
 $logDirectory = Join-Path $repoRoot ".codex\service-logs"
 $controlLogPath = Join-Path $logDirectory "service-control.log"
+$controlLogMaxBytes = 262144
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
+$repoNameBytes = [System.Text.Encoding]::UTF8.GetBytes($repoRoot.ToLowerInvariant())
+$repoNameHash = [System.Security.Cryptography.SHA256]::HashData($repoNameBytes)
+$repoNameToken = [System.Convert]::ToHexString($repoNameHash).Substring(0, 16)
+$operationMutexName = "Local\YTLibraryServiceControl-$repoNameToken"
+$operationLockWaited = $false
+$operationLockWaitSeconds = 0.0
 
 function Write-ControlLog {
     param(
@@ -72,8 +83,28 @@ function Write-ControlLog {
 
     $timestamp = (Get-Date).ToUniversalTime().ToString("o")
     $line = "$timestamp [$Level] $Message"
+    if (
+        (Test-Path -LiteralPath $controlLogPath -PathType Leaf) -and
+        (Get-Item -LiteralPath $controlLogPath).Length -ge $controlLogMaxBytes
+    ) {
+        $recentLines = Get-Content -LiteralPath $controlLogPath -Tail 500
+        Set-Content -LiteralPath $controlLogPath -Value $recentLines -Encoding utf8
+    }
     Add-Content -LiteralPath $controlLogPath -Value $line -Encoding utf8
     Write-Verbose $line
+}
+
+function Reset-ServiceRunLogs {
+    Get-ChildItem -LiteralPath $logDirectory -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -in @(
+                "service.stdout.log",
+                "service.stderr.log",
+                "latest-launcher-pid.txt"
+            ) -or
+            $_.Name -match '^(service|yt-library|ytl).*[-.](out|err|stdout|stderr)\.log$'
+        } |
+        Remove-Item -Force
 }
 
 function Get-ObjectValue {
@@ -276,9 +307,9 @@ function Start-ServiceProcess {
         throw "Port $($serviceConfig.Port) is already in use"
     }
 
-    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $stdoutPath = Join-Path $logDirectory "service-$timestamp.stdout.log"
-    $stderrPath = Join-Path $logDirectory "service-$timestamp.stderr.log"
+    Reset-ServiceRunLogs
+    $stdoutPath = Join-Path $logDirectory "service.stdout.log"
+    $stderrPath = Join-Path $logDirectory "service.stderr.log"
     $start = @{
         FilePath = $venvPython
         ArgumentList = $managerScript
@@ -360,6 +391,8 @@ function Resume-Queue {
 function Write-Result {
     param([object]$Result)
 
+    $Result | Add-Member -NotePropertyName OperationLockWaited -NotePropertyValue $operationLockWaited
+    $Result | Add-Member -NotePropertyName OperationLockWaitSeconds -NotePropertyValue $operationLockWaitSeconds
     if ($Json) {
         Write-Output ($Result | ConvertTo-Json -Depth 6 -Compress)
     }
@@ -368,12 +401,51 @@ function Write-Result {
     }
 }
 
+$operationMutex = $null
+$operationLockHeld = $false
+
 try {
+    if ($Action -ne "status") {
+        $operationMutex = [System.Threading.Mutex]::new($false, $operationMutexName)
+        try {
+            $operationLockHeld = $operationMutex.WaitOne(0)
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            $operationLockHeld = $true
+            Write-ControlLog "WARN" "Recovered abandoned service-operation lock $operationMutexName."
+        }
+        if (-not $operationLockHeld) {
+            $operationLockWaited = $true
+            $waitMessage = "Another service operation is active; waiting up to $TimeoutSeconds seconds for the service-operation lock."
+            Write-Warning $waitMessage
+            $lockWait = [System.Diagnostics.Stopwatch]::StartNew()
+            try {
+                $operationLockHeld = $operationMutex.WaitOne([TimeSpan]::FromSeconds($TimeoutSeconds))
+            }
+            catch [System.Threading.AbandonedMutexException] {
+                $operationLockHeld = $true
+                Write-ControlLog "WARN" "Recovered abandoned service-operation lock $operationMutexName while waiting."
+            }
+            finally {
+                $lockWait.Stop()
+                $operationLockWaitSeconds = [Math]::Round($lockWait.Elapsed.TotalSeconds, 3)
+            }
+            if ($operationLockHeld) {
+                Write-ControlLog "INFO" "Acquired service-operation lock after waiting $operationLockWaitSeconds seconds."
+            }
+        }
+        if (-not $operationLockHeld) {
+            throw "Another service operation is still running after waiting $TimeoutSeconds seconds"
+        }
+    }
+
     $initialStatus = Get-ServiceStatus
     $initialListenerProcessId = Get-ListenerProcessId
     $queueWasRunning = $null -ne $initialStatus -and [bool]$initialStatus.workerQueueRunning
     $queueCount = if ($null -ne $initialStatus) { [int]$initialStatus.workerQueueCount } else { 0 }
-    Write-ControlLog "INFO" "Action=$Action; url=$($serviceConfig.BaseUrl); listener_pid=$initialListenerProcessId; queue_running=$queueWasRunning; queue_count=$queueCount."
+    if ($Action -ne "status") {
+        Write-ControlLog "INFO" "Action=$Action; url=$($serviceConfig.BaseUrl); listener_pid=$initialListenerProcessId; queue_running=$queueWasRunning; queue_count=$queueCount."
+    }
 
     switch ($Action) {
         "status" {
@@ -477,6 +549,16 @@ try {
     }
 }
 catch {
-    Write-ControlLog "ERROR" "Action=$Action failed: $($_.Exception.Message)"
+    if ($operationLockHeld) {
+        Write-ControlLog "ERROR" "Action=$Action failed: $($_.Exception.Message)"
+    }
     throw
+}
+finally {
+    if ($operationLockHeld -and $null -ne $operationMutex) {
+        $operationMutex.ReleaseMutex()
+    }
+    if ($null -ne $operationMutex) {
+        $operationMutex.Dispose()
+    }
 }
