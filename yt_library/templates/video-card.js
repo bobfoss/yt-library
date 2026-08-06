@@ -127,12 +127,21 @@
   function watchedLineHtml(video) {
     const progress = watchProgressPercent(video);
     const count = Number((video || {}).watch_count || 0);
-    const countText = Number.isFinite(count) && count > 0
-      ? ` · ${count} ${count === 1 ? 'watch' : 'watches'}`
+    const hasCount = Number.isFinite(count) && count > 0;
+    if (!progress && !hasCount) return '';
+    const progressHtml = progress
+      ? `<span class="watched-progress">Watched ${progress}%</span>`
       : '';
-    if (!progress && !countText) return '';
-    const progressText = progress ? ` ${progress}%` : '';
-    return `<div class="watched-line">Watched${progressText}${countText}</div>`;
+    const countHtml = hasCount
+      ? `<span class="watched-count">${progress ? ' · ' : 'Watched · '}${count} ${count === 1 ? 'watch' : 'watches'}</span>`
+      : '';
+    return `<div class="watched-line${progress ? ' has-progress' : ''}">${progressHtml}${countHtml}</div>`;
+  }
+
+  function compactWatchCountHtml(video) {
+    const count = Number((video || {}).watch_count || 0);
+    if (!Number.isFinite(count) || count <= 0) return '';
+    return `<span class="compact-watch-count"> · ${count} ${count === 1 ? 'watch' : 'watches'}</span>`;
   }
 
   function watchDates(video) {
@@ -252,11 +261,12 @@
       ${options.channelHtml ? `<div class="details video-card-channel">${options.channelHtml}</div>` : ''}
       ${options.position ? `<div class="position">#${escapeHtml(options.position)}</div>` : ''}
       ${titleHtml(options)}
+      ${options.availabilityHtml || ''}
       ${badgeRowsHtml(options.badges)}
       ${detailRowHtml(options.details)}
+      ${detailRowHtml(options.identifiers, 'details video-identifiers')}
       ${options.recoveryHtml || ''}
       ${options.watchDateHtml || ''}
-      ${options.availabilityHtml || ''}
       ${options.latestWatchDateHtml || ''}
       ${options.watchedHtml || ''}
       ${options.sparklineHtml || ''}
@@ -275,6 +285,7 @@
 
   window.YTLibraryVideoCard = {
     badgeRowsHtml,
+    compactWatchCountHtml,
     create,
     creatorHtml,
     detailRowHtml,

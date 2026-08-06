@@ -583,4 +583,25 @@ test('video-card helpers escape markup and clamp watch progress', () => {
   assert.equal(helpers.watchProgressPercent({ watch_progress_percent: 0.4 }), 1);
   assert.equal(helpers.watchProgressPercent({ watch_progress_percent: 104 }), 100);
   assert.equal(helpers.watchProgressPercent({ watch_progress_percent: 'bad' }), 0);
+  assert.equal(
+    helpers.compactWatchCountHtml({ watch_count: 1 }),
+    '<span class="compact-watch-count"> · 1 watch</span>',
+  );
+  assert.equal(
+    helpers.compactWatchCountHtml({ watch_count: 3 }),
+    '<span class="compact-watch-count"> · 3 watches</span>',
+  );
+  assert.equal(helpers.compactWatchCountHtml({ watch_count: 0 }), '');
+  assert.equal(
+    helpers.watchedLineHtml({ watch_progress_percent: 25, watch_count: 2 }),
+    '<div class="watched-line has-progress"><span class="watched-progress">Watched 25%</span><span class="watched-count"> · 2 watches</span></div>',
+  );
+  assert.equal(
+    helpers.watchedLineHtml({ watch_count: 1 }),
+    '<div class="watched-line"><span class="watched-count">Watched · 1 watch</span></div>',
+  );
+  assert.match(
+    source('index.js'),
+    /const compactWatchCountHtml = VideoCard\.compactWatchCountHtml;/,
+  );
 });

@@ -3,6 +3,7 @@ const CollectionCard = window.YTLibraryCollectionCard;
 const EntityCardExtensions = window.YTLibraryEntityCardExtensions;
 const HistoryWorkflow = window.YTLibraryHistoryWorkflow;
 const badgeRowsHtml = VideoCard.badgeRowsHtml;
+const compactWatchCountHtml = VideoCard.compactWatchCountHtml;
 const creatorHtml = VideoCard.creatorHtml;
 const detailRowHtml = VideoCard.detailRowHtml;
 const escapeHtml = VideoCard.escapeHtml;
@@ -1931,7 +1932,7 @@ function latestWatchedAtLabel(video) {
 function latestWatchDateHtml(video) {
   const watchedAt = latestWatchedAtLabel(video);
   return watchedAt
-    ? `<div class="details"><span>Last watched ${escapeHtml(watchedAt)}</span></div>`
+    ? `<div class="details watch-date-line"><span>Last watched ${escapeHtml(watchedAt)}${compactWatchCountHtml(video)}</span></div>`
     : '';
 }
 
@@ -3558,7 +3559,7 @@ function archivarixStatusLabel(video) {
 
 function archivarixStatusHtml(video) {
   const label = archivarixStatusLabel(video);
-  return label ? `<div class="details"><span class="badge">${escapeHtml(label)}</span></div>` : '';
+  return label ? `<div class="details archivarix-status"><span class="badge">${escapeHtml(label)}</span></div>` : '';
 }
 
 function archivarixVideoUrl(video) {
@@ -3572,7 +3573,7 @@ function shouldShowArchivarixLink(video) {
 function archivarixLinkHtml(video) {
   const url = archivarixVideoUrl(video);
   if (!url || !shouldShowArchivarixLink(video)) return '';
-  return `<a class="playlist-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Archivarix</a>`;
+  return `<a class="playlist-link archivarix-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Archivarix</a>`;
 }
 
 function browserPluginRequestUrl(pluginId, path, params = {}) {
@@ -4273,6 +4274,7 @@ function videoDetailCardFor(video) {
           ${watchUrl ? `<a class="external-link" href="${escapeHtml(watchUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
           <span class="entity-card-slot entity-card-actions" data-entity-card-slot="actions"></span>
         </div>
+        ${videoAvailabilityHtml(video)}
         ${badgeRowsHtml([
           { label: video.virtual_video ? 'Not in library' : '' },
           { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
@@ -4285,7 +4287,6 @@ function videoDetailCardFor(video) {
           archivarixLinkHtml(video),
         ])}
         ${archivarixStatusHtml(video)}
-        ${videoAvailabilityHtml(video)}
         ${latestWatchDateHtml(video)}
         ${watchedLineHtml(video)}
         ${watchSparklineHtml(video, true)}
@@ -4952,7 +4953,9 @@ function playlistVideoCardFor(video, options = {}) {
     details: [
       ...(options.details || []),
       displayVideoDuration(video) ? `<span>${escapeHtml(displayVideoDuration(video))}</span>` : '',
-      video.video_id ? `<span>${escapeHtml(video.video_id)}</span>` : '',
+    ],
+    identifiers: [
+      video.video_id ? `<span class="video-id">${escapeHtml(video.video_id)}</span>` : '',
       archivarixLinkHtml(video),
     ],
     recoveryHtml: archivarixStatusHtml(video),
@@ -5106,7 +5109,7 @@ function historyRowCardFor(video, { layout = 'detailed' } = {}) {
   const article = playlistVideoCardFor(video, {
     playlistSourcesHtml: playlistSourceLinksHtml(video),
     watchDateHtml: watched
-      ? `<div class="details"><span>Watched ${escapeHtml(watched)}</span></div>`
+      ? `<div class="details watch-date-line"><span>Watched ${escapeHtml(watched)}${compactWatchCountHtml(video)}</span></div>`
       : '',
   });
   article.classList.add('history-card');
