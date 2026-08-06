@@ -822,11 +822,34 @@ class AdminServerTests(unittest.TestCase):
         )
 
         handler._send_bytes.reset_mock()
+        self.assertTrue(handler._handle_page_get("/history-workflow.js"))
+        handler._send_bytes.assert_called_once_with(
+            server.HISTORY_WORKFLOW_JS.encode("utf-8"),
+            "text/javascript; charset=utf-8",
+            cache_control="no-cache",
+        )
+
+        handler._send_bytes.reset_mock()
         self.assertTrue(handler._handle_page_get("/admin.js"))
         handler._send_bytes.assert_called_once_with(
             server.ADMIN_JS.encode("utf-8"),
             "text/javascript; charset=utf-8",
             cache_control="no-cache",
+        )
+
+    def test_rendered_browser_page_loads_history_workflow_before_index(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.display_timezone_name = Mock(return_value="UTC")
+        handler.layout_settings = Mock(return_value={})
+
+        rendered = handler.render_page(
+            '<html><head></head><body><script src="/index.js"></script></body></html>'
+        ).decode("utf-8")
+
+        self.assertIn('<script src="/history-workflow.js"></script>', rendered)
+        self.assertLess(
+            rendered.index('<script src="/history-workflow.js"></script>'),
+            rendered.index('<script src="/index.js"></script>'),
         )
 
     def test_post_dispatches_to_explicit_route_groups(self) -> None:

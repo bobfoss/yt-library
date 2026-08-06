@@ -324,12 +324,20 @@ test('capability gating skips unavailable plugins and legacy decorators use the 
 });
 
 test('all native render entry points call the shared entity-card batch', () => {
-  for (const view of ['search', 'playlist', 'history', 'video-detail', 'clip-detail']) {
+  for (const view of ['search', 'playlist', 'video-detail', 'clip-detail']) {
     assert.match(indexSource, new RegExp(`decorateEntityCardBatch\\([\\s\\S]{0,500}'${view}'`));
   }
   assert.match(
     indexSource,
-    /const layoutContext = 'channel-history'[\s\S]{0,1200}decorateEntityCardBatch\(/,
+    /async function renderHistoryResults\(options\)[\s\S]{0,1800}decorateEntityCardBatch\([\s\S]{0,180}layoutContext/,
+  );
+  assert.match(
+    indexSource,
+    /async function renderHistoryView\(generation\)[\s\S]{0,600}layoutContext: 'history'/,
+  );
+  assert.match(
+    indexSource,
+    /const layoutContext = 'channel-history'[\s\S]{0,700}renderHistoryResults\([\s\S]{0,500}leadingEntries: \[channelEntry\]/,
   );
   assert.match(
     indexSource,

@@ -59,6 +59,9 @@ versioned migrations as well as creating a fresh current schema.
 
 - Liked videos are derived from canonical reaction metadata and have video-count, unavailable, and sort controls.
 - History and channel-history views have navigable activity heatmaps that remain stable across pagination and year changes.
+- Global and channel History share one generation-safe page/activity/card/pager
+  workflow. Heatmap year, Today, and Sync transitions share busy-state,
+  stale-work rejection, and complete date/page rollback on failure.
 - Internal Takeout/YouTube source and match badges are retained in data where needed but are not rendered to users.
 - Video and channel detail pages avoid repeated headings, and exact video timestamps render in the configured display timezone.
 - Omni-search is server-owned: SQLite filters source and text fields, deduplicates canonical videos across playlist/history evidence, ranks all entity types, counts the complete result set, and returns the requested page.

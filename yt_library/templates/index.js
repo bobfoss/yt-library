@@ -1,6 +1,7 @@
 const VideoCard = window.YTLibraryVideoCard;
 const CollectionCard = window.YTLibraryCollectionCard;
 const EntityCardExtensions = window.YTLibraryEntityCardExtensions;
+const HistoryWorkflow = window.YTLibraryHistoryWorkflow;
 const badgeRowsHtml = VideoCard.badgeRowsHtml;
 const creatorHtml = VideoCard.creatorHtml;
 const detailRowHtml = VideoCard.detailRowHtml;
@@ -2622,6 +2623,48 @@ function historyHeatmapFor(payload) {
   return heatmap;
 }
 
+function historyTransitionState() {
+  return {
+    activityYearOffset: historyActivityYearOffset,
+    navigationDate: historyNavigationDate,
+    page: currentPage,
+    pendingDate: pendingHistoryDate,
+    syncEnabled: historyActivitySyncEnabled,
+  };
+}
+
+function restoreHistoryTransitionState(snapshot) {
+  historyActivityYearOffset = snapshot.activityYearOffset;
+  historyNavigationDate = snapshot.navigationDate;
+  currentPage = snapshot.page;
+  pendingHistoryDate = snapshot.pendingDate;
+  historyActivitySyncEnabled = snapshot.syncEnabled;
+}
+
+function restoreHistoryTransitionControls(heatmap) {
+  const toggle = heatmap.querySelector('[data-history-sync]');
+  if (toggle instanceof HTMLInputElement) toggle.checked = historyActivitySyncEnabled;
+  restoreHistoryNavigationButtons(heatmap);
+}
+
+function historyHeatmapIsCurrent(heatmap) {
+  const channelId = heatmap.dataset.historyChannelId || '';
+  return channelId
+    ? selected.startsWith('__channel__:') && channelDetailTab === 'history'
+    : selected === '__history__';
+}
+
+function runHistoryHeatmapTransition(heatmap, options) {
+  return HistoryWorkflow.runTransition({
+    ...options,
+    captureState: historyTransitionState,
+    heatmap,
+    isCurrent: options.isCurrent || (() => historyHeatmapIsCurrent(heatmap)),
+    restoreControls: restoreHistoryTransitionControls,
+    restoreState: restoreHistoryTransitionState,
+  });
+}
+
 async function shiftHistoryActivityYear(delta) {
   const nextOffset = Math.max(0, historyActivityYearOffset + delta);
   if (nextOffset === historyActivityYearOffset) return;
@@ -2631,24 +2674,12 @@ async function shiftHistoryActivityYear(delta) {
     await render();
     return;
   }
-  const previousOffset = historyActivityYearOffset;
-  const previousPage = currentPage;
-  const previousPendingDate = pendingHistoryDate;
   const channelId = heatmap.dataset.historyChannelId || '';
   const currentAnchorDate = displayedHistoryAnchorDate();
-  historyActivityYearOffset = nextOffset;
-  heatmap.setAttribute('aria-busy', 'true');
-  for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
-    button.disabled = true;
-  }
-  try {
-    const activity = await fetchHistoryActivity(channelId);
-    const channelHeatmapActive = Boolean(
-      channelId
-      && selected.startsWith('__channel__:')
-      && channelDetailTab === 'history'
-    );
-    if ((selected === '__history__' || channelHeatmapActive) && heatmap.isConnected) {
+  await runHistoryHeatmapTransition(heatmap, {
+    applyState: () => { historyActivityYearOffset = nextOffset; },
+    load: () => fetchHistoryActivity(channelId),
+    commit: async activity => {
       if (!historyActivitySyncEnabled) {
         heatmap.replaceWith(historyHeatmapFor(activity));
         return;
@@ -2663,15 +2694,8 @@ async function shiftHistoryActivityYear(delta) {
       } else {
         heatmap.replaceWith(historyHeatmapFor(activity));
       }
-    }
-  } catch (error) {
-    historyActivityYearOffset = previousOffset;
-    currentPage = previousPage;
-    pendingHistoryDate = previousPendingDate;
-    heatmap.removeAttribute('aria-busy');
-    restoreHistoryNavigationButtons(heatmap);
-    throw error;
-  }
+    },
+  });
 }
 
 async function jumpToCurrentHistoryActivity() {
@@ -2686,73 +2710,51 @@ async function jumpToCurrentHistoryActivity() {
     await render();
     return;
   }
-  const previousOffset = historyActivityYearOffset;
-  const previousPage = currentPage;
-  const previousPendingDate = pendingHistoryDate;
   const channelId = heatmap.dataset.historyChannelId || '';
-  historyActivityYearOffset = 0;
-  heatmap.setAttribute('aria-busy', 'true');
-  for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
-    button.disabled = true;
-  }
-  try {
-    const activity = await fetchHistoryActivity(channelId, 0);
-    if (!heatmap.isConnected) return;
-    if (!historyActivitySyncEnabled) {
-      heatmap.replaceWith(historyHeatmapFor(activity));
-      return;
-    }
-    const targetDay = historyActivityDayNear(activity, localDateKey(new Date()));
-    if (targetDay) {
-      setHistoryPageFromOffset(targetDay.watch_date, Number(targetDay.offset || 0));
-      if (updateCurrentHash(false)) return;
-      await render();
-    } else {
-      heatmap.replaceWith(historyHeatmapFor(activity));
-    }
-  } catch (error) {
-    historyActivityYearOffset = previousOffset;
-    currentPage = previousPage;
-    pendingHistoryDate = previousPendingDate;
-    heatmap.removeAttribute('aria-busy');
-    restoreHistoryNavigationButtons(heatmap);
-    throw error;
-  }
+  await runHistoryHeatmapTransition(heatmap, {
+    applyState: () => { historyActivityYearOffset = 0; },
+    load: () => fetchHistoryActivity(channelId, 0),
+    commit: async activity => {
+      if (!historyActivitySyncEnabled) {
+        heatmap.replaceWith(historyHeatmapFor(activity));
+        return;
+      }
+      const targetDay = historyActivityDayNear(activity, localDateKey(new Date()));
+      if (targetDay) {
+        setHistoryPageFromOffset(targetDay.watch_date, Number(targetDay.offset || 0));
+        if (updateCurrentHash(false)) return;
+        await render();
+      } else {
+        heatmap.replaceWith(historyHeatmapFor(activity));
+      }
+    },
+  });
 }
 
 async function setHistoryActivitySync(enabled) {
-  historyActivitySyncEnabled = enabled;
-  if (!enabled) return;
-  const heatmap = viewContext.querySelector('.history-heatmap');
-  if (!(heatmap instanceof HTMLElement)) return;
-  const previousPage = currentPage;
-  const previousPendingDate = pendingHistoryDate;
-  const channelId = heatmap.dataset.historyChannelId || '';
-  heatmap.setAttribute('aria-busy', 'true');
-  for (const button of heatmap.querySelectorAll('.history-heatmap-nav button')) {
-    button.disabled = true;
-  }
-  try {
-    const activity = await fetchHistoryActivity(channelId);
-    const targetDate = localDateKey(historyActivityRange().displayEnd);
-    const targetDay = historyActivityDayNear(activity, targetDate);
-    if (!targetDay || !historyActivitySyncEnabled || !heatmap.isConnected) return;
-    setHistoryPageFromOffset(targetDay.watch_date, Number(targetDay.offset || 0));
-    if (updateCurrentHash(false)) return;
-    await render();
-  } catch (error) {
+  if (!enabled) {
     historyActivitySyncEnabled = false;
-    currentPage = previousPage;
-    pendingHistoryDate = previousPendingDate;
-    const toggle = heatmap.querySelector('[data-history-sync]');
-    if (toggle instanceof HTMLInputElement) toggle.checked = false;
-    throw error;
-  } finally {
-    if (heatmap.isConnected) {
-      heatmap.removeAttribute('aria-busy');
-      restoreHistoryNavigationButtons(heatmap);
-    }
+    return;
   }
+  const heatmap = viewContext.querySelector('.history-heatmap');
+  if (!(heatmap instanceof HTMLElement)) {
+    historyActivitySyncEnabled = true;
+    return;
+  }
+  const channelId = heatmap.dataset.historyChannelId || '';
+  await runHistoryHeatmapTransition(heatmap, {
+    applyState: () => { historyActivitySyncEnabled = true; },
+    load: () => fetchHistoryActivity(channelId),
+    isCurrent: () => historyActivitySyncEnabled && historyHeatmapIsCurrent(heatmap),
+    commit: async activity => {
+      const targetDate = localDateKey(historyActivityRange().displayEnd);
+      const targetDay = historyActivityDayNear(activity, targetDate);
+      if (!targetDay) return;
+      setHistoryPageFromOffset(targetDay.watch_date, Number(targetDay.offset || 0));
+      if (updateCurrentHash(false)) return;
+      await render();
+    },
+  });
 }
 
 function scrollToPendingHistoryDate() {
@@ -2799,53 +2801,76 @@ async function fetchHistoryLocation(channelId = '') {
   return [await fetchHistoryPage(channelId), activity];
 }
 
+async function renderHistoryResults(options) {
+  const {
+    channelId = '',
+    commitChrome,
+    emptyMessage,
+    generation,
+    layoutContext,
+    leadingEntries = [],
+  } = options;
+  const loaded = await HistoryWorkflow.loadPage({
+    channelId,
+    fetchActivity: fetchHistoryActivity,
+    fetchLocation: fetchHistoryLocation,
+    isCurrent: () => generation === renderGeneration,
+    pendingDate: pendingHistoryDate,
+    syncActivityYear: syncHistoryActivityYearWithRows,
+    syncEnabled: historyActivitySyncEnabled,
+  });
+  if (!loaded) return false;
+  const { activity, rows, total } = loaded;
+  const pageInfo = remotePageInfo(total, rows.length);
+  const historyBatch = historyRowsWithDayDividers(rows, {
+    layout: cardLayoutFor(layoutContext),
+  });
+  const decoration = decorateEntityCardBatch(
+    [...leadingEntries, ...historyBatch.entries],
+    layoutContext,
+    cardLayoutFor(layoutContext),
+    generation,
+  );
+  commitChrome({ activity, pageInfo, total });
+  renderPager(pageInfo);
+  applyCardLayout(layoutContext);
+  grid.replaceChildren(...historyBatch.elements);
+  await decoration;
+  if (generation !== renderGeneration) return false;
+  empty.hidden = rows.length !== 0;
+  empty.textContent = emptyMessage;
+  scrollToPendingHistoryDate();
+  scheduleAdjacentPagePrefetch(
+    pageInfo,
+    page => fetchHistoryPage(channelId, page),
+    historyYearPagePrefetches(channelId, rows),
+  );
+  return true;
+}
+
 async function renderHistoryView(generation) {
   title.textContent = 'History';
   meta.textContent = 'Loading history...';
   applyCardLayout('history');
   empty.hidden = true;
-  const [payload, initialActivity] = await fetchHistoryLocation();
-  if (generation !== renderGeneration) return;
-  const rows = payload.watch || [];
-  const activity = historyActivitySyncEnabled
-    && syncHistoryActivityYearWithRows(rows, pendingHistoryDate)
-    ? await fetchHistoryActivity()
-    : initialActivity;
-  if (generation !== renderGeneration) return;
-  const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
-  const pageInfo = remotePageInfo(total, rows.length);
-  const historyTitleLocation = historyNavigationDate
-    ? historyDayLabel({ watch_date: historyNavigationDate })
-    : `page ${pageInfo.page}`;
-  setDocumentTitle(`History ${historyTitleLocation}`);
-  meta.innerHTML = rightPanelListMetaHtml(`${total} watches`, {
-    showLayout: true,
-    layout: cardLayoutFor('history'),
+  await renderHistoryResults({
+    commitChrome: ({ activity, pageInfo, total }) => {
+      const historyTitleLocation = historyNavigationDate
+        ? historyDayLabel({ watch_date: historyNavigationDate })
+        : `page ${pageInfo.page}`;
+      setDocumentTitle(`History ${historyTitleLocation}`);
+      meta.innerHTML = rightPanelListMetaHtml(`${total} watches`, {
+        showLayout: true,
+        layout: cardLayoutFor('history'),
+        layoutContext: 'history',
+      });
+      viewContext.hidden = false;
+      viewContext.replaceChildren(historyHeatmapFor(activity));
+    },
+    emptyMessage: 'No history rows match.',
+    generation,
     layoutContext: 'history',
   });
-  viewContext.hidden = false;
-  viewContext.replaceChildren(historyHeatmapFor(activity));
-  renderPager(pageInfo);
-  const historyBatch = historyRowsWithDayDividers(rows, {
-    layout: cardLayoutFor('history'),
-  });
-  const decoration = decorateEntityCardBatch(
-    historyBatch.entries,
-    'history',
-    cardLayoutFor('history'),
-    generation,
-  );
-  grid.replaceChildren(...historyBatch.elements);
-  await decoration;
-  if (generation !== renderGeneration) return;
-  empty.hidden = rows.length !== 0;
-  empty.textContent = 'No history rows match.';
-  scrollToPendingHistoryDate();
-  scheduleAdjacentPagePrefetch(
-    pageInfo,
-    page => fetchHistoryPage('', page),
-    historyYearPagePrefetches('', rows),
-  );
 }
 
 function scrollResultsToTop() {
@@ -4517,43 +4542,21 @@ async function render() {
       meta.textContent = 'Loading channel history...';
       grid.replaceChildren();
       empty.hidden = true;
-      const [payload, initialActivity] = await fetchHistoryLocation(channelId);
-      const rows = payload.watch || [];
-      const activity = historyActivitySyncEnabled
-        && syncHistoryActivityYearWithRows(rows, pendingHistoryDate)
-        ? await fetchHistoryActivity(channelId)
-        : initialActivity;
-      const total = Number(payload.totals?.filtered_watch_rows ?? payload.totals?.watch_rows ?? rows.length);
-      if (generation !== renderGeneration) return;
-      const historyBatch = historyRowsWithDayDividers(rows, {
-        layout: cardLayoutFor(layoutContext),
-      });
-      const decoration = decorateEntityCardBatch(
-        [channelEntry, ...historyBatch.entries],
-        layoutContext,
-        cardLayoutFor(layoutContext),
+      await renderHistoryResults({
+        channelId,
+        commitChrome: ({ activity, total }) => {
+          viewContext.replaceChildren(
+            channelCard,
+            channelTabsFor('history', playlistCount, total),
+            historyHeatmapFor(activity),
+          );
+          meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
+        },
+        emptyMessage: 'No history rows match this channel.',
         generation,
-      );
-      viewContext.replaceChildren(
-        channelCard,
-        channelTabsFor('history', playlistCount, total),
-        historyHeatmapFor(activity),
-      );
-      const pageInfo = remotePageInfo(total, rows.length);
-      meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
-      renderPager(pageInfo);
-      applyCardLayout(layoutContext);
-      grid.replaceChildren(...historyBatch.elements);
-      await decoration;
-      if (generation !== renderGeneration) return;
-      empty.hidden = rows.length !== 0;
-      empty.textContent = 'No history rows match this channel.';
-      scrollToPendingHistoryDate();
-      scheduleAdjacentPagePrefetch(
-        pageInfo,
-        page => fetchHistoryPage(channelId, page),
-        historyYearPagePrefetches(channelId, rows),
-      );
+        layoutContext,
+        leadingEntries: [channelEntry],
+      });
     } else {
       const layoutContext = 'channel-playlists';
       const payload = await fetchVideoCollection({ channelId, sort: 'title' });

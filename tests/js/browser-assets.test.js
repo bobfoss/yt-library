@@ -11,6 +11,7 @@ const assetNames = [
   'video-card.js',
   'collection-card.js',
   'entity-card-extensions.js',
+  'history-workflow.js',
   'index.js',
   'admin.js',
 ];
@@ -184,7 +185,10 @@ test('history views render shared day dividers', () => {
   assert.match(indexSource, /const options = \{ weekday: 'short' \}/);
   assert.match(indexSource, /return `\$\{weekday\}, \$\{dateLabel\}`/);
   assert.match(indexSource, /function historyRowsWithDayDividers\(rows, options = \{\}\)/);
-  assert.equal((indexSource.match(/historyRowsWithDayDividers\(rows/g) || []).length, 3);
+  assert.equal((indexSource.match(/historyRowsWithDayDividers\(rows/g) || []).length, 2);
+  assert.match(indexSource, /async function renderHistoryResults\(options\)[\s\S]{0,1600}historyRowsWithDayDividers\(rows/);
+  assert.match(indexSource, /async function renderHistoryView\(generation\)[\s\S]{0,500}renderHistoryResults\(\{/);
+  assert.match(indexSource, /const layoutContext = 'channel-history'[\s\S]{0,500}renderHistoryResults\(\{/);
   assert.match(indexSource, /divider\.dataset\.historyDate = date/);
   assert.match(indexSource, /for \(const value of \[row\?\.watched_at, row\?\.watch_date\]\)/);
   assert.match(indexSource, /const watchDate = historyRowDateKey\(video\)/);
@@ -225,6 +229,27 @@ test('history year navigation keeps the selected month and day', () => {
     indexSource,
     /async function shiftHistoryActivityYear\(delta\)[\s\S]{0,700}const currentAnchorDate = displayedHistoryAnchorDate\(\)[\s\S]{0,800}shiftedHistoryDateKey\(currentAnchorDate, delta\)/,
   );
+});
+
+test('history heatmap changes share one rollback-safe transition path', () => {
+  const indexSource = source('index.js');
+  const workflowSource = source('history-workflow.js');
+
+  assert.equal(
+    (indexSource.match(/runHistoryHeatmapTransition\(/g) || []).length,
+    4,
+  );
+  assert.match(
+    indexSource,
+    /function historyTransitionState\(\)[\s\S]{0,400}navigationDate: historyNavigationDate/,
+  );
+  assert.match(
+    indexSource,
+    /function restoreHistoryTransitionState\(snapshot\)[\s\S]{0,300}historyNavigationDate = snapshot\.navigationDate/,
+  );
+  assert.match(workflowSource, /if \(!isCurrent\(\) \|\| !heatmap\.isConnected\) \{\s*restore\(\)/);
+  assert.match(workflowSource, /catch \(error\) \{\s*restore\(\)/);
+  assert.doesNotMatch(indexSource, /heatmap\.setAttribute\('aria-busy', 'true'\)/);
 });
 
 test('histogram navigation uses a restorable date URL', () => {
@@ -452,7 +477,7 @@ test('channel tabs use independent persisted card layouts', () => {
   );
   assert.match(
     indexSource,
-    /const layoutContext = 'channel-history'[\s\S]{0,1200}historyRowsWithDayDividers\(rows, \{\s*layout: cardLayoutFor\(layoutContext\)[\s\S]{0,700}cardLayoutHtml\(cardLayoutFor\(layoutContext\), layoutContext\)/,
+    /const layoutContext = 'channel-history'[\s\S]{0,500}renderHistoryResults\(\{[\s\S]{0,700}cardLayoutHtml\(cardLayoutFor\(layoutContext\), layoutContext\)[\s\S]{0,300}layoutContext/,
   );
   assert.match(
     indexSource,

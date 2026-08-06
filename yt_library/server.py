@@ -143,6 +143,7 @@ TIMEZONE_JS = load_template("timezone.js")
 VIDEO_CARD_JS = load_template("video-card.js")
 COLLECTION_CARD_JS = load_template("collection-card.js")
 ENTITY_CARD_EXTENSIONS_JS = load_template("entity-card-extensions.js")
+HISTORY_WORKFLOW_JS = load_template("history-workflow.js")
 INDEX_JS = load_template("index.js")
 ADMIN_JS = load_template("admin.js")
 FAVICON_SVG = load_template("favicon.svg")
@@ -636,6 +637,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             ),
             "/entity-card-extensions.js": (
                 ENTITY_CARD_EXTENSIONS_JS,
+                "text/javascript; charset=utf-8",
+            ),
+            "/history-workflow.js": (
+                HISTORY_WORKFLOW_JS,
                 "text/javascript; charset=utf-8",
             ),
             "/index.js": (INDEX_JS, "text/javascript; charset=utf-8"),
@@ -2197,6 +2202,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             '<script src="/video-card.js"></script>'
             '<script src="/collection-card.js"></script>'
             '<script src="/entity-card-extensions.js"></script>'
+            '<script src="/history-workflow.js"></script>'
         )
         return template.replace("</head>", scripts + "</head>").encode("utf-8")
 
