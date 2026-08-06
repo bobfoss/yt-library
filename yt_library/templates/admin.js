@@ -1495,9 +1495,13 @@ document.getElementById('reconcilePlaylists').addEventListener('click', () => po
 document.getElementById('startWorkerQueue').addEventListener('click', () => post('/api/admin/queue/start').catch(error => alert(error.message)));
 fields.retryProxy.addEventListener('click', () => post('/api/admin/proxy/retry').catch(error => alert(error.message)));
 document.getElementById('retryArchivarix').addEventListener('click', () => post('/api/admin/archivarix/retry').catch(error => alert(error.message)));
-document.getElementById('rebuildWorkerQueue').addEventListener('click', () => post('/api/admin/queue/rebuild').catch(error => alert(error.message)));
+document.getElementById('rebuildWorkerQueue').addEventListener('click', () => {
+  const warning = 'Rebuild automatic library work? This replaces pending account, metadata, playlist, and History jobs; preserves pending Clip, Archivarix recovery, plugin, and other non-plan jobs; and queues current Clip and playlist discovery. The rebuilt queue will not start automatically.';
+  if (!confirm(warning)) return;
+  post('/api/admin/queue/rebuild').catch(error => alert(error.message));
+});
 document.getElementById('clearWorkerQueue').addEventListener('click', () => {
-  if (!confirm('Clear the worker queue? This will remove all pending account, metadata, playlist, and history jobs.')) return;
+  if (!confirm('Clear the worker queue? This removes all pending core, Clip, Archivarix recovery, and plugin jobs.')) return;
   post('/api/admin/queue/clear').catch(error => alert(error.message));
 });
 document.getElementById('stopWorkerQueue').addEventListener('click', () => stopWorkersNow().catch(error => alert(error.message)));

@@ -1016,6 +1016,109 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(discovery["source_key"], "new")
         self.assertFalse(discovery["manual"])
 
+    def test_rebuild_queue_replaces_plan_rows_and_preserves_non_plan_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCrebuildchannel", title="Rebuild channel")
+                    core.upsert_video(
+                        conn,
+                        "duevideo001",
+                        title="Due video",
+                        channel_id="UCrebuildchannel",
+                    )
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLrebuild', 'Due playlist')"
+                    )
+                    core.enqueue_account_sync_task(conn)
+                    core.enqueue_history_task(conn, "verify")
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="obsolete001",
+                        current_title="Obsolete manual target",
+                        manual=True,
+                    )
+                    core.enqueue_playlist_scan_item(
+                        conn,
+                        "PLobsolete",
+                        title="Obsolete manual playlist",
+                        manual=True,
+                    )
+                    core.enqueue_clip_item(
+                        conn,
+                        task_type="discover",
+                        mode="all",
+                        manual=True,
+                    )
+                    core.enqueue_clip_item(
+                        conn,
+                        clip_id="UgkxRebuildClip",
+                        task_type="scan",
+                        manual=True,
+                    )
+                    now = core.utc_now()
+                    conn.executemany(
+                        """
+                        INSERT INTO worker_queue(
+                          subject_key, worker_type, task_type, current_title,
+                          created_at, updated_at
+                        ) VALUES (?, ?, 'test', ?, ?, ?)
+                        """,
+                        (
+                            ("placeholder:preserved", "placeholder", "Recovery", now, now),
+                            ("plugin:example:fetch:1", "plugin", "Plugin", now, now),
+                            ("future:preserved", "future", "Future", now, now),
+                        ),
+                    )
+
+                    stats = core.rebuild_library_queue(conn)
+
+                rows = {
+                    row["subject_key"]: dict(row)
+                    for row in conn.execute(
+                        "SELECT subject_key, worker_type, task_type, source_key, priority, manual "
+                        "FROM worker_queue ORDER BY subject_key"
+                    )
+                }
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            stats["cleared_by_type"],
+            {"account": 1, "history": 1, "metadata": 1, "playlist": 1},
+        )
+        self.assertEqual(
+            stats["preserved_by_type"],
+            {"clip": 2, "future": 1, "placeholder": 1, "plugin": 1},
+        )
+        self.assertEqual(stats["preserved"], 5)
+        self.assertEqual(stats["metadata"], 2)
+        self.assertEqual(stats["playlist_scans"], 2)
+        self.assertEqual(stats["selected"], 8)
+        self.assertEqual(stats["inserted"], 7)
+        self.assertEqual(stats["already_queued"], 1)
+        self.assertNotIn("metadata:video:obsolete001", rows)
+        self.assertNotIn("playlist:scan:PLobsolete", rows)
+        self.assertNotIn("history:verify", rows)
+        self.assertIn("history:recent", rows)
+        self.assertIn("playlist:discover-current", rows)
+        self.assertIn("playlist:scan:LL", rows)
+        self.assertIn("playlist:scan:PLrebuild", rows)
+        self.assertIn("metadata:video:duevideo001", rows)
+        self.assertIn("metadata:channel:UCrebuildchannel", rows)
+        self.assertIn("placeholder:preserved", rows)
+        self.assertIn("plugin:example:fetch:1", rows)
+        self.assertIn("future:preserved", rows)
+        self.assertIn("clip:scan:UgkxRebuildClip", rows)
+        self.assertEqual(rows["clip:discover"]["source_key"], "all")
+        self.assertTrue(rows["clip:discover"]["manual"])
+        self.assertEqual(rows["playlist:discover-current"]["source_key"], "new")
+        self.assertEqual(rows["playlist:scan:PLrebuild"]["source_key"], "rebuild")
+        self.assertEqual(rows["metadata:video:duevideo001"]["source_key"], "rebuild")
+        self.assertEqual(rows["account:sync"]["priority"], -4)
+        self.assertEqual(rows["history:recent"]["priority"], -1)
+
     def test_recent_channel_fetch_without_thumbnail_ages_out_of_metadata_queue(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:

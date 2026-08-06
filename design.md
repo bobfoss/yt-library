@@ -941,7 +941,9 @@ The database models the best-known current state of YouTube. Imports and scans r
 - `playlist_items` links playlists to videos and retains only membership, position, unavailable-slot, and reconciliation facts.
 - `history_events` stores watch events. Exact Takeout timestamps and date-only live observations share this table without fabricating precision.
 - `video_recovery` stores only current Archivarix recovery status, capture time, media availability, and errors.
-- `worker_queue` stores prioritized metadata, playlist, history, and recovery tasks. Queue events and worker-specific run/log tables provide operational history.
+- `worker_queue` stores prioritized account, Clip, metadata, playlist, History,
+  recovery, and plugin tasks. Queue events and worker-specific run/log tables
+  provide operational history.
 
 Parsers may use titles, channels, descriptions, and URLs transiently to update canonical entities, then discard those source copies. Metadata revisions and complete historical playlist snapshots are intentionally not retained.
 
@@ -959,6 +961,17 @@ Long-running and rate-sensitive tasks run as in-process background workers with 
 - History tasks support recent fetch and full verification modes, fetching YouTube history in batches and reconciling after each batch.
 
 YouTube metadata and Archivarix recovery have independent launch intervals and `max_in_flight` limits from the config file, so a slow request to one site does not stall the other site's cadence. Playlist and history tasks remain worker-specific and run through the same prioritized queue. The dispatcher checks SQLite again before each launch, so priority changes and newly queued work can affect later dispatches without rebuilding an in-memory batch.
+
+Initialize, Update, and Rebuild use one declarative library queue planner.
+Initialize selects a full playlist scan, full History verification, all Clip
+discovery, and due metadata without clearing pending work. Update adds only due
+playlist scans, recent History, new Clip and playlist discovery, and never-fetched
+metadata. Rebuild replaces the regenerable account, History, metadata, and
+playlist plan rows, while preserving pending Clip, Archivarix recovery, plugin,
+and future non-plan rows. It then applies the due-work plan and does not start the
+dispatcher automatically. Plugins receive `library_initialize` and
+`library_update` hooks; Rebuild preserves plugin rows because the host contract
+does not define a generic rebuild hook.
 
 Workers should be visible and interruptible from `/admin`. Queue counts, previews, timing estimates, stop buttons, and incrementally polled logs are part of the design, not just debugging conveniences. A server restart interrupts active in-process workers, so unfinished metadata, playlist, history, and placeholder recovery runs are marked interrupted during startup.
 

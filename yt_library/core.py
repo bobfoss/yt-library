@@ -7720,7 +7720,12 @@ def enqueue_clip_item(
         VALUES (?, 'clip', ?, '', ?, '', '', '', ?, ?, 0, ?, ?, ?, ?)
         ON CONFLICT(subject_key) DO UPDATE SET
           current_title=COALESCE(NULLIF(excluded.current_title, ''), worker_queue.current_title),
-          source_key=excluded.source_key,
+          source_key=CASE
+            WHEN excluded.task_type = 'discover'
+             AND (worker_queue.source_key = 'all' OR excluded.source_key = 'all')
+              THEN 'all'
+            ELSE excluded.source_key
+          END,
           priority=MIN(worker_queue.priority, excluded.priority),
           manual=MAX(worker_queue.manual, excluded.manual),
           updated_at=excluded.updated_at
@@ -7970,29 +7975,124 @@ def library_has_data(conn: sqlite3.Connection) -> bool:
     return bool(row[0])
 
 
-def enqueue_update_tasks(conn: sqlite3.Connection) -> dict[str, int]:
-    queued_before = worker_queue_count(conn)
+@dataclass(frozen=True)
+class LibraryQueuePlan:
+    name: str
+    clip_discovery_mode: str
+    playlist_discovery_mode: str
+    history_mode: str
+    history_manual: bool
+    playlist_selection: str
+    playlist_stale_days: int
+    metadata_selection: str
+    metadata_stale_days: int
+    replace_worker_types: tuple[str, ...] = ()
+
+
+INITIALIZATION_QUEUE_PLAN = LibraryQueuePlan(
+    name="initialize",
+    clip_discovery_mode="all",
+    playlist_discovery_mode="",
+    history_mode="verify",
+    history_manual=True,
+    playlist_selection="all",
+    playlist_stale_days=0,
+    metadata_selection="due",
+    metadata_stale_days=30,
+)
+UPDATE_QUEUE_PLAN = LibraryQueuePlan(
+    name="update",
+    clip_discovery_mode="new",
+    playlist_discovery_mode="new",
+    history_mode="recent",
+    history_manual=False,
+    playlist_selection="due",
+    playlist_stale_days=7,
+    metadata_selection="never",
+    metadata_stale_days=30,
+)
+REBUILD_QUEUE_PLAN = LibraryQueuePlan(
+    name="rebuild",
+    clip_discovery_mode="new",
+    playlist_discovery_mode="new",
+    history_mode="recent",
+    history_manual=False,
+    playlist_selection="due",
+    playlist_stale_days=7,
+    metadata_selection="due",
+    metadata_stale_days=30,
+    replace_worker_types=("account", "history", "metadata", "playlist"),
+)
+
+
+def worker_queue_counts_by_type(conn: sqlite3.Connection) -> dict[str, int]:
+    return {
+        str(row["worker_type"] or ""): int(row["count"] or 0)
+        for row in conn.execute(
+            """
+            SELECT worker_type, COUNT(*) AS count
+            FROM worker_queue
+            GROUP BY worker_type
+            ORDER BY worker_type
+            """
+        )
+    }
+
+
+def enqueue_library_queue_plan(
+    conn: sqlite3.Connection,
+    plan: LibraryQueuePlan,
+) -> dict[str, Any]:
+    if plan.playlist_selection not in {"all", "due"}:
+        raise ValueError(f"Unsupported playlist queue selection: {plan.playlist_selection}")
+    if plan.metadata_selection not in {"due", "never"}:
+        raise ValueError(f"Unsupported metadata queue selection: {plan.metadata_selection}")
+
     playlist_rows = playlist_scan_candidate_rows(
         conn,
-        force=False,
-        stale_days=7,
+        force=plan.playlist_selection == "all",
+        stale_days=plan.playlist_stale_days,
     )
     metadata_rows = metadata_queue_candidate_rows(
         conn,
         force=False,
+        stale_days=plan.metadata_stale_days,
         metadata_kind="all",
-        never_fetched_only=True,
+        never_fetched_only=plan.metadata_selection == "never",
     )
 
+    cleared_by_type = {
+        worker_type: clear_worker_queue_type(conn, worker_type)
+        for worker_type in plan.replace_worker_types
+    }
+    preserved_by_type = worker_queue_counts_by_type(conn)
+    queued_before_plan = worker_queue_count(conn)
+
     enqueue_account_sync_task(conn, priority=-4, manual=False)
-    enqueue_clip_item(conn, task_type="discover", mode="new", priority=-3, manual=False)
-    enqueue_playlist_discovery_item(conn, priority=-2, mode="new")
-    enqueue_history_task(conn, "recent", priority=-1, manual=False)
+    enqueue_clip_item(
+        conn,
+        task_type="discover",
+        mode=plan.clip_discovery_mode,
+        priority=-3,
+        manual=False,
+    )
+    if plan.playlist_discovery_mode:
+        enqueue_playlist_discovery_item(
+            conn,
+            priority=-2,
+            mode=plan.playlist_discovery_mode,
+        )
+    enqueue_history_task(
+        conn,
+        plan.history_mode,
+        priority=-1,
+        manual=plan.history_manual,
+    )
     enqueue_playlist_scan_item(
         conn,
         LIKED_VIDEOS_PLAYLIST_ID,
         title="Liked videos",
-        source_key="update",
+        source_key=plan.name,
         priority=0,
         manual=False,
     )
@@ -8005,7 +8105,7 @@ def enqueue_update_tasks(conn: sqlite3.Connection) -> dict[str, int]:
             conn,
             row["playlist_id"] or "",
             title=row["title"] or "",
-            source_key="update",
+            source_key=plan.name,
             priority=index,
             manual=False,
         )
@@ -8021,102 +8121,75 @@ def enqueue_update_tasks(conn: sqlite3.Connection) -> dict[str, int]:
             channel_title=row["channel_title"] or "",
             current_title=row["current_title"] or "",
             metadata_source=source,
-            source_key="update",
+            source_key=plan.name,
             playlist_count=int(row["playlist_count"] or 0),
             priority=priority,
             manual=False,
         )
 
     queued_after = worker_queue_count(conn)
-    selected = 5 + playlist_count + len(metadata_rows)
-    inserted = max(0, queued_after - queued_before)
+    selected = 4 + bool(plan.playlist_discovery_mode) + playlist_count + len(metadata_rows)
+    inserted = max(0, queued_after - queued_before_plan)
     return {
+        "plan": plan.name,
         "account": 1,
         "clips": 1,
-        "discovery": 1,
+        "discovery": 1 if plan.playlist_discovery_mode else 0,
         "history": 1,
         "liked_videos": 1,
         "playlists": playlist_count,
+        "playlist_scans": playlist_count + 1,
         "metadata": len(metadata_rows),
         "selected": selected,
         "inserted": inserted,
         "already_queued": max(0, selected - inserted),
         "queued": queued_after,
+        "cleared": sum(cleared_by_type.values()),
+        "cleared_by_type": cleared_by_type,
+        "preserved": queued_before_plan,
+        "preserved_by_type": preserved_by_type,
+    }
+
+
+def enqueue_update_tasks(conn: sqlite3.Connection) -> dict[str, int]:
+    stats = enqueue_library_queue_plan(conn, UPDATE_QUEUE_PLAN)
+    return {
+        key: int(stats[key])
+        for key in (
+            "account",
+            "clips",
+            "discovery",
+            "history",
+            "liked_videos",
+            "playlists",
+            "metadata",
+            "selected",
+            "inserted",
+            "already_queued",
+            "queued",
+        )
     }
 
 
 def enqueue_initialization_tasks(conn: sqlite3.Connection) -> dict[str, int | bool]:
     had_data = library_has_data(conn)
-    queued_before = worker_queue_count(conn)
-    enqueue_account_sync_task(conn, priority=-1, manual=False)
-    enqueue_clip_item(conn, task_type="discover", mode="all", priority=-1, manual=False)
-
-    metadata_rows = metadata_queue_candidate_rows(
-        conn,
-        force=False,
-        stale_days=30,
-        metadata_kind="all",
-    )
-    for index, row in enumerate(metadata_rows, start=1):
-        source = row["metadata_source"] or "history"
-        priority = int(row["priority"] or 0) * 1_000_000 + index
-        enqueue_metadata_item(
-            conn,
-            video_id=row["video_id"] or "",
-            channel_id=row["channel_id"] or "",
-            channel_title=row["channel_title"] or "",
-            current_title=row["current_title"] or "",
-            metadata_source=source,
-            source_key="initialize",
-            playlist_count=int(row["playlist_count"] or 0),
-            priority=priority,
-            manual=False,
-        )
-
-    playlist_rows = playlist_scan_candidate_rows(
-        conn,
-        force=True,
-        stale_days=0,
-    )
-    enqueue_playlist_scan_item(
-        conn,
-        LIKED_VIDEOS_PLAYLIST_ID,
-        title="Liked videos",
-        source_key="initialize",
-        priority=0,
-        manual=False,
-    )
-    playlist_count = 1
-    for index, row in enumerate(playlist_rows, start=1):
-        if row["playlist_id"] == LIKED_VIDEOS_PLAYLIST_ID:
-            continue
-        enqueue_playlist_scan_item(
-            conn,
-            row["playlist_id"] or "",
-            title=row["title"] or "",
-            source_key="initialize",
-            priority=index,
-            manual=False,
-        )
-        playlist_count += 1
-
-    enqueue_history_task(conn, "verify", priority=0, manual=True)
-
-    queued_after = worker_queue_count(conn)
-    selected = len(metadata_rows) + playlist_count + 3
-    inserted = max(0, queued_after - queued_before)
+    stats = enqueue_library_queue_plan(conn, INITIALIZATION_QUEUE_PLAN)
     return {
         "had_data": had_data,
-        "metadata": len(metadata_rows),
-        "playlists": playlist_count,
-        "account": 1,
-        "clips": 1,
-        "history": 1,
-        "selected": selected,
-        "inserted": inserted,
-        "already_queued": max(0, selected - inserted),
-        "queued": queued_after,
+        "metadata": int(stats["metadata"]),
+        "playlists": int(stats["playlist_scans"]),
+        "account": int(stats["account"]),
+        "clips": int(stats["clips"]),
+        "history": int(stats["history"]),
+        "selected": int(stats["selected"]),
+        "inserted": int(stats["inserted"]),
+        "already_queued": int(stats["already_queued"]),
+        "queued": int(stats["queued"]),
     }
+
+
+def rebuild_library_queue(conn: sqlite3.Connection) -> dict[str, Any]:
+    return enqueue_library_queue_plan(conn, REBUILD_QUEUE_PLAN)
 
 
 def enqueue_playlist_metadata_targets(conn: sqlite3.Connection, playlist_id: str) -> dict[str, str]:

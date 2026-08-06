@@ -1652,6 +1652,66 @@ class AdminServerTests(unittest.TestCase):
             handler.config_data,
         )
 
+    def test_rebuild_endpoint_preserves_plugin_work_and_does_not_start_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_account_sync_task(conn)
+                    now = core.utc_now()
+                    conn.execute(
+                        """
+                        INSERT INTO worker_queue(
+                          subject_key, worker_type, task_type, current_title,
+                          created_at, updated_at
+                        ) VALUES ('plugin:example:fetch:1', 'plugin', 'fetch',
+                                  'Plugin task', ?, ?)
+                        """,
+                        (now, now),
+                    )
+            finally:
+                conn.close()
+
+            handler = object.__new__(server.LibraryHandler)
+            handler.db_path = db_path
+            handler.plugin_manager = Mock()
+            handler._start_worker_queue = Mock()
+            handler.send_json = Mock()
+
+            with (
+                patch.object(server.WORKER_QUEUE_DISPATCHER, "is_running", return_value=False),
+                patch.object(server.METADATA_WORKER, "is_running", return_value=False),
+                patch.object(server.PLAYLIST_SCAN_WORKER, "is_running", return_value=False),
+                patch.object(server.LIVE_HISTORY_WORKER, "is_running", return_value=False),
+            ):
+                handler._handle_admin_action_post(
+                    urllib.parse.urlparse("/api/admin/queue/rebuild"),
+                    {},
+                )
+
+            response = handler.send_json.call_args.args[0]
+            conn = core.connect(db_path)
+            try:
+                subjects = {
+                    row["subject_key"]
+                    for row in conn.execute("SELECT subject_key FROM worker_queue")
+                }
+            finally:
+                conn.close()
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["clearedByType"]["account"], 1)
+        self.assertEqual(response["preservedByType"], {"plugin": 1})
+        self.assertEqual(response["clips"], 1)
+        self.assertEqual(response["discovery"], 1)
+        self.assertFalse(response["started"])
+        self.assertIn("plugin:example:fetch:1", subjects)
+        self.assertIn("clip:discover", subjects)
+        self.assertIn("playlist:discover-current", subjects)
+        handler.plugin_manager.enqueue_hook.assert_not_called()
+        handler._start_worker_queue.assert_not_called()
+
     def test_fetch_history_also_queues_personal_activity_collection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

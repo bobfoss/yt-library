@@ -169,6 +169,11 @@ class TemplateDomTests(unittest.TestCase):
         self.assertNotIn("historyFetchDaily", self.admin.ids)
         self.assertNotIn("backfillChannelFirstSeen", self.admin.ids)
 
+    def test_admin_queue_actions_explain_rebuild_and_clear_scope(self) -> None:
+        self.assertIn("preserves pending Clip, Archivarix recovery, plugin", server.ADMIN_JS)
+        self.assertIn("will not start automatically", server.ADMIN_JS)
+        self.assertIn("removes all pending core, Clip, Archivarix recovery, and plugin jobs", server.ADMIN_JS)
+
     def test_browser_dom_preserves_primary_navigation_and_content_regions(self) -> None:
         expected_elements = {
             "history-nav": ("a", None),

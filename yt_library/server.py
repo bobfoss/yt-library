@@ -90,9 +90,9 @@ from .core import (
     metadata_queue_count,
     migrate_database,
     rebuild_history_reconciliation,
+    rebuild_library_queue,
     rebuild_metadata_queue,
     rebuild_playlist_reconciliation,
-    rebuild_playlist_scan_queue,
     reconcile_worker_runs,
     refresh_exact_history_dates,
     remove_worker_queue_entry,
@@ -1849,12 +1849,29 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             conn = connect(self.db_path)
             try:
                 with conn:
-                    cleared = clear_worker_queue(conn)
-                    metadata = rebuild_metadata_queue(conn, force=False, stale_days=30)
-                    playlists = rebuild_playlist_scan_queue(conn, force=False, stale_days=7)
-                    enqueue_history_task(conn, "recent", priority=0, manual=False)
-                    enqueue_account_sync_task(conn, priority=-1, manual=False)
-                self.send_json({"ok": True, "cleared": cleared, "metadata": metadata, "playlists": playlists, "history": 1, "account": 1})
+                    queue = rebuild_library_queue(conn)
+                self.send_json(
+                    {
+                        "ok": True,
+                        "cleared": queue["cleared"],
+                        "clearedByType": queue["cleared_by_type"],
+                        "preserved": queue["preserved"],
+                        "preservedByType": queue["preserved_by_type"],
+                        "metadata": {
+                            "cleared": queue["cleared_by_type"].get("metadata", 0),
+                            "inserted": queue["metadata"],
+                        },
+                        "playlists": {
+                            "cleared": queue["cleared_by_type"].get("playlist", 0),
+                            "inserted": queue["playlist_scans"],
+                        },
+                        "history": queue["history"],
+                        "account": queue["account"],
+                        "clips": queue["clips"],
+                        "discovery": queue["discovery"],
+                        "started": False,
+                    }
+                )
             finally:
                 conn.close()
             return

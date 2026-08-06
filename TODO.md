@@ -38,6 +38,9 @@ versioned migrations as well as creating a fresh current schema.
 - New installs bind to `127.0.0.1` by default, while a specific Tailscale address can be configured for remote access.
 - YouTube and Archivarix cookie paths, launch intervals, and concurrency limits have explicit config keys.
 - The persistent queue dispatches tasks by priority and applies independent YouTube and Archivarix launch cadence and concurrency limits.
+- Initialize, Update, and Rebuild share a declarative library queue planner;
+  Rebuild regenerates automatic core plan rows while preserving Clip,
+  Archivarix-recovery, plugin, and future non-plan work.
 - YouTube authentication is checked throughout metadata work so an expired cookie stops the run instead of silently degrading later tasks.
 - Admin queue and log views use incremental polling rather than repeatedly transferring full snapshots.
 
