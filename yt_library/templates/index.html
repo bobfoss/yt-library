@@ -433,20 +433,20 @@
     .history-heatmap-nav button:disabled { opacity: .4; cursor: default; }
     .history-heatmap-range { min-width: 112px; text-align: center; font-variant-numeric: tabular-nums; }
     .history-heatmap-scroll { max-width: 100%; overflow-x: auto; padding: 2px 0 5px; }
-    .history-heatmap-calendar { display: grid; grid-template-columns: 21px max-content; grid-template-rows: 17px auto; column-gap: 4px; width: max-content; margin: 0 auto; }
+    .history-heatmap-calendar { position: relative; display: grid; grid-template-columns: max-content; grid-template-rows: 17px auto; width: max-content; margin: 0 auto; }
     .history-heatmap-months,
-    .history-heatmap-weeks { display: grid; grid-template-columns: repeat(53, 11px); column-gap: 1.875px; width: max-content; padding-inline: 3px; }
-    .history-heatmap-months { grid-column: 2; grid-row: 1; }
-    .history-heatmap-weeks { grid-column: 2; grid-row: 2; }
+    .history-heatmap-weeks { display: grid; grid-template-columns: repeat(53, 11px); column-gap: 2.3px; width: max-content; padding-inline: 2.5px; }
+    .history-heatmap-months { grid-column: 1; grid-row: 1; }
+    .history-heatmap-weeks { grid-column: 1; grid-row: 2; }
     .history-heatmap-months { min-height: 17px; color: var(--muted); font-size: 11px; }
     .history-heatmap-month { white-space: nowrap; }
-    .history-heatmap-week-start { grid-column: 1; grid-row: 2; align-self: start; color: var(--muted); font-size: 11px; line-height: 11px; white-space: nowrap; }
-    .history-heatmap-week { display: grid; grid-template-rows: repeat(7, 11px); gap: 3px; }
+    .history-heatmap-week-start { position: absolute; top: 17px; right: calc(100% + 5px); color: var(--muted); font-size: 11px; line-height: 11px; white-space: nowrap; }
+    .history-heatmap-week { display: grid; grid-template-rows: repeat(7, 11px); gap: 2.5px; }
     .history-heatmap-day { width: 11px; height: 11px; border: 0; border-radius: 2px; padding: 0; background: color-mix(in srgb, var(--line) 48%, transparent); }
     button.history-heatmap-day { cursor: pointer; }
     button.history-heatmap-day:hover,
     button.history-heatmap-day:focus-visible,
-    button.history-heatmap-day[aria-current="date"] { position: relative; z-index: 1; outline: 2px solid var(--ink); outline-offset: 1px; }
+    button.history-heatmap-day[aria-current="date"] { outline: 2px solid var(--ink); outline-offset: 0; }
     .history-heatmap-day.level-1 { background: color-mix(in srgb, var(--accent) 30%, var(--panel)); }
     .history-heatmap-day.level-2 { background: color-mix(in srgb, var(--accent) 48%, var(--panel)); }
     .history-heatmap-day.level-3 { background: color-mix(in srgb, var(--accent) 68%, var(--panel)); }
