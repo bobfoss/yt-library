@@ -1214,7 +1214,7 @@ class WorkerQueueTests(unittest.TestCase):
             conn = core.connect(db_path)
             try:
                 playlist = conn.execute(
-                    "SELECT title, visibility, video_count, is_library_playlist "
+                    "SELECT title, visibility, video_count, ownership, in_library "
                     "FROM playlists WHERE playlist_id = 'PLnewcurrent'"
                 ).fetchone()
                 queued = core.playlist_scan_queue_rows(conn)
@@ -1238,7 +1238,8 @@ class WorkerQueueTests(unittest.TestCase):
                 "title": "New current playlist",
                 "visibility": "private",
                 "video_count": 3,
-                "is_library_playlist": 1,
+                "ownership": "others",
+                "in_library": 1,
             },
         )
         self.assertEqual(
@@ -1311,6 +1312,117 @@ class WorkerQueueTests(unittest.TestCase):
             [(row["playlist_id"], row["manual"]) for row in queued],
             [("PLbrandnew", 1)],
         )
+
+    def test_playlist_discovery_deletes_accessible_foreign_playlist_removed_from_library(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            cookie_file = Path(temp_dir) / "cookies.txt"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCmine", title="Library owner")
+                    core.upsert_channel(conn, "UCother", title="Other owner")
+                    conn.executemany(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, owner_channel_id, ownership, in_library
+                        ) VALUES (?, ?, ?, ?, 1)
+                        """,
+                        [
+                            ("PLcurrent", "Current", "UCmine", "mine"),
+                            ("PLforeign", "Foreign", "UCother", "others"),
+                        ],
+                    )
+                    core.upsert_video(conn, "foreignonly1", source="playlist")
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_items(playlist_id, position, video_id)
+                        VALUES ('PLforeign', 1, 'foreignonly1')
+                        """
+                    )
+                    core.enqueue_playlist_discovery_item(conn, mode="new")
+            finally:
+                conn.close()
+
+            discovered = [
+                {
+                    "playlist_id": "PLcurrent",
+                    "title": "Current",
+                    "owner": "Library owner",
+                    "owner_channel_id": "UCmine",
+                    "visibility": "private",
+                    "video_count": "1",
+                }
+            ]
+            metadata = {
+                "title": "Foreign",
+                "owner": "Other owner",
+                "owner_channel_id": "UCother",
+                "visibility": "public",
+                "video_count": 1,
+                "has_video_count": True,
+            }
+            videos = [
+                {
+                    "video_id": "foreignonly1",
+                    "title": "Foreign-only video",
+                    "is_playable": True,
+                }
+            ]
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.fetch_current_youtube_playlists",
+                    return_value=(object(), discovered),
+                ),
+                patch("yt_library.workers.request_text", return_value="playlist page"),
+                patch("yt_library.workers.extract_playlist_metadata", return_value=metadata),
+                patch(
+                    "yt_library.workers.scan_playlist_ytdlp",
+                    return_value=(videos, metadata),
+                ),
+                patch("yt_library.workers.scan_playlist_videos") as scan_web,
+            ):
+                worker._run(
+                    "test-foreign-library-removal",
+                    db_path,
+                    cookie_file,
+                    delay=0,
+                    limit=2,
+                    force=False,
+                    stale_days=7,
+                    record_summary=False,
+                )
+
+            scan_web.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                playlist = conn.execute(
+                    "SELECT 1 FROM playlists WHERE playlist_id = 'PLforeign'"
+                ).fetchone()
+                video = conn.execute(
+                    "SELECT 1 FROM videos WHERE video_id = 'foreignonly1'"
+                ).fetchone()
+                tombstone = conn.execute(
+                    "SELECT 1 FROM playlist_tombstones WHERE playlist_id = 'PLforeign'"
+                ).fetchone()
+                log = conn.execute(
+                    """
+                    SELECT message FROM playlist_scan_worker_log
+                    WHERE run_id = 'test-foreign-library-removal'
+                      AND playlist_id = 'PLforeign'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertIsNone(playlist)
+        self.assertIsNone(video)
+        self.assertIsNone(tombstone)
+        self.assertIn("accessible foreign playlist deleted", log["message"])
 
     def test_playlist_worker_logs_existing_playlist_count_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1934,12 +2046,19 @@ class WorkerQueueTests(unittest.TestCase):
                     conn.execute(
                         """
                         INSERT INTO playlists(
-                          playlist_id, title, visibility, is_library_playlist
+                          playlist_id, title, visibility, ownership, in_library
                         )
-                        VALUES ('PLmissing', 'Missing', 'private', 1)
+                        VALUES ('PLmissing', 'Missing', 'private', 'mine', 1)
                         """
                     )
                     core.upsert_video(conn, "keptvideo01", title="Kept video", source="playlist")
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watch_date, time_precision, source_type, match_type
+                        ) VALUES ('kept-watch', 'keptvideo01', '2026-07-28', 'date_only', 'youtube', 'video_id_date')
+                        """
+                    )
                     conn.execute(
                         """
                         INSERT INTO playlist_items(playlist_id, position, video_id)
@@ -1993,18 +2112,18 @@ class WorkerQueueTests(unittest.TestCase):
             conn = core.connect(db_path)
             try:
                 playlist = conn.execute(
-                    """
-                    SELECT fetch_status
-                    FROM playlists
-                    WHERE playlist_id = 'PLmissing'
-                    """
+                    "SELECT 1 FROM playlists WHERE playlist_id = 'PLmissing'"
                 ).fetchone()
-                self.assertEqual(playlist["fetch_status"], "removed")
+                self.assertIsNone(playlist)
+                tombstone = conn.execute(
+                    "SELECT reason FROM playlist_tombstones WHERE playlist_id = 'PLmissing'"
+                ).fetchone()
+                self.assertEqual(tombstone["reason"], "authenticated_missing")
                 self.assertEqual(
                     conn.execute(
                         "SELECT COUNT(*) FROM playlist_items WHERE playlist_id = 'PLmissing'"
                     ).fetchone()[0],
-                    1,
+                    0,
                 )
                 self.assertEqual(
                     conn.execute(
@@ -2026,8 +2145,8 @@ class WorkerQueueTests(unittest.TestCase):
                     """
                 ).fetchone()
                 self.assertEqual(log["level"], "info")
-                self.assertIn("marked removed", log["message"])
-                self.assertIn("preserved 1 videos", log["message"])
+                self.assertIn("confirmed removed", log["message"])
+                self.assertIn("tombstone recorded", log["message"])
             finally:
                 conn.close()
 

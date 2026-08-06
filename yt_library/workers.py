@@ -1074,10 +1074,38 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                     "SELECT playlist_id FROM playlists WHERE playlist_id <> ''"
                                 )
                             }
+                            library_playlist_count = int(
+                                conn.execute(
+                                    "SELECT COUNT(*) FROM playlists WHERE in_library = 1"
+                                ).fetchone()[0]
+                                or 0
+                            )
+                            if library_playlist_count and not discovered_records:
+                                raise RuntimeError(
+                                    "Authenticated playlist feed returned no playlists; "
+                                    "existing library membership was left unchanged"
+                                )
                             discovery_stats = save_discovered_playlists(
                                 conn,
                                 discovered_records,
+                                reconcile_missing=True,
                             )
+                            verification_records = [
+                                dict(existing)
+                                for existing in conn.execute(
+                                    """
+                                    SELECT playlist_id, title
+                                    FROM playlists
+                                    WHERE playlist_id IN ({})
+                                    ORDER BY playlist_id
+                                    """.format(
+                                        ", ".join(
+                                            "?" for _ in discovery_stats["verify_ids"]
+                                        )
+                                    ),
+                                    discovery_stats["verify_ids"],
+                                )
+                            ] if discovery_stats["verify_ids"] else []
                             scan_records = (
                                 [
                                     record
@@ -1087,13 +1115,19 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 if discovery_mode == "new"
                                 else discovered_records
                             )
+                            scan_records = [*scan_records, *verification_records]
+                            verification_ids = set(discovery_stats["verify_ids"])
                             for index, record in enumerate(scan_records, start=1):
                                 is_new = record.get("playlist_id", "") not in known_playlist_ids
                                 enqueue_playlist_scan_item(
                                     conn,
                                     record.get("playlist_id", ""),
                                     title=record.get("title", ""),
-                                    source_key="update" if discovery_mode == "new" else "",
+                                    source_key=(
+                                        "library_membership"
+                                        if record.get("playlist_id", "") in verification_ids
+                                        else "update" if discovery_mode == "new" else ""
+                                    ),
                                     priority=index,
                                     manual=is_new,
                                 )
@@ -1110,6 +1144,9 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 f"{discovery_stats['discovered']} current, "
                                 f"{discovery_stats['inserted']} new, "
                                 f"{discovery_stats['updated']} existing; "
+                                f"{discovery_stats['tombstoned']} owned removed, "
+                                f"{discovery_stats['pending_verification']} foreign awaiting verification, "
+                                f"{discovery_stats['unavailable']} unknown unavailable; "
                                 f"{len(scan_records)} scans added, "
                                 f"{remaining} playlist scans queued"
                             )
@@ -1367,6 +1404,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 with conn:
                     metadata_queued = 0
                     placeholder_queued = 0
+                    removed_from_library = False
                     liked_partial_note = ""
                     duplicate_note = ""
                     if status in {"removed", "unavailable"}:
@@ -1410,6 +1448,12 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                             error,
                             playlist_metadata=playlist_metadata,
                         )
+                        removed_from_library = not bool(
+                            conn.execute(
+                                "SELECT 1 FROM playlists WHERE playlist_id = ?",
+                                (playlist_id,),
+                            ).fetchone()
+                        )
                         duplicate_video_count, duplicate_occurrence_count = (
                             playlist_duplicate_counts(videos)
                         )
@@ -1420,10 +1464,10 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 f"across {duplicate_video_count} "
                                 f"video{'s' if duplicate_video_count != 1 else ''}"
                             )
-                        if bool(row["manual"]) and video_count:
+                        if not removed_from_library and bool(row["manual"]) and video_count:
                             metadata_result = enqueue_playlist_metadata_targets(conn, playlist_id)
                             metadata_queued = int(metadata_result["queued_count"])
-                        if playlist_id != LIKED_VIDEOS_PLAYLIST_ID:
+                        if not removed_from_library and playlist_id != LIKED_VIDEOS_PLAYLIST_ID:
                             placeholder_result = enqueue_placeholder_recovery_targets(
                                 conn,
                                 playlist_id,
@@ -1441,16 +1485,37 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 f"{title}: YouTube diagnostics: {youtube_debug}",
                                 playlist_id,
                             )
-                    elif status in {"removed", "unavailable"}:
+                    elif status == "removed":
                         found += 1
                         log_playlist_scan_event(
                             conn,
                             run_id,
                             "info",
                             (
-                                f"{title}: marked {status} after authenticated YouTube 404; "
+                                f"{title}: confirmed removed after authenticated YouTube 404; "
+                                "tombstone recorded and canonical playlist deleted"
+                            ),
+                            playlist_id,
+                        )
+                    elif status == "unavailable":
+                        found += 1
+                        log_playlist_scan_event(
+                            conn,
+                            run_id,
+                            "info",
+                            (
+                                f"{title}: marked unavailable after authenticated YouTube 404; "
                                 f"preserved {video_count} videos"
                             ),
+                            playlist_id,
+                        )
+                    elif removed_from_library:
+                        found += 1
+                        log_playlist_scan_event(
+                            conn,
+                            run_id,
+                            "info",
+                            f"{title}: removed from library; accessible foreign playlist deleted",
                             playlist_id,
                         )
                     else:

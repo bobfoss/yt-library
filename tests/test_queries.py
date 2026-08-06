@@ -1239,17 +1239,17 @@ class NormalizedReadModelTests(unittest.TestCase):
             """
             INSERT INTO playlists(
               playlist_id, title, visibility, owner_channel_id, fetch_status,
-              is_library_playlist
-            ) VALUES (?, ?, ?, ?, ?, ?)
+              ownership, in_library
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                ("PLprivate", "Needle private", "private", None, "", 1),
-                ("PLpublic", "Needle public", "public", None, "", 1),
-                ("PLunlisted", "Needle unlisted", "unlisted", None, "", 1),
-                ("PLremoved", "Needle removed playlist", "private", None, "removed", 1),
-                ("PLother", "Needle other playlist", "unlisted", "UC_playlist_other", "", 1),
+                ("PLprivate", "Needle private", "private", None, "", "unknown", 1),
+                ("PLpublic", "Needle public", "public", None, "", "unknown", 1),
+                ("PLunlisted", "Needle unlisted", "unlisted", None, "", "unknown", 1),
+                ("PLunavailable", "Needle unavailable playlist", "private", None, "unavailable", "unknown", 0),
+                ("PLother", "Needle other playlist", "unlisted", "UC_playlist_other", "", "others", 1),
                 *[
-                    (f"PLunknown{index}", f"Needle unknown {index}", "", "UC_library_owner", "", 1)
+                    (f"PLunknown{index}", f"Needle unknown {index}", "", "UC_library_owner", "", "mine", 1)
                     for index in range(5)
                 ],
             ],
@@ -1285,15 +1285,14 @@ class NormalizedReadModelTests(unittest.TestCase):
                 },
                 "playlists": {
                     "total": 10,
-                    "private": 2,
+                    "private": 1,
                     "public": 1,
                     "unlisted": 2,
+                    "unavailable": 1,
                     "unknown": 5,
                     "mine": 5,
                     "others": 1,
                     "ownership_unknown": 4,
-                    "active": 9,
-                    "removed": 1,
                 },
             },
         )
@@ -1342,7 +1341,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             "needle",
             video_meta_filters={"members_only"},
             channel_status_filters={"terminated"},
-            playlist_status_filters={"removed"},
+            playlist_meta_filters={"unavailable"},
             sort="type",
             limit=100,
         )
@@ -1358,16 +1357,15 @@ class NormalizedReadModelTests(unittest.TestCase):
                 (
                     result["kind"],
                     result.get("metaCategory"),
-                    result.get("playlistStatus"),
                     result.get("channelSubscription"),
                     result.get("channelStatus"),
                 )
                 for result in filtered["results"]
             ],
             [
-                ("video", "members_only", None, None, None),
-                ("playlist", "private", "removed", None, None),
-                ("channel", None, None, "subscribed", "terminated"),
+                ("video", "members_only", None, None),
+                ("playlist", "unavailable", None, None),
+                ("channel", None, "subscribed", "terminated"),
             ],
         )
         other_owned = omni_search_data(
@@ -1680,7 +1678,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             [
                 ("PLz", "Zulu", "private", 2, ""),
                 ("PLa", "Alpha", "public", 5, ""),
-                ("PLremoved", "Removed", "private", 1, "removed"),
+                ("PLunavailable", "Unavailable", "private", 1, "unavailable"),
             ],
         )
         self.conn.executemany(
@@ -1689,26 +1687,31 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.conn.commit()
 
-        data = playlist_list_data(self.conn, sort="most_videos", limit=1)
+        data = playlist_list_data(
+            self.conn,
+            sort="most_videos",
+            limit=1,
+            include_unavailable=True,
+        )
 
         self.assertEqual(data["total"], 3)
         self.assertEqual(data["counts"]["private"], 1)
         self.assertEqual(data["counts"]["public"], 1)
-        self.assertEqual(data["counts"]["removed"], 1)
+        self.assertEqual(data["counts"]["unavailable"], 1)
         self.assertEqual([row["playlist_id"] for row in data["results"]], ["PLa"])
-        without_removed = playlist_list_data(self.conn, include_removed=False)
+        without_unavailable = playlist_list_data(self.conn, include_unavailable=False)
         self.assertEqual(
-            [row["playlist_id"] for row in without_removed["results"]],
+            [row["playlist_id"] for row in without_unavailable["results"]],
             ["PLa", "PLz"],
         )
-        removed_only = playlist_list_data(
+        unavailable_status_only = playlist_list_data(
             self.conn,
             visibilities=set(),
-            include_removed=True,
+            include_unavailable=True,
         )
         self.assertEqual(
-            [row["playlist_id"] for row in removed_only["results"]],
-            ["PLremoved"],
+            [row["playlist_id"] for row in unavailable_status_only["results"]],
+            ["PLunavailable"],
         )
         unavailable = playlist_list_data(self.conn, unavailable_only=True)
         self.assertEqual([row["playlist_id"] for row in unavailable["results"]], ["PLz"])
@@ -2425,30 +2428,30 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(video["watch_count"], 1)
         self.assertEqual(video["playlist_links"], [])
 
-    def test_playlist_list_marks_dominant_owner_and_generates_urls(self) -> None:
+    def test_playlist_list_uses_persisted_ownership_and_generates_urls(self) -> None:
         core.upsert_channel(self.conn, "UC_owner", title="Library Owner")
         self.conn.executemany(
-            "INSERT INTO playlists(playlist_id, title, owner_channel_id) VALUES (?, ?, 'UC_owner')",
+            "INSERT INTO playlists(playlist_id, title, owner_channel_id, ownership) VALUES (?, ?, 'UC_owner', 'mine')",
             [(f"pl{i}", f"Playlist {i}") for i in range(6)],
         )
         self.conn.commit()
         playlists = playlist_list_data(self.conn, limit=20)["results"]
-        self.assertTrue(all(row["is_library_owner"] for row in playlists))
+        self.assertTrue(all(row["ownership"] == "mine" for row in playlists))
         self.assertTrue(all(row["url"].startswith("https://www.youtube.com/playlist?list=") for row in playlists))
 
-    def test_playlist_list_uses_library_playlist_evidence_for_visible_owners(self) -> None:
+    def test_playlist_list_keeps_explicit_ownership_for_visible_owners(self) -> None:
         core.upsert_channel(self.conn, "UC_owner", title="Library Owner")
         core.upsert_channel(self.conn, "UC_other", title="Other Owner")
         self.conn.executemany(
             """
             INSERT INTO playlists(
-              playlist_id, title, visibility, owner_channel_id, is_library_playlist
+              playlist_id, title, visibility, owner_channel_id, ownership
             ) VALUES (?, ?, ?, ?, ?)
             """,
             [
-                ("PLmine", "My public playlist", "public", "UC_owner", 1),
-                ("PLminelegacy", "My private playlist", "private", "UC_owner", 0),
-                ("PLother", "Their unlisted playlist", "unlisted", "UC_other", 0),
+                ("PLmine", "My public playlist", "public", "UC_owner", "mine"),
+                ("PLminelegacy", "My private playlist", "private", "UC_owner", "mine"),
+                ("PLother", "Their unlisted playlist", "unlisted", "UC_other", "others"),
             ],
         )
         self.conn.commit()
@@ -2458,9 +2461,9 @@ class NormalizedReadModelTests(unittest.TestCase):
             for row in playlist_list_data(self.conn, limit=20)["results"]
         }
 
-        self.assertEqual(playlists["PLmine"]["is_library_owner"], 1)
-        self.assertEqual(playlists["PLminelegacy"]["is_library_owner"], 1)
-        self.assertEqual(playlists["PLother"]["is_library_owner"], 0)
+        self.assertEqual(playlists["PLmine"]["ownership"], "mine")
+        self.assertEqual(playlists["PLminelegacy"]["ownership"], "mine")
+        self.assertEqual(playlists["PLother"]["ownership"], "others")
 
     def test_foreign_key_check_is_clean(self) -> None:
         self.assertEqual(self.conn.execute("PRAGMA foreign_key_check").fetchall(), [])

@@ -38,7 +38,10 @@ CREATE TABLE IF NOT EXISTS playlists (
   visibility TEXT NOT NULL DEFAULT '',
   created_at TEXT,
   metadata_checked_at TEXT,
-  is_library_playlist INTEGER NOT NULL DEFAULT 0 CHECK (is_library_playlist IN (0, 1)),
+  ownership TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (ownership IN ('mine', 'others', 'unknown')),
+  in_library INTEGER NOT NULL DEFAULT 0 CHECK (in_library IN (0, 1)),
+  library_missing_at TEXT,
   video_count INTEGER NOT NULL DEFAULT 0,
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
@@ -118,6 +121,14 @@ CREATE TABLE IF NOT EXISTS clips (
   fetched_at TEXT,
   last_seen_at TEXT,
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS playlist_tombstones (
+  playlist_id TEXT PRIMARY KEY,
+  observed_removed_at TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT 'authenticated_missing'
+    CHECK (reason IN ('authenticated_missing', 'missing_from_library', 'explicit_user')),
+  last_confirmed_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS playlist_scans (

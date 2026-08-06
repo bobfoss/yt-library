@@ -52,6 +52,7 @@ from .database import (
     SCHEMA_VERSION as SCHEMA_VERSION,
     VIDEO_VISIBILITY_CAPTURE_START as VIDEO_VISIBILITY_CAPTURE_START,
     connect,
+    delete_playlist_and_orphaned_unwatched_videos,
     migrate_database as migrate_database,
     worker_queue_order_sql,
 )
@@ -4052,6 +4053,8 @@ def fetch_current_youtube_playlists(
     )
     referer = "https://www.youtube.com/feed/playlists"
     page = request_text(opener, referer)
+    if not youtube_page_is_authenticated(page):
+        raise youtube_authentication_error(page, "playlists feed")
     config = extract_ytcfg(page)
     api_key = config.get("INNERTUBE_API_KEY", "")
     client_version = config.get("INNERTUBE_CLIENT_VERSION", "")
@@ -4383,6 +4386,7 @@ def fetch_clip_metadata(
 
 
 def _library_owner_identity(conn: sqlite3.Connection) -> dict[str, str]:
+    library_channel_id, _library_owner_name = library_playlist_owner_identity(conn)
     row = conn.execute(
         """
         SELECT p.owner_channel_id,
@@ -4392,11 +4396,14 @@ def _library_owner_identity(conn: sqlite3.Connection) -> dict[str, str]:
                COUNT(*) AS playlist_count
         FROM playlists p
         LEFT JOIN channels c ON c.channel_id = p.owner_channel_id
-        WHERE p.is_library_playlist = 1 AND p.owner_channel_id IS NOT NULL
+        WHERE p.ownership = 'mine'
+          AND p.owner_channel_id IS NOT NULL
+          AND (? = '' OR p.owner_channel_id = ?)
         GROUP BY p.owner_channel_id
         ORDER BY playlist_count DESC, p.owner_channel_id
         LIMIT 1
-        """
+        """,
+        (library_channel_id, library_channel_id),
     ).fetchone()
     return dict(row) if row else {}
 
@@ -4547,19 +4554,200 @@ def is_system_playlist(playlist_id: str) -> bool:
     return playlist_id in {"LL", "LM", "WL"} or playlist_id.startswith("RD")
 
 
+def library_playlist_owner_identity(conn: sqlite3.Connection) -> tuple[str, str]:
+    row = conn.execute(
+        """
+        SELECT COALESCE(p.owner_channel_id, '') AS owner_channel_id,
+               lower(trim(COALESCE(c.title, ''))) AS owner_name,
+               COUNT(*) AS playlist_count
+        FROM playlists p
+        LEFT JOIN channels c ON c.channel_id = p.owner_channel_id
+        WHERE p.ownership = 'mine'
+          AND trim(COALESCE(p.owner_channel_id, '') || COALESCE(c.title, '')) <> ''
+        GROUP BY p.owner_channel_id, owner_name
+        ORDER BY playlist_count DESC, owner_channel_id, owner_name
+        LIMIT 1
+        """
+    ).fetchone()
+    if not row:
+        return "", ""
+    return str(row["owner_channel_id"] or ""), str(row["owner_name"] or "")
+
+
+def dominant_playlist_owner_identity(
+    records: Sequence[dict[str, Any]],
+) -> tuple[str, str]:
+    counts: Counter[tuple[str, str]] = Counter()
+    for record in records:
+        owner_channel_id = str(record.get("owner_channel_id") or "").strip()
+        owner_name = str(record.get("owner") or "").strip().casefold()
+        if owner_channel_id or owner_name:
+            counts[(owner_channel_id, owner_name)] += 1
+    if not counts:
+        return "", ""
+    ordered = counts.most_common(2)
+    (identity, top_count) = ordered[0]
+    next_count = ordered[1][1] if len(ordered) > 1 else 0
+    if top_count < 2 or top_count < max(2, next_count * 2):
+        return "", ""
+    return identity
+
+
+def playlist_ownership_for_owner(
+    conn: sqlite3.Connection,
+    owner_channel_id: str,
+    owner_name: str = "",
+    *,
+    existing: str = "unknown",
+    library_owner_identity: tuple[str, str] | None = None,
+) -> str:
+    owner_channel_id = (owner_channel_id or "").strip()
+    owner_name = (owner_name or "").strip().casefold()
+    existing = existing if existing in {"mine", "others", "unknown"} else "unknown"
+    if not owner_channel_id and not owner_name:
+        return existing
+    library_channel_id, library_owner_name = (
+        library_owner_identity
+        if library_owner_identity is not None
+        else library_playlist_owner_identity(conn)
+    )
+    if (library_channel_id and owner_channel_id == library_channel_id) or (
+        library_owner_name and owner_name == library_owner_name
+    ):
+        return "mine"
+    return "others"
+
+
+def playlist_is_tombstoned(conn: sqlite3.Connection, playlist_id: str) -> bool:
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM playlist_tombstones WHERE playlist_id = ?",
+            (playlist_id,),
+        ).fetchone()
+    )
+
+
+def clear_playlist_tombstone(conn: sqlite3.Connection, playlist_id: str) -> None:
+    conn.execute(
+        "DELETE FROM playlist_tombstones WHERE playlist_id = ?",
+        (playlist_id,),
+    )
+
+
+def tombstone_playlist(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    *,
+    reason: str,
+    observed_at: str | None = None,
+) -> int:
+    if reason not in {"authenticated_missing", "missing_from_library", "explicit_user"}:
+        raise ValueError(f"Unsupported playlist tombstone reason: {reason}")
+    observed_at = observed_at or utc_now()
+    conn.execute(
+        """
+        INSERT INTO playlist_tombstones(
+          playlist_id, observed_removed_at, reason, last_confirmed_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(playlist_id) DO UPDATE SET
+          reason=excluded.reason,
+          last_confirmed_at=excluded.last_confirmed_at
+        """,
+        (playlist_id, observed_at, reason, observed_at),
+    )
+    return delete_playlist_and_orphaned_unwatched_videos(conn, playlist_id)
+
+
+def reconcile_missing_library_playlists(
+    conn: sqlite3.Connection,
+    current_playlist_ids: set[str],
+) -> dict[str, Any]:
+    missing_rows = conn.execute(
+        """
+        SELECT playlist_id, ownership
+        FROM playlists
+        WHERE in_library = 1
+        ORDER BY playlist_id
+        """
+    ).fetchall()
+    stats: dict[str, Any] = {
+        "tombstoned": 0,
+        "pending_verification": 0,
+        "unavailable": 0,
+        "videos_deleted": 0,
+        "verify_ids": [],
+    }
+    for row in missing_rows:
+        playlist_id = str(row["playlist_id"] or "")
+        if not playlist_id or playlist_id in current_playlist_ids:
+            continue
+        ownership = str(row["ownership"] or "unknown")
+        if ownership == "mine":
+            stats["videos_deleted"] += tombstone_playlist(
+                conn,
+                playlist_id,
+                reason="missing_from_library",
+            )
+            stats["tombstoned"] += 1
+        elif ownership == "others":
+            now = utc_now()
+            conn.execute(
+                """
+                UPDATE playlists
+                SET in_library=0, library_missing_at=?, updated_at=?
+                WHERE playlist_id=?
+                """,
+                (now, now, playlist_id),
+            )
+            stats["pending_verification"] += 1
+            stats["verify_ids"].append(playlist_id)
+        else:
+            now = utc_now()
+            conn.execute(
+                """
+                UPDATE playlists
+                SET in_library=0, library_missing_at=NULL, fetch_status='unavailable',
+                    fetch_error='Playlist is no longer present in the authenticated library',
+                    updated_at=?
+                WHERE playlist_id=?
+                """,
+                (now, playlist_id),
+            )
+            conn.execute(
+                """
+                UPDATE playlist_scans
+                SET scan_status='unavailable',
+                    scan_error='Playlist is no longer present in the authenticated library',
+                    scanned_at=?
+                WHERE playlist_id=?
+                """,
+                (now, playlist_id),
+            )
+            stats["unavailable"] += 1
+    return stats
+
+
 def save_discovered_playlists(
     conn: sqlite3.Connection,
     records: list[dict[str, str]],
-) -> dict[str, int]:
+    *,
+    reconcile_missing: bool = False,
+) -> dict[str, Any]:
     existing_ids = {
         row["playlist_id"]
         for row in conn.execute("SELECT playlist_id FROM playlists")
     }
     inserted = 0
+    library_owner_identity = library_playlist_owner_identity(conn)
+    if not any(library_owner_identity):
+        library_owner_identity = dominant_playlist_owner_identity(records)
+    current_playlist_ids: set[str] = set()
     for record in records:
         playlist_id = (record.get("playlist_id") or "").strip()
         if not playlist_id:
             continue
+        current_playlist_ids.add(playlist_id)
+        clear_playlist_tombstone(conn, playlist_id)
         if playlist_id not in existing_ids:
             inserted += 1
             existing_ids.add(playlist_id)
@@ -4574,18 +4762,34 @@ def save_discovered_playlists(
                 source="playlist_owner",
                 updated_at=utc_now(),
             )
+        existing = conn.execute(
+            "SELECT ownership FROM playlists WHERE playlist_id = ?",
+            (playlist_id,),
+        ).fetchone()
+        ownership = playlist_ownership_for_owner(
+            conn,
+            owner_channel_id,
+            record.get("owner", ""),
+            existing=str(existing["ownership"] or "unknown") if existing else "unknown",
+            library_owner_identity=library_owner_identity,
+        )
         conn.execute(
             """
             INSERT INTO playlists(
               playlist_id, title, description, owner_channel_id, visibility,
-              is_library_playlist, video_count, thumbnail_url, thumbnail_path,
+              ownership, in_library, video_count, thumbnail_url, thumbnail_path,
               fetch_status, fetch_error, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 'ok', '', ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'ok', '', ?)
             ON CONFLICT(playlist_id) DO UPDATE SET
               title=excluded.title,
               description=excluded.description,
-              is_library_playlist=1,
+              ownership=CASE
+                WHEN excluded.ownership <> 'unknown' THEN excluded.ownership
+                ELSE playlists.ownership
+              END,
+              in_library=1,
+              library_missing_at=NULL,
               owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
               visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
               video_count=excluded.video_count,
@@ -4601,16 +4805,27 @@ def save_discovered_playlists(
                 record.get("description", ""),
                 owner_channel_id or None,
                 record.get("visibility", ""),
+                ownership,
                 max(0, int(record.get("video_count") or 0)),
                 record.get("thumbnail_url", ""),
                 record.get("thumbnail_path", ""),
                 utc_now(),
             ),
         )
+    reconciliation: dict[str, Any] = {
+        "tombstoned": 0,
+        "pending_verification": 0,
+        "unavailable": 0,
+        "videos_deleted": 0,
+        "verify_ids": [],
+    }
+    if reconcile_missing:
+        reconciliation = reconcile_missing_library_playlists(conn, current_playlist_ids)
     return {
         "discovered": len(records),
         "inserted": inserted,
         "updated": max(0, len(records) - inserted),
+        **reconciliation,
     }
 
 
@@ -5474,14 +5689,16 @@ def save_youtube_data_api_snapshot(
             updated_at=now,
         ) or None
         created_at = normalize_utc_timestamp(str(playlist.published_at or ""))
+        clear_playlist_tombstone(conn, playlist_id)
         conn.execute(
             """
             INSERT INTO playlists(
               playlist_id, title, description, owner_channel_id, visibility,
-              created_at, metadata_checked_at, is_library_playlist, video_count,
+              created_at, metadata_checked_at, ownership, in_library,
+              library_missing_at, video_count,
               fetch_status, fetch_error, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'ok', '', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'mine', 1, NULL, ?, 'ok', '', ?)
             ON CONFLICT(playlist_id) DO UPDATE SET
               title=CASE WHEN excluded.title <> '' THEN excluded.title ELSE playlists.title END,
               description=CASE
@@ -5495,7 +5712,9 @@ def save_youtube_data_api_snapshot(
               END,
               created_at=COALESCE(excluded.created_at, playlists.created_at),
               metadata_checked_at=excluded.metadata_checked_at,
-              is_library_playlist=1,
+              ownership='mine',
+              in_library=1,
+              library_missing_at=NULL,
               video_count=excluded.video_count,
               fetch_status='ok', fetch_error='', updated_at=excluded.updated_at
             """,
@@ -6217,10 +6436,15 @@ def _ensure_playlist_parent(
     *,
     title: str = "",
     updated_at: str | None = None,
-) -> None:
+    restore_tombstone: bool = False,
+) -> bool:
     playlist_id = playlist_id.strip()
     if not playlist_id:
         raise ValueError("Playlist ID is required")
+    if playlist_is_tombstoned(conn, playlist_id):
+        if not restore_tombstone:
+            return False
+        clear_playlist_tombstone(conn, playlist_id)
     conn.execute(
         """
         INSERT INTO playlists(playlist_id, title, updated_at)
@@ -6229,6 +6453,7 @@ def _ensure_playlist_parent(
         """,
         (playlist_id, title.strip() or playlist_id, updated_at or utc_now()),
     )
+    return True
 
 
 def save_playlist_scan(
@@ -6247,11 +6472,31 @@ def save_playlist_scan(
     videos = normalized_videos
     unavailable_count = sum(1 for video in videos if not video["is_playable"])
     now = utc_now()
+    existing_playlist = conn.execute(
+        "SELECT ownership, library_missing_at FROM playlists WHERE playlist_id = ?",
+        (playlist_id,),
+    ).fetchone()
+    if (
+        status == "ok"
+        and playlist_metadata
+        and existing_playlist
+        and existing_playlist["library_missing_at"]
+        and playlist_ownership_for_owner(
+            conn,
+            str(playlist_metadata.get("owner_channel_id") or ""),
+            str(playlist_metadata.get("owner") or ""),
+            existing=str(existing_playlist["ownership"] or "unknown"),
+        )
+        == "others"
+    ):
+        delete_playlist_and_orphaned_unwatched_videos(conn, playlist_id)
+        return 0, 0
     _ensure_playlist_parent(
         conn,
         playlist_id,
         title=str((playlist_metadata or {}).get("title") or ""),
         updated_at=now,
+        restore_tombstone=True,
     )
     retained = [
         dict(row)
@@ -6372,6 +6617,16 @@ def save_playlist_scan(
                 source="playlist_owner",
                 updated_at=now,
             )
+        ownership = playlist_ownership_for_owner(
+            conn,
+            metadata["owner_channel_id"],
+            str(playlist_metadata.get("owner") or "").strip(),
+            existing=(
+                str(existing_playlist["ownership"] or "unknown")
+                if existing_playlist
+                else "unknown"
+            ),
+        )
         if playlist_metadata.get("collaborators_authoritative"):
             collaborators = playlist_metadata.get("collaborators") or []
             conn.execute(
@@ -6410,15 +6665,19 @@ def save_playlist_scan(
         conn.execute(
             """
             INSERT INTO playlists(
-              playlist_id, title, description, owner_channel_id, visibility, video_count,
+              playlist_id, title, description, owner_channel_id, visibility, ownership, video_count,
               thumbnail_url, thumbnail_path, fetch_status, fetch_error, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(playlist_id) DO UPDATE SET
               title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
               description=COALESCE(NULLIF(excluded.description, ''), playlists.description),
               owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
               visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
+              ownership=CASE
+                WHEN excluded.ownership <> 'unknown' THEN excluded.ownership
+                ELSE playlists.ownership
+              END,
               video_count=CASE
                 WHEN excluded.video_count > 0 THEN excluded.video_count
                 ELSE playlists.video_count
@@ -6427,6 +6686,7 @@ def save_playlist_scan(
               thumbnail_path=COALESCE(NULLIF(excluded.thumbnail_path, ''), playlists.thumbnail_path),
               fetch_status=excluded.fetch_status,
               fetch_error=excluded.fetch_error,
+              library_missing_at=NULL,
               updated_at=excluded.updated_at
             """,
             (
@@ -6435,6 +6695,7 @@ def save_playlist_scan(
                 metadata["description"],
                 metadata["owner_channel_id"] or None,
                 metadata["visibility"],
+                ownership,
                 metadata["video_count"],
                 metadata["thumbnail_url"],
                 metadata["thumbnail_path"],
@@ -6516,7 +6777,6 @@ def save_playlist_scan_error(
     error: str,
 ) -> tuple[int, int]:
     now = utc_now()
-    _ensure_playlist_parent(conn, playlist_id, updated_at=now)
     previous = conn.execute(
         """
         SELECT video_count, unavailable_count
@@ -6527,6 +6787,8 @@ def save_playlist_scan_error(
     ).fetchone()
     video_count = int(previous["video_count"] or 0) if previous else 0
     unavailable_count = int(previous["unavailable_count"] or 0) if previous else 0
+    if not _ensure_playlist_parent(conn, playlist_id, updated_at=now):
+        return video_count, unavailable_count
     conn.execute(
         """
         INSERT INTO playlist_scans(
@@ -6548,25 +6810,15 @@ def save_playlist_scan_error(
 def playlist_missing_status(conn: sqlite3.Connection, playlist_id: str) -> str:
     row = conn.execute(
         """
-        SELECT p.is_library_playlist,
-               EXISTS(
-                 SELECT 1
-                 FROM playlist_items pi
-                 WHERE pi.playlist_id = p.playlist_id
-                   AND pi.source_quality = 'takeout'
-               ) AS has_takeout_items
-        FROM playlists p
-        WHERE p.playlist_id = ?
+        SELECT ownership
+        FROM playlists
+        WHERE playlist_id = ?
         """,
         (playlist_id,),
     ).fetchone()
     if not row:
-        return "unavailable"
-    return (
-        "removed"
-        if bool(row["is_library_playlist"]) or bool(row["has_takeout_items"])
-        else "unavailable"
-    )
+        return "removed" if playlist_is_tombstoned(conn, playlist_id) else "unavailable"
+    return "removed" if row["ownership"] == "mine" else "unavailable"
 
 
 def save_playlist_missing_status(
@@ -6578,7 +6830,6 @@ def save_playlist_missing_status(
     if status not in {"removed", "unavailable"}:
         raise ValueError(f"Unsupported playlist missing status: {status}")
     now = utc_now()
-    _ensure_playlist_parent(conn, playlist_id, updated_at=now)
     previous = conn.execute(
         """
         SELECT video_count, unavailable_count
@@ -6589,10 +6840,25 @@ def save_playlist_missing_status(
     ).fetchone()
     video_count = int(previous["video_count"] or 0) if previous else 0
     unavailable_count = int(previous["unavailable_count"] or 0) if previous else 0
+    if status == "removed":
+        tombstone_playlist(
+            conn,
+            playlist_id,
+            reason="authenticated_missing",
+            observed_at=now,
+        )
+        return video_count, unavailable_count
+    if not _ensure_playlist_parent(conn, playlist_id, updated_at=now):
+        conn.execute(
+            "UPDATE playlist_tombstones SET last_confirmed_at=? WHERE playlist_id=?",
+            (now, playlist_id),
+        )
+        return video_count, unavailable_count
     conn.execute(
         """
         UPDATE playlists
-        SET fetch_status = ?, fetch_error = ?, updated_at = ?
+        SET in_library=0, library_missing_at=NULL,
+            fetch_status = ?, fetch_error = ?, updated_at = ?
         WHERE playlist_id = ?
         """,
         (status, error, now, playlist_id),
@@ -8557,11 +8823,10 @@ def admin_status(
                   COUNT(*) AS total_playlists,
                   SUM(CASE WHEN ps.playlist_id IS NULL THEN 1 ELSE 0 END) AS unscanned_playlists,
                   SUM(CASE WHEN ps.scan_status = 'ok' THEN 1 ELSE 0 END) AS scanned_ok,
-                  SUM(CASE WHEN ps.scan_status = 'removed' THEN 1 ELSE 0 END) AS removed,
                   SUM(CASE WHEN ps.scan_status = 'unavailable' THEN 1 ELSE 0 END) AS unavailable,
                   SUM(
                     CASE
-                      WHEN ps.scan_status NOT IN ('', 'ok', 'removed', 'unavailable') THEN 1
+                      WHEN ps.scan_status NOT IN ('', 'ok', 'unavailable') THEN 1
                       ELSE 0
                     END
                   ) AS scan_errors
@@ -8852,6 +9117,33 @@ def normalized_playlist_title(value: str) -> str:
     return value
 
 
+def save_takeout_playlist_header(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    title: str,
+    visibility: str,
+    observed_at: str,
+) -> bool:
+    if playlist_is_tombstoned(conn, playlist_id):
+        return False
+    conn.execute(
+        """
+        INSERT INTO playlists(
+          playlist_id, title, visibility, ownership, in_library, updated_at
+        )
+        VALUES (?, ?, ?, 'mine', 1, ?)
+        ON CONFLICT(playlist_id) DO UPDATE SET
+          title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
+          visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
+          ownership='mine',
+          in_library=1,
+          updated_at=excluded.updated_at
+        """,
+        (playlist_id, title, visibility, observed_at),
+    )
+    return True
+
+
 def import_takeout_playlists(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     takeout_dir = Path(args.takeout)
@@ -8877,24 +9169,12 @@ def import_takeout_playlists(args: argparse.Namespace) -> None:
             playlist_id = row.get("Playlist ID", "").strip()
             if not playlist_id:
                 continue
-            conn.execute(
-                """
-                INSERT INTO playlists(
-                  playlist_id, title, visibility, is_library_playlist, updated_at
-                )
-                VALUES (?, ?, ?, 1, ?)
-                ON CONFLICT(playlist_id) DO UPDATE SET
-                  title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
-                  visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
-                  is_library_playlist=1,
-                  updated_at=excluded.updated_at
-                """,
-                (
-                    playlist_id,
-                    row.get("Playlist Title (Original)", "").strip(),
-                    normalize_playlist_visibility(row.get("Playlist Visibility", "")),
-                    now,
-                ),
+            save_takeout_playlist_header(
+                conn,
+                playlist_id,
+                row.get("Playlist Title (Original)", "").strip(),
+                normalize_playlist_visibility(row.get("Playlist Visibility", "")),
+                now,
             )
 
     imported_video_rows = 0
@@ -8912,26 +9192,19 @@ def import_takeout_playlists(args: argparse.Namespace) -> None:
                 unmatched_files.append(video_file.name)
                 playlist_id = f"takeout:{title_from_file}"
                 playlist_title = title_from_file
-                conn.execute(
-                    """
-                    INSERT INTO playlists(
-                      playlist_id, title, is_library_playlist, updated_at
-                    )
-                    VALUES (?, ?, 1, ?)
-                    ON CONFLICT(playlist_id) DO UPDATE SET
-                      is_library_playlist=1,
-                      updated_at=excluded.updated_at
-                    """,
-                    (
-                        playlist_id,
-                        playlist_title,
-                        now,
-                    ),
+                save_takeout_playlist_header(
+                    conn,
+                    playlist_id,
+                    playlist_title,
+                    "",
+                    now,
                 )
             else:
                 playlist_id = playlist_row.get("Playlist ID", "").strip()
                 playlist_title = playlist_row.get("Playlist Title (Original)", "").strip()
             if not playlist_id:
+                continue
+            if playlist_is_tombstoned(conn, playlist_id):
                 continue
             conn.execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
             with video_file.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -9090,36 +9363,35 @@ def import_takeout_playlists_zip(conn: sqlite3.Connection, zip_path: Path) -> di
     with zipfile.ZipFile(zip_path) as zf:
         playlists_text = read_zip_member_text(zf, "playlists/playlists.csv")
         if not playlists_text:
-            return {"playlists": 0, "items": 0, "unmatched": 0}
+            return {
+                "source_found": 0,
+                "playlists": 0,
+                "items": 0,
+                "unmatched": 0,
+                "tombstoned": 0,
+            }
         playlist_rows = list(csv.DictReader(io.StringIO(playlists_text)))
         by_title = {
             (row.get("Playlist Title (Original)") or "").strip().casefold(): row
             for row in playlist_rows
             if (row.get("Playlist Title (Original)") or "").strip()
         }
+        imported_playlist_ids: set[str] = set()
+        tombstoned = 0
         for row in playlist_rows:
             playlist_id = (row.get("Playlist ID") or "").strip()
             if not playlist_id:
                 continue
-            conn.execute(
-                """
-                INSERT INTO playlists(
-                  playlist_id, title, visibility, is_library_playlist, updated_at
-                )
-                VALUES (?, ?, ?, 1, ?)
-                ON CONFLICT(playlist_id) DO UPDATE SET
-                  title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
-                  visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
-                  is_library_playlist=1,
-                  updated_at=excluded.updated_at
-                """,
-                (
-                    playlist_id,
-                    (row.get("Playlist Title (Original)") or "").strip(),
-                    normalize_playlist_visibility(row.get("Playlist Visibility") or ""),
-                    now,
-                ),
-            )
+            if save_takeout_playlist_header(
+                conn,
+                playlist_id,
+                (row.get("Playlist Title (Original)") or "").strip(),
+                normalize_playlist_visibility(row.get("Playlist Visibility") or ""),
+                now,
+            ):
+                imported_playlist_ids.add(playlist_id)
+            else:
+                tombstoned += 1
 
         item_count = 0
         unmatched = 0
@@ -9138,7 +9410,7 @@ def import_takeout_playlists_zip(conn: sqlite3.Connection, zip_path: Path) -> di
                 unmatched += 1
                 continue
             playlist_id = (playlist_row.get("Playlist ID") or "").strip()
-            if not playlist_id:
+            if not playlist_id or playlist_id not in imported_playlist_ids:
                 continue
             scanned = conn.execute(
                 "SELECT 1 FROM playlist_scans WHERE playlist_id = ?",
@@ -9170,7 +9442,13 @@ def import_takeout_playlists_zip(conn: sqlite3.Connection, zip_path: Path) -> di
                     (playlist_id, position, video_id, added_at or None, now),
                 )
                 item_count += 1
-    return {"playlists": len(playlist_rows), "items": item_count, "unmatched": unmatched}
+    return {
+        "source_found": 1,
+        "playlists": len(imported_playlist_ids),
+        "items": item_count,
+        "unmatched": unmatched,
+        "tombstoned": tombstoned,
+    }
 
 
 def load_takeout_subscriptions(takeout_path: Path) -> list[dict[str, str]]:
@@ -9296,15 +9574,21 @@ def import_history(args: argparse.Namespace) -> dict[str, Any]:
     duplicate_watch_rows = 0
     distinct_video_ids: set[str] = set()
     imported_keys: list[str] = []
-    playlist_stats = {"playlists": 0, "items": 0, "unmatched": 0}
+    playlist_stats = {
+        "source_found": 0,
+        "playlists": 0,
+        "items": 0,
+        "unmatched": 0,
+        "tombstoned": 0,
+    }
     with conn:
         sync_takeout_subscriptions(conn, takeout_path)
-        for zip_path, _history_key, _watch_text in sources:
+        for zip_path, _history_key, _watch_text in reversed(sources):
             if zip_path:
                 stats = import_takeout_playlists_zip(conn, zip_path)
-                playlist_stats["playlists"] += stats["playlists"]
-                playlist_stats["items"] += stats["items"]
-                playlist_stats["unmatched"] += stats["unmatched"]
+                if stats["source_found"]:
+                    playlist_stats = stats
+                    break
         existing_events = existing_takeout_history_event_keys(conn)
         for _source_path, history_key, watch_text in sources:
             imported_keys.append(history_key)

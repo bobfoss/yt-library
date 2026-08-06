@@ -106,6 +106,19 @@ test('playlist unavailable and removed filters are persisted opt-ins', () => {
   assert.match(indexSource, /metaAllFilter === 'playlist-videos'[\s\S]{0,100}savePlaylistVideoOptInPreferences\(\)/);
 });
 
+test('playlist search groups unavailable under availability without a status facet', () => {
+  const indexSource = source('index.js');
+  const availabilityStart = indexSource.indexOf('const playlistAvailabilityMetaFilterDefinitions');
+  const ownershipStart = indexSource.indexOf('const playlistOwnershipMetaFilterDefinitions');
+  const availabilitySource = indexSource.slice(availabilityStart, ownershipStart);
+
+  assert.ok(availabilityStart >= 0);
+  assert.ok(availabilitySource.indexOf("key: 'unavailable'") < availabilitySource.indexOf("key: 'unknown'"));
+  assert.match(indexSource, /key: 'playlistAvailability'[\s\S]{0,220}allLabel: 'Availability'/);
+  assert.doesNotMatch(indexSource, /key: 'playlistStatus'/);
+  assert.doesNotMatch(indexSource, /allLabel: 'Status', kind: 'playlists'/);
+});
+
 test('playlist cards show visibility before counts and pluralize video counts', () => {
   const indexSource = source('index.js');
   const cardSource = indexSource.slice(

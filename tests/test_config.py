@@ -366,6 +366,8 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertTrue(valid_filter_preference_key("playlist_videos.unavailable"))
         self.assertTrue(valid_filter_preference_key("playlist_videos.removed"))
+        self.assertTrue(valid_filter_preference_key("playlists.unavailable"))
+        self.assertFalse(valid_filter_preference_key("playlists.removed"))
         self.assertFalse(valid_filter_preference_key("plugins.bad id.search"))
         self.assertFalse(valid_filter_preference_key("plugins.subtitles.filters.bad.key"))
         self.assertEqual(

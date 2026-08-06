@@ -26,7 +26,7 @@ const filterPreferenceKeys = {
   lowPartialCompletion: 'completion.partial_below_minimum',
   unavailablePlaylistVideos: 'playlist_videos.unavailable',
   removedPlaylistVideos: 'playlist_videos.removed',
-  removedPlaylists: 'playlists.removed',
+  unavailablePlaylists: 'playlists.unavailable',
   terminatedChannels: 'channels.terminated',
 };
 const filterPreferences = Object.fromEntries(
@@ -329,12 +329,14 @@ const defaultSearchMetaVisibility = {
     active: true,
     terminated: filterPreferenceEnabled(filterPreferenceKeys.terminatedChannels),
   },
-  playlistVisibility: { private: true, public: true, unlisted: true, unknown: true },
-  playlistOwnership: { mine: true, others: true, ownership_unknown: true },
-  playlistStatus: {
-    active: true,
-    removed: filterPreferenceEnabled(filterPreferenceKeys.removedPlaylists),
+  playlistAvailability: {
+    private: true,
+    public: true,
+    unlisted: true,
+    unavailable: filterPreferenceEnabled(filterPreferenceKeys.unavailablePlaylists),
+    unknown: true,
   },
+  playlistOwnership: { mine: true, others: true, ownership_unknown: true },
 };
 let searchMetaVisibility = Object.fromEntries(
   Object.entries(defaultSearchMetaVisibility).map(([groupName, visibility]) => [
@@ -352,9 +354,8 @@ const searchMetaParamNames = {
   clipOwnership: 'co',
   channelSubscription: 'csub',
   channelStatus: 'cstatus',
-  playlistVisibility: 'pm',
+  playlistAvailability: 'pm',
   playlistOwnership: 'po',
-  playlistStatus: 'ps',
 };
 const searchOptInMetaFilters = [
   {
@@ -366,8 +367,8 @@ const searchOptInMetaFilters = [
     preferenceKey: filterPreferenceKeys.lowPartialCompletion,
   },
   {
-    groupName: 'playlistStatus', key: 'removed', paramName: 'removed',
-    preferenceKey: filterPreferenceKeys.removedPlaylists,
+    groupName: 'playlistAvailability', key: 'unavailable', paramName: 'playlist_unavailable',
+    preferenceKey: filterPreferenceKeys.unavailablePlaylists,
   },
   {
     groupName: 'channelStatus', key: 'terminated', paramName: 'terminated',
@@ -1310,9 +1311,8 @@ function applySearchHash(hash) {
     clipOwnership: params.get(searchMetaParamNames.clipOwnership),
     channelSubscription: params.get(searchMetaParamNames.channelSubscription),
     channelStatus: params.get(searchMetaParamNames.channelStatus),
-    playlistVisibility: params.get(searchMetaParamNames.playlistVisibility),
+    playlistAvailability: params.get(searchMetaParamNames.playlistAvailability),
     playlistOwnership: params.get(searchMetaParamNames.playlistOwnership),
-    playlistStatus: params.get(searchMetaParamNames.playlistStatus),
   };
   const uploaderCategoryParam = metaParamValues.uploaderCategory;
   uploaderCategorySelectionExplicit = uploaderCategoryParam !== null;
@@ -1620,9 +1620,8 @@ function metaFilterGroupVisibility(groupName) {
     'search-uploaderCategory': searchMetaVisibility.uploaderCategory,
     'search-channelSubscription': searchMetaVisibility.channelSubscription,
     'search-channelStatus': searchMetaVisibility.channelStatus,
-    'search-playlistVisibility': searchMetaVisibility.playlistVisibility,
+    'search-playlistAvailability': searchMetaVisibility.playlistAvailability,
     'search-playlistOwnership': searchMetaVisibility.playlistOwnership,
-    'search-playlistStatus': searchMetaVisibility.playlistStatus,
   };
   return groups[groupName] || null;
 }
@@ -1669,7 +1668,7 @@ const searchVideoFacetKeys = [
   'membership',
   'uploaderCategory',
 ];
-const searchPlaylistFacetKeys = ['playlistVisibility', 'playlistOwnership', 'playlistStatus'];
+const searchPlaylistFacetKeys = ['playlistAvailability', 'playlistOwnership'];
 const searchChannelFacetKeys = ['channelSubscription', 'channelStatus'];
 const searchClipFacetKeys = ['clipOwnership'];
 
@@ -3005,10 +3004,11 @@ const channelStatusMetaFilterDefinitions = [
   { key: 'active', label: 'active' },
   terminatedChannelMetaFilterDefinition,
 ];
-const playlistVisibilityMetaFilterDefinitions = [
+const playlistAvailabilityMetaFilterDefinitions = [
   { key: 'private', label: 'private', visibilityIcon: true },
   { key: 'public', label: 'public', visibilityIcon: true },
   { key: 'unlisted', label: 'unlisted', visibilityIcon: true },
+  { key: 'unavailable', label: 'unavailable', className: 'status' },
   { key: 'unknown', label: 'unknown' },
 ];
 const playlistOwnershipMetaFilterDefinitions = [
@@ -3016,11 +3016,6 @@ const playlistOwnershipMetaFilterDefinitions = [
   { key: 'others', label: 'others' },
   { key: 'ownership_unknown', label: 'unknown' },
 ];
-const playlistStatusMetaFilterDefinitions = [
-  { key: 'active', label: 'active' },
-  { key: 'removed', label: 'removed', className: 'status' },
-];
-
 function metaFilterChildrenHtml({
   groupName,
   filterAttribute,
@@ -3316,9 +3311,8 @@ function searchMetaFiltersHtml(
       ].join(''))
       : '',
     kindHtml('Playlists', 'playlists', metaCounts?.playlists?.total, [
-      facetHtml({ key: 'playlistVisibility', visibility: searchMetaVisibility.playlistVisibility, definitions: playlistVisibilityMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Visibility', kind: 'playlists' }),
+      facetHtml({ key: 'playlistAvailability', visibility: searchMetaVisibility.playlistAvailability, definitions: playlistAvailabilityMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Availability', kind: 'playlists' }),
       facetHtml({ key: 'playlistOwnership', visibility: searchMetaVisibility.playlistOwnership, definitions: playlistOwnershipMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Ownership', kind: 'playlists' }),
-      facetHtml({ key: 'playlistStatus', visibility: searchMetaVisibility.playlistStatus, definitions: playlistStatusMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Status', kind: 'playlists' }),
     ].join('')),
     kindHtml('Channels', 'channels', metaCounts?.channels?.total, [
       facetHtml({ key: 'channelSubscription', visibility: searchMetaVisibility.channelSubscription, definitions: channelSubscriptionMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Subscription', kind: 'channels' }),
@@ -3351,7 +3345,7 @@ function renderSearchMetaFilters({
     uploaderCategoryCounts,
     counts,
   );
-  for (const key of ['videos', 'reactions', 'completion', 'membership', 'uploaderCategory', 'clipOwnership', 'playlistVisibility', 'playlistOwnership', 'playlistStatus', 'channelSubscription', 'channelStatus']) {
+  for (const key of ['videos', 'reactions', 'completion', 'membership', 'uploaderCategory', 'clipOwnership', 'playlistAvailability', 'playlistOwnership', 'channelSubscription', 'channelStatus']) {
     syncMetaFilterGroup(`search-${key}`);
   }
   for (const plugin of browserVideoFilterPlugins()) {
@@ -3788,9 +3782,8 @@ async function fetchOmniSearch(query, page = currentPage) {
     clip_ownership: metaFilterParamValue(searchMetaVisibility.clipOwnership),
     channel_subscription: metaFilterParamValue(searchMetaVisibility.channelSubscription),
     channel_status: metaFilterParamValue(searchMetaVisibility.channelStatus),
-    playlist_meta: metaFilterParamValue(searchMetaVisibility.playlistVisibility),
+    playlist_meta: metaFilterParamValue(searchMetaVisibility.playlistAvailability),
     playlist_ownership: metaFilterParamValue(searchMetaVisibility.playlistOwnership),
-    playlist_status: metaFilterParamValue(searchMetaVisibility.playlistStatus),
     sort: searchResultsSort,
   });
   if (!allMetaFiltersEnabled(searchMetaVisibility.uploaderCategory)) {
@@ -4820,7 +4813,6 @@ function cardFor(playlist, options = {}) {
 }
 
 function playlistStatusLabelHtml(playlist) {
-  if (playlist.fetch_status === 'removed') return '<span class="status">Removed</span>';
   if (playlist.fetch_status === 'unavailable') return '<span class="status">Unavailable</span>';
   if (playlist.fetch_status === 'error') return '<span class="status">Fetch failed</span>';
   return '';
@@ -4832,8 +4824,7 @@ function playlistVideoCountLabel(playlist) {
   const count = reported || scanned;
   if (!count) return '';
   const incomplete = Boolean(
-    playlist.scan_status !== 'removed'
-    && playlist.scan_status !== 'unavailable'
+    playlist.scan_status !== 'unavailable'
     && (
       playlist.scan_status === 'error'
       || (reported && scanned && reported !== scanned)

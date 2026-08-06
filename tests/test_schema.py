@@ -230,12 +230,23 @@ class SchemaTests(unittest.TestCase):
         self.assertIsNone(rows[2]["request_started_at"])
         self.assertEqual(rows[2]["request_count"], 0)
 
-    def test_migrate_marks_takeout_playlists_as_library_playlists(self) -> None:
+    def test_migrate_marks_takeout_playlists_as_owned_and_in_library(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
             legacy_schema = core.SCHEMA.replace(
-                "  is_library_playlist INTEGER NOT NULL DEFAULT 0 "
-                "CHECK (is_library_playlist IN (0, 1)),\n",
+                "  ownership TEXT NOT NULL DEFAULT 'unknown'\n"
+                "    CHECK (ownership IN ('mine', 'others', 'unknown')),\n"
+                "  in_library INTEGER NOT NULL DEFAULT 0 CHECK (in_library IN (0, 1)),\n"
+                "  library_missing_at TEXT,\n",
+                "",
+            ).replace(
+                "CREATE TABLE IF NOT EXISTS playlist_tombstones (\n"
+                "  playlist_id TEXT PRIMARY KEY,\n"
+                "  observed_removed_at TEXT NOT NULL,\n"
+                "  reason TEXT NOT NULL DEFAULT 'authenticated_missing'\n"
+                "    CHECK (reason IN ('authenticated_missing', 'missing_from_library', 'explicit_user')),\n"
+                "  last_confirmed_at TEXT NOT NULL\n"
+                ");\n\n",
                 "",
             )
             raw = sqlite3.connect(db_path)
@@ -277,7 +288,7 @@ class SchemaTests(unittest.TestCase):
             try:
                 playlist = conn.execute(
                     """
-                    SELECT is_library_playlist
+                    SELECT ownership, in_library
                     FROM playlists
                     WHERE playlist_id = 'PLtakeout'
                     """
@@ -288,8 +299,93 @@ class SchemaTests(unittest.TestCase):
             finally:
                 conn.close()
 
-        self.assertEqual(playlist["is_library_playlist"], 1)
+        self.assertEqual(dict(playlist), {"ownership": "mine", "in_library": 1})
         self.assertEqual(schema_version, core.SCHEMA_VERSION)
+
+    def test_v20_migration_tombstones_owned_removed_and_retains_foreign_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            legacy_schema = core.SCHEMA.replace(
+                "  ownership TEXT NOT NULL DEFAULT 'unknown'\n"
+                "    CHECK (ownership IN ('mine', 'others', 'unknown')),\n"
+                "  in_library INTEGER NOT NULL DEFAULT 0 CHECK (in_library IN (0, 1)),\n"
+                "  library_missing_at TEXT,\n",
+                "  is_library_playlist INTEGER NOT NULL DEFAULT 0 "
+                "CHECK (is_library_playlist IN (0, 1)),\n",
+            ).replace(
+                "CREATE TABLE IF NOT EXISTS playlist_tombstones (\n"
+                "  playlist_id TEXT PRIMARY KEY,\n"
+                "  observed_removed_at TEXT NOT NULL,\n"
+                "  reason TEXT NOT NULL DEFAULT 'authenticated_missing'\n"
+                "    CHECK (reason IN ('authenticated_missing', 'missing_from_library', 'explicit_user')),\n"
+                "  last_confirmed_at TEXT NOT NULL\n"
+                ");\n\n",
+                "",
+            )
+            raw = sqlite3.connect(db_path)
+            try:
+                raw.executescript(legacy_schema)
+                raw.execute("DELETE FROM schema_migrations")
+                raw.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (19, '2026-08-01T00:00:00Z')"
+                )
+                raw.execute(
+                    "INSERT INTO channels(channel_id, title) VALUES ('UCother', 'Other owner')"
+                )
+                raw.executemany(
+                    """
+                    INSERT INTO playlists(
+                      playlist_id, title, owner_channel_id, fetch_status,
+                      is_library_playlist
+                    ) VALUES (?, ?, ?, 'removed', 1)
+                    """,
+                    [
+                        ("PLowned", "Owned removed", None),
+                        ("PLforeign", "Foreign removed", "UCother"),
+                    ],
+                )
+                raw.execute(
+                    "INSERT INTO videos(video_id, title) VALUES ('ownedvideo1', 'Owned video')"
+                )
+                raw.execute(
+                    """
+                    INSERT INTO playlist_items(
+                      playlist_id, position, video_id, source_quality
+                    ) VALUES ('PLowned', 1, 'ownedvideo1', 'takeout')
+                    """
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                owned = conn.execute(
+                    "SELECT 1 FROM playlists WHERE playlist_id = 'PLowned'"
+                ).fetchone()
+                tombstone = conn.execute(
+                    """
+                    SELECT reason FROM playlist_tombstones
+                    WHERE playlist_id = 'PLowned'
+                    """
+                ).fetchone()
+                foreign = conn.execute(
+                    """
+                    SELECT ownership, in_library, fetch_status
+                    FROM playlists
+                    WHERE playlist_id = 'PLforeign'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertIsNone(owned)
+        self.assertEqual(tombstone["reason"], "authenticated_missing")
+        self.assertEqual(
+            dict(foreign),
+            {"ownership": "others", "in_library": 1, "fetch_status": "unavailable"},
+        )
 
     def test_migrate_adds_nullable_channel_first_seen_without_backfill(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1666,7 +1762,7 @@ class SchemaTests(unittest.TestCase):
             finally:
                 core.ROOT = original_root
 
-    def test_save_playlist_missing_status_preserves_playlist_and_members(self) -> None:
+    def test_owned_missing_playlist_is_tombstoned_and_orphan_videos_are_pruned(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
             try:
@@ -1674,29 +1770,37 @@ class SchemaTests(unittest.TestCase):
                     conn.execute(
                         """
                         INSERT INTO playlists(
-                          playlist_id, title, visibility, is_library_playlist
+                          playlist_id, title, visibility, ownership, in_library
                         )
-                        VALUES ('PLmissing', 'Missing', 'private', 1)
+                        VALUES ('PLmissing', 'Missing', 'private', 'mine', 1)
                         """
                     )
                     core.upsert_video(conn, "keptvideo01", title="Kept video", source="playlist")
+                    core.upsert_video(conn, "dropvideo01", title="Drop video", source="playlist")
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watch_date, time_precision, source_type, match_type
+                        ) VALUES ('kept-watch', 'keptvideo01', '2026-07-28', 'date_only', 'youtube', 'video_id_date')
+                        """
+                    )
                     conn.execute(
                         """
                         INSERT INTO playlist_items(
                           playlist_id, position, video_id, membership_state,
                           source_quality, match_type
                         )
-                        VALUES (
-                          'PLmissing', 1, 'keptvideo01', 'retained_unavailable',
-                          'takeout', 'ambiguous_hidden_candidate'
-                        )
+                        VALUES
+                          ('PLmissing', 1, 'keptvideo01', 'retained_unavailable',
+                           'takeout', 'ambiguous_hidden_candidate'),
+                          ('PLmissing', 2, 'dropvideo01', 'current', 'youtube', 'video_id')
                         """
                     )
                     conn.execute(
                         """
                         INSERT INTO playlist_scans(
                           playlist_id, scanned_at, video_count, unavailable_count, scan_status
-                        ) VALUES ('PLmissing', '2026-07-28T00:00:00Z', 1, 0, 'ok')
+                        ) VALUES ('PLmissing', '2026-07-28T00:00:00Z', 2, 0, 'ok')
                         """
                     )
                     self.assertEqual(
@@ -1709,29 +1813,24 @@ class SchemaTests(unittest.TestCase):
                         "removed",
                         "authenticated YouTube 404",
                     )
-                self.assertEqual(counts, (1, 0))
+                self.assertEqual(counts, (2, 0))
                 playlist = conn.execute(
+                    "SELECT 1 FROM playlists WHERE playlist_id = 'PLmissing'"
+                ).fetchone()
+                self.assertIsNone(playlist)
+                tombstone = conn.execute(
                     """
-                    SELECT fetch_status, fetch_error
-                    FROM playlists
+                    SELECT reason
+                    FROM playlist_tombstones
                     WHERE playlist_id = 'PLmissing'
                     """
                 ).fetchone()
-                self.assertEqual(playlist["fetch_status"], "removed")
-                self.assertIn("404", playlist["fetch_error"])
-                scan = conn.execute(
-                    """
-                    SELECT video_count, scan_status
-                    FROM playlist_scans
-                    WHERE playlist_id = 'PLmissing'
-                    """
-                ).fetchone()
-                self.assertEqual(dict(scan), {"video_count": 1, "scan_status": "removed"})
+                self.assertEqual(tombstone["reason"], "authenticated_missing")
                 self.assertEqual(
                     conn.execute(
                         "SELECT COUNT(*) FROM playlist_items WHERE playlist_id = 'PLmissing'"
                     ).fetchone()[0],
-                    1,
+                    0,
                 )
                 self.assertEqual(
                     conn.execute(
@@ -1739,11 +1838,13 @@ class SchemaTests(unittest.TestCase):
                     ).fetchone()[0],
                     "Kept video",
                 )
-                self.assertEqual(core.playlist_scan_candidate_rows(conn), [])
-                self.assertEqual(
-                    [row["playlist_id"] for row in core.playlist_scan_candidate_rows(conn, force=True)],
-                    ["PLmissing"],
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT 1 FROM videos WHERE video_id = 'dropvideo01'"
+                    ).fetchone()
                 )
+                self.assertEqual(core.playlist_scan_candidate_rows(conn), [])
+                self.assertEqual(core.playlist_scan_candidate_rows(conn, force=True), [])
             finally:
                 conn.close()
 
@@ -1765,6 +1866,183 @@ class SchemaTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_missing_foreign_playlist_is_verified_before_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCother", title="Other owner")
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, owner_channel_id, ownership, in_library
+                        ) VALUES ('PLforeign', 'Foreign', 'UCother', 'others', 1)
+                        """
+                    )
+                    core.upsert_video(
+                        conn,
+                        "keptforeign1",
+                        title="Watched foreign video",
+                        source="playlist",
+                    )
+                    core.upsert_video(
+                        conn,
+                        "dropforeign1",
+                        title="Unwatched foreign video",
+                        source="playlist",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO history_events(
+                          event_id, video_id, watch_date, time_precision,
+                          source_type, match_type
+                        ) VALUES (
+                          'foreign-watch', 'keptforeign1', '2026-07-28',
+                          'date_only', 'youtube', 'video_id_date'
+                        )
+                        """
+                    )
+                    conn.executemany(
+                        """
+                        INSERT INTO playlist_items(playlist_id, position, video_id)
+                        VALUES ('PLforeign', ?, ?)
+                        """,
+                        [(1, "keptforeign1"), (2, "dropforeign1")],
+                    )
+                    reconciliation = core.reconcile_missing_library_playlists(conn, set())
+
+                self.assertEqual(reconciliation["verify_ids"], ["PLforeign"])
+                pending = conn.execute(
+                    """
+                    SELECT ownership, in_library, library_missing_at, fetch_status
+                    FROM playlists
+                    WHERE playlist_id = 'PLforeign'
+                    """
+                ).fetchone()
+                self.assertEqual(pending["ownership"], "others")
+                self.assertEqual(pending["in_library"], 0)
+                self.assertIsNotNone(pending["library_missing_at"])
+                self.assertNotEqual(pending["fetch_status"], "unavailable")
+
+                with conn:
+                    result = core.save_playlist_scan(
+                        conn,
+                        "PLforeign",
+                        [{"video_id": "liveforeign1", "is_playable": True}],
+                        "ok",
+                        "",
+                        playlist_metadata={
+                            "title": "Foreign",
+                            "owner": "Other owner",
+                            "owner_channel_id": "UCother",
+                            "video_count": 1,
+                        },
+                    )
+                self.assertEqual(result, (0, 0))
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT 1 FROM playlists WHERE playlist_id = 'PLforeign'"
+                    ).fetchone()
+                )
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT 1 FROM playlist_tombstones WHERE playlist_id = 'PLforeign'"
+                    ).fetchone()
+                )
+                self.assertIsNotNone(
+                    conn.execute(
+                        "SELECT 1 FROM videos WHERE video_id = 'keptforeign1'"
+                    ).fetchone()
+                )
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT 1 FROM videos WHERE video_id = 'dropforeign1'"
+                    ).fetchone()
+                )
+            finally:
+                conn.close()
+
+    def test_inaccessible_foreign_playlist_is_retained_as_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, ownership, in_library
+                        ) VALUES ('PLforeign', 'Foreign', 'others', 1)
+                        """
+                    )
+                    core.upsert_video(conn, "foreignvideo1", source="playlist")
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_items(playlist_id, position, video_id)
+                        VALUES ('PLforeign', 1, 'foreignvideo1')
+                        """
+                    )
+                    core.reconcile_missing_library_playlists(conn, set())
+                    status = core.playlist_missing_status(conn, "PLforeign")
+                    core.save_playlist_missing_status(
+                        conn,
+                        "PLforeign",
+                        status,
+                        "authenticated YouTube 404",
+                    )
+                playlist = conn.execute(
+                    """
+                    SELECT ownership, in_library, library_missing_at, fetch_status
+                    FROM playlists
+                    WHERE playlist_id = 'PLforeign'
+                    """
+                ).fetchone()
+                self.assertEqual(status, "unavailable")
+                self.assertEqual(playlist["ownership"], "others")
+                self.assertEqual(playlist["in_library"], 0)
+                self.assertIsNone(playlist["library_missing_at"])
+                self.assertEqual(playlist["fetch_status"], "unavailable")
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM playlist_items WHERE playlist_id = 'PLforeign'"
+                    ).fetchone()[0],
+                    1,
+                )
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT 1 FROM playlist_tombstones WHERE playlist_id = 'PLforeign'"
+                    ).fetchone()
+                )
+            finally:
+                conn.close()
+
+    def test_missing_unknown_playlist_is_retained_as_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, ownership, in_library
+                        ) VALUES ('PLunknown', 'Unknown', 'unknown', 1)
+                        """
+                    )
+                    reconciliation = core.reconcile_missing_library_playlists(conn, set())
+                playlist = conn.execute(
+                    """
+                    SELECT in_library, library_missing_at, fetch_status
+                    FROM playlists
+                    WHERE playlist_id = 'PLunknown'
+                    """
+                ).fetchone()
+                self.assertEqual(reconciliation["unavailable"], 1)
+                self.assertEqual(reconciliation["verify_ids"], [])
+                self.assertEqual(playlist["in_library"], 0)
+                self.assertIsNone(playlist["library_missing_at"])
+                self.assertEqual(playlist["fetch_status"], "unavailable")
+            finally:
+                conn.close()
+
     def test_playlist_missing_status_uses_removed_for_library_playlist(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
@@ -1773,15 +2051,44 @@ class SchemaTests(unittest.TestCase):
                     conn.execute(
                         """
                         INSERT INTO playlists(
-                          playlist_id, title, visibility, is_library_playlist
+                          playlist_id, title, visibility, ownership, in_library
                         )
-                        VALUES ('PLlibrary', 'Library', 'private', 1)
+                        VALUES ('PLlibrary', 'Library', 'private', 'mine', 1)
                         """
                     )
                 self.assertEqual(
                     core.playlist_missing_status(conn, "PLlibrary"),
                     "removed",
                 )
+            finally:
+                conn.close()
+
+    def test_missing_owned_playlist_is_tombstoned_from_complete_library_feed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, ownership, in_library
+                        ) VALUES ('PLmine', 'Mine', 'mine', 1)
+                        """
+                    )
+                    reconciliation = core.reconcile_missing_library_playlists(conn, set())
+                self.assertEqual(reconciliation["tombstoned"], 1)
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT 1 FROM playlists WHERE playlist_id = 'PLmine'"
+                    ).fetchone()
+                )
+                tombstone = conn.execute(
+                    """
+                    SELECT reason FROM playlist_tombstones
+                    WHERE playlist_id = 'PLmine'
+                    """
+                ).fetchone()
+                self.assertEqual(tombstone["reason"], "missing_from_library")
             finally:
                 conn.close()
 

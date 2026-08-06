@@ -294,7 +294,13 @@ class CoreHelperTests(unittest.TestCase):
             config["use_proxy"] = True
             config["proxy"] = "socks5h://127.0.0.1:1080"
             core.migrate_database(Path(temp_dir) / "library.sqlite3")
-            with patch.object(dispatcher, "_run", side_effect=hold_dispatcher):
+            with (
+                patch.object(dispatcher, "_run", side_effect=hold_dispatcher),
+                patch(
+                    "yt_library.workers.probe_socks5_proxy",
+                    return_value=(True, "Proxy available"),
+                ),
+            ):
                 result = dispatcher.start(
                     Path(temp_dir) / "library.sqlite3",
                     Path(temp_dir) / "cookies.txt",
@@ -2052,6 +2058,89 @@ class CoreHelperTests(unittest.TestCase):
             sorted({row["takeout_history_key"] for row in rows}),
             ["20260704T052745Z", "20260705T052745Z"],
         )
+
+    def test_import_history_uses_newest_playlist_snapshot_and_skips_tombstones(self) -> None:
+        original_root = core.ROOT
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            core.ROOT = root
+            try:
+                db_path = root / "library.sqlite3"
+                core.migrate_database(db_path)
+                conn = core.connect(db_path)
+                try:
+                    with conn:
+                        core.tombstone_playlist(
+                            conn,
+                            "PLdeleted",
+                            reason="explicit_user",
+                            observed_at="2026-07-02T00:00:00Z",
+                        )
+                finally:
+                    conn.close()
+
+                snapshots = [
+                    (
+                        "takeout-20260701T000000Z-001.zip",
+                        [("PLold", "Old playlist", "Private", "oldvideo01")],
+                    ),
+                    (
+                        "takeout-20260702T000000Z-001.zip",
+                        [
+                            ("PLnew", "New playlist", "Private", "newvideo01"),
+                            ("PLdeleted", "Deleted playlist", "Private", "deletedvid1"),
+                        ],
+                    ),
+                ]
+                for filename, playlists in snapshots:
+                    with zipfile.ZipFile(root / filename, "w") as zf:
+                        zf.writestr(
+                            "Takeout/YouTube and YouTube Music/history/watch-history.json",
+                            "[]",
+                        )
+                        zf.writestr(
+                            "Takeout/YouTube and YouTube Music/playlists/playlists.csv",
+                            "Playlist ID,Playlist Title (Original),Playlist Visibility\n"
+                            + "".join(
+                                f"{playlist_id},{title},{visibility}\n"
+                                for playlist_id, title, visibility, _video_id in playlists
+                            ),
+                        )
+                        for _playlist_id, title, _visibility, video_id in playlists:
+                            zf.writestr(
+                                "Takeout/YouTube and YouTube Music/playlists/"
+                                f"{title}-videos.csv",
+                                "Video ID,Playlist Video Creation Timestamp\n"
+                                f"{video_id},2026-07-01T00:00:00Z\n",
+                            )
+
+                result = core.import_history(
+                    argparse.Namespace(db=str(db_path), takeout=str(root), history_key="")
+                )
+                conn = core.connect(db_path)
+                try:
+                    playlist_ids = [
+                        row["playlist_id"]
+                        for row in conn.execute(
+                            "SELECT playlist_id FROM playlists ORDER BY playlist_id"
+                        )
+                    ]
+                    video_ids = [
+                        row["video_id"]
+                        for row in conn.execute(
+                            "SELECT video_id FROM videos ORDER BY video_id"
+                        )
+                    ]
+                finally:
+                    conn.close()
+            finally:
+                core.ROOT = original_root
+
+        self.assertEqual(playlist_ids, ["PLnew"])
+        self.assertEqual(video_ids, ["newvideo01"])
+        self.assertEqual(result["playlist_stats"]["playlists"], 1)
+        self.assertEqual(result["playlist_stats"]["items"], 1)
+        self.assertEqual(result["playlist_stats"]["tombstoned"], 1)
 
     def test_extract_reaction_from_toggled_buttons(self) -> None:
         liked = {

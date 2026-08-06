@@ -105,7 +105,7 @@ FILTER_PREFERENCE_KEYS = frozenset(
         "completion.partial_below_minimum",
         "playlist_videos.unavailable",
         "playlist_videos.removed",
-        "playlists.removed",
+        "playlists.unavailable",
         "channels.terminated",
     }
 )

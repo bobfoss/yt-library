@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -40,6 +40,197 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def delete_playlist_and_orphaned_unwatched_videos(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+) -> int:
+    video_ids = [
+        str(row["video_id"] or "")
+        for row in conn.execute(
+            "SELECT DISTINCT video_id FROM playlist_items WHERE playlist_id = ? AND video_id IS NOT NULL",
+            (playlist_id,),
+        )
+        if row["video_id"]
+    ]
+    conn.execute("DELETE FROM playlists WHERE playlist_id = ?", (playlist_id,))
+    if not video_ids:
+        return 0
+
+    placeholders = ", ".join("?" for _ in video_ids)
+    removable_ids = [
+        row["video_id"]
+        for row in conn.execute(
+            f"""
+            SELECT v.video_id
+            FROM videos v
+            WHERE v.video_id IN ({placeholders})
+              AND COALESCE(v.reaction, '') = ''
+              AND NOT EXISTS (
+                SELECT 1 FROM history_events he WHERE he.video_id = v.video_id
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM playlist_items pi WHERE pi.video_id = v.video_id
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM clips c WHERE c.source_video_id = v.video_id
+              )
+            """,
+            video_ids,
+        )
+    ]
+    if not removable_ids:
+        return 0
+    removable_placeholders = ", ".join("?" for _ in removable_ids)
+    conn.execute(
+        f"""
+        DELETE FROM worker_queue
+        WHERE video_id IN ({removable_placeholders})
+          AND worker_type IN ('metadata', 'placeholder')
+        """,
+        removable_ids,
+    )
+    conn.execute(
+        f"DELETE FROM videos WHERE video_id IN ({removable_placeholders})",
+        removable_ids,
+    )
+    return len(removable_ids)
+
+
+def _playlist_owner_identity_for_migration(
+    conn: sqlite3.Connection,
+) -> tuple[str, str]:
+    rows = conn.execute(
+        """
+        SELECT COALESCE(p.owner_channel_id, '') AS owner_channel_id,
+               lower(trim(COALESCE(ch.title, ''))) AS owner_name,
+               COUNT(*) AS playlist_count
+        FROM playlists p
+        LEFT JOIN channels ch ON ch.channel_id = p.owner_channel_id
+        WHERE p.in_library = 1
+          AND trim(COALESCE(p.owner_channel_id, '') || COALESCE(ch.title, '')) <> ''
+        GROUP BY p.owner_channel_id, owner_name
+        ORDER BY playlist_count DESC, owner_channel_id, owner_name
+        """
+    ).fetchall()
+    if not rows:
+        return "", ""
+    top_count = int(rows[0]["playlist_count"] or 0)
+    next_count = int(rows[1]["playlist_count"] or 0) if len(rows) > 1 else 0
+    if top_count < 2 or top_count < max(2, next_count * 2):
+        return "", ""
+    return str(rows[0]["owner_channel_id"] or ""), str(rows[0]["owner_name"] or "")
+
+
+def _migrate_playlist_ownership_v20(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(playlists)")}
+    if "in_library" not in columns:
+        conn.execute(
+            "ALTER TABLE playlists RENAME COLUMN is_library_playlist TO in_library"
+        )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(playlists)")}
+    if "ownership" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE playlists
+            ADD COLUMN ownership TEXT NOT NULL DEFAULT 'unknown'
+            CHECK (ownership IN ('mine', 'others', 'unknown'))
+            """
+        )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(playlists)")}
+    if "library_missing_at" not in columns:
+        conn.execute("ALTER TABLE playlists ADD COLUMN library_missing_at TEXT")
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS playlist_tombstones (
+          playlist_id TEXT PRIMARY KEY,
+          observed_removed_at TEXT NOT NULL,
+          reason TEXT NOT NULL DEFAULT 'authenticated_missing'
+            CHECK (reason IN ('authenticated_missing', 'missing_from_library', 'explicit_user')),
+          last_confirmed_at TEXT NOT NULL
+        );
+        """
+    )
+
+    library_channel_id, library_owner_name = _playlist_owner_identity_for_migration(conn)
+    rows = conn.execute(
+        """
+        SELECT p.playlist_id,
+               COALESCE(p.owner_channel_id, '') AS owner_channel_id,
+               lower(trim(COALESCE(ch.title, ''))) AS owner_name,
+               EXISTS (
+                 SELECT 1
+                 FROM playlist_items pi
+                 WHERE pi.playlist_id = p.playlist_id
+                   AND pi.source_quality = 'takeout'
+               ) AS has_takeout_items
+        FROM playlists p
+        LEFT JOIN channels ch ON ch.channel_id = p.owner_channel_id
+        """
+    ).fetchall()
+    for row in rows:
+        owner_channel_id = str(row["owner_channel_id"] or "")
+        owner_name = str(row["owner_name"] or "")
+        if bool(row["has_takeout_items"]) or (
+            library_channel_id and owner_channel_id == library_channel_id
+        ) or (
+            library_owner_name and owner_name == library_owner_name
+        ):
+            ownership = "mine"
+        elif owner_channel_id or owner_name:
+            ownership = "others"
+        else:
+            ownership = "unknown"
+        conn.execute(
+            "UPDATE playlists SET ownership = ? WHERE playlist_id = ?",
+            (ownership, row["playlist_id"]),
+        )
+
+    removed_rows = conn.execute(
+        """
+        SELECT p.playlist_id, p.ownership,
+               COALESCE(ps.scanned_at, p.updated_at, ?) AS observed_removed_at
+        FROM playlists p
+        LEFT JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
+        WHERE p.fetch_status = 'removed' OR ps.scan_status = 'removed'
+        """,
+        (utc_now(),),
+    ).fetchall()
+    for row in removed_rows:
+        if row["ownership"] == "mine":
+            conn.execute(
+                """
+                INSERT INTO playlist_tombstones(
+                  playlist_id, observed_removed_at, reason, last_confirmed_at
+                ) VALUES (?, ?, 'authenticated_missing', ?)
+                ON CONFLICT(playlist_id) DO UPDATE SET
+                  last_confirmed_at=excluded.last_confirmed_at
+                """,
+                (
+                    row["playlist_id"],
+                    row["observed_removed_at"],
+                    row["observed_removed_at"],
+                ),
+            )
+            delete_playlist_and_orphaned_unwatched_videos(conn, row["playlist_id"])
+        else:
+            conn.execute(
+                """
+                UPDATE playlists
+                SET fetch_status='unavailable'
+                WHERE playlist_id=?
+                """,
+                (row["playlist_id"],),
+            )
+            conn.execute(
+                """
+                UPDATE playlist_scans
+                SET scan_status='unavailable'
+                WHERE playlist_id=?
+                """,
+                (row["playlist_id"],),
+            )
 
 
 def migrate_database(db_path: Path) -> None:
@@ -374,7 +565,7 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
             row["name"]
             for row in conn.execute("PRAGMA table_info(playlists)")
         }
-        if "is_library_playlist" not in columns:
+        if "is_library_playlist" not in columns and "in_library" not in columns:
             conn.execute(
                 """
                 ALTER TABLE playlists
@@ -382,18 +573,19 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
                 CHECK (is_library_playlist IN (0, 1))
                 """
             )
-        conn.execute(
-            """
-            UPDATE playlists
-            SET is_library_playlist = 1
-            WHERE EXISTS (
-              SELECT 1
-              FROM playlist_items pi
-              WHERE pi.playlist_id = playlists.playlist_id
-                AND pi.source_quality = 'takeout'
+        if "in_library" not in columns:
+            conn.execute(
+                """
+                UPDATE playlists
+                SET is_library_playlist = 1
+                WHERE EXISTS (
+                  SELECT 1
+                  FROM playlist_items pi
+                  WHERE pi.playlist_id = playlists.playlist_id
+                    AND pi.source_quality = 'takeout'
+                )
+                """
             )
-            """
-        )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (7, utc_now()),
@@ -769,6 +961,12 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (19, utc_now()),
+        )
+    if current_version < 20:
+        _migrate_playlist_ownership_v20(conn)
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (20, utc_now()),
         )
 
 
