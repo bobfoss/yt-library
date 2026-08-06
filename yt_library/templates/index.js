@@ -2563,8 +2563,8 @@ function historyHeatmapFor(payload) {
   const current = document.createElement('button');
   current.type = 'button';
   current.dataset.historyCurrent = '';
-  current.title = 'Current year/day';
-  current.setAttribute('aria-label', 'Current year/day');
+  current.title = 'Today';
+  current.setAttribute('aria-label', 'Today');
   current.textContent = '>|';
   current.disabled = historyActivityYearOffset === 0 && currentPage === 1;
   nav.append(syncLabel, previous, rangeLabel, next, current);
