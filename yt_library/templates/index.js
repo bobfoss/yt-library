@@ -367,10 +367,10 @@ const playlistVideoOptInFilters = [
   },
 ];
 const searchSortOptions = new Set([
-  'relevance', 'title', 'newest', 'oldest', 'most_watched', 'type',
+  'relevance', 'title', 'title_desc', 'newest', 'oldest', 'most_watched', 'type',
 ]);
 const playlistVideoSortOptions = new Set([
-  'newest_added', 'title', 'oldest_added', 'most_watched', 'playlist_order',
+  'newest_added', 'title', 'title_desc', 'oldest_added', 'most_watched', 'playlist_order',
 ]);
 const sortPreferences = { ...(pageConfig.sortPreferences || {}) };
 let searchResultsSort = 'newest';
@@ -1088,17 +1088,6 @@ function defaultSearchResultsSort(
   return searchPresetDefinition(preset)?.sort || 'newest';
 }
 
-function browserPluginForcesRelevance(plugin, query = search.value.trim()) {
-  const mode = plugin?.search?.forceRelevance;
-  return mode === true || (mode === 'query' && Boolean(query));
-}
-
-function browserPluginSearchActive(plugin) {
-  return browserVideoFacetDefinition(plugin)
-    ? browserVideoFacetSearchActive(plugin) || browserPluginSearchFieldEnabled(plugin)
-    : searchKindEnabled(plugin.id);
-}
-
 function searchSortPreferenceContext(preset = activeSearchPreset) {
   return preset || 'search';
 }
@@ -1355,12 +1344,6 @@ function applySearchHash(hash) {
   searchResultsSort = searchSortExplicit
     ? requestedSort
     : preferredSearchResultsSort(search.value.trim());
-  if (browserSearchPlugins().some(plugin => (
-    browserPluginSearchActive(plugin) && browserPluginForcesRelevance(plugin)
-  ))) {
-    searchResultsSort = 'relevance';
-    searchSortExplicit = false;
-  }
   const page = Number(params.get('page') || 1);
   currentPage = Number.isFinite(page) && page > 0 ? page : 1;
   if (invalidPreset) updateSearchHash(true);
@@ -2848,6 +2831,7 @@ function videoSortHtml(value, scope) {
   const options = [
     ['newest_added', 'Recently added'],
     ['title', 'Title A-Z'],
+    ['title_desc', 'Title Z-A'],
     ['oldest_added', 'Oldest added'],
     ['most_watched', 'Most watched'],
     ['playlist_order', 'Playlist order'],
@@ -3353,14 +3337,10 @@ function syncSearchFiltersForSelection() {
 }
 
 function searchResultsSortHtml() {
-  const forceRelevance = browserSearchPlugins().some(plugin => (
-    browserPluginSearchActive(plugin) && browserPluginForcesRelevance(plugin)
-  ));
-  const options = forceRelevance ? [
-    ['relevance', 'Relevance'],
-  ] : [
+  const options = [
     ['relevance', 'Relevance'],
     ['title', 'Title A-Z'],
+    ['title_desc', 'Title Z-A'],
     ['newest', 'Newest'],
     ['oldest', 'Oldest'],
     ['most_watched', 'Most watched'],
@@ -5245,14 +5225,6 @@ function handleMetaChange(event) {
     } else {
       saveSearchOptInPreferences(searchKindFacetKeys(searchKindFilter));
     }
-    if (
-      plugin
-      && browserPluginSearchActive(plugin)
-      && browserPluginForcesRelevance(plugin)
-    ) {
-      searchResultsSort = 'relevance';
-      searchSortExplicit = false;
-    }
     refreshSearchAfterFilterChange(searchKindFilter, activatedFromHistory);
     return;
   }
@@ -5268,10 +5240,6 @@ function handleMetaChange(event) {
     if (target.checked && !searchKindEnabled('videos')) {
       enableDefaultSearchKind('videos');
       renderSearchMetaFilters();
-    }
-    if (browserPluginSearchActive(plugin) && browserPluginForcesRelevance(plugin)) {
-      searchResultsSort = 'relevance';
-      searchSortExplicit = false;
     }
     syncMetaFilterGroup(`search-plugin-${plugin.id}`);
     refreshSearchAfterFilterChange('videos', activatedFromHistory);

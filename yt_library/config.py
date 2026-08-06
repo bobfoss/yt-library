@@ -69,10 +69,10 @@ _LEGACY_ARCHIVARIX_REQUEST_INTERVAL_SECONDS = 3.0
 CARD_LAYOUTS = frozenset({"grid", "detailed", "compact"})
 PAGE_SIZES = frozenset({50, 100, 250, 500})
 SEARCH_SORTS = frozenset(
-    {"relevance", "title", "newest", "oldest", "most_watched", "type"}
+    {"relevance", "title", "title_desc", "newest", "oldest", "most_watched", "type"}
 )
 PLAYLIST_VIDEO_SORTS = frozenset(
-    {"newest_added", "title", "oldest_added", "most_watched", "playlist_order"}
+    {"newest_added", "title", "title_desc", "oldest_added", "most_watched", "playlist_order"}
 )
 SEARCH_SORT_CONTEXTS = frozenset(
     {

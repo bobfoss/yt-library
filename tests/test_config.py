@@ -304,9 +304,9 @@ class ConfigTests(unittest.TestCase):
                     "sort_preferences": {
                         "search": "most_watched",
                         "liked": "oldest",
-                        "playlists": "title",
+                        "playlists": "title_desc",
                         "all-playlists": "newest",
-                        "playlist": "playlist_order",
+                        "playlist": "title_desc",
                         "playlist-group": "invalid",
                         "unknown-context": "title",
                     }
@@ -315,8 +315,8 @@ class ConfigTests(unittest.TestCase):
             {
                 "search": "most_watched",
                 "liked": "oldest",
-                "playlists": "title",
-                "playlist": "playlist_order",
+                "playlists": "title_desc",
+                "playlist": "title_desc",
             },
         )
         self.assertEqual(

@@ -862,6 +862,7 @@ def video_collection_data(
             "playlist_title COLLATE NOCASE, position, COALESCE(video_id, ''), count_key"
         ),
         "title": f"{title_sql}, count_key",
+        "title_desc": f"{title_sql} DESC, count_key",
     }.get(
         sort,
         f"COALESCE(NULLIF(added_at, ''), metadata_upload_date, '') DESC, {title_sql} DESC, count_key",
@@ -1177,7 +1178,15 @@ def video_summaries_data(
 
 
 OMNI_SEARCH_FIELDS = {"titles", "descriptions"}
-OMNI_SEARCH_SORTS = {"relevance", "title", "newest", "oldest", "most_watched", "type"}
+OMNI_SEARCH_SORTS = {
+    "relevance",
+    "title",
+    "title_desc",
+    "newest",
+    "oldest",
+    "most_watched",
+    "type",
+}
 OMNI_SEARCH_KIND_ORDER = ("video", "clip", "playlist", "channel")
 OMNI_SEARCH_META_FILTERS = {
     "video": VIDEO_AVAILABILITY_CATEGORIES,
@@ -1270,6 +1279,8 @@ def _sort_omni_results(results: list[dict[str, Any]], sort: str) -> None:
     results.sort(key=lambda result: (result["_title"], kind_rank.get(result["kind"], 99)))
     if sort == "relevance":
         results.sort(key=lambda result: (result["score"], kind_rank.get(result["kind"], 99)))
+    elif sort == "title_desc":
+        results.sort(key=lambda result: result["_title"], reverse=True)
     elif sort == "newest":
         results.sort(
             key=lambda result: (

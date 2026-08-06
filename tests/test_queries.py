@@ -307,6 +307,33 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.assertEqual([result["kind"] for result in data["results"]], ["playlist"])
 
+    def test_omni_search_sorts_titles_in_both_directions(self) -> None:
+        self.add_video("sort-alpha", "Sort Alpha")
+        self.add_video("sort-zulu", "Sort Zulu")
+        self.conn.commit()
+
+        ascending = omni_search_data(
+            self.conn,
+            "sort",
+            result_kinds={"video"},
+            sort="title",
+        )
+        descending = omni_search_data(
+            self.conn,
+            "sort",
+            result_kinds={"video"},
+            sort="title_desc",
+        )
+
+        self.assertEqual(
+            [result["item"]["video_id"] for result in ascending["results"]],
+            ["sort-alpha", "sort-zulu"],
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in descending["results"]],
+            ["sort-zulu", "sort-alpha"],
+        )
+
     def test_omni_search_playlist_group_includes_child_groups(self) -> None:
         self.conn.executemany(
             "INSERT INTO playlists(playlist_id, title) VALUES (?, ?)",
@@ -1732,6 +1759,16 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(
             [row["video_id"] for row in video_page["results"]],
             ["video-b"],
+        )
+        reverse_video_page = video_collection_data(
+            self.conn,
+            scope="liked",
+            sort="title_desc",
+            limit=3,
+        )
+        self.assertEqual(
+            [row["video_id"] for row in reverse_video_page["results"]],
+            ["video-c", "video-b", "video-a"],
         )
         paged_queries = [
             " ".join(statement.upper().split())

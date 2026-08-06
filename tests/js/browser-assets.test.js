@@ -385,6 +385,15 @@ test('navigation preset labels and identifiers stay concise', () => {
   assert.match(indexSource, /if \(invalidPreset\) updateSearchHash\(true\)/);
 });
 
+test('search and playlist video sorts include both title directions', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /const searchSortOptions = new Set\(\[[\s\S]{0,180}'title_desc'/);
+  assert.match(indexSource, /function searchResultsSortHtml\(\)[\s\S]{0,320}\['title', 'Title A-Z'\][\s\S]{0,80}\['title_desc', 'Title Z-A'\]/);
+  assert.match(indexSource, /function videoSortHtml\(value, scope\)[\s\S]{0,260}\['title', 'Title A-Z'\][\s\S]{0,80}\['title_desc', 'Title Z-A'\]/);
+  assert.doesNotMatch(indexSource, /browserPluginForcesRelevance|forceRelevance \?/);
+});
+
 test('history heatmap can return to the current year and day', () => {
   const indexSource = source('index.js');
 
