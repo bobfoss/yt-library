@@ -63,6 +63,10 @@ This repository is a Python web app for browsing, enriching, and reconciling a p
 - `TODO.md` is the canonical project TODO and deferred-decisions list. Treat references to the TODO, TODO list, cleanup findings, or future work as references to this file.
 - `requirements.txt` lists Python dependencies, including `yt-dlp`.
 - `yt_library.sqlite3`, cookie files, thumbnail folders, and Takeout zip exports are local runtime data and should not be committed.
+- Put rollback copies, pre-repair SQLite snapshots, retired databases, and
+  backup cookie files in `backups/`; do not leave backups in the repository
+  root or commit them. Keep only active configured databases and cookies at
+  their configured paths.
 - Common generated asset folders include `thumbs/`, `video_thumbs/`, and `archivarix_thumbs/`.
 
 ## Build, Test, and Development Commands
