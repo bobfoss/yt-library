@@ -523,6 +523,17 @@ test('channel tabs use independent persisted card layouts', () => {
   );
 });
 
+test('card layout controls place compact beside grid', () => {
+  const indexSource = source('index.js');
+  const grid = indexSource.indexOf("['grid', 'Grid']");
+  const compact = indexSource.indexOf("['compact', 'Compact list']");
+  const detailed = indexSource.indexOf("['detailed', 'Detailed list']");
+
+  assert.ok(grid >= 0);
+  assert.ok(compact > grid);
+  assert.ok(detailed > compact);
+});
+
 test('theme selection normalizes, persists, and publishes changes', () => {
   const stored = new Map([['yt-library-theme', 'light']]);
   const events = [];

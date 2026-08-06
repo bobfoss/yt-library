@@ -3432,8 +3432,8 @@ function cardLayoutIconSvg(layout) {
 function cardLayoutHtml(activeLayout, context) {
   const options = [
     ['grid', 'Grid'],
-    ['detailed', 'Detailed list'],
     ['compact', 'Compact list'],
+    ['detailed', 'Detailed list'],
   ];
   return `
     <div class="card-layout-control" role="group" aria-label="Card layout">
