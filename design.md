@@ -970,6 +970,13 @@ Unknown playlist slots use `NULL` video IDs and structured unavailable state. St
 
 Long-running and rate-sensitive tasks run as in-process background workers with persistent queue rows, run records, and logs. The unified dispatcher selects the next eligible `worker_queue` row by priority before each launch:
 
+`yt_library/worker_runs.py` owns the common persistence transitions for every
+host run family. Workers provide only their validated family-specific fields;
+the recorder applies running and terminal statuses, timestamps, progress
+updates, atomic counters, and restart interruption while leaving commits and
+rollbacks to the surrounding worker transaction. Fetching, queue disposition,
+logs, retry policy, and error classification remain owned by each worker.
+
 - Metadata tasks fetch channel pages directly when keyed by channel and watch pages directly when keyed by video. They never use YouTube's search interface as a metadata fallback. Each authenticated request verifies that YouTube still accepts the configured cookie; authentication failure stops further YouTube dispatch.
 - Playlist tasks scan playlists with yt-dlp first and fall back to the web parser when needed. They record reported, exposed, and unavailable counts without replacing a fuller scan with a short result.
 - Placeholder tasks query Archivarix for deleted/private/unavailable video IDs, persist each recovery attempt and its run-linked logs, and preserve rate-limited tasks for a later retry.

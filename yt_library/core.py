@@ -67,6 +67,7 @@ from .request_pacing import (
     request_url_matches_hosts as request_url_matches_hosts,
 )
 from .time_utils import utc_days_ago, utc_now
+from .worker_runs import WorkerRunRecorder
 
 if TYPE_CHECKING:
     from .workers import (
@@ -8737,35 +8738,7 @@ def admin_status(
     }
 
 
-_WORKER_RUN_TABLES = (
-    "metadata_worker_runs",
-    "playlist_scan_worker_runs",
-    "live_history_worker_runs",
-    "placeholder_recovery_worker_runs",
-)
-_PLUGIN_WORKER_RUN_TABLE = "plugin_worker_runs"
-
-
-def _interrupt_running_worker_rows(
-    conn: sqlite3.Connection,
-    table: str,
-    finished_at: str,
-) -> None:
-    if table not in {*_WORKER_RUN_TABLES, _PLUGIN_WORKER_RUN_TABLE}:
-        raise ValueError(f"Unknown worker run table: {table}")
-    conn.execute(
-        f"""
-        UPDATE {table}
-        SET status = 'interrupted',
-            finished_at = ?,
-            message = CASE
-              WHEN message = '' THEN 'Interrupted by server restart'
-              ELSE message || ' (interrupted by server restart)'
-            END
-        WHERE status = 'running'
-        """,
-        (finished_at,),
-    )
+_WORKER_RUN_KINDS = ("metadata", "playlist", "history", "placeholder")
 
 
 def reconcile_worker_runs(
@@ -8776,7 +8749,7 @@ def reconcile_worker_runs(
     placeholder_recovery_worker: "PlaceholderRecoveryWorker | None" = None,
 ) -> None:
     worker_states = zip(
-        _WORKER_RUN_TABLES,
+        _WORKER_RUN_KINDS,
         (
             metadata_worker,
             playlist_worker,
@@ -8784,18 +8757,18 @@ def reconcile_worker_runs(
             placeholder_recovery_worker,
         ),
     )
-    inactive_run_tables = [
-        table
-        for table, worker in worker_states
+    inactive_run_kinds = [
+        kind
+        for kind, worker in worker_states
         if worker is None or not worker.is_running()
     ]
     now = utc_now()
     conn = connect(db_path)
     try:
         with conn:
-            for table in inactive_run_tables:
-                _interrupt_running_worker_rows(conn, table, now)
-            _interrupt_running_worker_rows(conn, _PLUGIN_WORKER_RUN_TABLE, now)
+            for kind in inactive_run_kinds:
+                WorkerRunRecorder(conn, kind).interrupt_running(finished_at=now)
+            WorkerRunRecorder(conn, "plugin").interrupt_running(finished_at=now)
     finally:
         conn.close()
 

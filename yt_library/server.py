@@ -129,6 +129,7 @@ from .queries import (
     video_summaries_data,
 )
 from .templates import load_template
+from .worker_runs import WorkerRunRecorder
 from .workers import (
     LIVE_HISTORY_WORKER,
     METADATA_WORKER,
@@ -2040,14 +2041,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             started_at = utc_now()
             try:
                 with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO playlist_scan_worker_runs(
-                          run_id, status, started_at, requested_limit, message
-                        )
-                        VALUES (?, 'running', ?, 0, ?)
-                        """,
-                        (run_id, started_at, "Playlist reconciliation started"),
+                    runs = WorkerRunRecorder(conn, "playlist")
+                    runs.start(
+                        run_id,
+                        message="Playlist reconciliation started",
+                        started_at=started_at,
+                        requested_limit=0,
                     )
                     log_playlist_scan_event(conn, run_id, "info", "Playlist reconciliation started")
                     stats = rebuild_playlist_reconciliation(conn)
@@ -2055,26 +2054,14 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         f"Playlist reconciliation complete: {stats['rows']} rows, "
                         f"{stats['inferred']} inferred, {stats['ambiguous']} ambiguous"
                     )
-                    conn.execute(
-                        """
-                        UPDATE playlist_scan_worker_runs
-                        SET status = 'complete',
-                            finished_at = ?,
-                            total = ?,
-                            processed = ?,
-                            found = ?,
-                            failed = 0,
-                            message = ?
-                        WHERE run_id = ?
-                        """,
-                        (
-                            utc_now(),
-                            stats["playlists"],
-                            stats["playlists"],
-                            stats["inferred"],
-                            message,
-                            run_id,
-                        ),
+                    runs.finish(
+                        run_id,
+                        status="complete",
+                        message=message,
+                        total=stats["playlists"],
+                        processed=stats["playlists"],
+                        found=stats["inferred"],
+                        failed=0,
                     )
                     log_playlist_scan_event(conn, run_id, "info", message)
             finally:
@@ -2098,14 +2085,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             conn = connect(self.db_path)
             try:
                 with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO live_history_worker_runs(
-                          run_id, status, started_at, requested_limit, message
-                        )
-                        VALUES (?, 'running', ?, 0, 'Takeout directory import started')
-                        """,
-                        (run_id, started_at),
+                    WorkerRunRecorder(conn, "history").start(
+                        run_id,
+                        message="Takeout directory import started",
+                        started_at=started_at,
+                        requested_limit=0,
                     )
                     log_live_history_event(conn, run_id, "info", "Takeout directory import started")
             finally:
@@ -2124,13 +2108,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 conn = connect(self.db_path)
                 try:
                     with conn:
-                        conn.execute(
-                            """
-                            UPDATE live_history_worker_runs
-                            SET status = 'error', finished_at = ?, failed = 1, message = ?
-                            WHERE run_id = ?
-                            """,
-                            (utc_now(), message, run_id),
+                        WorkerRunRecorder(conn, "history").finish(
+                            run_id,
+                            status="error",
+                            message=message,
+                            failed=1,
                         )
                         log_live_history_event(conn, run_id, "error", message)
                 finally:
@@ -2141,27 +2123,14 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             conn = connect(self.db_path)
             try:
                 with conn:
-                    conn.execute(
-                        """
-                        UPDATE live_history_worker_runs
-                        SET status = 'complete',
-                            finished_at = ?,
-                            total = ?,
-                            processed = ?,
-                            found = ?,
-                            skipped = ?,
-                            message = ?
-                        WHERE run_id = ?
-                        """,
-                        (
-                            utc_now(),
-                            import_stats["total_watch_rows"],
-                            import_stats["total_watch_rows"],
-                            import_stats["inserted_watch_rows"],
-                            import_stats["duplicate_watch_rows"],
-                            message,
-                            run_id,
-                        ),
+                    WorkerRunRecorder(conn, "history").finish(
+                        run_id,
+                        status="complete",
+                        message=message,
+                        total=import_stats["total_watch_rows"],
+                        processed=import_stats["total_watch_rows"],
+                        found=import_stats["inserted_watch_rows"],
+                        skipped=import_stats["duplicate_watch_rows"],
                     )
                     log_live_history_event(conn, run_id, "info", message)
             finally:

@@ -127,6 +127,7 @@ from .my_activity import MyActivityError, fetch_my_activity_pages
 from .network import ProxyUnavailableError, probe_socks5_proxy, proxy_unavailable_error
 from .plugins import PluginManager, PluginTaskWorker
 from .request_pacing import pace_outbound_request
+from .worker_runs import WorkerRunRecorder
 from .youtube_data_api import (
     YouTubeDataApiError,
     YouTubeDataApiNotConfigured,
@@ -416,30 +417,21 @@ class MetadataWorker(_ThreadWorkerLifecycle):
         proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
+        runs = WorkerRunRecorder(conn, "metadata")
         current_queue_id = 0
         current_subject_id = ""
         try:
             initial_total = 1 if target_queue_id else worker_queue_type_count(conn, "metadata")
             run_total = min(initial_total, limit) if limit else initial_total
             with conn:
-                conn.execute(
-                    """
-                    INSERT INTO metadata_worker_runs(
-                      run_id, status, started_at, total, delay_seconds,
-                      requested_limit, force, stale_days, message
-                    )
-                    VALUES (?, 'running', ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        run_id,
-                        utc_now(),
-                        run_total,
-                        delay,
-                        limit,
-                        1 if force else 0,
-                        stale_days,
-                        "Metadata worker started",
-                    ),
+                runs.start(
+                    run_id,
+                    message="Metadata worker started",
+                    total=run_total,
+                    delay_seconds=delay,
+                    requested_limit=limit,
+                    force=1 if force else 0,
+                    stale_days=stale_days,
                 )
                 if record_summary:
                     log_worker_event(conn, run_id, "info", f"Queued {initial_total} metadata items")
@@ -459,13 +451,10 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                 row = rows[0]
                 if self._stop.is_set():
                     with conn:
-                        conn.execute(
-                            """
-                            UPDATE metadata_worker_runs
-                            SET status = 'stopped', finished_at = ?, message = ?
-                            WHERE run_id = ?
-                            """,
-                            (utc_now(), "Stop requested", run_id),
+                        runs.finish(
+                            run_id,
+                            status="stopped",
+                            message="Stop requested",
                         )
                         log_worker_event(conn, run_id, "warn", "Worker stopped by request")
                     return
@@ -479,13 +468,10 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                         authentication_error = f"Metadata worker stopped: {session_message}"
                         self._set_blocked_reason(authentication_error)
                         with conn:
-                            conn.execute(
-                                """
-                                UPDATE metadata_worker_runs
-                                SET status = 'error', finished_at = ?, message = ?
-                                WHERE run_id = ?
-                                """,
-                                (utc_now(), authentication_error, run_id),
+                            runs.finish(
+                                run_id,
+                                status="error",
+                                message=authentication_error,
                             )
                             log_worker_event(conn, run_id, "error", authentication_error)
                             log_worker_event(
@@ -555,13 +541,10 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                         proxy_url,
                     )
                     with conn:
-                        conn.execute(
-                            """
-                            UPDATE metadata_worker_runs
-                            SET status = 'error', finished_at = ?, message = ?
-                            WHERE run_id = ?
-                            """,
-                            (utc_now(), authentication_error, run_id),
+                        runs.finish(
+                            run_id,
+                            status="error",
+                            message=authentication_error,
                         )
                         log_worker_event(conn, run_id, "error", authentication_error)
                         log_worker_event(
@@ -599,13 +582,10 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                             proxy_url,
                         )
                         with conn:
-                            conn.execute(
-                                """
-                                UPDATE metadata_worker_runs
-                                SET status = 'error', finished_at = ?, message = ?
-                                WHERE run_id = ?
-                                """,
-                                (utc_now(), authentication_error, run_id),
+                            runs.finish(
+                                run_id,
+                                status="error",
+                                message=authentication_error,
                             )
                             log_worker_event(conn, run_id, "error", authentication_error)
                             log_worker_event(
@@ -695,44 +675,34 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                     if row_queue_id:
                         conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (row_queue_id,))
                     remaining = worker_queue_type_count(conn, "metadata")
-                    conn.execute(
-                        """
-                        UPDATE metadata_worker_runs
-                        SET total = ?, processed = ?, found = ?, failed = ?, last_video_id = ?, message = ?
-                        WHERE run_id = ?
-                        """,
-                        (
-                            run_total,
-                            processed,
-                            found,
-                            failed,
-                            video_id,
-                            f"Processed {processed} of {run_total}; {remaining} metadata jobs remain queued",
-                            run_id,
+                    runs.update(
+                        run_id,
+                        total=run_total,
+                        processed=processed,
+                        found=found,
+                        failed=failed,
+                        last_video_id=video_id,
+                        message=(
+                            f"Processed {processed} of {run_total}; "
+                            f"{remaining} metadata jobs remain queued"
                         ),
                     )
                 if self._stop.is_set():
                     with conn:
-                        conn.execute(
-                            """
-                            UPDATE metadata_worker_runs
-                            SET status = 'stopped', finished_at = ?, message = ?
-                            WHERE run_id = ?
-                            """,
-                            (utc_now(), "Stop requested", run_id),
+                        runs.finish(
+                            run_id,
+                            status="stopped",
+                            message="Stop requested",
                         )
                         log_worker_event(conn, run_id, "warn", "Worker stopped by request")
                     return
                 if delay and worker_queue_type_count(conn, "metadata") > 0:
                     time.sleep(delay)
             with conn:
-                conn.execute(
-                    """
-                    UPDATE metadata_worker_runs
-                    SET status = 'complete', finished_at = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (utc_now(), f"Completed {processed} items", run_id),
+                runs.finish(
+                    run_id,
+                    status="complete",
+                    message=f"Completed {processed} items",
                 )
                 if record_summary:
                     log_worker_event(conn, run_id, "info", f"Worker complete: {processed} processed")
@@ -746,13 +716,10 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                     queue_id=current_queue_id,
                 )
                 message = f"Metadata worker paused: {proxy_message}"
-                conn.execute(
-                    """
-                    UPDATE metadata_worker_runs
-                    SET status = 'blocked', finished_at = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (utc_now(), message, run_id),
+                runs.finish(
+                    run_id,
+                    status="blocked",
+                    message=message,
                 )
                 log_worker_event(
                     conn,
@@ -763,13 +730,10 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                 )
         except Exception as exc:
             with conn:
-                conn.execute(
-                    """
-                    UPDATE metadata_worker_runs
-                    SET status = 'error', finished_at = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (utc_now(), str(exc), run_id),
+                runs.finish(
+                    run_id,
+                    status="error",
+                    message=str(exc),
                 )
                 log_worker_event(conn, run_id, "error", f"Worker crashed: {exc}")
         finally:
@@ -1031,6 +995,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
         proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
+        runs = WorkerRunRecorder(conn, "playlist")
         requested_queue_id = queue_id
         current_queue_id = 0
         current_playlist_id = ""
@@ -1042,24 +1007,14 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
             )
             run_total = min(initial_total, limit) if limit else initial_total
             with conn:
-                conn.execute(
-                    """
-                    INSERT INTO playlist_scan_worker_runs(
-                      run_id, status, started_at, total, delay_seconds,
-                      requested_limit, force, stale_days, message
-                    )
-                    VALUES (?, 'running', ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        run_id,
-                        utc_now(),
-                        run_total,
-                        delay,
-                        limit,
-                        1 if force else 0,
-                        stale_days,
-                        "Playlist scan worker started",
-                    ),
+                runs.start(
+                    run_id,
+                    message="Playlist scan worker started",
+                    total=run_total,
+                    delay_seconds=delay,
+                    requested_limit=limit,
+                    force=1 if force else 0,
+                    stale_days=stale_days,
                 )
                 if record_summary:
                     log_playlist_scan_event(conn, run_id, "info", f"Queued {initial_total} playlists")
@@ -1076,13 +1031,10 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 row = rows[0]
                 if self._stop.is_set():
                     with conn:
-                        conn.execute(
-                            """
-                            UPDATE playlist_scan_worker_runs
-                            SET status = 'stopped', finished_at = ?, message = ?
-                            WHERE run_id = ?
-                            """,
-                            (utc_now(), "Stop requested", run_id),
+                        runs.finish(
+                            run_id,
+                            status="stopped",
+                            message="Stop requested",
                         )
                         log_playlist_scan_event(conn, run_id, "warn", "Playlist scan stopped by request")
                     return
@@ -1162,21 +1114,14 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 f"{remaining} playlist scans queued"
                             )
                             log_playlist_scan_event(conn, run_id, "info", message)
-                            conn.execute(
-                                """
-                                UPDATE playlist_scan_worker_runs
-                                SET total = ?, processed = ?, found = ?, failed = ?,
-                                    last_playlist_id = '', message = ?
-                                WHERE run_id = ?
-                                """,
-                                (
-                                    run_total,
-                                    processed,
-                                    found,
-                                    failed,
-                                    message,
-                                    run_id,
-                                ),
+                            runs.update(
+                                run_id,
+                                total=run_total,
+                                processed=processed,
+                                found=found,
+                                failed=failed,
+                                last_playlist_id="",
+                                message=message,
                             )
                     except ProxyUnavailableError:
                         raise
@@ -1191,21 +1136,14 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                     "DELETE FROM worker_queue WHERE queue_id = ?",
                                     (queue_id,),
                                 )
-                            conn.execute(
-                                """
-                                UPDATE playlist_scan_worker_runs
-                                SET total = ?, processed = ?, found = ?, failed = ?,
-                                    last_playlist_id = '', message = ?
-                                WHERE run_id = ?
-                                """,
-                                (
-                                    run_total,
-                                    processed,
-                                    found,
-                                    failed,
-                                    message,
-                                    run_id,
-                                ),
+                            runs.update(
+                                run_id,
+                                total=run_total,
+                                processed=processed,
+                                found=found,
+                                failed=failed,
+                                last_playlist_id="",
+                                message=message,
                             )
                     if delay and worker_queue_type_count(conn, "playlist") > 0:
                         time.sleep(delay)
@@ -1557,32 +1495,25 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     if queue_id:
                         conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
                     remaining = worker_queue_type_count(conn, "playlist")
-                    conn.execute(
-                        """
-                        UPDATE playlist_scan_worker_runs
-                        SET total = ?, processed = ?, found = ?, failed = ?, last_playlist_id = ?, message = ?
-                        WHERE run_id = ?
-                        """,
-                        (
-                            run_total,
-                            processed,
-                            found,
-                            failed,
-                            playlist_id,
-                            f"Processed {processed} of {run_total}; {remaining} playlist jobs remain queued",
-                            run_id,
+                    runs.update(
+                        run_id,
+                        total=run_total,
+                        processed=processed,
+                        found=found,
+                        failed=failed,
+                        last_playlist_id=playlist_id,
+                        message=(
+                            f"Processed {processed} of {run_total}; "
+                            f"{remaining} playlist jobs remain queued"
                         ),
                     )
                 if delay and worker_queue_type_count(conn, "playlist") > 0:
                     time.sleep(delay)
             with conn:
-                conn.execute(
-                    """
-                    UPDATE playlist_scan_worker_runs
-                    SET status = 'complete', finished_at = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (utc_now(), f"Completed {processed} playlists", run_id),
+                runs.finish(
+                    run_id,
+                    status="complete",
+                    message=f"Completed {processed} playlists",
                 )
                 if record_summary:
                     log_playlist_scan_event(conn, run_id, "info", f"Playlist scan complete: {processed} processed")
@@ -1596,13 +1527,10 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     queue_id=current_queue_id,
                 )
                 message = f"Playlist scan paused: {proxy_message}"
-                conn.execute(
-                    """
-                    UPDATE playlist_scan_worker_runs
-                    SET status = 'blocked', finished_at = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (utc_now(), message, run_id),
+                runs.finish(
+                    run_id,
+                    status="blocked",
+                    message=message,
                 )
                 log_playlist_scan_event(
                     conn,
@@ -1613,13 +1541,10 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 )
         except Exception as exc:
             with conn:
-                conn.execute(
-                    """
-                    UPDATE playlist_scan_worker_runs
-                    SET status = 'error', finished_at = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (utc_now(), str(exc), run_id),
+                runs.finish(
+                    run_id,
+                    status="error",
+                    message=str(exc),
                 )
                 log_playlist_scan_event(
                     conn,
@@ -1675,6 +1600,7 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
         proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
+        runs = WorkerRunRecorder(conn, "history")
         mode = "verify" if mode == "verify" else "recent"
         label = "Verify history" if mode == "verify" else "History fetch"
         batch_size = HISTORY_BATCH_SIZE if mode == "verify" else RECENT_HISTORY_BATCH_SIZE
@@ -1707,33 +1633,20 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                 else None
             )
             with conn:
-                conn.execute(
-                    """
-                    INSERT INTO live_history_worker_runs(
-                      run_id, status, started_at, delay_seconds,
-                      requested_limit, message
-                    )
-                    VALUES (?, 'running', ?, ?, ?, ?)
-                    """,
-                    (
-                        run_id,
-                        utc_now(),
-                        HISTORY_BATCH_DELAY_SECONDS,
-                        batch_size,
-                        f"{label} started",
-                    ),
+                runs.start(
+                    run_id,
+                    message=f"{label} started",
+                    delay_seconds=HISTORY_BATCH_DELAY_SECONDS,
+                    requested_limit=batch_size,
                 )
                 log_live_history_event(conn, run_id, "info", f"{label} started with {batch_size} per batch")
 
             if self._stop.is_set():
                 with conn:
-                    conn.execute(
-                        """
-                        UPDATE live_history_worker_runs
-                        SET status = 'stopped', finished_at = ?, message = ?
-                        WHERE run_id = ?
-                        """,
-                        (utc_now(), "Stopped before fetch", run_id),
+                    runs.finish(
+                        run_id,
+                        status="stopped",
+                        message="Stopped before fetch",
                     )
                     log_live_history_event(conn, run_id, "warn", "History fetch stopped before fetch")
                 return
@@ -1827,14 +1740,14 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                         f"{batch_takeout_matches} Takeout matches, "
                         f"{len(batch_metadata_ids)} metadata queued"
                     )
-                    conn.execute(
-                        """
-                        UPDATE live_history_worker_runs
-                        SET total = ?, processed = ?, found = ?, skipped = ?,
-                            last_video_id = ?, message = ?
-                        WHERE run_id = ?
-                        """,
-                        (processed, processed, inserted_total, skipped_total, last_video_id, final_message, run_id),
+                    runs.update(
+                        run_id,
+                        total=processed,
+                        processed=processed,
+                        found=inserted_total,
+                        skipped=skipped_total,
+                        last_video_id=last_video_id,
+                        message=final_message,
                     )
                     log_live_history_event(conn, run_id, "info", final_message)
                 if seen < batch_size:
@@ -1879,24 +1792,15 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                         """,
                         (mode,),
                     )
-                conn.execute(
-                    """
-                    UPDATE live_history_worker_runs
-                    SET status = ?, finished_at = ?, total = ?, processed = ?,
-                        found = ?, skipped = ?, last_video_id = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (
-                        status,
-                        utc_now(),
-                        processed,
-                        processed,
-                        inserted_total,
-                        skipped_total,
-                        last_video_id,
-                        final_message,
-                        run_id,
-                    ),
+                runs.finish(
+                    run_id,
+                    status=status,
+                    message=final_message,
+                    total=processed,
+                    processed=processed,
+                    found=inserted_total,
+                    skipped=skipped_total,
+                    last_video_id=last_video_id,
                 )
                 log_live_history_event(conn, run_id, "info" if status == "complete" else "warn", final_message)
         except ProxyUnavailableError as exc:
@@ -1909,13 +1813,10 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                     queue_id=current_queue_id,
                 )
                 message = f"{label} paused: {proxy_message}"
-                conn.execute(
-                    """
-                    UPDATE live_history_worker_runs
-                    SET status = 'blocked', finished_at = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (utc_now(), message, run_id),
+                runs.finish(
+                    run_id,
+                    status="blocked",
+                    message=message,
                 )
                 log_live_history_event(
                     conn,
@@ -1941,13 +1842,10 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                 error_message = str(exc)
                 debug_message = ""
             with conn:
-                conn.execute(
-                    """
-                    UPDATE live_history_worker_runs
-                    SET status = 'error', finished_at = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (utc_now(), error_message, run_id),
+                runs.finish(
+                    run_id,
+                    status="error",
+                    message=error_message,
                 )
                 log_live_history_event(conn, run_id, "error", f"History fetch crashed: {error_message}")
                 if debug_message:
@@ -2022,28 +1920,6 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
             requested_message="Placeholder recovery stop requested",
         )
 
-    @staticmethod
-    def _finish_run(
-        conn: sqlite3.Connection,
-        run_id: str,
-        *,
-        status: str,
-        message: str,
-        recovery_status: str = "",
-        processed: int = 0,
-        found: int = 0,
-        failed: int = 0,
-    ) -> None:
-        conn.execute(
-            """
-            UPDATE placeholder_recovery_worker_runs
-            SET status = ?, finished_at = ?, processed = ?, found = ?, failed = ?,
-                recovery_status = ?, message = ?
-            WHERE run_id = ?
-            """,
-            (status, utc_now(), processed, found, failed, recovery_status, message, run_id),
-        )
-
     def _run(
         self,
         run_id: str,
@@ -2058,27 +1934,21 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
         proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
+        runs = WorkerRunRecorder(conn, "placeholder")
         video_id = ""
         try:
             with conn:
-                conn.execute(
-                    """
-                    INSERT INTO placeholder_recovery_worker_runs(
-                      run_id, status, started_at, total, queue_id, message
-                    )
-                    VALUES (?, 'running', ?, 1, ?, ?)
-                    """,
-                    (run_id, utc_now(), queue_id, "Placeholder recovery started"),
+                runs.start(
+                    run_id,
+                    message="Placeholder recovery started",
+                    total=1,
+                    queue_id=queue_id,
                 )
             rows = placeholder_worker_queue_rows(conn, limit=1, queue_id=queue_id)
             if not rows:
                 with conn:
-                    conn.execute(
-                        "UPDATE placeholder_recovery_worker_runs SET total = 0 WHERE run_id = ?",
-                        (run_id,),
-                    )
-                    self._finish_run(
-                        conn,
+                    runs.update(run_id, total=0)
+                    runs.finish(
                         run_id,
                         status="complete",
                         message="No placeholder recovery item queued",
@@ -2101,17 +1971,15 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
             video_id = row["video_id"]
             title = row["current_title"] or video_id
             with conn:
-                conn.execute(
-                    """
-                    UPDATE placeholder_recovery_worker_runs
-                    SET queue_id = ?, video_id = ?, playlist_id = ?
-                    WHERE run_id = ?
-                    """,
-                    (queue_id, video_id, playlist_id, run_id),
+                runs.update(
+                    run_id,
+                    queue_id=queue_id,
+                    video_id=video_id,
+                    playlist_id=playlist_id,
                 )
             if self._stop.is_set():
                 with conn:
-                    self._finish_run(conn, run_id, status="stopped", message="Stop requested")
+                    runs.finish(run_id, status="stopped", message="Stop requested")
                     log_placeholder_recovery_event(conn, run_id, "warn", "Stop requested", video_id)
                 return
             session_valid, session_message = (
@@ -2130,8 +1998,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                         run_id=run_id,
                         queue_id=queue_id,
                     )
-                    self._finish_run(
-                        conn,
+                    runs.finish(
                         run_id,
                         status="blocked",
                         message=session_message,
@@ -2151,13 +2018,10 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
             )
             for attempt in range(1, attempts + 1):
                 with conn:
-                    conn.execute(
-                        """
-                        UPDATE placeholder_recovery_worker_runs
-                        SET request_started_at = ?, request_count = request_count + 1
-                        WHERE run_id = ?
-                        """,
-                        (utc_now(), run_id),
+                    runs.update(
+                        run_id,
+                        request_started_at=utc_now(),
+                        increments={"request_count": 1},
                     )
                 try:
                     video, thumbnail_url, thumbnail_path, status, error = recover_archivarix_video(
@@ -2184,8 +2048,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                             queue_id=queue_id,
                         )
                         message = f"Placeholder recovery paused: {proxy_message}"
-                        self._finish_run(
-                            conn,
+                        runs.finish(
                             run_id,
                             status="blocked",
                             message=message,
@@ -2211,8 +2074,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                     error = str(exc)
                 if self._stop.is_set():
                     with conn:
-                        self._finish_run(
-                            conn,
+                        runs.finish(
                             run_id,
                             status="stopped",
                             message="Stop requested",
@@ -2236,8 +2098,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                     )
                 if self._stop.wait(delay):
                     with conn:
-                        self._finish_run(
-                            conn,
+                        runs.finish(
                             run_id,
                             status="stopped",
                             message="Stop requested",
@@ -2269,8 +2130,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                         run_id=run_id,
                         queue_id=queue_id,
                     )
-                    self._finish_run(
-                        conn,
+                    runs.finish(
                         run_id,
                         status="blocked",
                         message=message,
@@ -2292,8 +2152,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                                 (queue_id,),
                             )
                         rebuild_playlist_reconciliation(conn, playlist_id)
-                        self._finish_run(
-                            conn,
+                        runs.finish(
                             run_id,
                             status="complete",
                             message=message,
@@ -2329,8 +2188,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                         run_id=run_id,
                         queue_id=queue_id,
                     )
-                    self._finish_run(
-                        conn,
+                    runs.finish(
                         run_id,
                         status="blocked",
                         message=message,
@@ -2352,8 +2210,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                 if queue_id:
                     conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
                 rebuild_playlist_reconciliation(conn, playlist_id)
-                self._finish_run(
-                    conn,
+                runs.finish(
                     run_id,
                     status="complete",
                     message=message,
@@ -2373,8 +2230,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                     queue_id=queue_id,
                 )
                 message = f"Placeholder recovery paused: {proxy_message}"
-                self._finish_run(
-                    conn,
+                runs.finish(
                     run_id,
                     status="blocked",
                     message=message,
@@ -2390,8 +2246,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                 )
         except Exception as exc:
             with conn:
-                self._finish_run(
-                    conn,
+                runs.finish(
                     run_id,
                     status="error",
                     message=str(exc),

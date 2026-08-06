@@ -53,6 +53,8 @@ This repository is a Python web app for browsing, enriching, and reconciling a p
 - `yt_library/database.py` contains SQLite connection, schema bootstrap, and migrations.
 - `yt_library/server.py` contains HTTP routing and local API endpoints.
 - `yt_library/workers.py` contains background worker orchestration.
+- `yt_library/worker_runs.py` contains typed persistence transitions shared by
+  all worker run families.
 - `yt_library/plugins.py` contains the versioned optional plugin host. Plugins
   depend on this API; the core application must not depend on plugin packages.
 - `yt_library/queries.py` contains paginated browser list/detail read models, unified omni-search, and history search.

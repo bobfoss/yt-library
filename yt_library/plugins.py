@@ -15,6 +15,7 @@ from typing import Any, Iterable
 
 from .database import connect
 from .time_utils import utc_now
+from .worker_runs import WorkerRunRecorder
 
 
 PLUGIN_API_VERSION = 2
@@ -1534,23 +1535,14 @@ class PluginTaskWorker:
         conn = connect(db_path)
         try:
             with conn:
-                conn.execute(
-                    """
-                    INSERT INTO plugin_worker_runs(
-                      run_id, plugin_id, worker_id, status, started_at,
-                      queue_id, subject_id, message
-                    )
-                    VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
-                    """,
-                    (
-                        run_id,
-                        plugin_id,
-                        worker_id,
-                        started_at,
-                        queue_id,
-                        subject_id,
-                        "Plugin worker task started",
-                    ),
+                WorkerRunRecorder(conn, "plugin").start(
+                    run_id,
+                    message="Plugin worker task started",
+                    started_at=started_at,
+                    plugin_id=plugin_id,
+                    worker_id=worker_id,
+                    queue_id=queue_id,
+                    subject_id=subject_id,
                 )
         finally:
             conn.close()
@@ -1616,24 +1608,16 @@ class PluginTaskWorker:
         conn = connect(db_path)
         try:
             with conn:
-                conn.execute(
-                    """
-                    UPDATE plugin_worker_runs
-                    SET status = ?, finished_at = ?, outcome = ?, processed = ?,
-                        found = ?, failed = ?, skipped = ?, message = ?
-                    WHERE run_id = ?
-                    """,
-                    (
-                        status,
-                        finished_at,
-                        result["outcome"],
-                        result["processed"],
-                        result["found"],
-                        result["failed"],
-                        result["skipped"],
-                        result["message"],
-                        run_id,
-                    ),
+                WorkerRunRecorder(conn, "plugin").finish(
+                    run_id,
+                    status=status,
+                    finished_at=finished_at,
+                    outcome=result["outcome"],
+                    processed=result["processed"],
+                    found=result["found"],
+                    failed=result["failed"],
+                    skipped=result["skipped"],
+                    message=result["message"],
                 )
         finally:
             conn.close()

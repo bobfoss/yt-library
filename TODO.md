@@ -79,7 +79,11 @@ versioned migrations as well as creating a fresh current schema.
 ### Shared Worker Lifecycle
 
 - A private lifecycle base owns worker locks, background threads, stop events, running/stopping state, blocked reasons, duplicate-start protection, and standard start/stop responses.
-- Metadata, playlist, history, placeholder recovery, and queue dispatcher workers retain their task-specific fetching, persistence, logging, and completion behavior.
+- A typed run recorder owns the shared start, progress, terminal-state, and
+  restart-interruption writes for metadata, playlist, history, placeholder, and
+  plugin run tables. It validates each run family's fields and statuses without
+  taking ownership of caller transaction boundaries.
+- Metadata, playlist, history, placeholder recovery, plugin, and queue dispatcher workers retain their task-specific fetching, queue, logging, and completion behavior.
 - Placeholder recovery attempts now persist run IDs, lifecycle and recovery outcomes, and dedicated run-linked logs just like the other external workers.
 - Dispatcher site cadence, concurrency limits, queue priority, and per-request YouTube authentication checks are unchanged.
 

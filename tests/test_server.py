@@ -1908,6 +1908,79 @@ class AdminServerTests(unittest.TestCase):
             handler.config_data,
         )
 
+    def test_playlist_reconcile_endpoint_records_the_completed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/admin/playlists/reconcile"
+            handler.db_path = db_path
+            handler.send_json = Mock()
+
+            handler.do_POST()
+
+            conn = core.connect(db_path)
+            try:
+                row = conn.execute(
+                    """
+                    SELECT status, total, processed, found, failed, message
+                    FROM playlist_scan_worker_runs
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(tuple(row[:5]), ("complete", 0, 0, 0, 0))
+        self.assertIn("Playlist reconciliation complete", row["message"])
+        self.assertTrue(handler.send_json.call_args.args[0]["ok"])
+
+    def test_takeout_import_endpoint_records_success_and_failure_runs(self) -> None:
+        success_stats = {
+            "inserted_watch_rows": 2,
+            "duplicate_watch_rows": 1,
+            "total_watch_rows": 3,
+            "imported_keys": ["watch-history.json"],
+            "reconciled_rows": 2,
+            "matched_rows": 1,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/admin/history/import-takeout"
+            handler.db_path = db_path
+            handler.takeout_dir = Path(temp_dir) / "takeout"
+            handler.config_data = {}
+            handler.send_json = Mock()
+
+            with patch.object(server, "import_history", return_value=success_stats):
+                handler.do_POST()
+            with patch.object(server, "import_history", side_effect=SystemExit("No Takeout data")):
+                handler.do_POST()
+
+            conn = core.connect(db_path)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT status, total, processed, found, failed, skipped, message
+                    FROM live_history_worker_runs
+                    ORDER BY started_at, run_id
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+        by_status = {row["status"]: row for row in rows}
+        self.assertEqual(
+            tuple(by_status["complete"][:6]),
+            ("complete", 3, 3, 2, 0, 1),
+        )
+        self.assertEqual(by_status["error"]["failed"], 1)
+        self.assertEqual(by_status["error"]["message"], "No Takeout data")
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
     def test_service_replacement_uses_dedicated_log_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
