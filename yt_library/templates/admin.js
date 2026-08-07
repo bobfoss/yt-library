@@ -45,7 +45,7 @@ const fields = {
   commonWorkerState: document.getElementById('commonWorkerState'),
   workerQueueElapsed: document.getElementById('workerQueueElapsed'),
   workerQueueEta: document.getElementById('workerQueueEta'),
-  archivarixRequests24h: document.getElementById('archivarixRequests24h'),
+  archivarixRequestsUtcDay: document.getElementById('archivarixRequestsUtcDay'),
   archivarixRequestsTotal: document.getElementById('archivarixRequestsTotal'),
   dispatchModeDelay: document.getElementById('dispatchModeDelay'),
   dispatchModeThrottle: document.getElementById('dispatchModeThrottle'),
@@ -810,12 +810,18 @@ function render(data) {
   fields.startWorkerQueue.classList.toggle('primary', !queueWorkerRunning && !queueWorkerStopping);
   fields.stopWorkerQueue.classList.toggle('danger', queueWorkerRunning || queueWorkerStopping);
   const archivarixRequestCounts = data.archivarixRequestCounts || {};
-  fields.archivarixRequests24h.textContent = archivarixRequestCounts.last_24_hours || 0;
+  fields.archivarixRequestsUtcDay.textContent = archivarixRequestCounts.current_utc_day || 0;
   fields.archivarixRequestsTotal.textContent = archivarixRequestCounts.total || 0;
-  fields.archivarixRequests24h.title = archivarixRequestCounts.latest_at
+  const archivarixWindowTitle = archivarixRequestCounts.window_ends_at
+    ? `Resets ${fmtTime(archivarixRequestCounts.window_ends_at)} (00:00 UTC)`
+    : '';
+  const archivarixLatestTitle = archivarixRequestCounts.latest_at
     ? `Latest request ${fmtTime(archivarixRequestCounts.latest_at)}`
     : 'No tracked requests';
-  fields.archivarixRequestsTotal.title = fields.archivarixRequests24h.title;
+  fields.archivarixRequestsUtcDay.title = [archivarixWindowTitle, archivarixLatestTitle]
+    .filter(Boolean)
+    .join('. ');
+  fields.archivarixRequestsTotal.title = archivarixLatestTitle;
   const dispatchSettings = data.dispatchSettings || {};
   if (!dispatchSettingsSaving && !dispatchSettingsDirty) {
     const dispatchMode = dispatchSettings.dispatch_mode === 'throttle' ? 'throttle' : 'delay';

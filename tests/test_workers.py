@@ -2828,14 +2828,57 @@ class WorkerQueueTests(unittest.TestCase):
                     "test-placeholder-rate-limited",
                 )
                 self.assertTrue(status["archivarixBlock"]["blocked"])
-                self.assertEqual(status["archivarixRequestCounts"]["last_24_hours"], 1)
+                self.assertEqual(status["archivarixRequestCounts"]["current_utc_day"], 1)
                 self.assertEqual(status["archivarixRequestCounts"]["total"], 1)
+                self.assertRegex(
+                    status["archivarixRequestCounts"]["window_started_at"],
+                    r"^\d{4}-\d{2}-\d{2}T00:00:00Z$",
+                )
+                self.assertRegex(
+                    status["archivarixRequestCounts"]["window_ends_at"],
+                    r"^\d{4}-\d{2}-\d{2}T00:00:00Z$",
+                )
                 self.assertEqual(
                     status["archivarixRequestCounts"]["latest_at"],
                     run["request_started_at"],
                 )
             finally:
                 conn.close()
+
+    def test_archivarix_request_count_uses_current_utc_day(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.executemany(
+                        """
+                        INSERT INTO placeholder_recovery_worker_runs(
+                          run_id, status, started_at, request_started_at, request_count
+                        )
+                        VALUES (?, 'complete', ?, ?, ?)
+                        """,
+                        (
+                            (
+                                "old-window",
+                                "2000-01-01T12:00:00Z",
+                                "2000-01-01T12:00:00Z",
+                                3,
+                            ),
+                            (
+                                "current-window",
+                                core.utc_now(),
+                                core.utc_now(),
+                                2,
+                            ),
+                        ),
+                    )
+            finally:
+                conn.close()
+
+            counts = core.admin_status(db_path)["archivarixRequestCounts"]
+            self.assertEqual(counts["current_utc_day"], 2)
+            self.assertEqual(counts["total"], 5)
 
     def test_placeholder_timeout_retries_then_completes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

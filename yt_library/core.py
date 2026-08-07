@@ -8922,14 +8922,22 @@ def admin_status(
                 SELECT
                   COALESCE(SUM(request_count), 0) AS total,
                   COALESCE(
-                    SUM(CASE WHEN request_started_at >= ? THEN request_count ELSE 0 END),
+                    SUM(
+                      CASE
+                        WHEN request_started_at >= strftime('%Y-%m-%dT00:00:00Z', 'now')
+                         AND request_started_at < strftime('%Y-%m-%dT00:00:00Z', 'now', '+1 day')
+                          THEN request_count
+                        ELSE 0
+                      END
+                    ),
                     0
-                  ) AS last_24_hours,
-                  COALESCE(MAX(request_started_at), '') AS latest_at
+                  ) AS current_utc_day,
+                  COALESCE(MAX(request_started_at), '') AS latest_at,
+                  strftime('%Y-%m-%dT00:00:00Z', 'now') AS window_started_at,
+                  strftime('%Y-%m-%dT00:00:00Z', 'now', '+1 day') AS window_ends_at
                 FROM placeholder_recovery_worker_runs
                 WHERE request_count > 0
-                """,
-                (utc_days_ago(1),),
+                """
             ).fetchone()
         )
         archivarix_block = external_service_block(conn, "archivarix")
