@@ -948,6 +948,7 @@ class AdminServerTests(unittest.TestCase):
         cases = (
             ("/api/admin/cookies/youtube", "_handle_cookie_post"),
             ("/api/settings/page-size?value=250", "_handle_preference_post"),
+            ("/api/settings/hide-empty-filters?enabled=1", "_handle_preference_post"),
             ("/api/admin/update-schedule?frequency=off", "_handle_admin_configuration_post"),
             ("/api/admin/queue/start", "_handle_admin_action_post"),
         )
@@ -1107,6 +1108,39 @@ class AdminServerTests(unittest.TestCase):
         handler.do_POST()
 
         self.assertEqual(config["partial_completion_min_percent"], 1)
+        self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
+
+    def test_hide_empty_filters_preference_saves_without_restarting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            request_restart = Mock()
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/settings/hide-empty-filters?enabled=0"
+            handler.config_data = config
+            handler.request_restart = request_restart
+            handler.send_json = Mock()
+
+            handler.do_POST()
+
+            self.assertFalse(config["hide_empty_filters"])
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertFalse(payload["hide_empty_filters"])
+            request_restart.assert_not_called()
+            handler.send_json.assert_called_once_with(
+                {"ok": True, "hideEmptyFilters": False}
+            )
+
+    def test_hide_empty_filters_preference_rejects_unknown_values(self) -> None:
+        config = load_config(Path("missing-test-config.json"))
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = "/api/settings/hide-empty-filters?enabled=maybe"
+        handler.config_data = config
+        handler.send_json = Mock()
+
+        handler.do_POST()
+
+        self.assertTrue(config["hide_empty_filters"])
         self.assertEqual(handler.send_json.call_args.kwargs["status"], 400)
 
     def test_filter_preference_saves_and_removes_sparse_entry(self) -> None:

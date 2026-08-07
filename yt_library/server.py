@@ -159,6 +159,7 @@ PREFERENCE_POST_PATHS = frozenset(
         "/api/settings/sort",
         "/api/settings/page-size",
         "/api/settings/partial-completion-minimum",
+        "/api/settings/hide-empty-filters",
         "/api/settings/filter-preference",
         "/api/settings/search-filter-tree",
         "/api/settings/navigation-group-tree",
@@ -1465,6 +1466,20 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     "partialCompletionMinPercent": minimum_percent,
                 }
             )
+            return
+        if parsed.path == "/api/settings/hide-empty-filters":
+            enabled_value = (params.get("enabled") or [""])[0].strip().lower()
+            if enabled_value not in {"0", "1", "false", "true"}:
+                self.send_json(
+                    {"error": "Invalid hide empty filters preference"},
+                    status=400,
+                )
+                return
+            enabled = enabled_value in {"1", "true"}
+            self._update_config(
+                lambda config: config.__setitem__("hide_empty_filters", enabled)
+            )
+            self.send_json({"ok": True, "hideEmptyFilters": enabled})
             return
         if parsed.path == "/api/settings/filter-preference":
             preference_key = (params.get("key") or [""])[0].strip()

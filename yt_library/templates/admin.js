@@ -121,6 +121,10 @@ let dispatchSettingsRevision = 0;
 let dispatchSettingsSaveTimer = null;
 let settingsSaving = false;
 let settingsDirty = false;
+let hideEmptyFiltersSaving = false;
+let hideEmptyFiltersDirty = false;
+let hideEmptyFiltersRevision = 0;
+let savedHideEmptyFilters = true;
 let updateScheduleSaving = false;
 let updateScheduleDirty = false;
 let updateScheduleRevision = 0;
@@ -771,9 +775,12 @@ function render(data) {
     fields.displayTimezone.value = settings.displayTimezone || window.YTLibraryTime.detected();
     fields.weekStartMonday.checked = settings.weekStart === 'monday';
     fields.weekStartSunday.checked = !fields.weekStartMonday.checked;
-    fields.hideEmptyFilters.checked = settings.hideEmptyFilters !== false;
     fields.useProxy.checked = Boolean(settings.useProxy);
     fields.proxyUrl.value = settings.proxy || '';
+  }
+  if (!hideEmptyFiltersSaving && !hideEmptyFiltersDirty) {
+    savedHideEmptyFilters = settings.hideEmptyFilters !== false;
+    fields.hideEmptyFilters.checked = savedHideEmptyFilters;
   }
   if (!updateScheduleSaving && !updateScheduleDirty) {
     fields.updateFrequency.value = settings.updateFrequency || 'off';
@@ -1049,7 +1056,6 @@ async function saveAdminSettings() {
     const payload = await AdminTransport.postJson('/api/admin/settings', {
       display_timezone: fields.displayTimezone.value.trim(),
       week_start: fields.weekStartMonday.checked ? 'monday' : 'sunday',
-      hide_empty_filters: fields.hideEmptyFilters.checked ? '1' : '0',
       use_proxy: fields.useProxy.checked ? '1' : '0',
       proxy: fields.proxyUrl.value.trim(),
     });
@@ -1057,7 +1063,6 @@ async function saveAdminSettings() {
     fields.displayTimezone.value = settings.displayTimezone || fields.displayTimezone.value.trim();
     fields.weekStartMonday.checked = settings.weekStart === 'monday';
     fields.weekStartSunday.checked = !fields.weekStartMonday.checked;
-    fields.hideEmptyFilters.checked = settings.hideEmptyFilters !== false;
     fields.useProxy.checked = Boolean(settings.useProxy);
     fields.proxyUrl.value = settings.proxy || '';
     window.YTLibraryTime.apply(settings.displayTimezone || fields.displayTimezone.value);
@@ -1075,6 +1080,36 @@ async function saveAdminSettings() {
   } finally {
     settingsSaving = false;
     fields.saveSettings.disabled = false;
+  }
+}
+
+async function saveHideEmptyFilters() {
+  if (hideEmptyFiltersSaving || !hideEmptyFiltersDirty) return;
+  const saveRevision = hideEmptyFiltersRevision;
+  const enabled = fields.hideEmptyFilters.checked;
+  hideEmptyFiltersSaving = true;
+  hideEmptyFiltersDirty = false;
+  fields.settingsStatus.textContent = 'Saving';
+  try {
+    const payload = await AdminTransport.postJson('/api/settings/hide-empty-filters', {
+      enabled: enabled ? '1' : '0',
+    });
+    savedHideEmptyFilters = payload.hideEmptyFilters !== false;
+    if (hideEmptyFiltersRevision === saveRevision) {
+      fields.hideEmptyFilters.checked = savedHideEmptyFilters;
+      fields.settingsStatus.textContent = 'Saved';
+    }
+  } catch (error) {
+    if (hideEmptyFiltersRevision === saveRevision) {
+      fields.hideEmptyFilters.checked = savedHideEmptyFilters;
+      fields.settingsStatus.textContent = 'Save failed';
+    }
+    alert(error.message);
+  } finally {
+    hideEmptyFiltersSaving = false;
+    if (hideEmptyFiltersDirty || hideEmptyFiltersRevision !== saveRevision) {
+      saveHideEmptyFilters();
+    }
   }
 }
 
@@ -1538,7 +1573,11 @@ fields.themeToggle.addEventListener('change', () => {
 fields.displayTimezone.addEventListener('input', () => { settingsDirty = true; });
 fields.weekStartSunday.addEventListener('change', () => { settingsDirty = true; });
 fields.weekStartMonday.addEventListener('change', () => { settingsDirty = true; });
-fields.hideEmptyFilters.addEventListener('change', () => { settingsDirty = true; });
+fields.hideEmptyFilters.addEventListener('change', () => {
+  hideEmptyFiltersDirty = true;
+  hideEmptyFiltersRevision += 1;
+  saveHideEmptyFilters();
+});
 fields.useProxy.addEventListener('change', () => { settingsDirty = true; });
 fields.proxyUrl.addEventListener('input', () => { settingsDirty = true; });
 fields.saveSettings.addEventListener('click', saveAdminSettings);

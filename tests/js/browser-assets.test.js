@@ -313,7 +313,15 @@ test('zero-count filters use the config-backed shared visibility path', () => {
   assert.match(indexSource, /function visibleMetaFilterDefinitions\(visibility, counts, definitions\)/);
   assert.match(indexSource, /!hideEmptyFilters \|\| counts === null \|\| counts === undefined \|\| metaFilterCount\(counts, key\) !== 0/);
   assert.match(adminHtml, /id="hideEmptyFilters" type="checkbox" checked>Hide empty filters/);
-  assert.match(adminSource, /hide_empty_filters: fields\.hideEmptyFilters\.checked \? '1' : '0'/);
+  assert.match(adminSource, /AdminTransport\.postJson\('\/api\/settings\/hide-empty-filters'/);
+  assert.match(
+    adminSource,
+    /fields\.hideEmptyFilters\.addEventListener\('change',[\s\S]{0,180}saveHideEmptyFilters\(\)/,
+  );
+  assert.doesNotMatch(
+    adminSource,
+    /AdminTransport\.postJson\('\/api\/admin\/settings',[\s\S]{0,300}hide_empty_filters:/,
+  );
 });
 
 test('admin parameter posts use the shared transport with caller-owned effects', () => {
