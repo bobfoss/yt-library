@@ -3951,8 +3951,8 @@ async function decorateCoreSearchResults(results, errors, query) {
   }
 }
 
-async function fetchOmniSearch(query, page = currentPage, { limit: limitOverride = null } = {}) {
-  const size = limitOverride ?? pageSizeNumber();
+async function fetchOmniSearch(query, page = currentPage) {
+  const size = pageSizeNumber();
   const limit = Number.isFinite(size) ? size : 5000;
   const requestedPage = Math.max(1, Number(page) || 1);
   const offset = (requestedPage - 1) * limit;
@@ -4149,14 +4149,35 @@ async function fetchOmniSearch(query, page = currentPage, { limit: limitOverride
   }, adjacentPageCacheLimit);
 }
 
-function hydrateEntitySearchFilters(query, generation) {
-  const category = selectedEntityCategory();
-  if (!['videos', 'clips', 'channels'].includes(category)) return;
-  if (
-    renderedSearchFilterContext === category
-    && renderedSearchFilterPayload.metaCounts
-  ) return;
-  void fetchOmniSearch(query, 1, { limit: 1 }).then(payload => {
+async function fetchEntitySearchFilters(category, entityId) {
+  const resultKind = {
+    videos: 'video',
+    clips: 'clip',
+    channels: 'channel',
+  }[category];
+  if (!resultKind || !entityId) return null;
+  const params = new URLSearchParams({
+    q: entityId,
+    search_fields: 'titles',
+    kinds: resultKind,
+    limit: '1',
+    offset: '0',
+  });
+  for (const plugin of category === 'videos'
+    ? browserVideoFilterPlugins()
+    : (category === 'clips' ? browserClipFilterPlugins() : [])) {
+    params.append(category === 'videos' ? 'video_facet_plugin' : 'clip_facet_plugin', plugin.id);
+  }
+  params.append('video_search_plugin', '__none__');
+  params.append('clip_search_plugin', '__none__');
+  const response = await fetch(`/api/search?${params}`, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Selected item filters failed: ${response.status}`);
+  return response.json();
+}
+
+function hydrateEntitySearchFilters(category, entityId, generation) {
+  void fetchEntitySearchFilters(category, entityId).then(payload => {
+    if (!payload) return;
     if (generation !== renderGeneration || selectedEntityCategory() !== category) return;
     renderSearchMetaFilters(payload);
   }).catch(() => {
@@ -4835,7 +4856,6 @@ async function render() {
   }
   syncSearchFiltersForSelection();
   const query = search.value.trim().toLowerCase();
-  hydrateEntitySearchFilters(query, generation);
   viewTop.classList.toggle('history-top', selected === '__history__');
   viewTop.classList.toggle(
     'video-collection-top',
@@ -4885,6 +4905,7 @@ async function render() {
       return;
     }
     if (generation !== renderGeneration) return;
+    hydrateEntitySearchFilters('clips', clip.clip_id || clipId, generation);
     const result = {
       kind: 'clip',
       item: clip,
@@ -4930,6 +4951,7 @@ async function render() {
       return;
     }
     if (generation !== renderGeneration) return;
+    hydrateEntitySearchFilters('videos', video.video_id || videoId, generation);
     setDocumentTitle(displayVideoTitle(video) || videoId);
     hidePager();
     grid.className = 'grid';
@@ -4970,6 +4992,7 @@ async function render() {
     }
     if (generation !== renderGeneration) return;
     const channelId = channel.channel_id || channelReference;
+    hydrateEntitySearchFilters('channels', channelId, generation);
     setDocumentTitle(channel.title || channelReference);
     const playlistCount = Number(playlistSummary.total || 0);
     const historyCount = cachedChannelHistoryCount(channelId);

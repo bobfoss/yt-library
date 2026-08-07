@@ -139,8 +139,11 @@ test('entity details enter their scoped category context', () => {
   assert.match(indexSource, /function activeSidebarCategory\(\)[\s\S]{0,160}return selectedEntityCategory\(\)/);
   assert.match(indexSource, /function activateSearchFromSelection[\s\S]{0,240}const scope = searchContextKind\(\)[\s\S]{0,160}activeSearchScope = scope/);
   assert.match(indexSource, /search\.placeholder = selected\.startsWith\('__playlist__:'\)[\s\S]{0,120}placeholders\[contextKind\]/);
-  assert.match(indexSource, /function hydrateEntitySearchFilters\(query, generation\)[\s\S]{0,420}fetchOmniSearch\(query, 1, \{ limit: 1 \}\)[\s\S]{0,220}renderSearchMetaFilters\(payload\)/);
-  assert.match(indexSource, /syncSearchFiltersForSelection\(\);[\s\S]{0,120}hydrateEntitySearchFilters\(query, generation\)/);
+  assert.match(indexSource, /async function fetchEntitySearchFilters\(category, entityId\)[\s\S]{0,480}q: entityId[\s\S]{0,220}limit: '1'/);
+  assert.match(indexSource, /function hydrateEntitySearchFilters\(category, entityId, generation\)[\s\S]{0,300}fetchEntitySearchFilters\(category, entityId\)[\s\S]{0,180}renderSearchMetaFilters\(payload\)/);
+  assert.match(indexSource, /hydrateEntitySearchFilters\('videos', video\.video_id \|\| videoId, generation\)/);
+  assert.match(indexSource, /hydrateEntitySearchFilters\('clips', clip\.clip_id \|\| clipId, generation\)/);
+  assert.match(indexSource, /hydrateEntitySearchFilters\('channels', channelId, generation\)/);
 });
 
 test('playlist detail reuses the sidebar video search facets', () => {
@@ -461,7 +464,7 @@ test('numbered browser pages cache and prefetch adjacent payloads', () => {
   assert.match(indexSource, /async function fetchHistoryPage\(channelId = '', page = currentPage\)/);
   assert.match(indexSource, /function historyYearPagePrefetches\(channelId, rows\)/);
   assert.match(indexSource, /const shifts = historyActivityYearOffset > 0 \? \[1, -1\] : \[1\]/);
-  assert.match(indexSource, /async function fetchOmniSearch\(query, page = currentPage, \{ limit: limitOverride = null \} = \{\}\)/);
+  assert.match(indexSource, /async function fetchOmniSearch\(query, page = currentPage\)/);
   assert.match(indexSource, /fetchVideoCollection\(\{[\s\S]*page = currentPage,/);
 });
 
