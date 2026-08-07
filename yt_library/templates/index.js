@@ -1554,20 +1554,11 @@ function activeSearchFields() {
   );
 }
 
-function syncFilterGroup(
-  parent,
-  childFilters,
-  dimChildrenWhenUnchecked = true,
-  fallbackCheckedStates = [],
-) {
-  if (!parent) return;
-  const checkedStates = childFilters.length
-    ? childFilters.map(input => input.checked)
-    : fallbackCheckedStates;
-  if (!checkedStates.length) return;
-  const checkedCount = checkedStates.filter(Boolean).length;
+function syncFilterGroup(parent, childFilters, dimChildrenWhenUnchecked = true) {
+  if (!parent || !childFilters.length) return;
+  const checkedCount = childFilters.filter(input => input.checked).length;
   parent.checked = checkedCount > 0;
-  parent.indeterminate = checkedCount > 0 && checkedCount < checkedStates.length;
+  parent.indeterminate = checkedCount > 0 && checkedCount < childFilters.length;
   setFilterDimmed(childFilters, dimChildrenWhenUnchecked && !parent.checked);
 }
 
@@ -1623,17 +1614,18 @@ function allMetaFilterChildrenChecked(groupName) {
   return children.length > 0 && children.every(([, checked]) => checked);
 }
 
-function syncMetaFilterGroup(groupName) {
+function syncMetaFilterGroup(groupName, assumeAllChecked = false) {
   const root = groupName.startsWith('search-') ? searchForFilters : meta;
-  const group = metaFilterGroupVisibility(groupName);
-  const excludedKeys = metaFilterGroupExcludedKeys(groupName);
+  const parent = root.querySelector(`[data-meta-all-filter="${groupName}"]`);
+  if (assumeAllChecked && parent instanceof HTMLInputElement) {
+    parent.checked = true;
+    parent.indeterminate = false;
+    return;
+  }
   syncFilterGroup(
-    root.querySelector(`[data-meta-all-filter="${groupName}"]`),
+    parent,
     [...root.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)],
     false,
-    Object.entries(group || {})
-      .filter(([key]) => !excludedKeys.has(key))
-      .map(([, checked]) => checked),
   );
 }
 
@@ -1694,9 +1686,20 @@ function setSearchKindFilter(kind, checked) {
   return true;
 }
 
-function syncSearchKindFilter(kind, applyDisabledStyles = true) {
+function syncSearchKindFilter(kind, applyDisabledStyles = true, assumeAllChecked = false) {
   const parent = searchForFilters.querySelector(`[data-search-kind-filter="${kind}"]`);
   if (!(parent instanceof HTMLInputElement)) return;
+  if (assumeAllChecked) {
+    parent.checked = true;
+    parent.indeterminate = false;
+    if (applyDisabledStyles) {
+      for (const row of searchForFilters.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
+        row.classList.remove('dimmed');
+      }
+      parent.closest('.search-meta-kind')?.classList.remove('kind-disabled');
+    }
+    return;
+  }
   if (browserSearchPlugin(kind)) {
     parent.checked = searchKindEnabled(kind);
     parent.indeterminate = false;
@@ -1707,26 +1710,18 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true) {
   }
   const facetKeys = searchKindFacetKeys(kind);
   if (!facetKeys.length) return;
-  let facetSelections = facetKeys.map(key => (
+  const facetSelections = facetKeys.map(key => (
     [...searchForFilters.querySelectorAll(`[data-meta-child-filter="search-${key}"]`)]
       .map(input => input.checked)
   )).filter(values => values.length);
-  const useVisibilityFallback = !facetSelections.length;
-  if (useVisibilityFallback) {
-    facetSelections = facetKeys.map(key => (
-      Object.values(searchMetaVisibility[key] || {})
-    )).filter(values => values.length);
-  }
   if (kind === 'videos') {
-    for (const plugin of browserVideoFilterPlugins()) {
-      const renderedSelections = [...searchForFilters.querySelectorAll(
-        `[data-meta-child-filter="search-plugin-${plugin.id}"]`
-      )].map(input => input.checked);
-      if (renderedSelections.length) facetSelections.push(renderedSelections);
-      else if (useVisibilityFallback) {
-        facetSelections.push(Object.values(browserVideoFacetState(plugin)));
-      }
-    }
+    facetSelections.push(
+      ...browserVideoFilterPlugins().map(plugin => (
+        [...searchForFilters.querySelectorAll(
+          `[data-meta-child-filter="search-plugin-${plugin.id}"]`
+        )].map(input => input.checked)
+      )).filter(values => values.length),
+    );
   }
   if (!facetSelections.length) return;
   const everyFacetHasSelection = facetSelections.every(values => values.some(Boolean));
@@ -3172,7 +3167,7 @@ function searchMetaFiltersHtml(
           id="${escapeHtml(searchFilterTreeChildrenId(nodeId))}"
           class="search-meta-facet-children"
           data-search-tree-children
-          ${expanded ? '' : 'hidden'}
+          ${expanded && countsReady ? '' : 'hidden'}
         >
           <span class="search-tree-toggle-spacer" aria-hidden="true"></span>
           <div class="search-meta-controls">
@@ -3270,6 +3265,7 @@ function renderSearchMetaFilters({
   uploaderCategoryCounts = null,
   counts = null,
 } = {}) {
+  const countsPending = metaCounts === null || metaCounts === undefined;
   renderedSearchFilterPayload = {
     metaCounts,
     reactionCounts,
@@ -3302,10 +3298,10 @@ function renderSearchMetaFilters({
     if (kindCount) kindCount.textContent = searchKindEnabled(kind) ? (count || '') : '';
   }
   for (const key of ['videos', 'reactions', 'completion', 'membership', 'uploaderCategory', 'clipOwnership', 'playlistAvailability', 'playlistOwnership', 'channelSubscription', 'channelStatus']) {
-    syncMetaFilterGroup(`search-${key}`);
+    syncMetaFilterGroup(`search-${key}`, countsPending);
   }
   for (const plugin of browserVideoFilterPlugins()) {
-    syncMetaFilterGroup(`search-plugin-${plugin.id}`);
+    syncMetaFilterGroup(`search-plugin-${plugin.id}`, countsPending);
   }
   for (const kind of [
     'videos',
@@ -3314,7 +3310,7 @@ function renderSearchMetaFilters({
     'channels',
     ...browserResultSearchPlugins().map(plugin => plugin.id),
   ]) {
-    syncSearchKindFilter(kind);
+    syncSearchKindFilter(kind, true, countsPending);
   }
   updateSearchMetaProgress();
 }

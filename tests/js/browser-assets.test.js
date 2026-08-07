@@ -329,7 +329,10 @@ test('search filter bootstrap defers leaves until facet counts arrive', () => {
 
   assert.match(indexSource, /const countsReady = counts !== null && counts !== undefined/);
   assert.match(indexSource, /\$\{countsReady \? metaFilterChildrenHtml\(\{/);
-  assert.match(indexSource, /fallbackCheckedStates = \[\]/);
+  assert.match(indexSource, /\$\{expanded && countsReady \? '' : 'hidden'\}/);
+  assert.match(indexSource, /const countsPending = metaCounts === null \|\| metaCounts === undefined/);
+  assert.match(indexSource, /syncMetaFilterGroup\(`search-\$\{key\}`, countsPending\)/);
+  assert.match(indexSource, /syncSearchKindFilter\(kind, true, countsPending\)/);
   assert.match(indexSource, /'search-clipOwnership': searchMetaVisibility\.clipOwnership/);
 });
 
@@ -437,13 +440,13 @@ test('search filters share deferred category dimming until refreshed results ren
   const indexSource = source('index.js');
 
   assert.match(indexSource, /function setSearchKindFilter\(kind, checked\)/);
-  assert.match(indexSource, /function syncSearchKindFilter\(kind, applyDisabledStyles = true\)/);
+  assert.match(indexSource, /function syncSearchKindFilter\(kind, applyDisabledStyles = true, assumeAllChecked = false\)/);
   assert.match(indexSource, /if \(applyDisabledStyles\) \{[\s\S]{0,300}row\.classList\.toggle\('dimmed'/);
   assert.match(indexSource, /function refreshSearchAfterFilterChange\(groupName, activatedFromHistory\)/);
   assert.match(indexSource, /refreshSearchAfterFilterChange[\s\S]{0,200}syncSearchKindFilter\(searchKindForFacet\(groupName\), false\)/);
   assert.match(indexSource, /setSearchKindFilter\(searchKindFilter, target\.checked\)[\s\S]{0,800}refreshSearchAfterFilterChange\(searchKindFilter, activatedFromHistory\)/);
   assert.match(indexSource, /syncMetaFilterGroup\(`search-\$\{groupName\}`\);[\s\S]{0,180}refreshSearchAfterFilterChange\(groupName, activatedFromHistory\)/);
-  assert.match(indexSource, /function renderSearchMetaFilters[\s\S]*?for \(const kind of \[[\s\S]*?syncSearchKindFilter\(kind\)/);
+  assert.match(indexSource, /function renderSearchMetaFilters[\s\S]*?for \(const kind of \[[\s\S]*?syncSearchKindFilter\(kind, true, countsPending\)/);
 });
 
 test('single-facet result kinds use the same parent state calculation', () => {
@@ -452,8 +455,7 @@ test('single-facet result kinds use the same parent state calculation', () => {
   const end = indexSource.indexOf('\nfunction searchKindForFacet(', start);
   const functionSource = indexSource.slice(start, end);
 
-  assert.match(functionSource, /let facetSelections = facetKeys\.map/);
-  assert.match(functionSource, /if \(useVisibilityFallback\)[\s\S]{0,180}Object\.values\(searchMetaVisibility\[key\] \|\| \{\}\)/);
+  assert.match(functionSource, /const facetSelections = facetKeys\.map/);
   assert.match(functionSource, /parent\.checked = everyFacetHasSelection/);
   assert.match(functionSource, /parent\.indeterminate = everyFacetHasSelection && !allChildrenSelected/);
   assert.doesNotMatch(functionSource, /facetKeys\.length > 1/);
@@ -543,7 +545,7 @@ test('search filter tree folds facets and persists disclosure state', () => {
   assert.match(indexSource, /function parentFilterCheckboxHtml[\s\S]*M2\.75 6\.5h7\.5M6\.5 2\.75v7\.5/);
   assert.match(indexSource, /defaultSearchFilterTreeExpanded = \[[\s\S]*'kind:videos'[\s\S]*'kind:playlists'[\s\S]*'kind:channels'/);
   assert.match(indexSource, /data-search-tree-toggle="\$\{escapeHtml\(nodeId\)\}"/);
-  assert.match(indexSource, /class="search-meta-facet-children"[\s\S]*\$\{expanded \? '' : 'hidden'\}[\s\S]*class="search-tree-toggle-spacer"[\s\S]*class="search-meta-controls"/);
+  assert.match(indexSource, /class="search-meta-facet-children"[\s\S]*\$\{expanded && countsReady \? '' : 'hidden'\}[\s\S]*class="search-tree-toggle-spacer"[\s\S]*class="search-meta-controls"/);
   assert.match(indexSource, /\/api\/settings\/search-filter-tree/);
 });
 
