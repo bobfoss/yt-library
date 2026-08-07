@@ -927,8 +927,10 @@ events are:
   work.
 - `library_update`: emitted for manual and scheduled Update planning.
 - `video_scan`: emitted when Admin resolves an individual video ID or direct
-  video URL through the common add-target control. Channel and playlist targets
-  do not emit it.
+  video URL through the common add-target control, and after a metadata worker
+  successfully saves video metadata. Channel targets and failed or unavailable
+  video fetches do not emit it. The notification is intentionally idempotent;
+  the Admin path can emit before the corresponding metadata worker emits again.
 - `clip_scan`: emitted after a clip metadata worker has resolved and saved the
   clip's source video. It includes `clip_id` and `source_video_id`, each as a
   one-item list. A plugin should resolve canonical clip bounds through

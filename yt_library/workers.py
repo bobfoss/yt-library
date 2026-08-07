@@ -373,6 +373,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
         queue_id: int = 0,
         proxy_url: str = "",
         timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
+        plugin_manager: PluginManager | None = None,
     ) -> dict[str, Any]:
         return self._start_background(
             self._run,
@@ -388,6 +389,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                 record_summary,
                 queue_id,
                 timezone_name,
+                plugin_manager,
                 proxy_url,
             ),
             started_message="Worker started",
@@ -414,6 +416,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
         record_summary: bool,
         target_queue_id: int = 0,
         timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
+        plugin_manager: PluginManager | None = None,
         proxy_url: str = "",
     ) -> None:
         conn = connect(db_path)
@@ -604,6 +607,12 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                         store_channel_metadata(conn, metadata, status, error, updated_at=now)
                     else:
                         store_video_metadata(conn, metadata, status, error, updated_at=now)
+                        if plugin_manager is not None and status == "ok":
+                            plugin_manager.enqueue_hook(
+                                conn,
+                                "video_scan",
+                                {"video_id": [video_id]},
+                            )
                         log_history_date_conflicts(
                             conn,
                             run_id,
@@ -3115,6 +3124,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         queue_id=queue_id,
                         proxy_url=proxy_url,
                         timezone_name=timezone_name,
+                        plugin_manager=plugin_manager,
                     )
                     if result.get("started"):
                         with self._lock:

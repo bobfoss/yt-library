@@ -1019,6 +1019,7 @@ class WorkerQueueTests(unittest.TestCase):
                 conn.close()
 
             worker = MetadataWorker()
+            plugin_manager = Mock()
             with (
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
                 patch(
@@ -1037,9 +1038,11 @@ class WorkerQueueTests(unittest.TestCase):
                     force=False,
                     stale_days=30,
                     record_summary=False,
+                    plugin_manager=plugin_manager,
                 )
 
             recover.assert_not_called()
+            plugin_manager.enqueue_hook.assert_not_called()
             conn = core.connect(db_path)
             try:
                 self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 0)
@@ -1059,6 +1062,71 @@ class WorkerQueueTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
+
+    def test_successful_video_metadata_notifies_plugin_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="abcdefghijk",
+                        current_title="New video",
+                        metadata_source="history",
+                        priority=0,
+                    )
+            finally:
+                conn.close()
+
+            metadata = {
+                "video_id": "abcdefghijk",
+                "title": "New video",
+                "description": "",
+                "channel_id": "",
+                "channel": "",
+                "channel_url": "",
+                "duration_text": "1:00",
+                "view_count": "",
+                "upload_date": "",
+                "thumbnail_url": "",
+                "thumbnail_path": "",
+                "channel_thumbnail_url": "",
+                "channel_thumbnail_path": "",
+                "reaction": "",
+                "watch_progress_percent": "0",
+                "watch_resume_seconds": "0",
+                "yt_status": "OK",
+            }
+            plugin_manager = Mock()
+            plugin_manager.enqueue_hook.return_value = []
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.fetch_watch_metadata", return_value=metadata),
+                patch(
+                    "yt_library.workers.fetch_new_channel_metadata_if_needed",
+                    return_value=({}, "", ""),
+                ),
+            ):
+                MetadataWorker()._run(
+                    "test-video-plugin-notification",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=30,
+                    record_summary=False,
+                    plugin_manager=plugin_manager,
+                )
+
+            plugin_manager.enqueue_hook.assert_called_once()
+            hook_args = plugin_manager.enqueue_hook.call_args.args
+            self.assertEqual(
+                hook_args[1:],
+                ("video_scan", {"video_id": ["abcdefghijk"]}),
+            )
 
     def test_metadata_worker_stops_when_cookie_authentication_expires(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3207,6 +3275,7 @@ class WorkerQueueTests(unittest.TestCase):
                 conn.close()
 
             worker = MetadataWorker()
+            plugin_manager = Mock()
             with (
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
                 patch(
@@ -3224,8 +3293,10 @@ class WorkerQueueTests(unittest.TestCase):
                     force=False,
                     stale_days=30,
                     record_summary=False,
+                    plugin_manager=plugin_manager,
                 )
 
+            plugin_manager.enqueue_hook.assert_not_called()
             conn = core.connect(db_path)
             try:
                 self.assertEqual(core.worker_queue_count(conn), 0)
@@ -3386,6 +3457,7 @@ class WorkerQueueTests(unittest.TestCase):
                 "channel_notification_level": "all",
             }
             worker = MetadataWorker()
+            plugin_manager = Mock()
             with (
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
                 patch("yt_library.workers.fetch_channel_metadata", return_value=channel_metadata),
@@ -3400,8 +3472,10 @@ class WorkerQueueTests(unittest.TestCase):
                     force=False,
                     stale_days=30,
                     record_summary=False,
+                    plugin_manager=plugin_manager,
                 )
 
+            plugin_manager.enqueue_hook.assert_not_called()
             conn = core.connect(db_path)
             try:
                 log = conn.execute(
