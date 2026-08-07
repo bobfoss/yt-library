@@ -536,7 +536,8 @@ const searchFilters = document.getElementById('search-filters');
 const searchInFields = document.getElementById('search-in-fields');
 const refresh = document.getElementById('refresh');
 const groupsEl = document.getElementById('groups');
-const searchForFilters = document.getElementById('search-for-filters');
+const searchFilterTree = document.getElementById('search-for-filters');
+const searchFilterRegion = groupsEl.parentElement;
 const searchFields = [...document.querySelectorAll('.search-field')];
 
 function loadRetainedSearchUrl() {
@@ -1590,7 +1591,7 @@ function metaFilterGroupExcludedKeys(groupName) {
 function setMetaFilterGroup(groupName, checked) {
   const group = metaFilterGroupVisibility(groupName);
   if (!group) return false;
-  const root = groupName.startsWith('search-') ? searchForFilters : meta;
+  const root = groupName.startsWith('search-') ? searchFilterRegion : meta;
   const excludedKeys = metaFilterGroupExcludedKeys(groupName);
   for (const key of Object.keys(group)) {
     if (!excludedKeys.has(key)) group[key] = checked;
@@ -1604,7 +1605,7 @@ function setMetaFilterGroup(groupName, checked) {
 function allMetaFilterChildrenChecked(groupName) {
   const group = metaFilterGroupVisibility(groupName);
   if (!group) return false;
-  const root = groupName.startsWith('search-') ? searchForFilters : meta;
+  const root = groupName.startsWith('search-') ? searchFilterRegion : meta;
   const visibleChildren = [
     ...root.querySelectorAll(`[data-meta-child-filter="${groupName}"]`),
   ];
@@ -1615,7 +1616,7 @@ function allMetaFilterChildrenChecked(groupName) {
 }
 
 function syncMetaFilterGroup(groupName, assumeAllChecked = false) {
-  const root = groupName.startsWith('search-') ? searchForFilters : meta;
+  const root = groupName.startsWith('search-') ? searchFilterRegion : meta;
   const parent = root.querySelector(`[data-meta-all-filter="${groupName}"]`);
   if (assumeAllChecked && parent instanceof HTMLInputElement) {
     parent.checked = true;
@@ -1664,7 +1665,7 @@ function setSearchKindFilter(kind, checked) {
     for (const key of Object.keys(searchMetaVisibility[facetKey])) {
       searchMetaVisibility[facetKey][key] = checked;
     }
-    for (const input of searchForFilters.querySelectorAll(`[data-search-meta-filter^="${facetKey}:"]`)) {
+    for (const input of searchFilterRegion.querySelectorAll(`[data-search-meta-filter^="${facetKey}:"]`)) {
       input.checked = checked;
     }
     syncMetaFilterGroup(`search-${facetKey}`);
@@ -1675,7 +1676,7 @@ function setSearchKindFilter(kind, checked) {
         browserVideoFacetState(videoFilter),
         { present: checked, absent: checked },
       );
-      for (const input of searchForFilters.querySelectorAll(
+      for (const input of searchFilterRegion.querySelectorAll(
         `[data-meta-child-filter="search-plugin-${videoFilter.id}"]`
       )) {
         input.checked = checked;
@@ -1687,13 +1688,13 @@ function setSearchKindFilter(kind, checked) {
 }
 
 function syncSearchKindFilter(kind, applyDisabledStyles = true, assumeAllChecked = false) {
-  const parent = searchForFilters.querySelector(`[data-search-kind-filter="${kind}"]`);
+  const parent = searchFilterRegion.querySelector(`[data-search-kind-filter="${kind}"]`);
   if (!(parent instanceof HTMLInputElement)) return;
   if (assumeAllChecked) {
     parent.checked = true;
     parent.indeterminate = false;
     if (applyDisabledStyles) {
-      for (const row of searchForFilters.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
+      for (const row of searchFilterRegion.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
         row.classList.remove('dimmed');
       }
       parent.closest('.search-meta-kind')?.classList.remove('kind-disabled');
@@ -1711,13 +1712,13 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true, assumeAllChecked
   const facetKeys = searchKindFacetKeys(kind);
   if (!facetKeys.length) return;
   const facetSelections = facetKeys.map(key => (
-    [...searchForFilters.querySelectorAll(`[data-meta-child-filter="search-${key}"]`)]
+    [...searchFilterRegion.querySelectorAll(`[data-meta-child-filter="search-${key}"]`)]
       .map(input => input.checked)
   )).filter(values => values.length);
   if (kind === 'videos') {
     facetSelections.push(
       ...browserVideoFilterPlugins().map(plugin => (
-        [...searchForFilters.querySelectorAll(
+        [...searchFilterRegion.querySelectorAll(
           `[data-meta-child-filter="search-plugin-${plugin.id}"]`
         )].map(input => input.checked)
       )).filter(values => values.length),
@@ -1729,7 +1730,7 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true, assumeAllChecked
   parent.checked = everyFacetHasSelection;
   parent.indeterminate = everyFacetHasSelection && !allChildrenSelected;
   if (applyDisabledStyles) {
-    for (const row of searchForFilters.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
+    for (const row of searchFilterRegion.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
       row.classList.toggle('dimmed', !everyFacetHasSelection);
     }
     parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !everyFacetHasSelection);
@@ -1769,7 +1770,7 @@ function restoreEmptySearchKindFacets(facetKey) {
     if (Object.values(searchMetaVisibility[siblingKey]).some(Boolean)) continue;
     const defaults = defaultSearchMetaVisibility[siblingKey];
     Object.assign(searchMetaVisibility[siblingKey], defaults);
-    for (const input of searchForFilters.querySelectorAll(`[data-search-meta-filter^="${siblingKey}:"]`)) {
+    for (const input of searchFilterRegion.querySelectorAll(`[data-search-meta-filter^="${siblingKey}:"]`)) {
       const filterName = input.dataset.searchMetaFilter.split(':')[1];
       input.checked = Boolean(defaults[filterName]);
     }
@@ -1780,7 +1781,7 @@ function restoreEmptySearchKindFacets(facetKey) {
     const state = browserVideoFacetState(plugin);
     if (Object.values(state).some(Boolean)) continue;
     Object.assign(state, { present: true, absent: true });
-    for (const input of searchForFilters.querySelectorAll(
+    for (const input of searchFilterRegion.querySelectorAll(
       `[data-search-plugin-facet-filter^="${plugin.id}:"]`
     )) {
       const filterName = input.dataset.searchPluginFacetFilter.split(':')[1];
@@ -2190,7 +2191,7 @@ function progressMessageAnimation(container, labelText) {
 
 function updateSearchMetaProgress(dotsText = searchMetaProgressDots) {
   searchMetaProgressDots = dotsText;
-  for (const dots of searchForFilters.querySelectorAll('[data-search-meta-progress]')) {
+  for (const dots of searchFilterRegion.querySelectorAll('[data-search-meta-progress]')) {
     const active = pendingSearchMetaGroups.has(dots.dataset.searchMetaProgress);
     dots.classList.toggle('active', active);
     dots.textContent = active ? dotsText : '';
@@ -3289,12 +3290,12 @@ function renderSearchMetaFilters({
     [...template.content.querySelectorAll('[data-search-filter-section]')]
       .map(section => [section.dataset.searchFilterSection, section]),
   );
-  for (const slot of searchForFilters.querySelectorAll('[data-search-filter-slot]')) {
+  for (const slot of searchFilterRegion.querySelectorAll('[data-search-filter-slot]')) {
     const kind = slot.dataset.searchFilterSlot || '';
     const section = sections.get(kind);
     slot.replaceChildren(...(section ? [...section.childNodes] : []));
     const count = section?.dataset.searchFilterCount;
-    const kindCount = searchForFilters.querySelector(`[data-search-kind-count="${kind}"]`);
+    const kindCount = searchFilterRegion.querySelector(`[data-search-kind-count="${kind}"]`);
     if (kindCount) kindCount.textContent = searchKindEnabled(kind) ? (count || '') : '';
   }
   for (const key of ['videos', 'reactions', 'completion', 'membership', 'uploaderCategory', 'clipOwnership', 'playlistAvailability', 'playlistOwnership', 'channelSubscription', 'channelStatus']) {
@@ -3316,7 +3317,7 @@ function renderSearchMetaFilters({
 }
 
 function applySearchFilterTreeNodeState(nodeId) {
-  const button = [...searchForFilters.querySelectorAll('[data-search-tree-toggle]')]
+  const button = [...searchFilterRegion.querySelectorAll('[data-search-tree-toggle]')]
     .find(candidate => candidate.dataset.searchTreeToggle === nodeId);
   if (!(button instanceof HTMLButtonElement)) return;
   const expanded = searchFilterTreeExpanded.has(nodeId);
@@ -3341,7 +3342,7 @@ function syncSearchFiltersForSelection() {
   const historySelected = selected === '__history__';
   const alreadyHidden = searchFilters.hidden;
   searchFilters.hidden = historySelected;
-  searchForFilters.hidden = historySelected;
+  searchFilterTree.hidden = historySelected;
   const placeholders = {
     videos: 'Search videos',
     clips: 'Search clips',
@@ -4180,6 +4181,10 @@ function searchFilterSlot(kind, className = 'search-filter-slot') {
   return slot;
 }
 
+function searchFilterMount(kind, navigationSection) {
+  return searchContextKind() === kind ? navigationSection : searchFilterTree;
+}
+
 function appendSearchFilterCategory(container, kind, label, count) {
   const contextKind = searchContextKind();
   const filtersVisible = selected !== '__history__' && (!contextKind || contextKind === kind);
@@ -4282,29 +4287,39 @@ function syncSidebarSelection() {
 
 function renderGroups() {
   if (!data) return;
-  searchForFilters.replaceChildren();
+  searchFilterTree.replaceChildren();
   groupsEl.replaceChildren();
   navigationGroupTreeDomId = 0;
   const counts = data.counts || {};
   const historyCount = historyNav?.querySelector('.count');
   if (historyCount) historyCount.textContent = counts.history || 0;
 
-  appendSearchFilterCategory(searchForFilters, 'videos', 'Videos', counts.videos || 0);
-  if (searchContextKind() === 'clips' || Number(counts.clips || 0) > 0) {
-    appendSearchFilterCategory(searchForFilters, 'clips', 'Clips', counts.clips || 0);
-  }
-  appendSearchFilterCategory(searchForFilters, 'playlists', 'Playlists', counts.playlists || 0);
-  appendSearchFilterCategory(searchForFilters, 'channels', 'Channels', counts.channels || 0);
-  appendPluginSearchFilters(searchForFilters);
-
   const videoSection = sectionFor('Videos');
   videoSection.appendChild(presetLink('videos', 'Videos', counts.videos || 0));
+  appendSearchFilterCategory(
+    searchFilterMount('videos', videoSection),
+    'videos',
+    'Videos',
+    counts.videos || 0,
+  );
   if (Number(counts.clips || 0) > 0) {
     videoSection.appendChild(presetLink('clips', 'Clips', counts.clips));
+    appendSearchFilterCategory(
+      searchFilterMount('clips', videoSection),
+      'clips',
+      'Clips',
+      counts.clips,
+    );
   }
 
   const playlistSection = sectionFor('Playlists');
   playlistSection.appendChild(presetLink('playlists', 'Playlists', counts.playlists || 0));
+  appendSearchFilterCategory(
+    searchFilterMount('playlists', playlistSection),
+    'playlists',
+    'Playlists',
+    counts.playlists || 0,
+  );
   appendNavigationGroupTrees(
     playlistSection,
     playlistChildren.get('') || [],
@@ -4315,6 +4330,12 @@ function renderGroups() {
 
   const channelSection = sectionFor('Channels');
   channelSection.appendChild(presetLink('channels', 'Channels', counts.channels || 0));
+  appendSearchFilterCategory(
+    searchFilterMount('channels', channelSection),
+    'channels',
+    'Channels',
+    counts.channels || 0,
+  );
   appendNavigationGroupTrees(
     channelSection,
     channelChildren.get('') || [],
@@ -4322,6 +4343,7 @@ function renderGroups() {
     channelMemberships,
     channelChildren,
   );
+  appendPluginSearchFilters(searchFilterTree);
   renderSearchMetaFilters(renderedSearchFilterPayload);
   syncSidebarSelection();
 }
@@ -5464,7 +5486,7 @@ function handleMetaChange(event) {
       previousMinimum,
     );
     searchMetaVisibility.completion.partial = true;
-    const partialInput = searchForFilters.querySelector(
+    const partialInput = searchFilterRegion.querySelector(
       '[data-search-meta-filter="completion:partial"]'
     );
     if (partialInput instanceof HTMLInputElement) partialInput.checked = true;
@@ -5565,8 +5587,8 @@ function handleMetaChange(event) {
   }
 }
 meta.addEventListener('change', handleMetaChange);
-searchForFilters.addEventListener('change', handleMetaChange);
-searchForFilters.addEventListener('click', event => {
+searchFilterRegion.addEventListener('change', handleMetaChange);
+searchFilterRegion.addEventListener('click', event => {
   if (!(event.target instanceof Element)) return;
   const button = event.target.closest('[data-search-tree-toggle]');
   if (!(button instanceof HTMLButtonElement)) return;
@@ -5585,7 +5607,7 @@ function scheduleCompletionMinimumInput(event) {
     handleMetaChange({ target });
   }, 250);
 }
-searchForFilters.addEventListener('input', scheduleCompletionMinimumInput);
+searchFilterRegion.addEventListener('input', scheduleCompletionMinimumInput);
 function applyCardLayoutPreference(context, layout) {
   if (!Object.prototype.hasOwnProperty.call(cardLayoutPreferences, context)) return;
   cardLayoutPreferences[context] = layout;
