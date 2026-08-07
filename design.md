@@ -37,7 +37,7 @@ Primary surfaces:
 
 Before 1.0, replaced hash routes and obsolete named-view URLs have no compatibility aliases. After 1.0, URL changes should preserve or deliberately migrate public links.
 
-Omni-search uses `/api/search` as its single read model. The server applies title/description and source filters, folds playlist and history evidence into one canonical video result, includes unresolved unavailable memberships, globally sorts and counts videos/channels/playlists, and only then returns the requested page. The browser does not merge a separate history result set.
+Omni-search uses `/api/search` as its single read model. The server applies title/description and source filters, folds playlist and history evidence into one canonical video result, includes unresolved unavailable memberships, globally sorts and counts videos, clips, playlists, and channels, and only then returns the requested page. The browser does not merge a separate history result set.
 
 The main browser is also view-driven. `/api/bootstrap` returns only navigation structure and aggregate counts; playlist, video, channel, and detail endpoints fetch the current view's rows from SQLite with server-side filtering, sorting, and pagination. The browser caches completed request keys for navigation within the session and preserves the currently rendered view while a new page is loading. It does not download a whole-library metadata snapshot during startup.
 
@@ -45,15 +45,57 @@ The main browser is also view-driven. `/api/bootstrap` returns only navigation s
 
 The browser path is the authoritative search context. `/search` can enable or disable any result category. A scoped path always searches only its category, even if query parameters are copied or edited. Default and path-implied values should be omitted from generated URLs.
 
-The left sidebar has three distinct responsibilities:
+The left sidebar separates search controls from navigation:
 
-- **Search in** selects searchable fields such as titles, descriptions, and plugin-provided text fields.
-- Category sections own their facet trees. Video availability, reactions, completion, playlist membership, uploader category, and plugin video facets live under Videos; clip ownership lives under Clips; playlist availability and ownership live under Playlists; and channel subscription and status live under Channels. There is no separate **Search for** block.
-- Category and group names are real links. Plain clicks use in-app navigation, while browser link affordances such as status-bar targets and open-in-new-tab remain available.
+- **Search in** selects searchable fields such as titles, descriptions, and
+  plugin-provided text fields.
+- `/search` renders one uninterrupted facet tree above navigation. Videos,
+  Clips, Playlists, Channels, and plugin result kinds are parent selectors in
+  this tree, not navigation links. Their native child facets are video
+  availability, reactions, completion, playlist membership, uploader category,
+  and plugin video facets; Clip ownership; playlist availability and ownership;
+  and channel subscription and status. The tree does not insert navigation
+  section headings or dividers between result kinds.
+- Navigation follows the complete broad-search facet tree and is grouped under
+  Videos, Playlists, and Channels. Category and group names are real links.
+  Plain clicks use in-app navigation, while browser affordances such as
+  status-bar targets and open-in-new-tab remain available.
 
-On `/search`, each category row is both the category link and the parent selector for its facets. On a scoped category page, the path supplies that parent selection, so the redundant category checkbox is omitted and only the applicable facets are shown. Playlist detail uses the same scoped video facets with the placeholder **Search this playlist**. History hides the facet trees and leaves the search box available; entering a query returns to `/search`. Detail navigation retains the last omni-search URL in session state so returning to Search restores the prior query, counts, filters, sort, and page.
+On a scoped category page, the path supplies the result kind. The sidebar omits
+the redundant kind parent and mounts only that kind's facet groups immediately
+below its active category link. The search placeholder names the scope, such as
+**Search videos**, **Search clips**, **Search playlists**, or **Search
+channels**. Playlist detail is a scoped video search: it reuses the same video
+facets beneath Videos, removes inapplicable playlist-membership filtering, and
+uses **Search this playlist**. This shared mount keeps broad and scoped filters
+on one rendering, event, and query path.
 
-Named sidebar shortcuts such as Liked, Playlisted, Subscribed, and Terminated are represented by category facets rather than separate view implementations. Playlist and channel group trees remain real scoped navigation because they carry user-defined membership context.
+History hides **Search in** and all facets while retaining the search box and
+the full category navigation. Entering a query returns to `/search`. Detail
+navigation retains the last omni-search URL in session state so returning to
+Search restores the prior query, counts, filters, sort, and page.
+
+The old named shortcuts such as Liked, Playlisted, Subscribed, and Terminated
+are not separate views or navigation entries. Their behavior is expressed by
+the applicable category facets. Playlist and channel group trees remain real
+scoped navigation because they carry user-defined membership context.
+
+Facet trees use disclosure chevrons and parent/child checkboxes. Their expanded
+state is saved in `yt_library.config.json`. Before server counts arrive, render
+only checked kind and facet parents; do not synthesize leaf rows or reserve
+empty child space. Populate leaves from the response, and when **Hide empty
+filters** is enabled omit zero-count leaves from omni-search and playlist
+filters. Facet counts describe the current search universe and remain stable
+while a leaf is toggled. Filter changes preserve the current results and
+controls while loading, then apply disabled/dimmed parent state only after the
+replacement response arrives.
+
+Grid, compact, and detailed card selectors are available on supported list
+views, with layout saved separately for Search, playlist detail, History,
+channel playlists, and channel History. Defaults are grid for Search, playlist
+detail, and channel playlists; compact for History; and detailed for channel
+History. Sort choices and page size are also saved as user preferences rather
+than encoded as permanent layout state in every URL.
 
 Global History and channel-scoped History use the same browser workflow for
 page and activity loading, occurrence-card rendering, pagination, adjacent-page
@@ -541,8 +583,9 @@ api.register({
 ```
 
 `searchField` adds a checkbox under **Search in**. Its key follows the plugin ID
-syntax and must be unique. `videoFacet` adds a facet under the Videos section,
-with independently selectable present and absent values. Both
+syntax and must be unique. `videoFacet` adds a facet under the Videos filter
+root on broad Search and beneath the Videos link in video-scoped contexts, with
+independently selectable present and absent values. Both
 are enabled on a fresh search by default, so simply installing a plugin does
 not narrow the core video set. Optional
 `presentDisabledPreferenceKey`/`absentDisabledPreferenceKey` values may make
@@ -1046,7 +1089,7 @@ The same card also included `watchEndpoint.startTimeSeconds = 7`, but that does 
 
 Watch progress is account-specific, volatile state. It should be captured as enrichment, not treated as equivalent to history evidence.
 
-Current video progress is stored on `videos`; progress observed on a particular live-history card remains on that `history_events` occurrence:
+Progress belongs to the `history_events` occurrence where it was observed:
 
 - `watch_progress_percent`
 - `watch_resume_seconds`
@@ -1057,7 +1100,12 @@ Known extraction shapes:
    - New lockup renderer: `thumbnailOverlayProgressBarViewModel.startPercent`
    - Resume candidates: `watchEndpoint.startTimeSeconds`
 
-The watch page may not expose the thumbnail progress overlay for the current video. Metadata refresh leaves progress unknown in that case rather than searching YouTube; playlist and history cards remain the account-specific progress sources and render progress as a thin red thumbnail bar plus a `Watched N%` line.
+Canonical video and playlist cards derive their displayed completion from the
+greatest observed history occurrence rather than storing a second progress
+value on `videos`. A manual metadata refresh does not assign completion because
+it cannot identify the corresponding watch occurrence. History cards retain
+their per-occurrence value. Cards render known progress as a thin red thumbnail
+bar plus a `Watched N%` line.
 
 Open question: `startTimeSeconds` may be useful, but it did not match the observed progress percentage in the first test case. Continue treating percentage as the authoritative UI signal until more examples clarify the resume semantics.
 
