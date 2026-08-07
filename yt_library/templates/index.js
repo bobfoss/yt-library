@@ -1,6 +1,7 @@
 const VideoCard = window.YTLibraryVideoCard;
 const CollectionCard = window.YTLibraryCollectionCard;
 const EntityCardExtensions = window.YTLibraryEntityCardExtensions;
+const SearchResultPresentations = window.YTLibrarySearchResultPresentations;
 const HistoryWorkflow = window.YTLibraryHistoryWorkflow;
 const badgeRowsHtml = VideoCard.badgeRowsHtml;
 const compactWatchCountHtml = VideoCard.compactWatchCountHtml;
@@ -169,6 +170,9 @@ function registerBrowserPlugin(plugin) {
   if (browserPlugins.has(pluginId)) throw new Error(`Plugin is already registered: ${pluginId}`);
   const searchFieldRegistration = validateBrowserPluginSearchField(plugin);
   if (plugin.entityCards) EntityCardExtensions.validateDefinition(plugin.entityCards);
+  if (plugin.search?.resultPresentation) {
+    SearchResultPresentations.validateDefinition(plugin.search.resultPresentation);
+  }
   if (plugin.search) {
     registerBrowserPluginSearchField(plugin, searchFieldRegistration);
     const videoFacet = browserVideoFacetDefinition(plugin);
@@ -196,8 +200,8 @@ function registerBrowserPlugin(plugin) {
 }
 
 window.YTLibraryBrowserPlugins = Object.freeze({
-  apiVersion: 1,
-  features: Object.freeze({ entityCards: 1 }),
+  apiVersion: 2,
+  features: Object.freeze({ entityCards: 1, searchResultPresentations: 1 }),
   register: registerBrowserPlugin,
 });
 
@@ -3838,35 +3842,14 @@ function browserPluginHost(pluginId) {
   };
 }
 
-function entityCardEntry(kind, item, card, legacyResult = null) {
+function entityCardEntry(kind, item, card) {
   return {
     card,
     entity: EntityCardExtensions.descriptor(kind, item),
-    legacyResult,
   };
 }
 
-function decorateLegacySearchCard(entry) {
-  const result = entry.legacyResult;
-  if (!result || !['video', 'clip'].includes(result.kind)) return;
-  for (const plugin of browserSearchPlugins().filter(item => (
-    searchKindEnabled(item.id)
-    || (result.kind === 'clip' && result.pluginFacets?.[item.id])
-  ))) {
-    if (typeof plugin.search.decorateCoreResultCard !== 'function') continue;
-    try {
-      plugin.search.decorateCoreResultCard(
-        entry.card,
-        result,
-        browserPluginHost(plugin.id),
-      );
-    } catch (error) {
-      console.error(`Plugin card decoration failed: ${plugin.id}`, error);
-    }
-  }
-}
-
-function decorateEntityCardBatch(entries, view, layout, generation, options = {}) {
+function decorateEntityCardBatch(entries, view, layout, generation) {
   return EntityCardExtensions.decorateBatch({
     entries,
     plugins: [...browserPlugins.values()],
@@ -3874,7 +3857,6 @@ function decorateEntityCardBatch(entries, view, layout, generation, options = {}
     supports: browserPluginSupports,
     hostFor: browserPluginHost,
     isCurrent: () => generation === renderGeneration,
-    decorateEntry: options.legacySearch ? decorateLegacySearchCard : null,
   });
 }
 
@@ -3929,26 +3911,34 @@ async function fetchBrowserPluginSearches(query, limit, offset) {
   };
 }
 
-async function decorateCoreSearchResults(results, errors, query) {
-  for (const plugin of browserSearchPlugins().filter(item => (
-    searchKindEnabled(item.id)
-    || results.some(result => result.kind === 'clip' && result.pluginFacets?.[item.id])
-  ))) {
-    if (typeof plugin.search.decorateCoreResults !== 'function') continue;
-    try {
-      await plugin.search.decorateCoreResults(
-        results,
-        browserPluginHost(plugin.id),
-        { query },
-      );
-    } catch (error) {
-      errors.push({
-        id: plugin.id,
-        label: plugin.search.label || plugin.id,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
+async function prepareBrowserSearchResultPresentations(results, errors, query, generation) {
+  const prepared = await SearchResultPresentations.prepareBatch({
+    results,
+    plugins: browserSearchPlugins(),
+    context: Object.freeze({ query }),
+    hostFor: browserPluginHost,
+    applies: (plugin, result) => (
+      searchKindEnabled(plugin.id)
+      || (result.kind === 'clip' && result.pluginFacets?.[plugin.id])
+    ),
+    isCurrent: () => generation === renderGeneration,
+  });
+  const seenFailures = new Set();
+  for (const failure of prepared.failures) {
+    const plugin = browserSearchPlugin(failure.pluginId);
+    const message = failure.error instanceof Error
+      ? failure.error.message
+      : String(failure.error);
+    const key = `${failure.pluginId}:${message}`;
+    if (seenFailures.has(key)) continue;
+    seenFailures.add(key);
+    errors.push({
+      id: failure.pluginId,
+      label: plugin?.search?.label || failure.pluginId,
+      message,
+    });
   }
+  return prepared.presentations;
 }
 
 async function fetchOmniSearch(query, page = currentPage) {
@@ -4073,7 +4063,6 @@ async function fetchOmniSearch(query, page = currentPage) {
     const coreRows = pluginPayload.remaining
       ? (corePayload.results || []).slice(0, pluginPayload.remaining)
       : [];
-    await decorateCoreSearchResults(coreRows, pluginPayload.errors, query);
     const payload = {
       ...corePayload,
       query,
@@ -4725,7 +4714,10 @@ function videoDetailCardFor(video) {
           ${watchUrl ? `<a class="external-link" href="${escapeHtml(watchUrl)}" target="_blank" rel="noreferrer" title="Open on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>` : ''}
           <span class="entity-card-slot entity-card-actions" data-entity-card-slot="actions"></span>
         </div>
-        ${videoAvailabilityHtml(video)}
+        <div class="video-availability-row">
+          ${videoAvailabilityHtml(video)}
+          <span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>
+        </div>
         ${badgeRowsHtml([
           { label: video.virtual_video ? 'Not in library' : '' },
           { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
@@ -4785,6 +4777,7 @@ function channelDetailCardFor(channel) {
           ${status ? `<span class="badge">${escapeHtml(status)}</span>` : ''}
           ${channel.channel_id ? `<span>${escapeHtml(channel.channel_id)}</span>` : ''}
           ${channel.archivarix_channel_id ? `<span>Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
+          <span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>
         </div>
         ${channelDatesHtml(channel)}
         ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
@@ -4911,18 +4904,15 @@ async function render() {
       item: clip,
       pluginFacets: clip.pluginFacets || {},
     };
-    await decorateCoreSearchResults([result], [], clipId);
-    if (generation !== renderGeneration) return;
     setDocumentTitle(clip.title || clipId);
     hidePager();
     grid.className = 'grid search-grid layout-detailed';
     const card = searchResultCardFor(result);
     const decoration = decorateEntityCardBatch(
-      [entityCardEntry('clip', clip, card, result)],
+      [entityCardEntry('clip', clip, card)],
       'clip-detail',
       'detailed',
       generation,
-      { legacySearch: true },
     );
     grid.replaceChildren(card, ...pluginPanels);
     await decoration;
@@ -5097,10 +5087,18 @@ async function render() {
       return;
     }
     if (generation !== renderGeneration) return;
+    const rows = payload.results || [];
+    const pluginErrors = [...(payload.pluginErrors || [])];
+    const resultPresentations = await prepareBrowserSearchResultPresentations(
+      rows,
+      pluginErrors,
+      query,
+      generation,
+    );
+    if (generation !== renderGeneration) return;
     stopSearchMetaProgress();
     stopSearchHeaderProgress();
     stopSearchProgress();
-    const rows = payload.results || [];
     const total = Number(payload.total || 0);
     const remoteLimit = Number(payload.limit || pageSizeNumber() || 100);
     currentPage = Math.floor(Number(payload.offset || 0) / remoteLimit) + 1;
@@ -5112,7 +5110,7 @@ async function render() {
       showLayout: true,
       sortHtml: searchResultsSortHtml(),
     });
-    for (const pluginError of payload.pluginErrors || []) {
+    for (const pluginError of pluginErrors) {
       const warning = document.createElement('div');
       warning.className = 'status plugin-search-warning';
       warning.textContent = `${pluginError.label} unavailable: ${pluginError.message}`;
@@ -5125,18 +5123,18 @@ async function render() {
     const cards = rows.map(result => searchResultCardFor(result, {
       query,
       searchFields: payload.searchFields,
+      presentation: resultPresentations.get(result),
     }));
     const entries = rows.flatMap((result, index) => (
       result.kind === 'plugin'
         ? []
-        : [entityCardEntry(result.kind, result.item, cards[index], result)]
+        : [entityCardEntry(result.kind, result.item, cards[index])]
     ));
     const decoration = decorateEntityCardBatch(
       entries,
       'search',
       cardLayoutFor('search'),
       generation,
-      { legacySearch: true },
     );
     grid.replaceChildren(...cards);
     await decoration;
@@ -5614,11 +5612,11 @@ function searchResultCardFor(result, options = {}) {
     );
     if (card instanceof HTMLElement) return card;
   }
-  if (result.kind === 'playlist') {
-    return cardFor(result.item, { resultKind: 'Playlist' });
-  }
   let card;
-  if (result.kind === 'clip') {
+  if (result.kind === 'playlist') {
+    card = cardFor(result.item, { resultKind: 'Playlist' });
+  }
+  if (!card && result.kind === 'clip') {
     const clip = result.item;
     const query = String(options.query || '');
     const searchFields = new Set(options.searchFields || []);
@@ -5628,8 +5626,8 @@ function searchResultCardFor(result, options = {}) {
         : undefined,
     });
   }
-  if (result.kind === 'channel') {
-    return channelCardFor(result.item, { resultKind: 'Channel' });
+  if (!card && result.kind === 'channel') {
+    card = channelCardFor(result.item, { resultKind: 'Channel' });
   }
   if (!card) {
     const video = result.item;
@@ -5646,7 +5644,7 @@ function searchResultCardFor(result, options = {}) {
         : undefined,
     });
   }
-  return card;
+  return SearchResultPresentations.apply(card, options.presentation);
 }
 
 function channelCardFor(channel, options = {}) {

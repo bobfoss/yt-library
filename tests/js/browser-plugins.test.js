@@ -13,6 +13,10 @@ const extensionSource = fs.readFileSync(
   path.join(templateDirectory, 'entity-card-extensions.js'),
   'utf8',
 );
+const searchPresentationSource = fs.readFileSync(
+  path.join(templateDirectory, 'search-result-presentations.js'),
+  'utf8',
+);
 
 class FakeElement {
   constructor(tagName = 'div') {
@@ -42,8 +46,14 @@ class FakeElement {
   }
 
   querySelector(selector) {
-    const match = /^\[data-entity-card-slot="([^"]+)"\]$/.exec(selector);
-    if (match && this.dataset.entityCardSlot === match[1]) return this;
+    const entitySlot = /^\[data-entity-card-slot="([^"]+)"\]$/.exec(selector);
+    if (entitySlot && this.dataset.entityCardSlot === entitySlot[1]) return this;
+    const searchSlot = /^\[data-search-result-slot="([^"]+)"\]$/.exec(selector);
+    if (searchSlot && this.dataset.searchResultSlot === searchSlot[1]) return this;
+    if (selector === '[data-search-result-native-summary]' && this.dataset.searchResultNativeSummary !== undefined) {
+      return this;
+    }
+    if (selector.startsWith('.') && this.className.split(/\s+/).includes(selector.slice(1))) return this;
     for (const child of this.children) {
       const found = child.querySelector(selector);
       if (found) return found;
@@ -52,25 +62,53 @@ class FakeElement {
   }
 }
 
-function loadEntityCardExtensions(errors = []) {
-  const context = {
+function browserExtensionContext(errors = []) {
+  return {
     console: { error: (...args) => errors.push(args) },
     document: { createElement: tagName => new FakeElement(tagName) },
     HTMLElement: FakeElement,
     window: {},
   };
+}
+
+function loadEntityCardExtensions(errors = []) {
+  const context = browserExtensionContext(errors);
   vm.runInNewContext(extensionSource, context, { filename: 'entity-card-extensions.js' });
   return context.window.YTLibraryEntityCardExtensions;
+}
+
+function loadSearchResultPresentations(errors = []) {
+  const context = browserExtensionContext(errors);
+  vm.runInNewContext(searchPresentationSource, context, {
+    filename: 'search-result-presentations.js',
+  });
+  return context.window.YTLibrarySearchResultPresentations;
 }
 
 function fakeCard() {
   const card = new FakeElement('article');
   const actions = new FakeElement('span');
   actions.dataset.entityCardSlot = 'actions';
+  const primaryMetadata = new FakeElement('span');
+  primaryMetadata.dataset.entityCardSlot = 'primaryMetadata';
   const secondaryMetadata = new FakeElement('div');
   secondaryMetadata.dataset.entityCardSlot = 'secondaryMetadata';
-  card.append(actions, secondaryMetadata);
-  return { actions, card, secondaryMetadata };
+  card.append(actions, primaryMetadata, secondaryMetadata);
+  return { actions, card, primaryMetadata, secondaryMetadata };
+}
+
+function fakeSearchCard() {
+  const card = new FakeElement('article');
+  const kind = new FakeElement('div');
+  kind.className = 'result-kind';
+  kind.textContent = 'Video';
+  const summaries = new FakeElement('div');
+  summaries.dataset.searchResultSlot = 'summaries';
+  const nativeSummary = new FakeElement('div');
+  nativeSummary.className = 'description';
+  nativeSummary.dataset.searchResultNativeSummary = '';
+  card.append(kind, summaries, nativeSummary);
+  return { card, kind, nativeSummary, summaries };
 }
 
 function labeledElement(label) {
@@ -87,6 +125,7 @@ function plugin(id, overrides = {}) {
       kinds: ['video'],
       render: entity => ({
         actions: [labeledElement(`${id}:${entity.id}:action`)],
+        primaryMetadata: [labeledElement(`${id}:${entity.id}:primary`)],
         secondaryMetadata: [labeledElement(`${id}:${entity.id}:metadata`)],
       }),
       ...overrides,
@@ -99,7 +138,6 @@ function videoEntry(extensions, id, card = fakeCard().card) {
   return {
     card,
     entity: extensions.descriptor('video', item),
-    legacyResult: { kind: 'video', item },
   };
 }
 
@@ -112,7 +150,8 @@ function contributionLabels(slot) {
 test('browser plugins are loaded through a generic registration contract', () => {
   assert.match(indexSource, /window\.YTLibraryBrowserPlugins = Object\.freeze/);
   assert.match(indexSource, /register: registerBrowserPlugin/);
-  assert.match(indexSource, /features: Object\.freeze\(\{ entityCards: 1 \}\)/);
+  assert.match(indexSource, /apiVersion: 2/);
+  assert.match(indexSource, /features: Object\.freeze\(\{ entityCards: 1, searchResultPresentations: 1 \}\)/);
   assert.match(indexSource, /status\.browserAssets \|\| \[\]/);
   assert.match(indexSource, /\/plugins\/\$\{encodeURIComponent\(pluginId\)\}\/assets\//);
   assert.match(indexSource, /\?v=\$\{encodeURIComponent\(version\)\}/);
@@ -127,7 +166,10 @@ test('browser plugins are loaded through a generic registration contract', () =>
   assert.doesNotMatch(indexSource, /browserSearchPresets/);
   assert.match(indexSource, /searchPresetDefinition\(preset\)/);
   assert.match(indexSource, /query \|\| plugin\.search\.fetchEmptyQuery === true/);
-  assert.match(indexSource, /decorateEntry: options\.legacySearch \? decorateLegacySearchCard : null/);
+  assert.match(indexSource, /SearchResultPresentations\.validateDefinition/);
+  assert.match(indexSource, /SearchResultPresentations\.prepareBatch/);
+  assert.match(indexSource, /SearchResultPresentations\.apply/);
+  assert.doesNotMatch(indexSource, /decorateCoreResults|decorateCoreResultCard|legacySearch/i);
   assert.match(indexSource, /search-plugin-facet-filter/);
   assert.match(indexSource, /browserVideoFacetState/);
   assert.match(indexSource, /facetSelections\.push\([\s\S]*browserVideoFilterPlugins/);
@@ -161,10 +203,10 @@ test('plugin search fields can be limited to applicable result kinds', () => {
   assert.match(indexSource, /function refreshSearchAfterFilterChange\([\s\S]*?syncBrowserPluginSearchFieldVisibility\(\)/);
 });
 
-test('legacy search preparation and entity-detail panels remain available', () => {
-  assert.match(indexSource, /async function decorateCoreSearchResults\(/);
-  assert.match(indexSource, /plugin\.search\.decorateCoreResults\(/);
-  assert.match(indexSource, /plugin\.search\.decorateCoreResultCard\(/);
+test('structured search presentation and entity-detail panels are first-class', () => {
+  assert.match(indexSource, /async function prepareBrowserSearchResultPresentations\(/);
+  assert.match(indexSource, /plugin\.search\?\.resultPresentation/);
+  assert.match(indexSource, /resultPresentations\.get\(result\)/);
   assert.match(indexSource, /async function renderBrowserPluginVideoPanels\(/);
   assert.match(indexSource, /const extension = plugin\.videoDetail/);
   assert.match(indexSource, /renderBrowserPluginVideoPanels\(videoId\)/);
@@ -190,7 +232,101 @@ test('entity-card definitions and canonical native descriptors are validated', (
   assert.equal(extensions.descriptor('clip', { clip_id: 'clip-1' }).id, 'clip-1');
 });
 
-test('entity-card plugins without search prepare once per batch and decorate every former view', async () => {
+test('search result presentations prepare once and apply structured contributions', async () => {
+  const presentations = loadSearchResultPresentations();
+  const result = {
+    kind: 'video',
+    item: { video_id: 'video-1' },
+    pluginFacets: { first: true },
+    pluginSearchMatches: ['first'],
+  };
+  const preparedDescriptors = [];
+  const first = {
+    id: 'first',
+    search: {
+      resultPresentation: {
+        kinds: ['video'],
+        prepare: async descriptors => {
+          preparedDescriptors.push(...descriptors);
+          return new Set(['video-1']);
+        },
+        render: (descriptor, prepared) => ({
+          kindLabel: prepared.has(descriptor.id) ? 'Match' : '',
+          summary: labeledElement(`first:${descriptor.id}`),
+        }),
+      },
+    },
+  };
+  const second = {
+    id: 'second',
+    search: {
+      resultPresentation: {
+        kinds: ['video'],
+        render: descriptor => ({ summary: labeledElement(`second:${descriptor.id}`) }),
+      },
+    },
+  };
+
+  assert.doesNotThrow(() => presentations.validateDefinition(first.search.resultPresentation));
+  assert.throws(
+    () => presentations.validateDefinition({ kinds: ['unknown'], render() {} }),
+    /Unsupported search resultPresentation kind/,
+  );
+  const batch = await presentations.prepareBatch({
+    context: { query: 'match' },
+    hostFor: pluginId => ({ pluginId }),
+    plugins: [first, second],
+    results: [result],
+  });
+  assert.equal(batch.failures.length, 0);
+  assert.equal(preparedDescriptors[0].id, 'video-1');
+  assert.equal(preparedDescriptors[0].pluginFacets.first, true);
+  assert.deepEqual([...preparedDescriptors[0].pluginSearchMatches], ['first']);
+
+  const target = fakeSearchCard();
+  presentations.apply(target.card, batch.presentations.get(result));
+  assert.equal(target.kind.textContent, 'Match');
+  assert.equal(target.nativeSummary.hidden, true);
+  assert.deepEqual(
+    target.summaries.children.map(item => item.dataset.browserPluginId),
+    ['first', 'second'],
+  );
+  assert.deepEqual(contributionLabels(target.summaries), ['first:video-1', 'second:video-1']);
+});
+
+test('search result presentation failures are isolated by plugin', async () => {
+  const presentations = loadSearchResultPresentations();
+  const result = { kind: 'video', item: { video_id: 'video-1' } };
+  const broken = {
+    id: 'broken',
+    search: {
+      resultPresentation: {
+        kinds: ['video'],
+        prepare: async () => { throw new Error('broken prepare'); },
+        render: () => null,
+      },
+    },
+  };
+  const healthy = {
+    id: 'healthy',
+    search: {
+      resultPresentation: {
+        kinds: ['video'],
+        render: descriptor => ({ summary: labeledElement(`healthy:${descriptor.id}`) }),
+      },
+    },
+  };
+
+  const batch = await presentations.prepareBatch({
+    plugins: [broken, healthy],
+    results: [result],
+  });
+  assert.equal(batch.failures.length, 1);
+  assert.equal(batch.failures[0].pluginId, 'broken');
+  assert.equal(batch.presentations.get(result).summaries[0].pluginId, 'healthy');
+});
+
+test('entity-card plugins prepare once per batch and decorate every native view', async () => {
   const extensions = loadEntityCardExtensions();
   const cases = [
     { kind: 'video', view: 'search' },
@@ -241,7 +377,7 @@ test('entity-card plugins without search prepare once per batch and decorate eve
 
 test('entity-card actions and metadata compose in registration order', async () => {
   const extensions = loadEntityCardExtensions();
-  const { actions, card, secondaryMetadata } = fakeCard();
+  const { actions, card, primaryMetadata, secondaryMetadata } = fakeCard();
 
   await extensions.decorateBatch({
     context: { view: 'search', layout: 'grid' },
@@ -251,8 +387,13 @@ test('entity-card actions and metadata compose in registration order', async () 
   });
 
   assert.deepEqual(actions.children.map(item => item.dataset.browserPluginId), ['first', 'second']);
+  assert.deepEqual(primaryMetadata.children.map(item => item.dataset.browserPluginId), ['first', 'second']);
   assert.deepEqual(secondaryMetadata.children.map(item => item.dataset.browserPluginId), ['first', 'second']);
   assert.deepEqual(contributionLabels(actions), ['first:one:action', 'second:one:action']);
+  assert.deepEqual(
+    contributionLabels(primaryMetadata),
+    ['first:one:primary', 'second:one:primary'],
+  );
   assert.deepEqual(
     contributionLabels(secondaryMetadata),
     ['first:one:metadata', 'second:one:metadata'],
@@ -326,24 +467,17 @@ test('stale and superseded batches cannot append or duplicate contributions', as
   assert.deepEqual(contributionLabels(target.actions), ['repeat:one:action']);
 });
 
-test('capability gating skips unavailable plugins and legacy decorators use the shared batch', async () => {
+test('capability gating skips unavailable entity-card plugins', async () => {
   const extensions = loadEntityCardExtensions();
   const target = fakeCard();
-  let legacyCalls = 0;
 
   await extensions.decorateBatch({
     context: { view: 'search' },
-    decorateEntry: entry => {
-      legacyCalls += 1;
-      entry.card.dataset.legacyDecorated = 'true';
-    },
     entries: [videoEntry(extensions, 'one', target.card)],
     plugins: [plugin('ready'), plugin('disabled'), plugin('missing_capability')],
     supports: (pluginId, capability) => pluginId === 'ready' && capability === 'ready_cards',
   });
 
-  assert.equal(legacyCalls, 1);
-  assert.equal(target.card.dataset.legacyDecorated, 'true');
   assert.deepEqual(contributionLabels(target.actions), ['ready:one:action']);
 });
 
@@ -369,6 +503,7 @@ test('all native render entry points call the shared entity-card batch', () => {
   );
   assert.match(indexSource, /entityCardEntry\('channel', channel, channelCard\)/);
   assert.match(indexSource, /data-entity-card-slot="actions"/);
+  assert.match(indexSource, /data-entity-card-slot="primaryMetadata"/);
   assert.match(indexSource, /data-entity-card-slot="secondaryMetadata"/);
 });
 
@@ -376,6 +511,10 @@ test('shared card builders keep host slots in the same structural order for ever
   assert.match(
     videoCardSource,
     /title-row[\s\S]*data-entity-card-slot="actions"/,
+  );
+  assert.ok(
+    videoCardSource.indexOf('data-entity-card-slot="primaryMetadata"')
+      < videoCardSource.indexOf('options.compactAvailabilityHtml'),
   );
   assert.ok(
     videoCardSource.indexOf('uploaderCategoryHtml(options.uploaderCategory)')
@@ -391,6 +530,10 @@ test('shared card builders keep host slots in the same structural order for ever
   );
   assert.ok(
     collectionCardSource.indexOf('options.bodyHtml')
+      < collectionCardSource.indexOf('data-entity-card-slot="primaryMetadata"'),
+  );
+  assert.ok(
+    collectionCardSource.indexOf('data-entity-card-slot="primaryMetadata"')
       < collectionCardSource.indexOf('data-entity-card-slot="secondaryMetadata"'),
   );
   assert.ok(

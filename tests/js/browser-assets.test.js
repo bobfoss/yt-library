@@ -11,6 +11,7 @@ const assetNames = [
   'video-card.js',
   'collection-card.js',
   'entity-card-extensions.js',
+  'search-result-presentations.js',
   'history-workflow.js',
   'index.js',
   'admin-transport.js',

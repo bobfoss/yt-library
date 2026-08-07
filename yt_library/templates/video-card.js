@@ -269,7 +269,7 @@
       ${options.position ? `<div class="position">#${escapeHtml(options.position)}</div>` : ''}
       ${titleHtml(options)}
       ${options.availabilityHtml
-        ? `<div class="video-availability-row">${options.availabilityHtml}${options.compactAvailabilityHtml || ''}</div>`
+        ? `<div class="video-availability-row">${options.availabilityHtml}<span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>${options.compactAvailabilityHtml || ''}</div>`
         : ''}
       ${badgeRowsHtml(options.badges)}
       ${detailRowHtml(options.details)}
@@ -283,9 +283,10 @@
       ${options.reactionHtml || ''}
       ${uploaderCategoryHtml(options.uploaderCategory)}
       <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
+      <div class="search-result-summary-slot" data-search-result-slot="summaries"></div>
       ${options.descriptionHtml
-        ? `<div class="description">${options.descriptionHtml}</div>`
-        : (options.description ? `<div class="description">${escapeHtml(options.description)}</div>` : '')}
+        ? `<div class="description" data-search-result-native-summary>${options.descriptionHtml}</div>`
+        : (options.description ? `<div class="description" data-search-result-native-summary>${escapeHtml(options.description)}</div>` : '')}
       ${detailRowHtml(options.sources)}
       ${options.playlistSourcesHtml || ''}
     `;

@@ -312,21 +312,13 @@
     .search-grid.layout-compact .channel-archivarix-id,
     .search-grid.layout-compact .channel-archivarix-link { display: none; }
     .search-grid.layout-compact .channel-card-links { justify-content: flex-end; }
-    .video-availability-row { display: contents; }
+    .video-availability-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+    .video-availability-row .video-availability { display: flex; align-items: center; margin-top: 0; }
+    .video-availability-row > .badge-lines { margin-top: 0; }
     .compact-video-duration { display: none; }
     .search-grid.layout-compact .video-availability-row {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 6px;
       margin-top: 7px;
     }
-    .search-grid.layout-compact .video-availability-row .video-availability {
-      display: flex;
-      align-items: center;
-      margin-top: 0;
-    }
-    .search-grid.layout-compact .video-availability-row > .badge-lines { margin-top: 0; }
     .search-grid.layout-compact .compact-video-duration {
       display: inline;
       color: var(--muted);
@@ -353,10 +345,14 @@
     .external-link:hover { background: var(--accent-soft); }
     .external-link svg { width: 15px; height: 15px; }
     .entity-card-actions { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+    .entity-card-primary-metadata { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 13px; }
     .entity-card-secondary-metadata { display: grid; gap: 5px; margin-top: 7px; }
     .entity-card-plugin-actions { display: inline-flex; align-items: center; gap: 5px; }
+    .entity-card-plugin-primary-metadata { display: inline-flex; align-items: center; gap: 5px; }
     .entity-card-plugin-secondary-metadata { display: grid; gap: 5px; }
     .entity-card-slot:empty, .entity-card-plugin-contribution[hidden] { display: none; }
+    .search-result-summary-slot { display: grid; gap: 5px; }
+    .search-result-summary-slot:empty { display: none; }
     .details { color: var(--muted); font-size: 13px; margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; }
     .visibility-label { display: inline-flex; align-items: center; gap: 4px; }
     .visibility-label svg { width: 14px; height: 14px; flex: 0 0 auto; }

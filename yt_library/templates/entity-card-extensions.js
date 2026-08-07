@@ -8,6 +8,11 @@
     playlist: 'playlist_id',
     channel: 'channel_id',
   });
+  const contributionSlots = Object.freeze({
+    actions: 'span',
+    primaryMetadata: 'span',
+    secondaryMetadata: 'div',
+  });
   const cardRuns = new WeakMap();
 
   function validateDefinition(definition) {
@@ -46,8 +51,8 @@
 
   function contributionFor(slot, pluginId, name) {
     if (!slot) return null;
-    const contribution = document.createElement(name === 'actions' ? 'span' : 'div');
-    const classSuffix = name === 'secondaryMetadata' ? 'secondary-metadata' : name;
+    const contribution = document.createElement(contributionSlots[name]);
+    const classSuffix = name.replace(/[A-Z]/g, value => `-${value.toLowerCase()}`);
     contribution.className = `entity-card-plugin-contribution entity-card-plugin-${classSuffix}`;
     contribution.dataset.browserPluginId = pluginId;
     contribution.dataset.entityCardContribution = name;
@@ -93,14 +98,8 @@
     if (!isCurrent()) return false;
     for (const entry of entries) {
       cardRuns.set(entry.card, token);
-      slotFor(entry.card, 'actions')?.replaceChildren();
-      slotFor(entry.card, 'secondaryMetadata')?.replaceChildren();
-      if (typeof options.decorateEntry === 'function') {
-        try {
-          options.decorateEntry(entry);
-        } catch (error) {
-          reportFailure('Legacy card decoration failed', String(entry.pluginId || 'unknown'), error);
-        }
+      for (const name of Object.keys(contributionSlots)) {
+        slotFor(entry.card, name)?.replaceChildren();
       }
     }
 
@@ -122,14 +121,13 @@
       }
       const contributions = new Map();
       for (const entry of occurrences) {
-        contributions.set(entry, {
-          actions: contributionFor(slotFor(entry.card, 'actions'), pluginId, 'actions'),
-          secondaryMetadata: contributionFor(
-            slotFor(entry.card, 'secondaryMetadata'),
-            pluginId,
-            'secondaryMetadata',
-          ),
-        });
+        contributions.set(
+          entry,
+          Object.fromEntries(Object.keys(contributionSlots).map(name => [
+            name,
+            contributionFor(slotFor(entry.card, name), pluginId, name),
+          ])),
+        );
       }
       plans.push({ plugin, definition, occurrences, uniqueEntities, contributions });
     }
@@ -155,15 +153,11 @@
           if (result && typeof result.then === 'function') {
             throw new TypeError('entityCards render must return synchronously');
           }
-          const actions = resultElements(result, 'actions');
-          const secondaryMetadata = resultElements(result, 'secondaryMetadata');
-          if (contribution.actions) {
-            contribution.actions.replaceChildren(...actions);
-            contribution.actions.hidden = actions.length === 0;
-          }
-          if (contribution.secondaryMetadata) {
-            contribution.secondaryMetadata.replaceChildren(...secondaryMetadata);
-            contribution.secondaryMetadata.hidden = secondaryMetadata.length === 0;
+          for (const name of Object.keys(contributionSlots)) {
+            const elements = resultElements(result, name);
+            if (!contribution[name]) continue;
+            contribution[name].replaceChildren(...elements);
+            contribution[name].hidden = elements.length === 0;
           }
         } catch (error) {
           reportFailure('Plugin entity-card rendering failed', pluginId, error);

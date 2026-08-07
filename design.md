@@ -116,7 +116,7 @@ SQLite is the source of truth for local state. Cached thumbnails and avatars are
 
 YT Library supports optional, separately packaged Python plugins. The current
 host contract is Python plugin API version 2. Browser extensions use a separate
-browser API version 1. Both versions are exact compatibility checks, not version
+browser API version 2. Both versions are exact compatibility checks, not version
 ranges.
 
 A breaking Python contract change must bump `PLUGIN_API_VERSION`; a breaking
@@ -383,7 +383,7 @@ operations belong in the host-owned worker queue. If a future plugin requires a
 different mutation primitive, extend the host with a generic reviewed contract
 instead of adding a plugin name to `server.py`.
 
-### Browser assets and browser API version 1
+### Browser assets and browser API version 2
 
 A plugin declares assets as dictionaries containing `path` and `type`:
 
@@ -422,7 +422,7 @@ The browser script registers synchronously when loaded:
 (() => {
   'use strict';
   const api = window.YTLibraryBrowserPlugins;
-  if (!api || api.apiVersion !== 1) return;
+  if (!api || api.apiVersion !== 2) return;
 
   api.register({
     id: 'example',
@@ -482,10 +482,8 @@ raw `innerHTML`.
 
 ### Native entity-card extensions
 
-Browser API version 1 includes the additive `entityCards` feature. Plugins
-should feature-detect it with `api.features?.entityCards === 1`; the browser API
-version remains 1 because plugins that use only the earlier optional `search`
-and `videoDetail` surfaces continue to register unchanged.
+Browser API version 2 includes the `entityCards` feature. Plugins should
+feature-detect it with `api.features?.entityCards === 1`.
 
 `entityCards` decorates native cards without requiring the plugin to implement
 search. It is capability-gated and supports the canonical native kinds
@@ -495,7 +493,7 @@ search. It is capability-gated and supports the canonical native kinds
 (() => {
   'use strict';
   const api = window.YTLibraryBrowserPlugins;
-  if (!api || api.apiVersion !== 1 || api.features?.entityCards !== 1) return;
+  if (!api || api.apiVersion !== 2 || api.features?.entityCards !== 1) return;
 
   api.register({
     id: 'example',
@@ -520,6 +518,7 @@ search. It is capability-gated and supports the canonical native kinds
         metadata.textContent = String(summary.label || '');
         return {
           actions: [action],
+          primaryMetadata: [],
           secondaryMetadata: [metadata],
         };
       },
@@ -539,11 +538,13 @@ is `grid`, `compact`, or `detailed` where the view supports it.
 The host deduplicates descriptors by kind and ID, then calls `prepare` at most
 once per plugin for the rendered batch. A repeated history occurrence is still
 rendered separately, but it does not cause another preparation request. Do all
-bounded I/O in `prepare`; `render` must return synchronously with `actions` and
-`secondaryMetadata` arrays containing plugin-owned `HTMLElement` instances, or
-return `null`. Actions are placed beside native title actions. Secondary
-metadata follows native facts such as uploader category and precedes native
-descriptions and source lists.
+bounded I/O in `prepare`; `render` must return synchronously with `actions`,
+`primaryMetadata`, and `secondaryMetadata` arrays containing plugin-owned
+`HTMLElement` instances, or return `null`. Actions are placed beside native
+title actions. Primary metadata is placed with the card's principal status
+facts, including video availability. Secondary metadata follows later native
+facts such as uploader category and precedes native descriptions and source
+lists. Omitted arrays are treated as empty.
 
 Plugins compose in browser registration order. The host wraps contributions by
 plugin ID, replaces a plugin's previous contribution on re-decoration, contains
@@ -553,11 +554,10 @@ preparation, so disabled, unavailable, and capability-missing plugins do not
 decorate. One plugin's asset, preparation, or rendering failure does not block
 native cards or another plugin.
 
-The older `search.decorateCoreResults` and
-`search.decorateCoreResultCard` hooks remain supported for query-specific read
-model decoration and presentation. The per-card compatibility hook now runs
-through the same card batch path as `entityCards`. Existing
-`videoDetail: {capability, render}` panels also remain independent and supported.
+Search-match presentation is intentionally separate from entity decoration and
+uses the structured `search.resultPresentation` contract below. Plugins do not
+receive native card elements and must not query or mutate host card DOM.
+`videoDetail: {capability, render}` panels also remain independent.
 
 ### Search, facets, cards, and virtual videos
 
@@ -592,10 +592,24 @@ api.register({
       presentHashParam: 'clips-with-example',
       absentHashParam: 'clips-without-example',
     },
-    forceRelevance: 'query',
     catalogCount: status => Number(status?.pluginStatus?.itemCount || 0),
-    decorateCoreResults: async (results, host, {query}) => {},
-    decorateCoreResultCard: (card, result, host) => {},
+    resultPresentation: {
+      kinds: ['video', 'clip'],
+      prepare: async (results, host, {query}) => {
+        const ids = results
+          .filter(result => result.pluginSearchMatches.includes('example'))
+          .map(result => result.id);
+        return host.requestJson('matches', {q: query, id: ids});
+      },
+      render: (result, prepared, host) => {
+        const match = prepared?.matches?.[result.id];
+        if (!match) return null;
+        const summary = document.createElement('div');
+        summary.className = 'description example-match';
+        summary.innerHTML = host.ui.searchHighlight.snippetHtml(match.snippet);
+        return {kindLabel: 'Example match', summary};
+      },
+    },
   },
 });
 ```
@@ -657,10 +671,25 @@ and absent facet counts, and annotates page results with:
 - `result.pluginFacets[plugin_id]`: whether the video or clip has plugin data.
 - `result.pluginSearchMatches`: plugin IDs whose text matched the query.
 
-`decorateCoreResults` can batch-fetch display details after the core page is
-known. `decorateCoreResultCard` can then add a badge or replace the displayed
-description with a match snippet. The result remains the original host entity
-and should retain its normal card semantics.
+Browser API version 2 advertises
+`api.features?.searchResultPresentations === 1`. A
+`search.resultPresentation` definition declares a nonempty unique `kinds`
+array, an optional asynchronous `prepare(results, host, context)`, and a
+required synchronous `render(result, preparedState, host, context)`. Search
+result descriptors are frozen
+`{kind, id, item, pluginFacets, pluginSearchMatches}` objects. The context
+contains the current `query`.
+
+The host calls `prepare` once per plugin and rendered page, then calls `render`
+for each applicable native result. `render` returns `null` or an object with an
+optional `kindLabel` string and optional plugin-owned `summary` HTMLElement.
+The first label contribution wins and summaries compose in browser registration
+order. A contributed summary replaces the native description without changing
+the canonical entity represented by the card. Preparation and rendering
+failures are isolated and surfaced with the other plugin-search warnings.
+Plugins perform all I/O in `prepare`, create a distinct summary element per
+result, and use the host highlighting helpers for marked snippets. There is no
+imperative native-card decoration hook.
 
 The second pattern is a separate result type. Use it only when results are not
 best represented as canonical host entities. Omit both `videoFacet` and
@@ -680,9 +709,8 @@ Implement `search.renderResult(item, host)` to return an `HTMLElement`.
 the separate search kind an opt-in saved filter. The host composes plugin and
 core pagination, surfaces request failures without failing core search, and
 uses `catalogCount` for unloaded counts. The plugin owns the ordering within
-its separate result page. A plugin that participates in text relevance should
-set `forceRelevance` to `true` or `"query"`; otherwise users retain all normal
-sort options.
+its separate result page. Host sort selection remains authoritative for native
+entity results.
 
 A video-oriented plugin may expose read-only virtual videos for IDs absent from
 YTL:

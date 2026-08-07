@@ -937,6 +937,14 @@ class AdminServerTests(unittest.TestCase):
         )
 
         handler._send_bytes.reset_mock()
+        self.assertTrue(handler._handle_page_get("/search-result-presentations.js"))
+        handler._send_bytes.assert_called_once_with(
+            server.SEARCH_RESULT_PRESENTATIONS_JS.encode("utf-8"),
+            "text/javascript; charset=utf-8",
+            cache_control="no-cache",
+        )
+
+        handler._send_bytes.reset_mock()
         self.assertTrue(handler._handle_page_get("/history-workflow.js"))
         handler._send_bytes.assert_called_once_with(
             server.HISTORY_WORKFLOW_JS.encode("utf-8"),
@@ -986,7 +994,7 @@ class AdminServerTests(unittest.TestCase):
 
         self.assertFalse(handler._handle_page_get("/video/video123"))
 
-    def test_rendered_browser_page_loads_history_workflow_before_index(self) -> None:
+    def test_rendered_browser_page_loads_helpers_before_index(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.display_timezone_name = Mock(return_value="UTC")
         handler.layout_settings = Mock(return_value={})
@@ -996,8 +1004,13 @@ class AdminServerTests(unittest.TestCase):
         ).decode("utf-8")
 
         self.assertIn('<script src="/history-workflow.js"></script>', rendered)
+        self.assertIn('<script src="/search-result-presentations.js"></script>', rendered)
         self.assertLess(
             rendered.index('<script src="/history-workflow.js"></script>'),
+            rendered.index('<script src="/index.js"></script>'),
+        )
+        self.assertLess(
+            rendered.index('<script src="/search-result-presentations.js"></script>'),
             rendered.index('<script src="/index.js"></script>'),
         )
 
