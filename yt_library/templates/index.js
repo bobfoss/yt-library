@@ -4645,6 +4645,21 @@ async function renderBrowserPluginVideoPanels(videoId) {
   return panels;
 }
 
+async function renderBrowserPluginClipPanels(clip) {
+  const panels = [];
+  for (const plugin of browserPlugins.values()) {
+    const extension = plugin.clipDetail;
+    if (!extension || !browserPluginSupports(plugin.id, extension.capability)) continue;
+    try {
+      const panel = await extension.render(clip, browserPluginHost(plugin.id));
+      if (panel instanceof HTMLElement) panels.push(panel);
+    } catch (_error) {
+      // Optional plugin failures must not prevent the core clip detail from rendering.
+    }
+  }
+  return panels;
+}
+
 function videoDetailCardFor(video) {
   const article = document.createElement('article');
   article.className = 'card video-detail';
@@ -4826,6 +4841,7 @@ async function render() {
     title.textContent = 'Clip';
     meta.textContent = '';
     let clip;
+    let pluginPanels = [];
     try {
       const clipParams = new URLSearchParams();
       for (const plugin of browserClipFilterPlugins()) {
@@ -4835,6 +4851,7 @@ async function render() {
       clip = await fetchViewData(
         `/api/clips/${encodeURIComponent(clipId)}${query ? `?${query}` : ''}`
       );
+      pluginPanels = await renderBrowserPluginClipPanels(clip);
     } catch (error) {
       if (generation !== renderGeneration) return;
       title.textContent = 'Clip not found';
@@ -4863,7 +4880,7 @@ async function render() {
       generation,
       { legacySearch: true },
     );
-    grid.replaceChildren(card);
+    grid.replaceChildren(card, ...pluginPanels);
     await decoration;
     if (generation !== renderGeneration) return;
     empty.hidden = true;

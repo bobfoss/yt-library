@@ -161,13 +161,17 @@ test('plugin search fields can be limited to applicable result kinds', () => {
   assert.match(indexSource, /function refreshSearchAfterFilterChange\([\s\S]*?syncBrowserPluginSearchFieldVisibility\(\)/);
 });
 
-test('legacy search preparation and video-detail panels remain available', () => {
+test('legacy search preparation and entity-detail panels remain available', () => {
   assert.match(indexSource, /async function decorateCoreSearchResults\(/);
   assert.match(indexSource, /plugin\.search\.decorateCoreResults\(/);
   assert.match(indexSource, /plugin\.search\.decorateCoreResultCard\(/);
   assert.match(indexSource, /async function renderBrowserPluginVideoPanels\(/);
   assert.match(indexSource, /const extension = plugin\.videoDetail/);
   assert.match(indexSource, /renderBrowserPluginVideoPanels\(videoId\)/);
+  assert.match(indexSource, /async function renderBrowserPluginClipPanels\(clip\)/);
+  assert.match(indexSource, /const extension = plugin\.clipDetail/);
+  assert.match(indexSource, /renderBrowserPluginClipPanels\(clip\)/);
+  assert.match(indexSource, /grid\.replaceChildren\(card, \.\.\.pluginPanels\)/);
 });
 
 test('entity-card definitions and canonical native descriptors are validated', () => {

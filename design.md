@@ -439,6 +439,16 @@ The browser script registers synchronously when loaded:
         return panel;
       },
     },
+    clipDetail: {
+      capability: 'example_detail',
+      render: async (clip, host) => {
+        if (!host.supports('example_detail')) return null;
+        const panel = document.createElement('article');
+        panel.className = 'card example-panel';
+        panel.textContent = `${clip.source_video_id}: ${clip.start_ms}-${clip.end_ms}`;
+        return panel;
+      },
+    },
   });
 })();
 ```
@@ -695,9 +705,18 @@ or hydrates that projection into the YTL database.
 
 `videoDetail: {capability, render}` adds a lazy plugin-owned panel to video
 detail. `render(videoId, host)` returns an `HTMLElement` or `null`. Failures are
-contained so the core detail card remains usable. Fetch large data only when
-the user expands or requests it, paginate it, and avoid loading full transcripts
-or other large payloads during the initial detail render.
+contained so the core detail card remains usable.
+
+`clipDetail: {capability, render}` is the corresponding clip-detail surface.
+`render(clip, host)` receives the host clip read model, including `clip_id`,
+`source_video_id`, `start_ms`, and `end_ms`, and returns an `HTMLElement` or
+`null`. A plugin that stores source-video data should keep the clip identity and
+bounds in YTL, then use this descriptor to request only the bounded plugin data;
+it should not duplicate or hydrate the source video into the host database.
+
+For both detail surfaces, return a lightweight panel shell during initial
+render. Fetch large data only when the user expands or requests it, paginate
+it, and avoid loading full transcripts or other large payloads before that.
 
 ### Navigation-group projections
 
