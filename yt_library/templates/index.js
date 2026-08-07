@@ -1554,11 +1554,20 @@ function activeSearchFields() {
   );
 }
 
-function syncFilterGroup(parent, childFilters, dimChildrenWhenUnchecked = true) {
-  if (!parent || !childFilters.length) return;
-  const checkedCount = childFilters.filter(input => input.checked).length;
+function syncFilterGroup(
+  parent,
+  childFilters,
+  dimChildrenWhenUnchecked = true,
+  fallbackCheckedStates = [],
+) {
+  if (!parent) return;
+  const checkedStates = childFilters.length
+    ? childFilters.map(input => input.checked)
+    : fallbackCheckedStates;
+  if (!checkedStates.length) return;
+  const checkedCount = checkedStates.filter(Boolean).length;
   parent.checked = checkedCount > 0;
-  parent.indeterminate = checkedCount > 0 && checkedCount < childFilters.length;
+  parent.indeterminate = checkedCount > 0 && checkedCount < checkedStates.length;
   setFilterDimmed(childFilters, dimChildrenWhenUnchecked && !parent.checked);
 }
 
@@ -1574,6 +1583,7 @@ function metaFilterGroupVisibility(groupName) {
     'search-completion': searchMetaVisibility.completion,
     'search-membership': searchMetaVisibility.membership,
     'search-uploaderCategory': searchMetaVisibility.uploaderCategory,
+    'search-clipOwnership': searchMetaVisibility.clipOwnership,
     'search-channelSubscription': searchMetaVisibility.channelSubscription,
     'search-channelStatus': searchMetaVisibility.channelStatus,
     'search-playlistAvailability': searchMetaVisibility.playlistAvailability,
@@ -1615,10 +1625,15 @@ function allMetaFilterChildrenChecked(groupName) {
 
 function syncMetaFilterGroup(groupName) {
   const root = groupName.startsWith('search-') ? searchForFilters : meta;
+  const group = metaFilterGroupVisibility(groupName);
+  const excludedKeys = metaFilterGroupExcludedKeys(groupName);
   syncFilterGroup(
     root.querySelector(`[data-meta-all-filter="${groupName}"]`),
     [...root.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)],
     false,
+    Object.entries(group || {})
+      .filter(([key]) => !excludedKeys.has(key))
+      .map(([, checked]) => checked),
   );
 }
 
@@ -1692,18 +1707,26 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true) {
   }
   const facetKeys = searchKindFacetKeys(kind);
   if (!facetKeys.length) return;
-  const facetSelections = facetKeys.map(key => (
+  let facetSelections = facetKeys.map(key => (
     [...searchForFilters.querySelectorAll(`[data-meta-child-filter="search-${key}"]`)]
       .map(input => input.checked)
   )).filter(values => values.length);
+  const useVisibilityFallback = !facetSelections.length;
+  if (useVisibilityFallback) {
+    facetSelections = facetKeys.map(key => (
+      Object.values(searchMetaVisibility[key] || {})
+    )).filter(values => values.length);
+  }
   if (kind === 'videos') {
-    facetSelections.push(
-      ...browserVideoFilterPlugins().map(plugin => (
-        [...searchForFilters.querySelectorAll(
-          `[data-meta-child-filter="search-plugin-${plugin.id}"]`
-        )].map(input => input.checked)
-      )).filter(values => values.length),
-    );
+    for (const plugin of browserVideoFilterPlugins()) {
+      const renderedSelections = [...searchForFilters.querySelectorAll(
+        `[data-meta-child-filter="search-plugin-${plugin.id}"]`
+      )].map(input => input.checked);
+      if (renderedSelections.length) facetSelections.push(renderedSelections);
+      else if (useVisibilityFallback) {
+        facetSelections.push(Object.values(browserVideoFacetState(plugin)));
+      }
+    }
   }
   if (!facetSelections.length) return;
   const everyFacetHasSelection = facetSelections.every(values => values.some(Boolean));
@@ -3129,6 +3152,7 @@ function searchMetaFiltersHtml(
     filterAttribute = 'search-meta-filter',
     filterValuePrefix = `${key}:`,
   }) => {
+    const countsReady = counts !== null && counts !== undefined;
     const visibleDefinitions = visibleMetaFilterDefinitions(
       visibility,
       searchKindEnabled(kind) ? counts : null,
@@ -3152,14 +3176,14 @@ function searchMetaFiltersHtml(
         >
           <span class="search-tree-toggle-spacer" aria-hidden="true"></span>
           <div class="search-meta-controls">
-            ${metaFilterChildrenHtml({
+            ${countsReady ? metaFilterChildrenHtml({
               groupName,
               filterAttribute,
               filterValuePrefix,
               visibility,
               counts: searchKindEnabled(kind) ? counts : null,
               definitions: visibleDefinitions,
-            })}
+            }) : ''}
           </div>
         </div>
       </div>

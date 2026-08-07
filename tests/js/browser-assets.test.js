@@ -324,6 +324,15 @@ test('zero-count filters use the config-backed shared visibility path', () => {
   );
 });
 
+test('search filter bootstrap defers leaves until facet counts arrive', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /const countsReady = counts !== null && counts !== undefined/);
+  assert.match(indexSource, /\$\{countsReady \? metaFilterChildrenHtml\(\{/);
+  assert.match(indexSource, /fallbackCheckedStates = \[\]/);
+  assert.match(indexSource, /'search-clipOwnership': searchMetaVisibility\.clipOwnership/);
+});
+
 test('admin parameter posts use the shared transport with caller-owned effects', () => {
   const adminSource = source('admin.js');
 
@@ -443,7 +452,8 @@ test('single-facet result kinds use the same parent state calculation', () => {
   const end = indexSource.indexOf('\nfunction searchKindForFacet(', start);
   const functionSource = indexSource.slice(start, end);
 
-  assert.match(functionSource, /const facetSelections = facetKeys\.map/);
+  assert.match(functionSource, /let facetSelections = facetKeys\.map/);
+  assert.match(functionSource, /if \(useVisibilityFallback\)[\s\S]{0,180}Object\.values\(searchMetaVisibility\[key\] \|\| \{\}\)/);
   assert.match(functionSource, /parent\.checked = everyFacetHasSelection/);
   assert.match(functionSource, /parent\.indeterminate = everyFacetHasSelection && !allChildrenSelected/);
   assert.doesNotMatch(functionSource, /facetKeys\.length > 1/);
