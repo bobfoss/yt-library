@@ -536,7 +536,7 @@ const searchFilters = document.getElementById('search-filters');
 const searchInFields = document.getElementById('search-in-fields');
 const refresh = document.getElementById('refresh');
 const groupsEl = document.getElementById('groups');
-const searchForFilters = groupsEl;
+const searchForFilters = document.getElementById('search-for-filters');
 const searchFields = [...document.querySelectorAll('.search-field')];
 
 function loadRetainedSearchUrl() {
@@ -3341,6 +3341,7 @@ function syncSearchFiltersForSelection() {
   const historySelected = selected === '__history__';
   const alreadyHidden = searchFilters.hidden;
   searchFilters.hidden = historySelected;
+  searchForFilters.hidden = historySelected;
   const placeholders = {
     videos: 'Search videos',
     clips: 'Search clips',
@@ -4179,16 +4180,12 @@ function searchFilterSlot(kind, className = 'search-filter-slot') {
   return slot;
 }
 
-function appendSearchCategory(section, kind, label, count) {
+function appendSearchFilterCategory(container, kind, label, count) {
   const contextKind = searchContextKind();
   const filtersVisible = selected !== '__history__' && (!contextKind || contextKind === kind);
-  if (!filtersVisible) {
-    section.appendChild(presetLink(kind, label, count));
-    return;
-  }
+  if (!filtersVisible) return;
   if (contextKind === kind) {
-    section.appendChild(presetLink(kind, label, count));
-    section.appendChild(searchFilterSlot(kind));
+    container.appendChild(searchFilterSlot(kind));
     return;
   }
 
@@ -4202,7 +4199,7 @@ function appendSearchCategory(section, kind, label, count) {
     ${searchFilterTreeToggleHtml(nodeId, `${label} filters`)}
     <div class="search-meta-row-title">
       ${parentFilterCheckboxHtml('data-search-kind-filter', kind)}
-      <a class="search-kind-link" href="${escapeHtml(searchPresetHref(kind))}">${escapeHtml(label)}</a>
+      <span>${escapeHtml(label)}</span>
       <span class="count" data-search-kind-count="${escapeHtml(kind)}">${kindEnabled ? filterCountText(count) : ''}</span>
       <span class="search-meta-progress" data-search-meta-progress="${escapeHtml(kind)}" aria-hidden="true"></span>
     </div>
@@ -4212,16 +4209,12 @@ function appendSearchCategory(section, kind, label, count) {
   slot.dataset.searchTreeChildren = '';
   slot.hidden = !expanded;
   root.appendChild(slot);
-  root.querySelector('.search-kind-link')?.addEventListener('click', event => {
-    handleSidebarLinkClick(event, () => activateSearchPreset(kind));
-  });
-  section.appendChild(root);
+  container.appendChild(root);
 }
 
-function appendPluginSearchKinds() {
+function appendPluginSearchFilters(container) {
   const plugins = browserResultSearchPlugins();
   if (!plugins.length || selected === '__history__' || searchContextKind()) return;
-  const section = sectionFor('Extensions');
   for (const plugin of plugins) {
     const kind = plugin.id;
     const label = plugin.search.label || kind;
@@ -4238,7 +4231,7 @@ function appendPluginSearchKinds() {
       </label>
     `;
     row.appendChild(searchFilterSlot(kind));
-    section.appendChild(row);
+    container.appendChild(row);
   }
 }
 
@@ -4289,19 +4282,29 @@ function syncSidebarSelection() {
 
 function renderGroups() {
   if (!data) return;
+  searchForFilters.replaceChildren();
   groupsEl.replaceChildren();
   navigationGroupTreeDomId = 0;
   const counts = data.counts || {};
   const historyCount = historyNav?.querySelector('.count');
   if (historyCount) historyCount.textContent = counts.history || 0;
+
+  appendSearchFilterCategory(searchForFilters, 'videos', 'Videos', counts.videos || 0);
+  if (searchContextKind() === 'clips' || Number(counts.clips || 0) > 0) {
+    appendSearchFilterCategory(searchForFilters, 'clips', 'Clips', counts.clips || 0);
+  }
+  appendSearchFilterCategory(searchForFilters, 'playlists', 'Playlists', counts.playlists || 0);
+  appendSearchFilterCategory(searchForFilters, 'channels', 'Channels', counts.channels || 0);
+  appendPluginSearchFilters(searchForFilters);
+
   const videoSection = sectionFor('Videos');
-  appendSearchCategory(videoSection, 'videos', 'Videos', counts.videos || 0);
+  videoSection.appendChild(presetLink('videos', 'Videos', counts.videos || 0));
   if (Number(counts.clips || 0) > 0) {
-    appendSearchCategory(videoSection, 'clips', 'Clips', counts.clips);
+    videoSection.appendChild(presetLink('clips', 'Clips', counts.clips));
   }
 
   const playlistSection = sectionFor('Playlists');
-  appendSearchCategory(playlistSection, 'playlists', 'Playlists', counts.playlists || 0);
+  playlistSection.appendChild(presetLink('playlists', 'Playlists', counts.playlists || 0));
   appendNavigationGroupTrees(
     playlistSection,
     playlistChildren.get('') || [],
@@ -4311,7 +4314,7 @@ function renderGroups() {
   );
 
   const channelSection = sectionFor('Channels');
-  appendSearchCategory(channelSection, 'channels', 'Channels', counts.channels || 0);
+  channelSection.appendChild(presetLink('channels', 'Channels', counts.channels || 0));
   appendNavigationGroupTrees(
     channelSection,
     channelChildren.get('') || [],
@@ -4319,7 +4322,6 @@ function renderGroups() {
     channelMemberships,
     channelChildren,
   );
-  appendPluginSearchKinds();
   renderSearchMetaFilters(renderedSearchFilterPayload);
   syncSidebarSelection();
 }
