@@ -68,6 +68,25 @@ class PluginPlanningContext:
         for row in rows:
             yield dict(row)
 
+    def library_clips(self) -> Iterable[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT c.clip_id,
+                   c.title,
+                   c.source_video_id,
+                   COALESCE(v.title, '') AS source_title,
+                   c.start_ms,
+                   c.end_ms,
+                   c.availability
+            FROM clips c
+            LEFT JOIN videos v ON v.video_id = c.source_video_id
+            WHERE c.clip_id <> ''
+            ORDER BY c.clip_id
+            """
+        )
+        for row in rows:
+            yield dict(row)
+
     def latest_worker_outcomes(self, worker_id: str) -> dict[str, dict[str, Any]]:
         normalized_worker_id = str(worker_id or "").strip()
         if not PLUGIN_PROCESS_ID.fullmatch(normalized_worker_id):
@@ -1257,6 +1276,65 @@ class PluginManager:
         if not search_match_ids.issubset(video_ids):
             raise ValueError("Plugin search matches must be included in its video filter")
         return video_ids, search_match_ids
+
+    def filter_clips(
+        self,
+        plugin_id: str,
+        query: str,
+        clips: Iterable[Mapping[str, Any]],
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        record = self._records.get(plugin_id)
+        if record is None:
+            raise LookupError(f"Plugin is not enabled: {plugin_id}")
+        if record.instance is None:
+            raise RuntimeError(f"Plugin is unavailable: {plugin_id}")
+        handler = getattr(record.instance, "filter_clips", None)
+        if not callable(handler):
+            raise TypeError(f"Plugin does not provide a clip filter: {plugin_id}")
+        normalized_clips: list[dict[str, Any]] = []
+        requested_clip_ids: set[str] = set()
+        for raw_clip in clips:
+            clip_id = str(raw_clip.get("clip_id") or "").strip()
+            source_video_id = str(raw_clip.get("source_video_id") or "").strip()
+            if not clip_id or clip_id in requested_clip_ids:
+                continue
+            try:
+                start_ms = max(0, int(raw_clip.get("start_ms") or 0))
+                end_ms = int(raw_clip.get("end_ms") or 0)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid clip bounds: {clip_id}") from exc
+            if not source_video_id or end_ms <= start_ms:
+                continue
+            requested_clip_ids.add(clip_id)
+            normalized_clips.append(
+                {
+                    "clip_id": clip_id,
+                    "source_video_id": source_video_id,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                }
+            )
+        if len(normalized_clips) > PLUGIN_TASK_LIMIT:
+            raise ValueError(f"Plugin clip filter exceeds the {PLUGIN_TASK_LIMIT} clip limit")
+        try:
+            payload = handler(query, tuple(normalized_clips))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Plugin clip filter failed: {plugin_id}: {type(exc).__name__}: {exc}"
+            ) from exc
+        if not isinstance(payload, Mapping):
+            raise TypeError("Plugin clip filter response must be a mapping")
+        clip_ids = _normalized_video_ids(payload.get("clip_ids"), "clip_ids")
+        search_match_ids = _normalized_video_ids(
+            payload.get("search_match_ids", ()),
+            "search_match_ids",
+        )
+        requested = frozenset(requested_clip_ids)
+        if not clip_ids.issubset(requested):
+            raise ValueError("Plugin clip filter returned an unrequested clip ID")
+        if not search_match_ids.issubset(clip_ids):
+            raise ValueError("Plugin search matches must be included in its clip filter")
+        return clip_ids, search_match_ids
 
     def project_videos(
         self,

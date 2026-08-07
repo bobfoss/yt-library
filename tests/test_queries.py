@@ -137,7 +137,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             "Distinct clip",
             result_kinds={"clip"},
             clip_ownership_filters={"mine"},
-            video_facet_memberships={"subtitles": {"sourceclip1"}},
+            clip_facet_memberships={"subtitles": {"UgkxClipExample123"}},
         )
 
         self.assertEqual(data["counts"]["clips"], 1)
@@ -153,6 +153,41 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(clip["reaction"], "LIKE")
         self.assertEqual(clip["uploader_category"], "Music")
         self.assertEqual(clip["source_thumbnail_path"], "video_thumbs/sourceclip1.jpg")
+
+        transcript_match = omni_search_data(
+            self.conn,
+            "spoken phrase",
+            search_fields=set(),
+            result_kinds={"clip"},
+            clip_facet_memberships={"subtitles": {"UgkxClipExample123"}},
+            clip_search_match_ids={"UgkxClipExample123"},
+            clip_search_match_memberships={
+                "subtitles": {"UgkxClipExample123"},
+            },
+        )
+        self.assertEqual(transcript_match["total"], 1)
+        self.assertEqual(
+            transcript_match["results"][0]["pluginSearchMatches"],
+            ["subtitles"],
+        )
+        self.assertEqual(
+            transcript_match["metaCounts"]["clipPlugins"]["subtitles"],
+            {"present": 1, "absent": 0},
+        )
+        with_subtitles = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"clip"},
+            clip_id_filters=({"UgkxClipExample123"},),
+        )
+        self.assertEqual(with_subtitles["total"], 1)
+        without_subtitles = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"clip"},
+            clip_id_exclusion_filters=({"UgkxClipExample123"},),
+        )
+        self.assertEqual(without_subtitles["total"], 0)
 
         hidden = omni_search_data(
             self.conn,

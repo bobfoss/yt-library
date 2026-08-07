@@ -483,10 +483,12 @@ test('single-facet result kinds use the same parent state calculation', () => {
   );
 });
 
-test('video category restores plugin-provided facets', () => {
+test('video and clip categories restore plugin-provided facets', () => {
   const indexSource = source('index.js');
 
-  assert.match(indexSource, /function enableDefaultSearchKind\(kind\)[\s\S]*if \(kind !== 'videos'\) return;[\s\S]*browserVideoFilterPlugins\(\)[\s\S]*defaultBrowserVideoFacetVisibility\(videoFilter\)/);
+  assert.match(indexSource, /function enableDefaultSearchKind\(kind\)[\s\S]*kind === 'videos'[\s\S]*browserVideoFilterPlugins\(\)[\s\S]*kind === 'clips'[\s\S]*browserClipFilterPlugins\(\)/);
+  assert.match(indexSource, /const state = kind === 'videos'[\s\S]*browserVideoFacetState\(filterPlugin\)[\s\S]*browserClipFacetState\(filterPlugin\)/);
+  assert.match(indexSource, /const defaults = kind === 'videos'[\s\S]*defaultBrowserVideoFacetVisibility\(filterPlugin\)[\s\S]*defaultBrowserClipFacetVisibility\(filterPlugin\)/);
 });
 
 test('search URLs omit state already implied by their scoped route', () => {

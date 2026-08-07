@@ -553,9 +553,10 @@ through the same card batch path as `entityCards`. Existing
 
 There are two browser search patterns. Choose one deliberately.
 
-The preferred pattern for data associated with videos is a video facet. It
-keeps the result a canonical YTL video while allowing plugin presence and text
-matches to participate in the host query:
+The preferred pattern for data associated with host entities is an entity
+facet. `videoFacet` keeps a result as a canonical YTL video; `clipFacet` does
+the same for clips while allowing plugin presence and bounded text matches to
+participate in the host query:
 
 ```javascript
 api.register({
@@ -567,13 +568,19 @@ api.register({
       key: 'example',
       label: 'Example data',
       defaultEnabled: true,
-      appliesToKinds: ['videos'],
+      appliesToKinds: ['videos', 'clips'],
     },
     videoFacet: {
       presentLabel: 'has example data',
       absentLabel: 'no example data',
       presentHashParam: 'with-example',
       absentHashParam: 'without-example',
+    },
+    clipFacet: {
+      presentLabel: 'has example data',
+      absentLabel: 'no example data',
+      presentHashParam: 'clips-with-example',
+      absentHashParam: 'clips-without-example',
     },
     forceRelevance: 'query',
     catalogCount: status => Number(status?.pluginStatus?.itemCount || 0),
@@ -589,9 +596,9 @@ the field to matching result-kind identifiers. The host hides and disables the
 field when a scoped path selects another kind, or when broad Search has none of
 its applicable kinds selected; its checked state is retained so returning to an
 applicable kind restores the prior choice. Omit `appliesToKinds` for a field
-that applies everywhere. `videoFacet` adds a facet under the Videos filter root
-on broad Search and beneath the Videos link in video-scoped contexts, with
-independently selectable present and absent values. Both
+that applies everywhere. `videoFacet` and `clipFacet` add independent facets
+under the corresponding Videos or Clips filter root, with independently
+selectable present and absent values. Both
 are enabled on a fresh search by default, so simply installing a plugin does
 not narrow the core video set. Optional
 `presentDisabledPreferenceKey`/`absentDisabledPreferenceKey` values may make
@@ -610,7 +617,20 @@ def filter_videos(self, query: str) -> dict[str, object]:
         "video_ids": all_video_ids_with_plugin_data,
         "search_match_ids": matching_video_ids if query.strip() else (),
     }
+
+def filter_clips(self, query: str, clips: tuple[dict[str, object], ...]) -> dict[str, object]:
+    return {
+        "clip_ids": clip_ids_with_plugin_data,
+        "search_match_ids": matching_clip_ids if query.strip() else (),
+    }
 ```
+
+The host supplies `filter_clips` only valid descriptors containing `clip_id`,
+`source_video_id`, `start_ms`, and `end_ms`. Plugins that index source-video
+content must apply those bounds before returning a clip search match. A source
+match outside the requested interval is not a clip match. The plugin may keep
+one source-owned payload and reuse it for every referencing clip; the host does
+not require clip-local duplication.
 
 Both values must be iterable collections of nonempty IDs, not strings or
 mappings. `search_match_ids` must be a subset of `video_ids`. The host may call
@@ -624,16 +644,17 @@ The host applies the returned sets to its normal search model, preserves native
 availability/reaction/completion/membership filtering, computes stable present
 and absent facet counts, and annotates page results with:
 
-- `result.pluginFacets[plugin_id]`: whether the video has plugin data.
+- `result.pluginFacets[plugin_id]`: whether the video or clip has plugin data.
 - `result.pluginSearchMatches`: plugin IDs whose text matched the query.
 
 `decorateCoreResults` can batch-fetch display details after the core page is
 known. `decorateCoreResultCard` can then add a badge or replace the displayed
-description with a match snippet. The result remains a video and should retain
-the host's normal video-card semantics.
+description with a match snippet. The result remains the original host entity
+and should retain its normal card semantics.
 
 The second pattern is a separate result type. Use it only when results are not
-best represented as canonical videos. Omit `videoFacet`, implement
+best represented as canonical host entities. Omit both `videoFacet` and
+`clipFacet`, implement
 `search.fetch({query, limit, offset}, host)`, and return:
 
 ```javascript
@@ -820,6 +841,9 @@ task.
 - `context.plugin_id` identifies the current plugin.
 - `context.library_videos()` streams dictionaries with `video_id`, `title`,
   `availability`, and `is_playable`, ordered by video ID.
+- `context.library_clips()` streams dictionaries with `clip_id`, `title`,
+  `source_video_id`, `source_title`, `start_ms`, `end_ms`, and `availability`,
+  ordered by clip ID.
 - `context.latest_worker_outcomes(worker_id)` returns the most recent run per
   nonempty subject for that plugin and worker, including `outcome`, `status`,
   `finished_at`, and `message`.
@@ -886,6 +910,10 @@ events are:
 - `video_scan`: emitted when Admin resolves an individual video ID or direct
   video URL through the common add-target control. Channel and playlist targets
   do not emit it.
+- `clip_scan`: emitted after a clip metadata worker has resolved and saved the
+  clip's source video. It includes `clip_id` and `source_video_id`, each as a
+  one-item list. A plugin should resolve canonical clip bounds through
+  `context.library_clips()` rather than treating event parameters as metadata.
 
 The planner receives `params["hook"]` plus event parameters. `video_scan`
 currently includes `video_id` as a list containing the resolved ID. Hook plans

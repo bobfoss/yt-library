@@ -66,12 +66,14 @@ class WorkerQueueTests(unittest.TestCase):
                 patch("yt_library.workers.load_cookie_opener", return_value=object()),
                 patch("yt_library.workers.fetch_clip_metadata", return_value=metadata),
             ):
+                plugin_manager = Mock()
                 ClipWorker()._run(
                     "clip-run",
                     db_path,
                     Path(temp_dir) / "missing-cookies.txt",
                     row,
                     "",
+                    plugin_manager,
                 )
 
             conn = core.connect(db_path)
@@ -97,6 +99,15 @@ class WorkerQueueTests(unittest.TestCase):
         self.assertEqual(source["uploader_category"], "Music")
         self.assertEqual([row["subject_key"] for row in queue], ["metadata:video:sourceworker1"])
         self.assertEqual(tuple(log), ("clip info", "UgkxWorkerClip123", "ok: Clip title"))
+        plugin_manager.enqueue_hook.assert_called_once()
+        hook_args = plugin_manager.enqueue_hook.call_args.args
+        self.assertEqual(hook_args[1:], (
+            "clip_scan",
+            {
+                "clip_id": ["UgkxWorkerClip123"],
+                "source_video_id": ["sourceworker1"],
+            },
+        ))
 
     def test_worker_log_wrappers_write_to_their_owned_tables(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

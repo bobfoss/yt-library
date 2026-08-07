@@ -7,7 +7,12 @@ from pathlib import Path
 
 from yt_library import core
 from yt_library.config import load_config
-from yt_library.plugins import PLUGIN_API_VERSION, PluginManager, PluginTaskWorker
+from yt_library.plugins import (
+    PLUGIN_API_VERSION,
+    PluginManager,
+    PluginPlanningContext,
+    PluginTaskWorker,
+)
 from yt_library.workers import WorkerQueueDispatcher
 
 from tests.support import migrated_connection
@@ -31,7 +36,7 @@ class FakePlugin:
             "maxInFlight": 2,
             "adminSurface": "advanced",
             "buttonLabel": "Fetch",
-            "hooks": ["library_update", "video_scan"],
+            "hooks": ["library_update", "video_scan", "clip_scan"],
             "adminActions": [
                 {
                     "id": "fetch-video",
@@ -78,6 +83,17 @@ class FakePlugin:
         return {
             "video_ids": {"available", "unavailable"},
             "search_match_ids": {"unavailable"} if query else set(),
+        }
+
+    def filter_clips(self, query, clips):
+        clip_ids = {
+            str(clip["clip_id"])
+            for clip in clips
+            if str(clip.get("source_video_id") or "") == "available"
+        }
+        return {
+            "clip_ids": clip_ids,
+            "search_match_ids": clip_ids if query else set(),
         }
 
     def project_videos(self, video_ids):
@@ -228,6 +244,43 @@ class FakeEntryPoint:
 
 
 class PluginManagerTests(unittest.TestCase):
+    def test_planning_context_exposes_canonical_clip_sources_and_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(conn, "abcdefghijk", title="Source title")
+                    core.save_clip_metadata(
+                        conn,
+                        {
+                            "clip_id": "UgkxPlanningClip",
+                            "title": "Clip title",
+                            "source_video_id": "abcdefghijk",
+                            "start_ms": 1_000,
+                            "end_ms": 2_000,
+                            "availability": "active",
+                        },
+                        fetched=True,
+                    )
+                clips = list(PluginPlanningContext(conn, "example").library_clips())
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            clips,
+            [
+                {
+                    "clip_id": "UgkxPlanningClip",
+                    "title": "Clip title",
+                    "source_video_id": "abcdefghijk",
+                    "source_title": "Source title",
+                    "start_ms": 1_000,
+                    "end_ms": 2_000,
+                    "availability": "active",
+                }
+            ],
+        )
+
     def test_core_query_and_browser_templates_have_no_plugin_specific_contract(self) -> None:
         root = Path(__file__).resolve().parents[1] / "yt_library"
         for path in (
@@ -301,6 +354,24 @@ class PluginManagerTests(unittest.TestCase):
             video_ids, search_match_ids = manager.filter_videos(
                 "subtitles", "history"
             )
+            clip_ids, clip_search_match_ids = manager.filter_clips(
+                "subtitles",
+                "history",
+                (
+                    {
+                        "clip_id": "clip-available",
+                        "source_video_id": "available",
+                        "start_ms": 1_000,
+                        "end_ms": 2_000,
+                    },
+                    {
+                        "clip_id": "clip-other",
+                        "source_video_id": "other",
+                        "start_ms": 1_000,
+                        "end_ms": 2_000,
+                    },
+                ),
+            )
             projections = manager.project_videos(
                 "subtitles",
                 {"available", "unavailable"},
@@ -323,6 +394,8 @@ class PluginManagerTests(unittest.TestCase):
             self.assertEqual(body, b"/* browser.js */")
             self.assertEqual(video_ids, frozenset({"available", "unavailable"}))
             self.assertEqual(search_match_ids, frozenset({"unavailable"}))
+            self.assertEqual(clip_ids, frozenset({"clip-available"}))
+            self.assertEqual(clip_search_match_ids, frozenset({"clip-available"}))
             self.assertEqual(
                 projections,
                 {

@@ -1777,6 +1777,11 @@ def omni_search_data(
     video_search_match_ids: Collection[str] = (),
     video_search_match_memberships: Mapping[str, Collection[str]] | None = None,
     video_projections: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
+    clip_id_filters: Sequence[Collection[str]] = (),
+    clip_id_exclusion_filters: Sequence[Collection[str]] = (),
+    clip_facet_memberships: Mapping[str, Collection[str]] | None = None,
+    clip_search_match_ids: Collection[str] = (),
+    clip_search_match_memberships: Mapping[str, Collection[str]] | None = None,
     channel_subscription_filters: set[str] | None = None,
     channel_status_filters: set[str] | None = None,
     clip_ownership_filters: set[str] | None = None,
@@ -1939,9 +1944,44 @@ def omni_search_data(
         if has_video_search_matches
         else "0"
     )
+    active_clip_id_filters = [frozenset(values) for values in clip_id_filters]
+    active_clip_id_exclusion_filters = [
+        frozenset(values) for values in clip_id_exclusion_filters
+    ]
+    active_clip_facet_memberships = {
+        str(plugin_id): frozenset(values)
+        for plugin_id, values in (clip_facet_memberships or {}).items()
+    }
+    active_clip_search_match_memberships = {
+        str(plugin_id): frozenset(values)
+        for plugin_id, values in (clip_search_match_memberships or {}).items()
+    }
+    active_clip_search_match_ids = frozenset(clip_search_match_ids).union(
+        *active_clip_search_match_memberships.values()
+    )
+    has_clip_search_matches = bool(query and active_clip_search_match_ids)
+    if has_clip_search_matches:
+        conn.execute("DROP TABLE IF EXISTS temp.omni_clip_search_matches")
+        conn.execute(
+            """
+            CREATE TEMP TABLE omni_clip_search_matches(
+              clip_id TEXT PRIMARY KEY
+            ) WITHOUT ROWID
+            """
+        )
+        conn.executemany(
+            "INSERT INTO temp.omni_clip_search_matches(clip_id) VALUES (?)",
+            ((clip_id,) for clip_id in active_clip_search_match_ids),
+        )
+    clip_search_match_sql = (
+        "EXISTS (SELECT 1 FROM temp.omni_clip_search_matches "
+        "WHERE clip_id = c.clip_id)"
+        if has_clip_search_matches
+        else "0"
+    )
     results: list[dict[str, Any]] = []
 
-    if "clip" in active_result_kinds and (not query or search_titles):
+    if "clip" in active_result_kinds and (not query or search_titles or has_clip_search_matches):
         clip_title_match = """
             lower(
               c.title || ' ' || c.clip_id || ' ' || c.owner_title || ' ' ||
@@ -1949,7 +1989,15 @@ def omni_search_data(
               COALESCE(source_channel.title, '') || ' ' || COALESCE(c.source_video_id, '')
             ) LIKE :pattern ESCAPE '\\'
         """
-        clip_matches = clip_title_match if query else "1 = 1"
+        clip_matches = []
+        if query:
+            if search_titles:
+                clip_matches.append(clip_title_match)
+            if has_clip_search_matches:
+                clip_matches.append(clip_search_match_sql)
+        else:
+            clip_matches.append("1 = 1")
+        clip_title_hit = clip_title_match if not query or search_titles else "0"
         for row in conn.execute(
             f"""
             SELECT c.*,
@@ -1966,17 +2014,19 @@ def omni_search_data(
                    COALESCE(source_channel.title, '') AS source_channel_title,
                    COALESCE(source_channel.aliases, '') AS source_channel_aliases,
                    COALESCE(source_channel.thumbnail_path, '') AS source_channel_thumbnail_path,
-                   CASE WHEN {clip_title_match} THEN 1 ELSE 0 END AS title_hit
+                   CASE WHEN {clip_title_hit} THEN 1 ELSE 0 END AS title_hit,
+                   CASE WHEN {clip_search_match_sql} THEN 1 ELSE 0 END AS plugin_search_hit
             FROM clips c
             LEFT JOIN channels owner ON owner.channel_id = c.owner_channel_id
             LEFT JOIN videos source ON source.video_id = c.source_video_id
             LEFT JOIN channels source_channel ON source_channel.channel_id = source.channel_id
-            WHERE ({clip_matches})
+            WHERE ({' OR '.join(f'({match})' for match in clip_matches)})
             """,
             params,
         ):
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
+            plugin_search_hit = bool(item.pop("plugin_search_hit"))
             item["video_id"] = item.get("source_video_id") or ""
             item["url"] = f"https://www.youtube.com/clip/{urllib.parse.quote(item['clip_id'])}"
             item["owner_channel_reference"] = preferred_youtube_channel_reference(
@@ -1996,14 +2046,19 @@ def omni_search_data(
                 source_channel_id,
                 item.get("source_channel_aliases") or "",
             )
-            results.append(
-                _omni_result(
+            result = _omni_result(
                     "clip",
                     1 if title_hit else 4,
                     item,
                     matched_description=False,
                 )
+            result["pluginSearchMatch"] = plugin_search_hit
+            result["pluginSearchMatches"] = sorted(
+                plugin_id
+                for plugin_id, clip_ids in active_clip_search_match_memberships.items()
+                if str(item.get("clip_id") or "") in clip_ids
             )
+            results.append(result)
 
     if "playlist" in active_result_kinds and (not query or search_titles or search_descriptions):
         playlist_title_match = """
@@ -2456,20 +2511,55 @@ def omni_search_data(
         }
         for plugin_id, video_ids in active_video_facet_memberships.items()
     }
+    native_clip_results = [
+        result
+        for result in results
+        if result["kind"] == "clip" and matches_native_filters(result)
+    ]
+    clip_facet_counts = {
+        plugin_id: {
+            "present": sum(
+                1
+                for result in native_clip_results
+                if str(result["item"].get("clip_id") or "") in clip_ids
+            ),
+            "absent": sum(
+                1
+                for result in native_clip_results
+                if str(result["item"].get("clip_id") or "") not in clip_ids
+            ),
+        }
+        for plugin_id, clip_ids in active_clip_facet_memberships.items()
+    }
 
     plugin_filtered_results = [
         result
         for result in results
         if (
-            result["kind"] != "video"
-            or (
-                all(
-                    str(result["item"].get("video_id") or "") in video_ids
-                    for video_ids in active_video_id_filters
+            (
+                result["kind"] != "video"
+                or (
+                    all(
+                        str(result["item"].get("video_id") or "") in video_ids
+                        for video_ids in active_video_id_filters
+                    )
+                    and all(
+                        str(result["item"].get("video_id") or "") not in video_ids
+                        for video_ids in active_video_id_exclusion_filters
+                    )
                 )
-                and all(
-                    str(result["item"].get("video_id") or "") not in video_ids
-                    for video_ids in active_video_id_exclusion_filters
+            )
+            and (
+                result["kind"] != "clip"
+                or (
+                    all(
+                        str(result["item"].get("clip_id") or "") in clip_ids
+                        for clip_ids in active_clip_id_filters
+                    )
+                    and all(
+                        str(result["item"].get("clip_id") or "") not in clip_ids
+                        for clip_ids in active_clip_id_exclusion_filters
+                    )
                 )
             )
         )
@@ -2477,6 +2567,8 @@ def omni_search_data(
     meta_counts = _omni_meta_counts(plugin_filtered_results)
     if video_facet_counts:
         meta_counts["videoPlugins"] = video_facet_counts
+    if clip_facet_counts:
+        meta_counts["clipPlugins"] = clip_facet_counts
     reaction_counts = _omni_reaction_counts(plugin_filtered_results)
     completion_counts = _omni_completion_counts(
         plugin_filtered_results,
@@ -2502,13 +2594,18 @@ def omni_search_data(
         [result["item"] for result in page if result["kind"] == "playlist"],
     )
     for result in page:
-        if result["kind"] not in {"video", "clip"}:
-            continue
-        video_id = str(result["item"].get("video_id") or "")
-        result["pluginFacets"] = {
-            plugin_id: video_id in video_ids
-            for plugin_id, video_ids in active_video_facet_memberships.items()
-        }
+        if result["kind"] == "video":
+            video_id = str(result["item"].get("video_id") or "")
+            result["pluginFacets"] = {
+                plugin_id: video_id in video_ids
+                for plugin_id, video_ids in active_video_facet_memberships.items()
+            }
+        elif result["kind"] == "clip":
+            clip_id = str(result["item"].get("clip_id") or "")
+            result["pluginFacets"] = {
+                plugin_id: clip_id in clip_ids
+                for plugin_id, clip_ids in active_clip_facet_memberships.items()
+            }
     _hydrate_omni_videos(conn, page)
     _add_omni_video_links(conn, page)
     counts = {

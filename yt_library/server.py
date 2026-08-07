@@ -18,7 +18,7 @@ import time
 import urllib.parse
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Mapping
 
 from .config import (
     CARD_LAYOUTS,
@@ -295,6 +295,74 @@ def video_plugin_query_data(
         "video_search_match_memberships": video_search_match_memberships,
         "video_projections": video_projections,
     }
+
+
+def clip_plugin_query_data(
+    plugin_manager: PluginManager,
+    params: dict[str, list[str]],
+    query: str,
+    clips: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    included_plugin_ids = set(params.get("clip_filter_plugin") or [])
+    excluded_plugin_ids = set(params.get("clip_exclude_filter_plugin") or [])
+    requested_search_plugin_ids = params.get("clip_search_plugin")
+    search_plugin_ids = (
+        set(included_plugin_ids)
+        if requested_search_plugin_ids is None
+        else {
+            plugin_id
+            for plugin_id in requested_search_plugin_ids
+            if plugin_id and plugin_id != "__none__"
+        }
+    )
+    facet_plugin_ids = dict.fromkeys(
+        [
+            *(params.get("clip_facet_plugin") or []),
+            *included_plugin_ids,
+            *excluded_plugin_ids,
+            *search_plugin_ids,
+        ]
+    )
+    clip_id_filters: list[frozenset[str]] = []
+    clip_id_exclusion_filters: list[frozenset[str]] = []
+    clip_facet_memberships: dict[str, frozenset[str]] = {}
+    clip_search_match_ids: set[str] = set()
+    clip_search_match_memberships: dict[str, frozenset[str]] = {}
+    clip_rows = tuple(clips) if facet_plugin_ids else ()
+    for plugin_id in facet_plugin_ids:
+        clip_ids, search_match_ids = plugin_manager.filter_clips(
+            plugin_id,
+            query if plugin_id in search_plugin_ids else "",
+            clip_rows,
+        )
+        clip_facet_memberships[plugin_id] = clip_ids
+        if plugin_id in included_plugin_ids:
+            clip_id_filters.append(clip_ids)
+        if plugin_id in excluded_plugin_ids:
+            clip_id_exclusion_filters.append(clip_ids)
+        if plugin_id in search_plugin_ids:
+            clip_search_match_ids.update(search_match_ids)
+            clip_search_match_memberships[plugin_id] = search_match_ids
+    return {
+        "clip_id_filters": clip_id_filters,
+        "clip_id_exclusion_filters": clip_id_exclusion_filters,
+        "clip_facet_memberships": clip_facet_memberships,
+        "clip_search_match_ids": clip_search_match_ids,
+        "clip_search_match_memberships": clip_search_match_memberships,
+    }
+
+
+def library_clip_descriptors(conn: sqlite3.Connection) -> Iterable[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT clip_id, source_video_id, start_ms, end_ms
+        FROM clips
+        WHERE clip_id <> '' AND source_video_id <> '' AND end_ms > start_ms
+        ORDER BY clip_id
+        """
+    )
+    for row in rows:
+        yield dict(row)
 
 
 def service_restart_command() -> list[str]:
@@ -987,18 +1055,19 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 data = clip_detail_data(conn, clip_id)
             finally:
                 conn.close()
-            if data is not None and data.get("source_video_id"):
+            if data is not None:
                 facets: dict[str, bool] = {}
                 try:
-                    for plugin_id in dict.fromkeys(params.get("video_facet_plugin") or []):
-                        video_ids, _search_matches = self.plugin_manager.filter_videos(
+                    for plugin_id in dict.fromkeys(params.get("clip_facet_plugin") or []):
+                        clip_ids, _search_matches = self.plugin_manager.filter_clips(
                             plugin_id,
                             "",
+                            (data,),
                         )
-                        facets[plugin_id] = str(data["source_video_id"]) in video_ids
+                        facets[plugin_id] = str(data["clip_id"]) in clip_ids
                 except (LookupError, RuntimeError, TypeError, ValueError) as exc:
                     self.send_json(
-                        {"error": "Clip source filter unavailable", "message": str(exc)},
+                        {"error": "Clip filter unavailable", "message": str(exc)},
                         status=503,
                     )
                     return
@@ -1252,6 +1321,19 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 offset = 0
             conn = connect(self.db_path)
             try:
+                try:
+                    clip_plugin_data = clip_plugin_query_data(
+                        self.plugin_manager,
+                        params,
+                        query,
+                        library_clip_descriptors(conn),
+                    )
+                except (LookupError, RuntimeError, TypeError, ValueError) as exc:
+                    self.send_json(
+                        {"error": "Clip filter unavailable", "message": str(exc)},
+                        status=503,
+                    )
+                    return
                 data = omni_search_data(
                     conn,
                     query,
@@ -1288,6 +1370,19 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         "video_search_match_memberships"
                     ],
                     video_projections=plugin_data["video_projections"],
+                    clip_id_filters=clip_plugin_data["clip_id_filters"],
+                    clip_id_exclusion_filters=clip_plugin_data[
+                        "clip_id_exclusion_filters"
+                    ],
+                    clip_facet_memberships=clip_plugin_data[
+                        "clip_facet_memberships"
+                    ],
+                    clip_search_match_ids=clip_plugin_data[
+                        "clip_search_match_ids"
+                    ],
+                    clip_search_match_memberships=clip_plugin_data[
+                        "clip_search_match_memberships"
+                    ],
                     channel_subscription_filters=query_set_param(
                         params,
                         "channel_subscription",

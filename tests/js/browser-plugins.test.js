@@ -139,6 +139,14 @@ test('browser plugins are loaded through a generic registration contract', () =>
   assert.match(indexSource, /label\.dataset\.browserPluginSearchField = plugin\.id/);
   assert.match(indexSource, /requestParams\.append\('video_search_plugin', plugin\.id\)/);
   assert.match(indexSource, /requestParams\.append\('video_search_plugin', '__none__'\)/);
+  assert.match(indexSource, /browserClipFacetState/);
+  assert.match(indexSource, /browserClipFilterPlugins/);
+  assert.match(indexSource, /requestParams\.append\('clip_facet_plugin', plugin\.id\)/);
+  assert.match(indexSource, /requestParams\.append\('clip_filter_plugin', plugin\.id\)/);
+  assert.match(indexSource, /requestParams\.append\('clip_exclude_filter_plugin', plugin\.id\)/);
+  assert.match(indexSource, /requestParams\.append\('clip_search_plugin', plugin\.id\)/);
+  assert.match(indexSource, /requestParams\.append\('clip_search_plugin', '__none__'\)/);
+  assert.match(indexSource, /metaCounts\?\.clipPlugins\?\.\[plugin\.id\]/);
 });
 
 test('plugin search fields can be limited to applicable result kinds', () => {

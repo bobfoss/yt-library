@@ -751,10 +751,18 @@ class ClipWorker(_ThreadWorkerLifecycle):
         row: dict[str, Any],
         *,
         proxy_url: str = "",
+        plugin_manager: PluginManager | None = None,
     ) -> dict[str, Any]:
         return self._start_background(
             self._run,
-            lambda run_id: (run_id, db_path, cookie_file, dict(row), proxy_url),
+            lambda run_id: (
+                run_id,
+                db_path,
+                cookie_file,
+                dict(row),
+                proxy_url,
+                plugin_manager,
+            ),
             started_message="Clip worker started",
             already_running_message="Clip worker already running",
             reset_blocked_reason=True,
@@ -773,6 +781,7 @@ class ClipWorker(_ThreadWorkerLifecycle):
         cookie_file: Path,
         row: dict[str, Any],
         proxy_url: str,
+        plugin_manager: PluginManager | None = None,
     ) -> None:
         queue_id = int(row.get("queue_id") or 0)
         clip_id = str(row.get("clip_id") or "").strip()
@@ -865,6 +874,15 @@ class ClipWorker(_ThreadWorkerLifecycle):
                     metadata["source_video_id"] = existing["source_video_id"] or ""
                     source_video_id = str(metadata["source_video_id"] or "")
                 save_clip_metadata(conn, metadata, fetched=True)
+                if plugin_manager is not None and source_video_id:
+                    plugin_manager.enqueue_hook(
+                        conn,
+                        "clip_scan",
+                        {
+                            "clip_id": [clip_id],
+                            "source_video_id": [source_video_id],
+                        },
+                    )
                 if source_video_id:
                     source_video = conn.execute(
                         "SELECT title, fetch_status FROM videos WHERE video_id = ?",
@@ -3113,6 +3131,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         cookie_file,
                         row,
                         proxy_url=proxy_url,
+                        plugin_manager=plugin_manager,
                     )
                     if result.get("started"):
                         with self._lock:

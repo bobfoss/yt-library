@@ -214,12 +214,12 @@ class AdminServerTests(unittest.TestCase):
         connection.close.assert_called_once_with()
         handler.send_json.assert_called_once_with(videos)
 
-    def test_clip_detail_route_inherits_source_video_plugin_facets(self) -> None:
+    def test_clip_detail_route_uses_generic_clip_plugin_facets(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.db_path = Path("library.sqlite3")
         handler.plugin_manager = Mock()
-        handler.plugin_manager.filter_videos.return_value = (
-            frozenset({"source12345"}),
+        handler.plugin_manager.filter_clips.return_value = (
+            frozenset({"UgkxClipRoute123"}),
             frozenset(),
         )
         handler.send_json = Mock()
@@ -227,6 +227,8 @@ class AdminServerTests(unittest.TestCase):
         detail = {
             "clip_id": "UgkxClipRoute123",
             "source_video_id": "source12345",
+            "start_ms": 1_000,
+            "end_ms": 2_000,
         }
 
         with (
@@ -235,11 +237,15 @@ class AdminServerTests(unittest.TestCase):
         ):
             handler._handle_library_get(
                 urllib.parse.urlparse(
-                    "/api/clips/UgkxClipRoute123?video_facet_plugin=subtitles"
+                    "/api/clips/UgkxClipRoute123?clip_facet_plugin=subtitles"
                 )
             )
 
-        handler.plugin_manager.filter_videos.assert_called_once_with("subtitles", "")
+        handler.plugin_manager.filter_clips.assert_called_once_with(
+            "subtitles",
+            "",
+            (detail,),
+        )
         self.assertEqual(detail["pluginFacets"], {"subtitles": True})
         handler.send_json.assert_called_once_with(detail)
 
@@ -496,6 +502,57 @@ class AdminServerTests(unittest.TestCase):
                     }
                 }
             },
+        )
+        handler.send_json.assert_called_once_with(payload)
+
+    def test_search_applies_generic_plugin_clip_filters(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.config_data = {}
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.filter_clips.return_value = (
+            frozenset({"clip-match"}),
+            frozenset({"clip-match"}),
+        )
+        handler.send_json = Mock()
+        connection = Mock()
+        clip_rows = (
+            {
+                "clip_id": "clip-match",
+                "source_video_id": "source12345",
+                "start_ms": 1_000,
+                "end_ms": 2_000,
+            },
+        )
+        payload = {"results": [], "total": 0}
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch("yt_library.server.library_clip_descriptors", return_value=clip_rows),
+            patch("yt_library.server.omni_search_data", return_value=payload) as search_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/search?q=spoken&clip_facet_plugin=example&clip_filter_plugin=example&clip_search_plugin=example&limit=1"
+                )
+            )
+
+        handler.plugin_manager.filter_clips.assert_called_once_with(
+            "example",
+            "spoken",
+            clip_rows,
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["clip_id_filters"],
+            [frozenset({"clip-match"})],
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["clip_search_match_ids"],
+            {"clip-match"},
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["clip_facet_memberships"],
+            {"example": frozenset({"clip-match"})},
         )
         handler.send_json.assert_called_once_with(payload)
 

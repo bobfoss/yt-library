@@ -73,6 +73,7 @@ const browserPlugins = new Map();
 const loadedBrowserPluginAssets = new Set();
 const pluginSearchVisibility = new Map();
 const pluginVideoFacetVisibility = new Map();
+const pluginClipFacetVisibility = new Map();
 
 function browserSearchFieldDefinition(plugin) {
   const definition = plugin?.search?.searchField;
@@ -140,8 +141,21 @@ function browserVideoFacetDefinition(plugin) {
   return definition && typeof definition === 'object' ? definition : null;
 }
 
+function browserClipFacetDefinition(plugin) {
+  const definition = plugin?.search?.clipFacet;
+  return definition && typeof definition === 'object' ? definition : null;
+}
+
 function defaultBrowserVideoFacetVisibility(plugin) {
   const definition = browserVideoFacetDefinition(plugin);
+  return {
+    present: !filterPreferenceEnabled(String(definition?.presentDisabledPreferenceKey || '')),
+    absent: !filterPreferenceEnabled(String(definition?.absentDisabledPreferenceKey || '')),
+  };
+}
+
+function defaultBrowserClipFacetVisibility(plugin) {
+  const definition = browserClipFacetDefinition(plugin);
   return {
     present: !filterPreferenceEnabled(String(definition?.presentDisabledPreferenceKey || '')),
     absent: !filterPreferenceEnabled(String(definition?.absentDisabledPreferenceKey || '')),
@@ -157,12 +171,21 @@ function registerBrowserPlugin(plugin) {
   if (plugin.entityCards) EntityCardExtensions.validateDefinition(plugin.entityCards);
   if (plugin.search) {
     registerBrowserPluginSearchField(plugin, searchFieldRegistration);
-    if (browserVideoFacetDefinition(plugin)) {
+    const videoFacet = browserVideoFacetDefinition(plugin);
+    const clipFacet = browserClipFacetDefinition(plugin);
+    if (videoFacet) {
       pluginVideoFacetVisibility.set(
         pluginId,
         defaultBrowserVideoFacetVisibility(plugin),
       );
-    } else {
+    }
+    if (clipFacet) {
+      pluginClipFacetVisibility.set(
+        pluginId,
+        defaultBrowserClipFacetVisibility(plugin),
+      );
+    }
+    if (!videoFacet && !clipFacet) {
       pluginSearchVisibility.set(
         pluginId,
         filterPreferenceEnabled(String(plugin.search.preferenceKey || '')),
@@ -207,9 +230,19 @@ function browserVideoFilterPlugins() {
   return browserSearchPlugins().filter(plugin => Boolean(browserVideoFacetDefinition(plugin)));
 }
 
+function browserClipFilterPlugins() {
+  return browserSearchPlugins().filter(plugin => Boolean(browserClipFacetDefinition(plugin)));
+}
+
 function browserVideoSearchFieldPlugins() {
   return browserVideoFilterPlugins().filter(plugin => (
-    browserPluginSearchFieldEnabled(plugin) && searchKindEnabled(plugin.id)
+    browserPluginSearchFieldEnabled(plugin) && searchKindEnabled('videos')
+  ));
+}
+
+function browserClipSearchFieldPlugins() {
+  return browserClipFilterPlugins().filter(plugin => (
+    browserPluginSearchFieldEnabled(plugin) && searchKindEnabled('clips')
   ));
 }
 
@@ -245,12 +278,26 @@ function browserVideoFacetSearchActive(plugin) {
   return state.present && !state.absent;
 }
 
+function browserClipFacetState(plugin) {
+  return pluginClipFacetVisibility.get(plugin.id) || { present: false, absent: false };
+}
+
+function browserClipFacetSearchActive(plugin) {
+  const state = browserClipFacetState(plugin);
+  return state.present && !state.absent;
+}
+
 function browserPluginStateKey(plugin) {
+  const parts = [plugin.id];
   if (browserVideoFacetDefinition(plugin)) {
     const state = browserVideoFacetState(plugin);
-    return `${plugin.id}:${state.present ? '1' : '0'}${state.absent ? '1' : '0'}`;
+    parts.push(`v${state.present ? '1' : '0'}${state.absent ? '1' : '0'}`);
   }
-  return searchKindEnabled(plugin.id) ? plugin.id : '';
+  if (browserClipFacetDefinition(plugin)) {
+    const state = browserClipFacetState(plugin);
+    parts.push(`c${state.present ? '1' : '0'}${state.absent ? '1' : '0'}`);
+  }
+  return parts.length > 1 ? parts.join(':') : (searchKindEnabled(plugin.id) ? plugin.id : '');
 }
 
 function saveBrowserVideoFacetPreferences(plugin) {
@@ -264,9 +311,21 @@ function saveBrowserVideoFacetPreferences(plugin) {
   }
 }
 
+function saveBrowserClipFacetPreferences(plugin) {
+  const definition = browserClipFacetDefinition(plugin);
+  const state = browserClipFacetState(plugin);
+  if (definition.presentDisabledPreferenceKey) {
+    saveFilterPreference(definition.presentDisabledPreferenceKey, !state.present);
+  }
+  if (definition.absentDisabledPreferenceKey) {
+    saveFilterPreference(definition.absentDisabledPreferenceKey, !state.absent);
+  }
+}
+
 function browserResultSearchPlugins() {
   return browserSearchPlugins().filter(plugin => (
     !browserVideoFacetDefinition(plugin)
+    && !browserClipFacetDefinition(plugin)
     && typeof plugin.search.fetch === 'function'
   ));
 }
@@ -510,6 +569,7 @@ function handleSidebarLinkClick(event, navigate) {
 function searchPresetDefinition(presetId) {
   return searchPresetDefinitions[presetId] || null;
 }
+
 let playlistVisibilityPlaylistId = '';
 let playlistViewSort = playlistVideoSortOptions.has(sortPreferences.playlist)
   ? sortPreferences.playlist
@@ -544,6 +604,7 @@ let videoUploaderCategoryCountsCache = new Map();
 let videoPluginFacetCountsCache = new Map();
 let omniMetaCountsCache = new Map();
 let omniVideoPluginFacetCountsCache = new Map();
+let omniClipPluginFacetCountsCache = new Map();
 let omniReactionCountsCache = new Map();
 let omniCompletionCountsCache = new Map();
 let omniPlaylistMembershipCountsCache = new Map();
@@ -628,6 +689,7 @@ async function loadData({ preserveSearchContent = false } = {}) {
   videoPluginFacetCountsCache = new Map();
   omniMetaCountsCache = new Map();
   omniVideoPluginFacetCountsCache = new Map();
+  omniClipPluginFacetCountsCache = new Map();
   omniReactionCountsCache = new Map();
   omniCompletionCountsCache = new Map();
   omniPlaylistMembershipCountsCache = new Map();
@@ -939,6 +1001,13 @@ function browserVideoFacetPresetBaseline(plugin, preset = activeSearchPreset) {
     : { present: false, absent: false };
 }
 
+function browserClipFacetPresetBaseline(plugin, preset = activeSearchPreset) {
+  const definition = searchPresetDefinition(preset);
+  return definition?.kind === 'clips' || !definition
+    ? defaultBrowserClipFacetVisibility(plugin)
+    : { present: false, absent: false };
+}
+
 function searchOptInKeys(groupName) {
   const keys = searchOptInMetaFilters
     .filter(filter => filter.groupName === groupName)
@@ -966,6 +1035,16 @@ function setLocalFilterPreference(preferenceKey, enabled) {
   for (const videoFacetPlugin of browserVideoFilterPlugins()) {
     const definition = browserVideoFacetDefinition(videoFacetPlugin);
     const state = browserVideoFacetState(videoFacetPlugin);
+    if (definition.presentDisabledPreferenceKey === preferenceKey) {
+      state.present = !enabled;
+    }
+    if (definition.absentDisabledPreferenceKey === preferenceKey) {
+      state.absent = !enabled;
+    }
+  }
+  for (const clipFacetPlugin of browserClipFilterPlugins()) {
+    const definition = browserClipFacetDefinition(clipFacetPlugin);
+    const state = browserClipFacetState(clipFacetPlugin);
     if (definition.presentDisabledPreferenceKey === preferenceKey) {
       state.present = !enabled;
     }
@@ -1048,7 +1127,14 @@ function resetSearchMetaVisibility() {
         browserVideoFacetState(plugin),
         defaultBrowserVideoFacetVisibility(plugin),
       );
-    } else {
+    }
+    if (browserClipFacetDefinition(plugin)) {
+      Object.assign(
+        browserClipFacetState(plugin),
+        defaultBrowserClipFacetVisibility(plugin),
+      );
+    }
+    if (!browserVideoFacetDefinition(plugin) && !browserClipFacetDefinition(plugin)) {
       pluginSearchVisibility.set(
         plugin.id,
         filterPreferenceEnabled(String(plugin.search.preferenceKey || '')),
@@ -1064,7 +1150,11 @@ function clearSearchMetaVisibility() {
   for (const plugin of browserSearchPlugins()) {
     if (browserVideoFacetDefinition(plugin)) {
       Object.assign(browserVideoFacetState(plugin), { present: false, absent: false });
-    } else {
+    }
+    if (browserClipFacetDefinition(plugin)) {
+      Object.assign(browserClipFacetState(plugin), { present: false, absent: false });
+    }
+    if (!browserVideoFacetDefinition(plugin) && !browserClipFacetDefinition(plugin)) {
       pluginSearchVisibility.set(plugin.id, false);
     }
   }
@@ -1079,11 +1169,17 @@ function enableDefaultSearchKind(kind) {
   for (const facetKey of searchKindFacetKeys(kind)) {
     Object.assign(searchMetaVisibility[facetKey], defaultSearchMetaVisibility[facetKey]);
   }
-  if (kind !== 'videos') return;
-  for (const videoFilter of browserVideoFilterPlugins()) {
-    const state = browserVideoFacetState(videoFilter);
+  const filters = kind === 'videos'
+    ? browserVideoFilterPlugins()
+    : (kind === 'clips' ? browserClipFilterPlugins() : []);
+  for (const filterPlugin of filters) {
+    const state = kind === 'videos'
+      ? browserVideoFacetState(filterPlugin)
+      : browserClipFacetState(filterPlugin);
     if (state.present || state.absent) continue;
-    const defaults = defaultBrowserVideoFacetVisibility(videoFilter);
+    const defaults = kind === 'videos'
+      ? defaultBrowserVideoFacetVisibility(filterPlugin)
+      : defaultBrowserClipFacetVisibility(filterPlugin);
     Object.assign(
       state,
       defaults.present || defaults.absent
@@ -1140,14 +1236,23 @@ function searchKindEnabled(kind) {
       const state = browserVideoFacetState(plugin);
       return state.present || state.absent;
     }
+    if (browserClipFacetDefinition(plugin)) {
+      const state = browserClipFacetState(plugin);
+      return state.present || state.absent;
+    }
     return pluginSearchVisibility.get(plugin.id) === true;
   }
   const nativeFacetsEnabled = searchKindFacetKeys(kind).every(
     key => Object.values(searchMetaVisibility[key]).some(Boolean)
   );
-  if (kind !== 'videos' || !nativeFacetsEnabled) return nativeFacetsEnabled;
-  return browserVideoFilterPlugins().every(pluginItem => {
-    const state = browserVideoFacetState(pluginItem);
+  if (!nativeFacetsEnabled) return false;
+  const filterPlugins = kind === 'videos'
+    ? browserVideoFilterPlugins()
+    : (kind === 'clips' ? browserClipFilterPlugins() : []);
+  return filterPlugins.every(pluginItem => {
+    const state = kind === 'videos'
+      ? browserVideoFacetState(pluginItem)
+      : browserClipFacetState(pluginItem);
     return state.present || state.absent;
   });
 }
@@ -1239,6 +1344,7 @@ function searchUrl() {
   }
   for (const plugin of browserSearchPlugins()) {
     const videoFacet = browserVideoFacetDefinition(plugin);
+    const clipFacet = browserClipFacetDefinition(plugin);
     if (videoFacet) {
       const state = browserVideoFacetState(plugin);
       const baseline = browserVideoFacetPresetBaseline(plugin);
@@ -1254,7 +1360,24 @@ function searchUrl() {
           state.absent ? '1' : '0',
         );
       }
-    } else if (searchKindEnabled(plugin.id)) {
+    }
+    if (clipFacet) {
+      const state = browserClipFacetState(plugin);
+      const baseline = browserClipFacetPresetBaseline(plugin);
+      if (state.present !== baseline.present) {
+        params.set(
+          clipFacet.presentHashParam || `plugin-${plugin.id}-clip-present`,
+          state.present ? '1' : '0',
+        );
+      }
+      if (state.absent !== baseline.absent) {
+        params.set(
+          clipFacet.absentHashParam || `plugin-${plugin.id}-clip-absent`,
+          state.absent ? '1' : '0',
+        );
+      }
+    }
+    if (!videoFacet && !clipFacet && searchKindEnabled(plugin.id)) {
       params.set(plugin.search.hashParam || `plugin-${plugin.id}`, '1');
     }
   }
@@ -1363,6 +1486,7 @@ function applySearchLocation(pathname, params) {
   }
   for (const plugin of browserSearchPlugins()) {
     const videoFacet = browserVideoFacetDefinition(plugin);
+    const clipFacet = browserClipFacetDefinition(plugin);
     if (videoFacet) {
       const state = browserVideoFacetState(plugin);
       const presentParam = params.get(
@@ -1373,7 +1497,19 @@ function applySearchLocation(pathname, params) {
       );
       if (presentParam !== null) state.present = presentParam === '1';
       if (absentParam !== null) state.absent = absentParam === '1';
-    } else {
+    }
+    if (clipFacet) {
+      const state = browserClipFacetState(plugin);
+      const presentParam = params.get(
+        clipFacet.presentHashParam || `plugin-${plugin.id}-clip-present`
+      );
+      const absentParam = params.get(
+        clipFacet.absentHashParam || `plugin-${plugin.id}-clip-absent`
+      );
+      if (presentParam !== null) state.present = presentParam === '1';
+      if (absentParam !== null) state.absent = absentParam === '1';
+    }
+    if (!videoFacet && !clipFacet) {
       const hashParam = plugin.search.hashParam || `plugin-${plugin.id}`;
       if (params.get(hashParam) === '1') pluginSearchVisibility.set(plugin.id, true);
     }
@@ -1605,6 +1741,11 @@ function syncFilterGroup(parent, childFilters, dimChildrenWhenUnchecked = true) 
 }
 
 function metaFilterGroupVisibility(groupName) {
+  if (groupName.startsWith('search-clip-plugin-')) {
+    const pluginId = groupName.slice('search-clip-plugin-'.length);
+    const plugin = browserClipFilterPlugins().find(item => item.id === pluginId);
+    return plugin ? browserClipFacetState(plugin) : null;
+  }
   if (groupName.startsWith('search-plugin-')) {
     const pluginId = groupName.slice('search-plugin-'.length);
     const plugin = browserVideoFilterPlugins().find(item => item.id === pluginId);
@@ -1695,7 +1836,11 @@ function setSearchKindFilter(kind, checked) {
   if (plugin) {
     if (browserVideoFacetDefinition(plugin)) {
       Object.assign(browserVideoFacetState(plugin), { present: checked, absent: checked });
-    } else {
+    }
+    if (browserClipFacetDefinition(plugin)) {
+      Object.assign(browserClipFacetState(plugin), { present: checked, absent: checked });
+    }
+    if (!browserVideoFacetDefinition(plugin) && !browserClipFacetDefinition(plugin)) {
       pluginSearchVisibility.set(plugin.id, checked);
     }
     return true;
@@ -1723,6 +1868,20 @@ function setSearchKindFilter(kind, checked) {
         input.checked = checked;
       }
       syncMetaFilterGroup(`search-plugin-${videoFilter.id}`);
+    }
+  }
+  if (kind === 'clips') {
+    for (const clipFilter of browserClipFilterPlugins()) {
+      Object.assign(
+        browserClipFacetState(clipFilter),
+        { present: checked, absent: checked },
+      );
+      for (const input of searchFilterRegion.querySelectorAll(
+        `[data-meta-child-filter="search-clip-plugin-${clipFilter.id}"]`
+      )) {
+        input.checked = checked;
+      }
+      syncMetaFilterGroup(`search-clip-plugin-${clipFilter.id}`);
     }
   }
   return true;
@@ -1761,6 +1920,15 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true, assumeAllChecked
       ...browserVideoFilterPlugins().map(plugin => (
         [...searchFilterRegion.querySelectorAll(
           `[data-meta-child-filter="search-plugin-${plugin.id}"]`
+        )].map(input => input.checked)
+      )).filter(values => values.length),
+    );
+  }
+  if (kind === 'clips') {
+    facetSelections.push(
+      ...browserClipFilterPlugins().map(plugin => (
+        [...searchFilterRegion.querySelectorAll(
+          `[data-meta-child-filter="search-clip-plugin-${plugin.id}"]`
         )].map(input => input.checked)
       )).filter(values => values.length),
     );
@@ -1806,7 +1974,7 @@ function refreshSearchAfterFilterChange(groupName, activatedFromHistory) {
 function restoreEmptySearchKindFacets(facetKey) {
   const kind = searchKindForFacet(facetKey);
   const facetKeys = searchKindFacetKeys(kind);
-  if (facetKeys.length < 2) return;
+  if (!facetKeys.length) return;
   for (const siblingKey of facetKeys) {
     if (siblingKey === facetKey) continue;
     if (Object.values(searchMetaVisibility[siblingKey]).some(Boolean)) continue;
@@ -1818,18 +1986,21 @@ function restoreEmptySearchKindFacets(facetKey) {
     }
     syncMetaFilterGroup(`search-${siblingKey}`);
   }
-  if (kind !== 'videos') return;
-  for (const plugin of browserVideoFilterPlugins()) {
-    const state = browserVideoFacetState(plugin);
+  const filterPlugins = kind === 'videos'
+    ? browserVideoFilterPlugins()
+    : (kind === 'clips' ? browserClipFilterPlugins() : []);
+  for (const plugin of filterPlugins) {
+    const clipFacet = kind === 'clips';
+    const state = clipFacet ? browserClipFacetState(plugin) : browserVideoFacetState(plugin);
     if (Object.values(state).some(Boolean)) continue;
     Object.assign(state, { present: true, absent: true });
     for (const input of searchFilterRegion.querySelectorAll(
-      `[data-search-plugin-facet-filter^="${plugin.id}:"]`
+      `[data-search-plugin-facet-filter^="${clipFacet ? 'clip' : 'video'}:${plugin.id}:"]`
     )) {
-      const filterName = input.dataset.searchPluginFacetFilter.split(':')[1];
+      const filterName = input.dataset.searchPluginFacetFilter.split(':')[2];
       input.checked = Boolean(state[filterName]);
     }
-    syncMetaFilterGroup(`search-plugin-${plugin.id}`);
+    syncMetaFilterGroup(`${clipFacet ? 'search-clip-plugin' : 'search-plugin'}-${plugin.id}`);
   }
 }
 
@@ -3233,7 +3404,7 @@ function searchMetaFiltersHtml(
       key: `plugin-${plugin.id}`,
       groupName: `search-plugin-${plugin.id}`,
       filterAttribute: 'search-plugin-facet-filter',
-      filterValuePrefix: `${plugin.id}:`,
+      filterValuePrefix: `video:${plugin.id}:`,
       visibility: browserVideoFacetState(plugin),
       counts: metaCounts?.videoPlugins?.[plugin.id] || null,
       definitions: [
@@ -3242,6 +3413,23 @@ function searchMetaFiltersHtml(
       ],
       allLabel: plugin.search.label || plugin.id,
       kind: 'videos',
+    });
+  };
+  const pluginClipFacetHtml = plugin => {
+    const definition = browserClipFacetDefinition(plugin);
+    return facetHtml({
+      key: `clip-plugin-${plugin.id}`,
+      groupName: `search-clip-plugin-${plugin.id}`,
+      filterAttribute: 'search-plugin-facet-filter',
+      filterValuePrefix: `clip:${plugin.id}:`,
+      visibility: browserClipFacetState(plugin),
+      counts: metaCounts?.clipPlugins?.[plugin.id] || null,
+      definitions: [
+        { key: 'absent', label: definition.absentLabel || `no ${plugin.search.label || plugin.id}` },
+        { key: 'present', label: definition.presentLabel || plugin.search.label || plugin.id },
+      ],
+      allLabel: plugin.search.label || plugin.id,
+      kind: 'clips',
     });
   };
   const kindHtml = (titleText, kind, count, facetsHtml) => {
@@ -3281,6 +3469,7 @@ function searchMetaFiltersHtml(
           allLabel: 'Ownership',
           kind: 'clips',
         }),
+        ...browserClipFilterPlugins().map(pluginClipFacetHtml),
       ].join('')) : '',
     kindHtml('Playlists', 'playlists', metaCounts?.playlists?.total, [
       facetHtml({ key: 'playlistAvailability', visibility: searchMetaVisibility.playlistAvailability, definitions: playlistAvailabilityMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Availability', kind: 'playlists' }),
@@ -3345,6 +3534,9 @@ function renderSearchMetaFilters({
   }
   for (const plugin of browserVideoFilterPlugins()) {
     syncMetaFilterGroup(`search-plugin-${plugin.id}`, countsPending);
+  }
+  for (const plugin of browserClipFilterPlugins()) {
+    syncMetaFilterGroup(`search-clip-plugin-${plugin.id}`, countsPending);
   }
   for (const kind of [
     'videos',
@@ -3768,6 +3960,7 @@ async function fetchOmniSearch(query, page = currentPage) {
   ]);
   const metaCountsCache = omniMetaCountsCache;
   const videoPluginFacetCountsCache = omniVideoPluginFacetCountsCache;
+  const clipPluginFacetCountsCache = omniClipPluginFacetCountsCache;
   const reactionCountsCache = omniReactionCountsCache;
   const completionCountsCache = omniCompletionCountsCache;
   const playlistMembershipCountsCache = omniPlaylistMembershipCountsCache;
@@ -3814,6 +4007,15 @@ async function fetchOmniSearch(query, page = currentPage) {
     metaFilterParamValue(searchMetaVisibility.uploaderCategory),
     query ? browserVideoFilterPlugins().map(browserVideoFacetSearchActive) : [],
   ]);
+  const clipPluginFacetCountsKey = JSON.stringify([
+    query,
+    searchFieldsValue,
+    kindsValue,
+    searchPlaylistGroupKey,
+    searchChannelGroupKey,
+    metaFilterParamValue(searchMetaVisibility.clipOwnership),
+    query ? browserClipFilterPlugins().map(browserClipFacetSearchActive) : [],
+  ]);
   const key = `${coreParams.toString()}&plugins=${encodeURIComponent(pluginKey)}&limit=${limit}&offset=${offset}`;
   return cachedRequest(omniSearchCache, key, async () => {
     const pluginPayload = await fetchBrowserPluginSearches(query, limit, offset);
@@ -3827,6 +4029,15 @@ async function fetchOmniSearch(query, page = currentPage) {
         requestParams.append('video_exclude_filter_plugin', plugin.id);
       }
     }
+    for (const plugin of browserClipFilterPlugins()) {
+      const state = browserClipFacetState(plugin);
+      requestParams.append('clip_facet_plugin', plugin.id);
+      if (state.present && !state.absent) {
+        requestParams.append('clip_filter_plugin', plugin.id);
+      } else if (state.absent && !state.present) {
+        requestParams.append('clip_exclude_filter_plugin', plugin.id);
+      }
+    }
     const videoSearchFieldPlugins = browserVideoSearchFieldPlugins();
     if (videoSearchFieldPlugins.length) {
       for (const plugin of videoSearchFieldPlugins) {
@@ -3834,6 +4045,14 @@ async function fetchOmniSearch(query, page = currentPage) {
       }
     } else {
       requestParams.append('video_search_plugin', '__none__');
+    }
+    const clipSearchFieldPlugins = browserClipSearchFieldPlugins();
+    if (clipSearchFieldPlugins.length) {
+      for (const plugin of clipSearchFieldPlugins) {
+        requestParams.append('clip_search_plugin', plugin.id);
+      }
+    } else {
+      requestParams.append('clip_search_plugin', '__none__');
     }
     requestParams.set('limit', String(Math.max(1, pluginPayload.remaining)));
     requestParams.set('offset', String(pluginPayload.coreOffset));
@@ -3874,6 +4093,16 @@ async function fetchOmniSearch(query, page = currentPage) {
         ),
       );
     }
+    if (!clipPluginFacetCountsCache.has(clipPluginFacetCountsKey)) {
+      clipPluginFacetCountsCache.set(
+        clipPluginFacetCountsKey,
+        Object.fromEntries(
+          Object.entries(payload.metaCounts?.clipPlugins || {}).map(
+            ([pluginId, counts]) => [pluginId, { ...counts }]
+          )
+        ),
+      );
+    }
     if (!reactionCountsCache.has(metaCountsKey)) {
       reactionCountsCache.set(metaCountsKey, { ...(payload.reactionCounts || {}) });
     }
@@ -3895,6 +4124,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     const stableMetaCounts = {
       ...metaCountsCache.get(metaCountsKey),
       videoPlugins: videoPluginFacetCountsCache.get(videoPluginFacetCountsKey),
+      clipPlugins: clipPluginFacetCountsCache.get(clipPluginFacetCountsKey),
     };
     const stablePayload = {
       ...payload,
@@ -4589,8 +4819,8 @@ async function render() {
     let clip;
     try {
       const clipParams = new URLSearchParams();
-      for (const plugin of browserVideoFilterPlugins()) {
-        clipParams.append('video_facet_plugin', plugin.id);
+      for (const plugin of browserClipFilterPlugins()) {
+        clipParams.append('clip_facet_plugin', plugin.id);
       }
       const query = clipParams.toString();
       clip = await fetchViewData(
@@ -5553,19 +5783,23 @@ function handleMetaChange(event) {
   }
   const searchPluginFacetFilter = target.dataset.searchPluginFacetFilter;
   if (searchPluginFacetFilter) {
-    const [pluginId, filterName] = searchPluginFacetFilter.split(':');
-    const plugin = browserVideoFilterPlugins().find(item => item.id === pluginId);
+    const [facetKind, pluginId, filterName] = searchPluginFacetFilter.split(':');
+    const clips = facetKind === 'clip';
+    const plugin = (clips ? browserClipFilterPlugins() : browserVideoFilterPlugins())
+      .find(item => item.id === pluginId);
     if (!plugin) return;
-    const state = browserVideoFacetState(plugin);
+    const state = clips ? browserClipFacetState(plugin) : browserVideoFacetState(plugin);
     if (!Object.prototype.hasOwnProperty.call(state, filterName)) return;
     state[filterName] = target.checked;
-    saveBrowserVideoFacetPreferences(plugin);
-    if (target.checked && !searchKindEnabled('videos')) {
-      enableDefaultSearchKind('videos');
+    if (clips) saveBrowserClipFacetPreferences(plugin);
+    else saveBrowserVideoFacetPreferences(plugin);
+    const kind = clips ? 'clips' : 'videos';
+    if (target.checked && !searchKindEnabled(kind)) {
+      enableDefaultSearchKind(kind);
       renderSearchMetaFilters();
     }
-    syncMetaFilterGroup(`search-plugin-${plugin.id}`);
-    refreshSearchAfterFilterChange('videos', activatedFromHistory);
+    syncMetaFilterGroup(`${clips ? 'search-clip-plugin' : 'search-plugin'}-${plugin.id}`);
+    refreshSearchAfterFilterChange(kind, activatedFromHistory);
     return;
   }
   const metaAllFilter = target.dataset.metaAllFilter;
@@ -5573,7 +5807,18 @@ function handleMetaChange(event) {
     ? !allMetaFilterChildrenChecked(metaAllFilter)
     : false;
   if (metaAllFilter && setMetaFilterGroup(metaAllFilter, selectAllMetaChildren)) {
-    if (metaAllFilter.startsWith('search-plugin-')) {
+    if (metaAllFilter.startsWith('search-clip-plugin-')) {
+      const pluginId = metaAllFilter.slice('search-clip-plugin-'.length);
+      const plugin = browserClipFilterPlugins().find(item => item.id === pluginId);
+      if (!plugin) return;
+      saveBrowserClipFacetPreferences(plugin);
+      if (selectAllMetaChildren && !searchKindEnabled('clips')) {
+        enableDefaultSearchKind('clips');
+        renderSearchMetaFilters();
+      }
+      syncMetaFilterGroup(metaAllFilter);
+      refreshSearchAfterFilterChange('clips', activatedFromHistory);
+    } else if (metaAllFilter.startsWith('search-plugin-')) {
       const pluginId = metaAllFilter.slice('search-plugin-'.length);
       const plugin = browserVideoFilterPlugins().find(item => item.id === pluginId);
       if (!plugin) return;
