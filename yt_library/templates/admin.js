@@ -21,8 +21,6 @@ const fields = {
   videoMetadataCounts: document.getElementById('videoMetadataCounts'),
   clipCounts: document.getElementById('clipCounts'),
   discoverClips: document.getElementById('discoverClips'),
-  clipTarget: document.getElementById('clipTarget'),
-  fetchClipMetadata: document.getElementById('fetchClipMetadata'),
   clipStatus: document.getElementById('clipStatus'),
   channelCounts: document.getElementById('channelCounts'),
   backfillVideoVisibility: document.getElementById('backfillVideoVisibility'),
@@ -1348,24 +1346,6 @@ fields.discoverClips.addEventListener('click', async () => {
     fields.discoverClips.disabled = false;
   }
 });
-fields.fetchClipMetadata.addEventListener('click', async () => {
-  const target = fields.clipTarget.value.trim();
-  if (!target) {
-    fields.clipStatus.textContent = 'Enter a clip URL or ID';
-    fields.clipTarget.focus();
-    return;
-  }
-  fields.fetchClipMetadata.disabled = true;
-  fields.clipStatus.textContent = 'Queueing';
-  try {
-    await post('/api/admin/clips/fetch', { target });
-    fields.clipStatus.textContent = 'Clip metadata queued';
-  } catch (error) {
-    fields.clipStatus.textContent = error.message;
-  } finally {
-    fields.fetchClipMetadata.disabled = false;
-  }
-});
 document.getElementById('fetchChannelMetadata').addEventListener('click', () => post('/api/admin/metadata/start', {
   kind: 'channel',
   stale_days: fields.channelMetadataStaleDays.value,
@@ -1412,7 +1392,7 @@ fields.backfillChannelAccount.addEventListener('click', () => {
 document.getElementById('queueProvidedTarget').addEventListener('click', async () => {
   const target = fields.providedQueueTarget.value.trim();
   if (!target) {
-    alert('Enter a YouTube URL, local URL, video ID, channel ID, @handle, or playlist ID.');
+    alert('Enter a video, clip, channel, or playlist URL or ID.');
     return;
   }
   try {

@@ -328,8 +328,6 @@
         </div>
         <div class="controls">
           <button id="discoverClips" class="primary" type="button">Discover clips</button>
-          <label>Clip URL or ID<input id="clipTarget" class="wide-input" type="text" placeholder="https://www.youtube.com/clip/..."></label>
-          <button id="fetchClipMetadata" type="button">Fetch clip metadata</button>
           <span id="clipStatus" class="metric" aria-live="polite"></span>
         </div>
         <div class="grid" id="clipCounts"></div>
@@ -430,7 +428,7 @@
         <span id="dispatchSettingsStatus" class="metric settings-status" aria-live="polite"></span>
       </div>
       <div class="controls">
-        <label>URL/video/channel/playlist ID<input id="providedQueueTarget" class="wide-input" type="text" placeholder="YouTube URL, local URL, video ID, channel ID, @handle, or playlist ID"></label>
+        <label>URL or ID<input id="providedQueueTarget" class="wide-input" type="text" placeholder="Video, clip, channel, or playlist URL or ID"></label>
         <button id="queueProvidedTarget" class="primary" type="button">Add to queue</button>
       </div>
       <div class="controls">

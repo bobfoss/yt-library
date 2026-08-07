@@ -108,12 +108,11 @@ class TemplateDomTests(unittest.TestCase):
             "fetchVideoMetadata": ("button", "button"),
             "videoPluginProcesses": ("div", None),
             "discoverClips": ("button", "button"),
-            "clipTarget": ("input", "text"),
-            "fetchClipMetadata": ("button", "button"),
             "scanPlaylists": ("button", "button"),
             "fetchChannelMetadata": ("button", "button"),
             "startLiveHistory": ("button", "button"),
             "pluginPanel": ("section", None),
+            "providedQueueTarget": ("input", "text"),
             "startWorkerQueue": ("button", "button"),
             "logPanel": ("div", None),
         }

@@ -2034,24 +2034,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 }
             )
             return
-        if parsed.path == "/api/admin/clips/fetch":
-            target = (params.get("target") or [""])[0].strip()
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    try:
-                        result = enqueue_worker_queue_target(conn, target)
-                    except ValueError as exc:
-                        self.send_json({"error": str(exc)}, status=400)
-                        return
-                    if result.get("worker_type") != "clip":
-                        self.send_json({"error": "Enter a YouTube clip URL or clip ID"}, status=400)
-                        return
-            finally:
-                conn.close()
-            dispatcher = self._start_worker_queue()
-            self.send_json({"ok": True, **result, "dispatcher": dispatcher})
-            return
         if parsed.path == "/api/admin/feature-backfill/start":
             self._handle_feature_backfill_start(params)
             return

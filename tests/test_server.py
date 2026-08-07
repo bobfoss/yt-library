@@ -249,13 +249,14 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(detail["pluginFacets"], {"subtitles": True})
         handler.send_json.assert_called_once_with(detail)
 
-    def test_clip_admin_endpoints_enqueue_discovery_and_manual_scan(self) -> None:
+    def test_clip_discovery_and_common_scan_endpoint_enqueue_clip_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
             conn = migrated_connection(db_path)
             conn.close()
             handler = object.__new__(server.LibraryHandler)
             handler.db_path = db_path
+            handler.plugin_manager = Mock()
             handler._start_worker_queue = Mock(return_value={"started": True})
             handler.send_json = Mock()
 
@@ -264,12 +265,16 @@ class AdminServerTests(unittest.TestCase):
                 {},
             )
             handler._handle_admin_action_post(
-                urllib.parse.urlparse("/api/admin/clips/fetch"),
+                urllib.parse.urlparse("/api/admin/queue/add-target"),
                 {
                     "target": [
                         "https://www.youtube.com/clip/UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s"
                     ]
                 },
+            )
+            handler._handle_admin_action_post(
+                urllib.parse.urlparse("/api/admin/queue/add-target"),
+                {"target": ["UgkxManualClip456"]},
             )
 
             conn = core.connect(db_path)
@@ -293,9 +298,11 @@ class AdminServerTests(unittest.TestCase):
                     "scan",
                     "UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s",
                 ),
+                ("clip", "scan", "UgkxManualClip456"),
             ],
         )
-        self.assertEqual(handler._start_worker_queue.call_count, 2)
+        self.assertEqual(handler._start_worker_queue.call_count, 1)
+        handler.plugin_manager.enqueue_hook.assert_not_called()
 
     def test_plugin_browser_assets_are_namespaced_and_delegated(self) -> None:
         handler = object.__new__(server.LibraryHandler)

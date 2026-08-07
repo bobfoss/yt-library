@@ -8612,7 +8612,7 @@ def local_queue_target_from_url(target: str) -> tuple[str, str]:
 def enqueue_worker_queue_target(conn: sqlite3.Connection, target: str) -> dict[str, str]:
     target = (target or "").strip()
     if not target:
-        raise ValueError("Enter a YouTube URL, local URL, video ID, channel ID, @handle, or playlist ID.")
+        raise ValueError("Enter a video, clip, channel, or playlist URL or ID.")
 
     parsed = urllib.parse.urlparse(target)
     host = (parsed.hostname or "").lower()
@@ -8620,23 +8620,24 @@ def enqueue_worker_queue_target(conn: sqlite3.Connection, target: str) -> dict[s
         host.endswith("youtube.com") or host == "youtu.be"
     )
 
+    clip_id = extract_clip_id(target)
+    if clip_id:
+        subject_key = enqueue_clip_item(
+            conn,
+            clip_id=clip_id,
+            task_type="scan",
+            title=target if is_youtube_url else "",
+            priority=0,
+            manual=True,
+        )
+        return {
+            "subject_key": subject_key,
+            "worker_type": "clip",
+            "clip_id": clip_id,
+            "source": "youtube" if is_youtube_url else "local",
+        }
+
     if is_youtube_url:
-        clip_id = extract_clip_id(target)
-        if clip_id:
-            subject_key = enqueue_clip_item(
-                conn,
-                clip_id=clip_id,
-                task_type="scan",
-                title=target,
-                priority=0,
-                manual=True,
-            )
-            return {
-                "subject_key": subject_key,
-                "worker_type": "clip",
-                "clip_id": clip_id,
-                "source": "youtube",
-            }
         video_id = extract_video_id(target)
         playlist_id = extract_playlist_id(target) or ""
         channel_id = "" if video_id else youtube_channel_ref_from_url(target)
@@ -8689,7 +8690,7 @@ def enqueue_worker_queue_target(conn: sqlite3.Connection, target: str) -> dict[s
                 "metadata_source": "provided",
                 "source": "youtube",
             }
-        raise ValueError("Could not identify a YouTube video, channel, or playlist from that URL.")
+        raise ValueError("Could not identify a YouTube video, clip, channel, or playlist from that URL.")
 
     local_kind, local_value = local_queue_target_from_url(target)
     if local_kind:
@@ -8758,7 +8759,7 @@ def enqueue_worker_queue_target(conn: sqlite3.Connection, target: str) -> dict[s
     if local_kind and local_kind != "video":
         raise ValueError("Could not identify a video, clip, channel, or playlist from that local URL.")
     if not video_id:
-        raise ValueError("Enter a video ID, channel ID, @handle, playlist ID, or URL.")
+        raise ValueError("Enter a video, clip, channel, or playlist URL or ID.")
     subject_key = enqueue_metadata_item(
         conn,
         video_id=video_id,
