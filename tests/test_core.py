@@ -1060,18 +1060,22 @@ class CoreHelperTests(unittest.TestCase):
             "https://www.youtube.com/channel/UCvmGOqGlxOgpZDoszBbWxmA",
         )
         self.assertEqual(
-            core.local_queue_target_from_url("http://127.0.0.1:8765/#playlist=PLexample"),
+            core.local_queue_target_from_url("http://127.0.0.1:8765/playlists/PLexample"),
             ("playlist", "PLexample"),
         )
         self.assertEqual(
-            core.local_queue_target_from_url("http://127.0.0.1:8765/#video=abc12345678"),
+            core.local_queue_target_from_url("http://127.0.0.1:8765/videos/abc12345678"),
             ("video", "abc12345678"),
         )
         self.assertEqual(
             core.local_queue_target_from_url(
-                "http://127.0.0.1:8765/#clip=UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s"
+                "http://127.0.0.1:8765/clips/UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s"
             ),
             ("clip", "UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s"),
+        )
+        self.assertEqual(
+            core.local_queue_target_from_url("http://127.0.0.1:8765/#video=abc12345678"),
+            ("", ""),
         )
         self.assertEqual(core.format_duration(65), "1:05")
         self.assertEqual(core.format_duration(3661), "1:01:01")

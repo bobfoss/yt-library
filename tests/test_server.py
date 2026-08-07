@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from yt_library import core, server, workers
 from yt_library.config import ConfigStore, load_config
@@ -717,6 +717,57 @@ class AdminServerTests(unittest.TestCase):
             [video_ids],
         )
 
+    def test_playlist_video_route_applies_shared_search_facets(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.filter_videos.side_effect = [
+            (frozenset({"alpha", "beta"}), frozenset({"beta"})),
+            (frozenset({"beta"}), frozenset()),
+        ]
+        handler.send_json = Mock()
+        connection = Mock()
+        payload = {"results": [], "total": 0}
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch(
+                "yt_library.server.video_collection_data",
+                return_value=payload,
+            ) as collection_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/playlists/PLshared/videos?q=phrase"
+                    "&search_fields=titles,subtitles&reaction=liked"
+                    "&uploader_category=Music&video_facet_plugin=subtitles"
+                    "&video_filter_plugin=subtitles&video_exclude_filter_plugin=blocked"
+                    "&video_search_plugin=subtitles&limit=10"
+                )
+            )
+
+        handler.plugin_manager.filter_videos.assert_has_calls(
+            [call("subtitles", "phrase"), call("blocked", "")]
+        )
+        kwargs = collection_data.call_args.kwargs
+        self.assertEqual(kwargs["playlist_id"], "PLshared")
+        self.assertEqual(kwargs["query"], "phrase")
+        self.assertEqual(kwargs["search_fields"], {"titles", "subtitles"})
+        self.assertEqual(kwargs["reaction_filters"], {"liked"})
+        self.assertEqual(kwargs["uploader_category_filters"], {"Music"})
+        self.assertEqual(kwargs["included_video_ids"], {"alpha", "beta"})
+        self.assertEqual(kwargs["excluded_video_ids"], {"beta"})
+        self.assertEqual(
+            kwargs["video_facet_memberships"],
+            {
+                "subtitles": frozenset({"alpha", "beta"}),
+                "blocked": frozenset({"beta"}),
+            },
+        )
+        self.assertEqual(kwargs["video_search_match_ids"], {"beta"})
+        connection.close.assert_called_once_with()
+        handler.send_json.assert_called_once_with(payload)
+
     def test_get_dispatches_page_admin_and_library_routes(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler._handle_page_get = Mock(return_value=False)
@@ -844,6 +895,32 @@ class AdminServerTests(unittest.TestCase):
             "text/javascript; charset=utf-8",
             cache_control="no-cache",
         )
+
+    def test_browser_page_routes_serve_the_application_shell(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.render_page = Mock(return_value=b"browser shell")
+        handler._send_bytes = Mock()
+
+        for path in (
+            "/search",
+            "/videos",
+            "/videos/video123",
+            "/clips/clip123",
+            "/playlists",
+            "/playlists/playlist123",
+            "/channels/@alias",
+            "/history",
+        ):
+            with self.subTest(path=path):
+                handler._send_bytes.reset_mock()
+                self.assertTrue(handler._handle_page_get(path))
+                handler._send_bytes.assert_called_once_with(
+                    b"browser shell",
+                    "text/html; charset=utf-8",
+                    cache_control="no-store",
+                )
+
+        self.assertFalse(handler._handle_page_get("/video/video123"))
 
     def test_rendered_browser_page_loads_history_workflow_before_index(self) -> None:
         handler = object.__new__(server.LibraryHandler)

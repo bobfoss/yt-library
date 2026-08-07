@@ -56,16 +56,8 @@ def library_bootstrap_data(conn: sqlite3.Connection) -> dict[str, Any]:
               (SELECT COUNT(*) FROM videos) AS videos,
               (SELECT COUNT(*) FROM clips) AS clips,
               (SELECT COUNT(*) FROM playlists) AS playlists,
-              (SELECT COUNT(*) FROM playlists p
-                 JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
-                WHERE ps.unavailable_count > 0) AS unavailable_playlists,
-              (SELECT COUNT(DISTINCT video_id) FROM playlist_items WHERE video_id IS NOT NULL)
-                + (SELECT COUNT(*) FROM playlist_items WHERE video_id IS NULL) AS playlist_videos,
-              (SELECT COUNT(*) FROM videos WHERE upper(reaction) = 'L') AS liked_videos,
               (SELECT COUNT(*) FROM history_events) AS history,
-              (SELECT COUNT(*) FROM channels) AS channels,
-              (SELECT COUNT(*) FROM channels WHERE subscribed = 1) AS subscribed_channels,
-              (SELECT COUNT(*) FROM channels WHERE lower(status) IN ('terminated', 'deleted')) AS terminated_channels
+              (SELECT COUNT(*) FROM channels) AS channels
             """
         ).fetchone()
     )
@@ -347,15 +339,26 @@ def _video_candidate_query(
     playlist_id: str = "",
     channel_id: str = "",
     query: str = "",
+    search_fields: set[str] | None = None,
+    has_video_search_matches: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     params: dict[str, Any] = {"query": f"%{_omni_like_pattern(query.strip())[1:-1]}%"}
-    query_clause = """
-      AND (
-        :query = '%%'
-        OR lower(COALESCE(v.title, '') || ' ' || COALESCE(v.description, '') || ' ' ||
-                 COALESCE(ch.title, '') || ' ' || COALESCE(v.video_id, '')) LIKE :query ESCAPE '\\'
-      )
-    """
+    active_search_fields = {"titles", "descriptions"} if search_fields is None else set(search_fields)
+    search_clauses = []
+    if "titles" in active_search_fields:
+        search_clauses.append(
+            "lower(COALESCE(v.title, '') || ' ' || COALESCE(ch.title, '') || ' ' || "
+            "COALESCE(v.video_id, '')) LIKE :query ESCAPE '\\'"
+        )
+    if "descriptions" in active_search_fields:
+        search_clauses.append("lower(COALESCE(v.description, '')) LIKE :query ESCAPE '\\'")
+    if has_video_search_matches:
+        search_clauses.append(
+            "EXISTS (SELECT 1 FROM temp.video_collection_search_matches matches "
+            "WHERE matches.video_id = v.video_id)"
+        )
+    query_match_sql = " OR ".join(search_clauses) or "0"
+    query_clause = f"AND (:query = '%%' OR ({query_match_sql}))"
     history_cte = """
       WITH history_stats AS (
         SELECT video_id,
@@ -372,7 +375,7 @@ def _video_candidate_query(
                  v.updated_at, '' AS playlist_id, '' AS playlist_title, 0 AS position,
                  '' AS membership_state, '' AS unavailable_kind, '' AS source_quality,
                  '' AS match_type, '' AS match_confidence, '' AS added_at,
-                 v.is_playable, v.availability,
+                 v.is_playable, v.availability, v.reaction, v.uploader_category,
                  COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent,
                  COALESCE(hs.watch_count, 0) AS watch_count,
                  COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
@@ -399,7 +402,8 @@ def _video_candidate_query(
                  pi.playlist_id, p.title AS playlist_title, pi.position,
                  pi.membership_state, pi.unavailable_kind, pi.source_quality,
                  pi.match_type, pi.match_confidence, COALESCE(pi.added_at, '') AS added_at,
-                 v.is_playable,
+                 v.is_playable, COALESCE(v.reaction, '') AS reaction,
+                 COALESCE(v.uploader_category, '') AS uploader_category,
                  COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent,
                  CASE WHEN pi.video_id IS NULL THEN pi.unavailable_kind ELSE v.availability END AS availability,
                  COALESCE(hs.watch_count, 0) AS watch_count,
@@ -435,6 +439,8 @@ VIDEO_COMPLETION_CATEGORIES = (
     "unknown",
     "never_watched",
 )
+VIDEO_REACTION_CATEGORIES = ("none", "liked", "disliked")
+NO_UPLOADER_CATEGORY_FILTER = "__no_category__"
 
 
 def _bounded_partial_min_percent(value: Any) -> int:
@@ -529,6 +535,7 @@ def video_collection_data(
     playlist_id: str = "",
     channel_id: str = "",
     query: str = "",
+    search_fields: set[str] | None = None,
     include_public: bool = True,
     include_unlisted: bool = True,
     include_private: bool = True,
@@ -538,16 +545,73 @@ def video_collection_data(
     include_removed: bool = True,
     duplicates_only: bool = False,
     completion_filters: set[str] | None = None,
+    reaction_filters: set[str] | None = None,
+    uploader_category_filters: set[str] | None = None,
+    included_video_ids: Collection[str] | None = None,
+    excluded_video_ids: Collection[str] = (),
+    video_facet_memberships: Mapping[str, Collection[str]] | None = None,
+    video_search_match_ids: Collection[str] = (),
     partial_min_percent: int = 1,
     sort: str = "newest_added",
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
+    active_search_match_ids = {
+        str(video_id).strip()
+        for video_id in video_search_match_ids
+        if str(video_id).strip()
+    }
+    conn.execute("DROP TABLE IF EXISTS temp.video_collection_search_matches")
+    if query.strip() and active_search_match_ids:
+        conn.execute(
+            "CREATE TEMP TABLE video_collection_search_matches(video_id TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        conn.executemany(
+            "INSERT INTO temp.video_collection_search_matches(video_id) VALUES (?)",
+            ((video_id,) for video_id in active_search_match_ids),
+        )
+
+    active_included_video_ids = (
+        None
+        if included_video_ids is None
+        else {
+            str(video_id).strip()
+            for video_id in included_video_ids
+            if str(video_id).strip()
+        }
+    )
+    conn.execute("DROP TABLE IF EXISTS temp.video_collection_included")
+    if active_included_video_ids is not None:
+        conn.execute(
+            "CREATE TEMP TABLE video_collection_included(video_id TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        conn.executemany(
+            "INSERT INTO temp.video_collection_included(video_id) VALUES (?)",
+            ((video_id,) for video_id in active_included_video_ids),
+        )
+
+    active_excluded_video_ids = {
+        str(video_id).strip()
+        for video_id in excluded_video_ids
+        if str(video_id).strip()
+    }
+    conn.execute("DROP TABLE IF EXISTS temp.video_collection_excluded")
+    if active_excluded_video_ids:
+        conn.execute(
+            "CREATE TEMP TABLE video_collection_excluded(video_id TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        conn.executemany(
+            "INSERT INTO temp.video_collection_excluded(video_id) VALUES (?)",
+            ((video_id,) for video_id in active_excluded_video_ids),
+        )
+
     candidate_sql, params = _video_candidate_query(
         scope=scope,
         playlist_id=playlist_id,
         channel_id=channel_id,
         query=query,
+        search_fields=search_fields,
+        has_video_search_matches=bool(query.strip() and active_search_match_ids),
     )
     selected_categories = {
         category
@@ -570,6 +634,20 @@ def video_collection_data(
         set(VIDEO_COMPLETION_CATEGORIES)
         if completion_filters is None
         else set(completion_filters) & set(VIDEO_COMPLETION_CATEGORIES)
+    )
+    selected_reaction_filters = (
+        set(VIDEO_REACTION_CATEGORIES)
+        if reaction_filters is None
+        else set(reaction_filters) & set(VIDEO_REACTION_CATEGORIES)
+    )
+    selected_uploader_category_filters = (
+        None
+        if uploader_category_filters is None
+        else {
+            str(category).strip()
+            for category in uploader_category_filters
+            if str(category).strip()
+        }
     )
     partial_min_percent = _bounded_partial_min_percent(partial_min_percent)
     params["partial_min_percent"] = partial_min_percent
@@ -603,6 +681,19 @@ def video_collection_data(
           ELSE 'never_watched'
         END
     """
+    reaction_category_sql = """
+        CASE upper(COALESCE(reaction, ''))
+          WHEN 'L' THEN 'liked'
+          WHEN 'D' THEN 'disliked'
+          ELSE 'none'
+        END
+    """
+    uploader_category_sql = """
+        CASE
+          WHEN trim(COALESCE(uploader_category, '')) = '' THEN '__no_category__'
+          ELSE trim(uploader_category)
+        END
+    """
     categorized_cte = f"""
         WITH raw_candidates AS MATERIALIZED (
           {candidate_sql}
@@ -619,6 +710,8 @@ def video_collection_data(
           SELECT candidate_occurrences.*,
                  {collection_category_sql} AS collection_category,
                  {completion_category_sql} AS completion_category,
+                 {reaction_category_sql} AS reaction_category,
+                 {uploader_category_sql} AS uploader_category_category,
                  CASE
                    WHEN COALESCE(video_id, '') <> '' THEN 'video:' || video_id
                    ELSE 'slot:' || playlist_id || ':' || position
@@ -626,6 +719,18 @@ def video_collection_data(
           FROM candidate_occurrences
         )
     """
+    plugin_filter_clauses = []
+    if active_included_video_ids is not None:
+        plugin_filter_clauses.append(
+            "EXISTS (SELECT 1 FROM temp.video_collection_included included "
+            "WHERE included.video_id = categorized.video_id)"
+        )
+    if active_excluded_video_ids:
+        plugin_filter_clauses.append(
+            "NOT EXISTS (SELECT 1 FROM temp.video_collection_excluded excluded "
+            "WHERE excluded.video_id = categorized.video_id)"
+        )
+    plugin_filter_clause = " AND ".join(plugin_filter_clauses) or "1"
     duplicate_count = 0
     if playlist_id:
         duplicate_count = int(
@@ -647,23 +752,59 @@ def video_collection_data(
         )
     count_rows = conn.execute(
         categorized_cte
-        + """
+        + f"""
           SELECT 'collection' AS count_type, collection_category AS category,
                  COUNT(DISTINCT count_key) AS count
           FROM categorized
+          WHERE {plugin_filter_clause}
           GROUP BY collection_category
           UNION ALL
           SELECT 'completion', completion_category, COUNT(DISTINCT count_key)
           FROM categorized
+          WHERE {plugin_filter_clause}
           GROUP BY completion_category
+          UNION ALL
+          SELECT 'reaction', reaction_category, COUNT(DISTINCT count_key)
+          FROM categorized
+          WHERE {plugin_filter_clause}
+          GROUP BY reaction_category
+          UNION ALL
+          SELECT 'uploader_category', uploader_category_category,
+                 COUNT(DISTINCT count_key)
+          FROM categorized
+          WHERE {plugin_filter_clause}
+          GROUP BY uploader_category_category
         """,
         params,
     ).fetchall()
     counts = {category: 0 for category in (*VIDEO_AVAILABILITY_CATEGORIES, "removed")}
     completion_counts = {category: 0 for category in VIDEO_COMPLETION_CATEGORIES}
+    reaction_counts = {
+        "total": 0,
+        **{category: 0 for category in VIDEO_REACTION_CATEGORIES},
+    }
+    uploader_category_counts = {
+        "total": 0,
+        NO_UPLOADER_CATEGORY_FILTER: 0,
+    }
     for row in count_rows:
-        target = counts if row["count_type"] == "collection" else completion_counts
+        if row["count_type"] == "collection":
+            target = counts
+        elif row["count_type"] == "completion":
+            target = completion_counts
+        elif row["count_type"] == "reaction":
+            target = reaction_counts
+        else:
+            target = uploader_category_counts
         target[row["category"]] = row["count"]
+    reaction_counts["total"] = sum(
+        reaction_counts[category] for category in VIDEO_REACTION_CATEGORIES
+    )
+    uploader_category_counts["total"] = sum(
+        count
+        for category, count in uploader_category_counts.items()
+        if category != "total"
+    )
 
     filter_params = dict(params)
     category_placeholders = ", ".join(
@@ -694,11 +835,80 @@ def video_collection_data(
         if selected_completion_filters
         else "0"
     )
+    reaction_placeholders = ", ".join(
+        f":reaction_{index}" for index in range(len(selected_reaction_filters))
+    )
+    filter_params.update(
+        {
+            f"reaction_{index}": value
+            for index, value in enumerate(sorted(selected_reaction_filters))
+        }
+    )
+    reaction_clause = (
+        f"reaction_category IN ({reaction_placeholders})"
+        if selected_reaction_filters
+        else "0"
+    )
+    if selected_uploader_category_filters is None:
+        uploader_category_clause = "1"
+    else:
+        uploader_category_placeholders = ", ".join(
+            f":uploader_category_{index}"
+            for index in range(len(selected_uploader_category_filters))
+        )
+        filter_params.update(
+            {
+                f"uploader_category_{index}": value
+                for index, value in enumerate(sorted(selected_uploader_category_filters))
+            }
+        )
+        uploader_category_clause = (
+            f"uploader_category_category IN ({uploader_category_placeholders})"
+            if selected_uploader_category_filters
+            else "0"
+        )
     duplicate_clause = (
         "playlist_occurrence_count > 1"
         if playlist_id and duplicates_only
         else "1"
     )
+    native_filter_clause = (
+        f"{selected_clause} AND {completion_clause} AND {reaction_clause} "
+        f"AND {uploader_category_clause} AND {duplicate_clause}"
+    )
+
+    active_video_facet_memberships = {
+        str(plugin_id): {
+            str(video_id).strip()
+            for video_id in video_ids
+            if str(video_id).strip()
+        }
+        for plugin_id, video_ids in (video_facet_memberships or {}).items()
+    }
+    facet_rows = conn.execute(
+        categorized_cte
+        + f"""
+          SELECT count_key, video_id
+          FROM categorized
+          WHERE {native_filter_clause}
+        """,
+        filter_params,
+    ).fetchall()
+    facet_video_ids = {
+        str(row["count_key"]): str(row["video_id"] or "")
+        for row in facet_rows
+    }
+    video_facet_counts = {
+        plugin_id: {
+            "present": sum(
+                1 for video_id in facet_video_ids.values() if video_id in video_ids
+            ),
+            "absent": sum(
+                1 for video_id in facet_video_ids.values() if video_id not in video_ids
+            ),
+        }
+        for plugin_id, video_ids in active_video_facet_memberships.items()
+    }
     rank_partition = (
         "count_key, playlist_id, position"
         if playlist_id
@@ -708,7 +918,7 @@ def video_collection_data(
         filtered AS (
           SELECT *
           FROM categorized
-          WHERE {selected_clause} AND {completion_clause} AND {duplicate_clause}
+          WHERE {native_filter_clause} AND {plugin_filter_clause}
         ),
         ranked AS (
           SELECT filtered.*,
@@ -792,15 +1002,25 @@ def video_collection_data(
             item["playlist_url"] = youtube_playlist_url(item.get("playlist_id") or "")
         item.pop("completeness_score", None)
         item.pop("completion_category", None)
+        item.pop("reaction_category", None)
+        item.pop("uploader_category_category", None)
         item.pop("count_key", None)
         item.pop("playlist_occurrence_count", None)
         item.pop("candidate_rank", None)
+        video_id = str(item.get("video_id") or "")
+        item["pluginFacets"] = {
+            plugin_id: video_id in video_ids
+            for plugin_id, video_ids in active_video_facet_memberships.items()
+        }
         results.append(item)
     return {
         "results": results,
         "total": total,
         "counts": counts,
         "completionCounts": completion_counts,
+        "reactionCounts": reaction_counts,
+        "uploaderCategoryCounts": uploader_category_counts,
+        "metaCounts": {"videoPlugins": video_facet_counts},
         "duplicateCount": duplicate_count,
         "limit": limit,
         "offset": offset,
@@ -1069,14 +1289,13 @@ OMNI_SEARCH_META_FILTERS = {
     "video": VIDEO_AVAILABILITY_CATEGORIES,
     "playlist": ("private", "public", "unlisted", "unavailable", "unknown"),
 }
-OMNI_SEARCH_REACTION_FILTERS = ("none", "liked", "disliked")
+OMNI_SEARCH_REACTION_FILTERS = VIDEO_REACTION_CATEGORIES
 OMNI_SEARCH_COMPLETION_FILTERS = VIDEO_COMPLETION_CATEGORIES
 OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS = ("member", "non_member")
 OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS = ("mine", "others", "ownership_unknown")
 OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS = ("subscribed", "non_subscribed")
 OMNI_SEARCH_CHANNEL_STATUS_FILTERS = ("active", "terminated")
 OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS = ("mine", "others", "ownership_unknown")
-NO_UPLOADER_CATEGORY_FILTER = "__no_category__"
 
 
 def _omni_like_pattern(query: str) -> str:

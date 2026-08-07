@@ -191,11 +191,8 @@ def query_bool_param(
     name: str,
     *,
     default: bool = True,
-    legacy_name: str = "",
 ) -> bool:
     values = params.get(name)
-    if values is None and legacy_name:
-        values = params.get(legacy_name)
     if values is None:
         return default
     return values[0].strip().lower() not in {"0", "false", "no"}
@@ -213,7 +210,7 @@ def query_partial_min_percent(
 
 def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, Any]:
     return {
-        "include_public": query_bool_param(params, "public", legacy_name="videos"),
+        "include_public": query_bool_param(params, "public"),
         "include_unlisted": query_bool_param(params, "unlisted"),
         "include_private": query_bool_param(params, "private"),
         "include_members_only": query_bool_param(params, "members_only"),
@@ -222,10 +219,80 @@ def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, Any]
         "include_removed": query_bool_param(params, "removed"),
         "duplicates_only": query_bool_param(params, "duplicates", default=False),
         "completion_filters": query_set_param(params, "completion"),
+        "reaction_filters": query_set_param(params, "reaction"),
+        "uploader_category_filters": query_set_param(params, "uploader_category"),
         "partial_min_percent": query_partial_min_percent(
             params,
             "completion_min_percent",
         ),
+    }
+
+
+def video_plugin_query_data(
+    plugin_manager: PluginManager,
+    params: dict[str, list[str]],
+    query: str,
+    *,
+    include_projections: bool = False,
+) -> dict[str, Any]:
+    included_plugin_ids = set(params.get("video_filter_plugin") or [])
+    excluded_plugin_ids = set(params.get("video_exclude_filter_plugin") or [])
+    requested_search_plugin_ids = params.get("video_search_plugin")
+    search_plugin_ids = (
+        set(included_plugin_ids)
+        if requested_search_plugin_ids is None
+        else {
+            plugin_id
+            for plugin_id in requested_search_plugin_ids
+            if plugin_id and plugin_id != "__none__"
+        }
+    )
+    facet_plugin_ids = dict.fromkeys(
+        [
+            *(params.get("video_facet_plugin") or []),
+            *included_plugin_ids,
+            *excluded_plugin_ids,
+            *search_plugin_ids,
+        ]
+    )
+    video_id_filters: list[frozenset[str]] = []
+    video_id_exclusion_filters: list[frozenset[str]] = []
+    video_facet_memberships: dict[str, frozenset[str]] = {}
+    video_search_match_ids: set[str] = set()
+    video_search_match_memberships: dict[str, frozenset[str]] = {}
+    video_projections: dict[str, dict[str, dict[str, str]]] = {}
+    for plugin_id in facet_plugin_ids:
+        video_ids, search_match_ids = plugin_manager.filter_videos(
+            plugin_id,
+            query if plugin_id in search_plugin_ids else "",
+        )
+        video_facet_memberships[plugin_id] = video_ids
+        if plugin_id in included_plugin_ids:
+            video_id_filters.append(video_ids)
+        if plugin_id in search_plugin_ids:
+            video_search_match_ids.update(search_match_ids)
+            video_search_match_memberships[plugin_id] = search_match_ids
+        if plugin_id in excluded_plugin_ids:
+            video_id_exclusion_filters.append(video_ids)
+        if not include_projections:
+            continue
+        projection_ids: frozenset[str] = frozenset()
+        if plugin_id in included_plugin_ids:
+            projection_ids = search_match_ids if query.strip() else video_ids
+        if plugin_id in search_plugin_ids and query.strip():
+            projection_ids = projection_ids.union(search_match_ids)
+        if projection_ids:
+            video_projections[plugin_id] = plugin_manager.project_videos(
+                plugin_id,
+                projection_ids,
+            )
+    return {
+        "video_id_filters": video_id_filters,
+        "video_id_exclusion_filters": video_id_exclusion_filters,
+        "video_facet_memberships": video_facet_memberships,
+        "video_search_match_ids": video_search_match_ids,
+        "video_search_match_memberships": video_search_match_memberships,
+        "video_projections": video_projections,
     }
 
 
@@ -664,7 +731,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 cache_control="no-cache",
             )
             return True
-        if path in {"/", "/index.html"}:
+        shell_paths = {"/", "/index.html", "/search", "/videos", "/playlists", "/channels", "/clips", "/history"}
+        shell_prefixes = ("/videos/", "/playlists/", "/channels/", "/clips/")
+        if path in shell_paths or path.startswith(shell_prefixes):
             self._send_bytes(
                 self.render_page(INDEX_HTML),
                 "text/html; charset=utf-8",
@@ -677,12 +746,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 "text/html; charset=utf-8",
                 cache_control="no-store",
             )
-            return True
-        if path == "/history":
-            self.send_response(302)
-            self.send_header("Location", "/#view=history")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
             return True
         return False
 
@@ -953,15 +1016,46 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 if is_videos:
                     params = urllib.parse.parse_qs(parsed.query)
+                    query = (params.get("q") or [""])[0]
                     try:
                         limit = max(1, min(500, int((params.get("limit") or ["100"])[0] or 100)))
                         offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
                     except ValueError:
                         limit, offset = 100, 0
+                    try:
+                        plugin_data = video_plugin_query_data(
+                            self.plugin_manager,
+                            params,
+                            query,
+                        )
+                    except (LookupError, RuntimeError, TypeError, ValueError) as exc:
+                        self.send_json(
+                            {"error": "Video filter unavailable", "message": str(exc)},
+                            status=503,
+                        )
+                        return
+                    included_sets = plugin_data["video_id_filters"]
+                    included_video_ids = (
+                        set.intersection(*(set(values) for values in included_sets))
+                        if included_sets
+                        else None
+                    )
+                    excluded_video_ids = set().union(
+                        *plugin_data["video_id_exclusion_filters"]
+                    )
                     data = video_collection_data(
                         conn,
                         playlist_id=playlist_id,
-                        query=(params.get("q") or [""])[0],
+                        query=query,
+                        search_fields=query_set_param(params, "search_fields"),
+                        included_video_ids=included_video_ids,
+                        excluded_video_ids=excluded_video_ids,
+                        video_facet_memberships=plugin_data[
+                            "video_facet_memberships"
+                        ],
+                        video_search_match_ids=plugin_data[
+                            "video_search_match_ids"
+                        ],
                         **video_collection_filter_args(params),
                         sort=(params.get("sort") or ["playlist_order"])[0],
                         limit=limit,
@@ -1135,58 +1229,13 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             )
             search_fields = query_set_param(params, "search_fields")
             sort = (params.get("sort") or [None])[0]
-            video_id_filters: list[frozenset[str]] = []
-            video_id_exclusion_filters: list[frozenset[str]] = []
-            video_facet_memberships: dict[str, frozenset[str]] = {}
-            video_search_match_ids: set[str] = set()
-            video_search_match_memberships: dict[str, frozenset[str]] = {}
-            video_projections: dict[str, dict[str, dict[str, str]]] = {}
             try:
-                included_plugin_ids = set(params.get("video_filter_plugin") or [])
-                excluded_plugin_ids = set(
-                    params.get("video_exclude_filter_plugin") or []
+                plugin_data = video_plugin_query_data(
+                    self.plugin_manager,
+                    params,
+                    query,
+                    include_projections=True,
                 )
-                requested_search_plugin_ids = params.get("video_search_plugin")
-                search_plugin_ids = (
-                    set(included_plugin_ids)
-                    if requested_search_plugin_ids is None
-                    else {
-                        plugin_id
-                        for plugin_id in requested_search_plugin_ids
-                        if plugin_id and plugin_id != "__none__"
-                    }
-                )
-                facet_plugin_ids = dict.fromkeys(
-                    [
-                        *(params.get("video_facet_plugin") or []),
-                        *included_plugin_ids,
-                        *excluded_plugin_ids,
-                        *search_plugin_ids,
-                    ]
-                )
-                for plugin_id in facet_plugin_ids:
-                    video_ids, search_match_ids = self.plugin_manager.filter_videos(
-                        plugin_id,
-                        query if plugin_id in search_plugin_ids else "",
-                    )
-                    video_facet_memberships[plugin_id] = video_ids
-                    if plugin_id in included_plugin_ids:
-                        video_id_filters.append(video_ids)
-                    if plugin_id in search_plugin_ids:
-                        video_search_match_ids.update(search_match_ids)
-                        video_search_match_memberships[plugin_id] = search_match_ids
-                    if plugin_id in excluded_plugin_ids:
-                        video_id_exclusion_filters.append(video_ids)
-                    projection_ids: frozenset[str] = frozenset()
-                    if plugin_id in included_plugin_ids:
-                        projection_ids = search_match_ids if query.strip() else video_ids
-                    if plugin_id in search_plugin_ids and query.strip():
-                        projection_ids = projection_ids.union(search_match_ids)
-                    if projection_ids:
-                        video_projections[plugin_id] = self.plugin_manager.project_videos(
-                            plugin_id,
-                            projection_ids,
-                        )
             except (LookupError, RuntimeError, TypeError, ValueError) as exc:
                 self.send_json(
                     {"error": "Video filter unavailable", "message": str(exc)},
@@ -1229,12 +1278,16 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         params,
                         "video_uploader_category",
                     ),
-                    video_id_filters=video_id_filters,
-                    video_id_exclusion_filters=video_id_exclusion_filters,
-                    video_facet_memberships=video_facet_memberships,
-                    video_search_match_ids=video_search_match_ids,
-                    video_search_match_memberships=video_search_match_memberships,
-                    video_projections=video_projections,
+                    video_id_filters=plugin_data["video_id_filters"],
+                    video_id_exclusion_filters=plugin_data[
+                        "video_id_exclusion_filters"
+                    ],
+                    video_facet_memberships=plugin_data["video_facet_memberships"],
+                    video_search_match_ids=plugin_data["video_search_match_ids"],
+                    video_search_match_memberships=plugin_data[
+                        "video_search_match_memberships"
+                    ],
+                    video_projections=plugin_data["video_projections"],
                     channel_subscription_filters=query_set_param(
                         params,
                         "channel_subscription",

@@ -51,7 +51,7 @@
     .admin-link:hover { text-decoration: underline; }
     .search { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 10px 12px; font: inherit; margin-bottom: 14px; }
     .filters { border-bottom: 1px solid var(--line); padding: 0 0 10px; margin-bottom: 14px; display: grid; gap: 7px; transition: opacity 120ms ease; }
-    .filters.view-inactive { opacity: .42; }
+    .filters[hidden] { display: none; }
     .filter-title { color: var(--muted); font-size: 12px; }
     .filter { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
     .filter input { accent-color: var(--accent); }
@@ -528,9 +528,9 @@
         <h1><a class="home-title" href="/"><img class="library-mark" src="/favicon.svg?v=ytl" alt="">YT Library</a></h1>
         <a class="admin-link" href="/admin">Admin</a>
       </div>
-      <a id="history-nav" class="group" href="#view=history" data-key="__history__"><span>History</span><span class="count"></span></a>
+      <a id="history-nav" class="group" href="/history" data-key="__history__"><span>History</span><span class="count"></span></a>
       <div class="primary-nav-divider" aria-hidden="true"></div>
-      <a id="search-nav" class="group search-nav" href="#search" data-key="__search__"><span>Search</span><span class="count"></span></a>
+      <a id="search-nav" class="group search-nav" href="/search" data-key="__search__"><span>Search</span><span class="count"></span></a>
       <input id="search" class="search" type="search" placeholder="Search everything" autocomplete="off">
       <div id="search-filters" class="filters" aria-label="Search filters">
         <div class="filter-title">Search in</div>

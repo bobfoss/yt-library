@@ -1266,7 +1266,7 @@ class SchemaTests(unittest.TestCase):
                         core.clear_worker_queue(conn)
                         unified_local_playlist = core.enqueue_worker_queue_target(
                             conn,
-                            "http://127.0.0.1:8765/#playlist=PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
+                            "http://127.0.0.1:8765/playlists/PLRTzPJUdKxQ_09dcCZZURVVavWaZq11E4",
                         )
                     self.assertEqual(unified_local_playlist["worker_type"], "playlist")
                     self.assertEqual(unified_local_playlist["source"], "local")
@@ -1297,7 +1297,7 @@ class SchemaTests(unittest.TestCase):
                         core.clear_worker_queue(conn)
                         local_clip_target = core.enqueue_worker_queue_target(
                             conn,
-                            "http://127.0.0.1:8765/#clip=UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s",
+                            "http://127.0.0.1:8765/clips/UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s",
                         )
                     self.assertEqual(local_clip_target["worker_type"], "clip")
                     self.assertEqual(local_clip_target["source"], "local")

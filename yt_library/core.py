@@ -8594,12 +8594,6 @@ def local_queue_target_from_url(target: str) -> tuple[str, str]:
     if host.endswith("youtube.com") or host == "youtu.be":
         return "", ""
 
-    fragment_params = urllib.parse.parse_qs(parsed.fragment)
-    for key, kind in (("playlist", "playlist"), ("video", "video"), ("clip", "clip"), ("channel", "channel")):
-        value = (fragment_params.get(key) or [""])[0]
-        if value:
-            return kind, urllib.parse.unquote(value).strip()
-
     query_params = urllib.parse.parse_qs(parsed.query)
     if (query_params.get("list") or [""])[0]:
         return "playlist", (query_params.get("list") or [""])[0].strip()
@@ -8607,8 +8601,14 @@ def local_queue_target_from_url(target: str) -> tuple[str, str]:
         return "video", (query_params.get("v") or [""])[0].strip()
 
     parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if len(parts) >= 2 and parts[0] in {"playlist", "video", "clip", "channel"}:
-        return parts[0], urllib.parse.unquote(parts[1]).strip()
+    singular_kind = {
+        "playlists": "playlist",
+        "videos": "video",
+        "clips": "clip",
+        "channels": "channel",
+    }
+    if len(parts) >= 2 and parts[0] in singular_kind:
+        return singular_kind[parts[0]], urllib.parse.unquote(parts[1]).strip()
     return "", ""
 
 

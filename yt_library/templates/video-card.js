@@ -89,11 +89,18 @@
     );
   }
 
+  function linkTargetAttributes(url) {
+    const value = String(url || '');
+    return value.startsWith('/') || value.startsWith('#')
+      ? ''
+      : ' target="_blank" rel="noreferrer"';
+  }
+
   function creatorHtml(path, name, url) {
     if (!name) return '';
     const avatar = path ? `<img class="channel-avatar" src="/${escapeHtml(path)}" alt="">` : '';
     const content = `${avatar}<span class="creator-name">${escapeHtml(name)}</span>`;
-    const attributes = String(url || '').startsWith('#') ? '' : ' target="_blank" rel="noreferrer"';
+    const attributes = linkTargetAttributes(url);
     return url
       ? `<a class="creator-link creator-chip" href="${escapeHtml(url)}"${attributes}>${content}</a>`
       : `<span class="creator-chip">${content}</span>`;
@@ -293,6 +300,7 @@
     creatorHtml,
     detailRowHtml,
     escapeHtml,
+    linkTargetAttributes,
     membersOnlyIconHtml,
     reactionLabel,
     reactionIconsHtml,

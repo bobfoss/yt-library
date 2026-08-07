@@ -59,9 +59,11 @@ test('timezone reset persists the detected zone in one request', () => {
 test('detail navigation retains the active search state', () => {
   const indexSource = source('index.js');
 
-  assert.match(indexSource, /let retainedSearchHash = '#search';/);
-  assert.match(indexSource, /retainedSearchHash = hash;/);
-  assert.match(indexSource, /window\.location\.hash = retainedSearchHash;/);
+  assert.match(indexSource, /let retainedSearchUrl = loadRetainedSearchUrl\(\);/);
+  assert.match(indexSource, /window\.sessionStorage\.getItem\('yt-library-retained-search-url'\)/);
+  assert.match(indexSource, /window\.sessionStorage\.setItem\('yt-library-retained-search-url', href\)/);
+  assert.match(indexSource, /rememberSearchUrl\(currentBrowserUrl\(\)\)/);
+  assert.match(indexSource, /setBrowserUrl\(retainedSearchUrl \|\| '\/search'\)/);
   assert.match(
     indexSource,
     /searchNav\?\.addEventListener\('click', event => \{[\s\S]{0,120}handleSidebarLinkClick\(event, activateSearchNavigation\)/,
@@ -72,17 +74,54 @@ test('detail navigation retains the active search state', () => {
   );
 });
 
+test('history hides search facets until the search box activates search', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+
+  assert.match(indexHtml, /\.filters\[hidden\] \{ display: none; \}/);
+  assert.match(
+    indexSource,
+    /function syncSearchFiltersForSelection\(\)[\s\S]{0,180}searchFilters\.hidden = historySelected/,
+  );
+  assert.match(
+    indexSource,
+    /function activateSearchFromHistory[\s\S]{0,300}searchFilters\.hidden = false/,
+  );
+});
+
 test('sidebar navigation uses real links without intercepting modified clicks', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');
 
-  assert.match(indexHtml, /<a id="history-nav" class="group" href="#view=history"/);
-  assert.match(indexHtml, /<a id="search-nav" class="group search-nav" href="#search"/);
+  assert.match(indexHtml, /<a id="history-nav" class="group" href="\/history"/);
+  assert.match(indexHtml, /<a id="search-nav" class="group search-nav" href="\/search"/);
   assert.match(indexSource, /function searchPresetHref\(preset, groupKey = ''\)/);
   assert.match(indexSource, /function handleSidebarLinkClick\(event, navigate\)[\s\S]{0,240}event\.ctrlKey[\s\S]{0,120}event\.preventDefault\(\)/);
   assert.match(indexSource, /function groupLinkFor[\s\S]{0,160}document\.createElement\('a'\)/);
   assert.match(indexSource, /function presetLink[\s\S]{0,160}document\.createElement\('a'\)/);
   assert.match(indexSource, /link\.href = searchPresetHref\(preset/);
+});
+
+test('browser routes use path scope as the authoritative search context', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /const scopeByPath = \{[\s\S]*?'\/videos': 'videos'[\s\S]*?'\/clips': 'clips'[\s\S]*?'\/playlists': 'playlists'[\s\S]*?'\/channels': 'channels'/);
+  assert.match(indexSource, /return activeSearchScope[\s\S]{0,120}selectedKinds\.filter\(kind => kind === activeSearchScope\)/);
+  assert.match(indexSource, /const base = scope \? `\/\$\{scope\}` : '\/search'/);
+  assert.match(indexSource, /if \(contextKind === kind\) return facetsHtml;/);
+  assert.match(indexSource, /window\.addEventListener\('popstate', handleBrowserLocationChange\)/);
+  assert.doesNotMatch(indexSource, /window\.location\.hash|addEventListener\('hashchange'/);
+});
+
+test('playlist detail reuses the sidebar video search facets', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /search\.placeholder = selected\.startsWith\('__playlist__:'\)[\s\S]{0,100}'Search this playlist'/);
+  assert.match(indexSource, /function searchContextKind\(\)[\s\S]{0,100}selected\.startsWith\('__playlist__:'\)[\s\S]{0,40}'videos'/);
+  assert.match(indexSource, /fetchVideoCollection\(\{[\s\S]{0,500}useSearchFacets: true/);
+  assert.match(indexSource, /reactionCounts: payload\.reactionCounts/);
+  assert.match(indexSource, /uploaderCategoryCounts: payload\.uploaderCategoryCounts/);
+  assert.doesNotMatch(indexSource, /function playlistVideoFiltersHtml/);
 });
 
 test('internal channel links prefer aliases while channel queries use canonical ids', () => {
@@ -101,9 +140,8 @@ test('playlist unavailable and removed filters are persisted opt-ins', () => {
 
   assert.match(indexSource, /unavailable: filterPreferenceEnabled\(filterPreferenceKeys\.unavailablePlaylistVideos\)/);
   assert.match(indexSource, /removed: filterPreferenceEnabled\(filterPreferenceKeys\.removedPlaylistVideos\)/);
-  assert.match(indexSource, /playlistVideoOptInFilters\.find\(item => item\.key === filter\)/);
-  assert.match(indexSource, /saveFilterPreference\(playlistFilter\.preferenceKey, target\.checked\)/);
-  assert.match(indexSource, /metaAllFilter === 'playlist-videos'[\s\S]{0,100}savePlaylistVideoOptInPreferences\(\)/);
+  assert.match(indexSource, /function savePlaylistVideoOptInPreferences\(\)[\s\S]{0,180}playlistVideoOptInFilters/);
+  assert.match(indexSource, /selected\.startsWith\('__playlist__:'\) && groupName === 'videos'[\s\S]{0,160}savePlaylistVideoOptInPreferences\(\)/);
 });
 
 test('playlist search groups unavailable under availability without a status facet', () => {
@@ -161,11 +199,17 @@ test('compact channel cards retain only a right-aligned YouTube link', () => {
 
 test('playlist cards render one owner separately from collaborators', () => {
   const indexSource = source('index.js');
+  const videoCardSource = source('video-card.js');
 
   assert.match(indexSource, /const people = \[owner, \.\.\.collaborators\]/);
   assert.match(indexSource, /names \+= ` and \$\{playlistPersonNameHtml\(collaborators\[0\]\)\}`/);
   assert.match(indexSource, /names \+= ` and \$\{collaborators\.length\} others`/);
   assert.match(indexSource, /playlist-creator-avatars/);
+  assert.match(
+    videoCardSource,
+    /value\.startsWith\('\/'\) \|\| value\.startsWith\('#'\)/,
+  );
+  assert.match(indexSource, /return linkTargetAttributes\(href\);/);
 });
 
 test('admin status polling clears stale running state on request failures', () => {
@@ -401,13 +445,13 @@ test('single-facet result kinds use the same parent state calculation', () => {
   );
 });
 
-test('video presets restore plugin-provided facets', () => {
+test('video category restores plugin-provided facets', () => {
   const indexSource = source('index.js');
 
   assert.match(indexSource, /function enableDefaultSearchKind\(kind\)[\s\S]*if \(kind !== 'videos'\) return;[\s\S]*browserVideoFilterPlugins\(\)[\s\S]*defaultBrowserVideoFacetVisibility\(videoFilter\)/);
 });
 
-test('search hashes omit state already implied by a preset', () => {
+test('search URLs omit state already implied by their scoped route', () => {
   const indexSource = source('index.js');
 
   assert.match(indexSource, /function searchMetaPresetBaseline\(groupName, preset = activeSearchPreset\)/);
@@ -491,19 +535,19 @@ test('uploader category facet requires detected categories', () => {
   assert.match(indexSource, /\.\.\.\(uploaderCategoryDefinitions\.length \? \[[\s\S]*?allLabel: 'Uploader category'/);
 });
 
-test('navigation preset labels and identifiers stay concise', () => {
+test('sidebar categories rely on scoped filters instead of named presets', () => {
   const indexSource = source('index.js');
 
-  assert.match(indexSource, /presetLink\('playlisted', 'Playlisted',/);
-  assert.match(indexSource, /presetLink\('liked', 'Liked',/);
+  assert.match(indexSource, /presetLink\('videos', 'Videos',/);
+  assert.match(indexSource, /presetLink\('clips', 'Clips',/);
   assert.match(indexSource, /presetLink\('playlists', 'Playlists',/);
-  assert.match(indexSource, /presetLink\('subscribed', 'Subscribed',/);
-  assert.match(indexSource, /presetLink\('terminated', 'Terminated',/);
-  assert.doesNotMatch(indexSource, /Playlist videos|Liked videos|Subscribed channels|Terminated channels/);
-  assert.doesNotMatch(indexSource, /presetLink\('(playlist-videos|liked-videos|subscribed-channels|terminated-channels)'/);
+  assert.match(indexSource, /presetLink\('channels', 'Channels',/);
+  assert.doesNotMatch(indexSource, /presetLink\('(playlisted|liked|subscribed|terminated)'/);
+  assert.doesNotMatch(indexSource, /activeSearchPreset === '(playlisted|liked|subscribed|terminated)'/);
+  assert.doesNotMatch(indexSource, /browserSearchPresets/);
   assert.doesNotMatch(indexSource, /all-playlists/);
-  assert.match(indexSource, /const invalidPreset = Boolean\(requestedPreset && !searchPresetDefinition\(requestedPreset\)\)/);
-  assert.match(indexSource, /if \(invalidPreset\) updateSearchHash\(true\)/);
+  assert.match(indexSource, /const invalidPreset = Boolean\([\s\S]{0,220}!requestedDefinition/);
+  assert.match(indexSource, /if \(pathname === '\/' \|\| invalidPreset\) updateSearchUrl\(true\)/);
 });
 
 test('search and playlist video sorts include both title directions', () => {
@@ -526,7 +570,7 @@ test('history heatmap can return to the current year and day', () => {
   assert.match(indexSource, /historyActivityYearOffset = 0/);
   assert.match(
     indexSource,
-    /async function jumpToCurrentHistoryActivity\(\)[\s\S]{0,420}selected === '__history__'[\s\S]{0,220}historyNavigationDate = '';[\s\S]{0,140}updateCurrentHash\(false\)/,
+    /async function jumpToCurrentHistoryActivity\(\)[\s\S]{0,420}selected === '__history__'[\s\S]{0,220}historyNavigationDate = '';[\s\S]{0,140}updateCurrentUrl\(false\)/,
   );
   assert.match(indexSource, /historyActivityDayNear\(activity, localDateKey\(new Date\(\)\)\)/);
   assert.match(indexSource, /current\.disabled = historyActivityYearOffset === 0 && currentPage === 1/);

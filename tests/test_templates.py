@@ -201,8 +201,8 @@ class TemplateDomTests(unittest.TestCase):
             self.index.position("history-nav"),
             self.index.position("search-nav"),
         )
-        self.assertEqual(self.index.element("history-nav")[1].get("href"), "#view=history")
-        self.assertEqual(self.index.element("search-nav")[1].get("href"), "#search")
+        self.assertEqual(self.index.element("history-nav")[1].get("href"), "/history")
+        self.assertEqual(self.index.element("search-nav")[1].get("href"), "/search")
         self.assertLess(
             self.index.position("view-meta"),
             self.index.position("refresh"),

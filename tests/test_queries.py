@@ -1661,12 +1661,14 @@ class NormalizedReadModelTests(unittest.TestCase):
         data = library_bootstrap_data(self.conn)
 
         self.assertEqual(set(data), {"groups", "memberships", "counts"})
+        self.assertEqual(
+            set(data["counts"]),
+            {"videos", "clips", "playlists", "history", "channels"},
+        )
         self.assertEqual(data["counts"]["videos"], 1)
         self.assertEqual(data["counts"]["playlists"], 1)
-        self.assertEqual(data["counts"]["playlist_videos"], 1)
-        self.assertEqual(data["counts"]["liked_videos"], 1)
         self.assertEqual(data["counts"]["history"], 1)
-        self.assertEqual(data["counts"]["subscribed_channels"], 1)
+        self.assertEqual(data["counts"]["channels"], 1)
 
     def test_playlist_list_filters_sorts_and_pages_on_server(self) -> None:
         self.conn.executemany(
@@ -2170,6 +2172,82 @@ class NormalizedReadModelTests(unittest.TestCase):
             [row["video_id"] for row in below_minimum["results"]],
             ["partial-low"],
         )
+
+    def test_playlist_collection_reuses_search_and_video_facets(self) -> None:
+        for video_id, title in (
+            ("facet-alpha", "Alpha"),
+            ("facet-beta", "Beta"),
+            ("facet-gamma", "Gamma"),
+        ):
+            self.add_video(video_id, title)
+        self.conn.executemany(
+            """
+            UPDATE videos
+            SET description = ?, reaction = ?, uploader_category = ?,
+                is_playable = 1, availability = 'public'
+            WHERE video_id = ?
+            """,
+            [
+                ("Plain description", "L", "Music", "facet-alpha"),
+                ("Contains the needle", "D", "Education", "facet-beta"),
+                ("Plugin-only match", "", "", "facet-gamma"),
+            ],
+        )
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLfacets', 'Facets')"
+        )
+        self.conn.executemany(
+            "INSERT INTO playlist_items(playlist_id, position, video_id) VALUES ('PLfacets', ?, ?)",
+            [(1, "facet-alpha"), (2, "facet-beta"), (3, "facet-gamma")],
+        )
+        self.conn.commit()
+
+        description_match = video_collection_data(
+            self.conn,
+            playlist_id="PLfacets",
+            query="needle",
+            search_fields={"descriptions"},
+        )
+        self.assertEqual(
+            [row["video_id"] for row in description_match["results"]],
+            ["facet-beta"],
+        )
+
+        plugin_match = video_collection_data(
+            self.conn,
+            playlist_id="PLfacets",
+            query="subtitle phrase",
+            search_fields={"titles"},
+            video_search_match_ids={"facet-gamma"},
+        )
+        self.assertEqual(
+            [row["video_id"] for row in plugin_match["results"]],
+            ["facet-gamma"],
+        )
+
+        filtered = video_collection_data(
+            self.conn,
+            playlist_id="PLfacets",
+            reaction_filters={"liked"},
+            uploader_category_filters={"Music"},
+            included_video_ids={"facet-alpha", "facet-beta"},
+            excluded_video_ids={"facet-beta"},
+            video_facet_memberships={
+                "subtitles": {"facet-alpha", "facet-gamma"},
+            },
+        )
+        self.assertEqual(
+            [row["video_id"] for row in filtered["results"]],
+            ["facet-alpha"],
+        )
+        self.assertEqual(filtered["reactionCounts"]["liked"], 1)
+        self.assertEqual(filtered["reactionCounts"]["disliked"], 0)
+        self.assertEqual(filtered["uploaderCategoryCounts"]["Music"], 1)
+        self.assertEqual(
+            filtered["metaCounts"]["videoPlugins"]["subtitles"],
+            {"present": 1, "absent": 0},
+        )
+        self.assertTrue(filtered["results"][0]["pluginFacets"]["subtitles"])
 
     def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:
         self.add_video("old123", "Old Router Video")
