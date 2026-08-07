@@ -141,6 +141,18 @@ test('browser plugins are loaded through a generic registration contract', () =>
   assert.match(indexSource, /requestParams\.append\('video_search_plugin', '__none__'\)/);
 });
 
+test('plugin search fields can be limited to applicable result kinds', () => {
+  assert.match(indexSource, /definition\?\.appliesToKinds === undefined/);
+  assert.match(indexSource, /function browserSearchFieldAppliesToCurrentContext\(plugin\)/);
+  assert.match(indexSource, /return selectedSearchKinds\(\)\.some\(kind => applicableKinds\.has\(kind\)\)/);
+  assert.match(indexSource, /label\.hidden = !applies/);
+  assert.match(indexSource, /label\.style\.display = applies \? '' : 'none'/);
+  assert.match(indexSource, /input\.disabled = !applies/);
+  assert.match(indexSource, /function applicableSearchFields\(\)[\s\S]*?input => !input\.disabled/);
+  assert.match(indexSource, /function syncSearchFiltersForSelection\(\)[\s\S]*?syncBrowserPluginSearchFieldVisibility\(\)/);
+  assert.match(indexSource, /function refreshSearchAfterFilterChange\([\s\S]*?syncBrowserPluginSearchFieldVisibility\(\)/);
+});
+
 test('legacy search preparation and video-detail panels remain available', () => {
   assert.match(indexSource, /async function decorateCoreSearchResults\(/);
   assert.match(indexSource, /plugin\.search\.decorateCoreResults\(/);

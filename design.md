@@ -567,6 +567,7 @@ api.register({
       key: 'example',
       label: 'Example data',
       defaultEnabled: true,
+      appliesToKinds: ['videos'],
     },
     videoFacet: {
       presentLabel: 'has example data',
@@ -583,8 +584,13 @@ api.register({
 ```
 
 `searchField` adds a checkbox under **Search in**. Its key follows the plugin ID
-syntax and must be unique. `videoFacet` adds a facet under the Videos filter
-root on broad Search and beneath the Videos link in video-scoped contexts, with
+syntax and must be unique. An optional nonempty `appliesToKinds` array limits
+the field to matching result-kind identifiers. The host hides and disables the
+field when a scoped path selects another kind, or when broad Search has none of
+its applicable kinds selected; its checked state is retained so returning to an
+applicable kind restores the prior choice. Omit `appliesToKinds` for a field
+that applies everywhere. `videoFacet` adds a facet under the Videos filter root
+on broad Search and beneath the Videos link in video-scoped contexts, with
 independently selectable present and absent values. Both
 are enabled on a fresh search by default, so simply installing a plugin does
 not narrow the core video set. Optional

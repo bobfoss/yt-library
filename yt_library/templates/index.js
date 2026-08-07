@@ -84,6 +84,19 @@ function browserSearchFieldKey(plugin) {
   return String(definition?.key || plugin?.id || '');
 }
 
+function browserSearchFieldApplicableKinds(plugin) {
+  const definition = browserSearchFieldDefinition(plugin);
+  if (definition?.appliesToKinds === undefined) return null;
+  if (
+    !Array.isArray(definition.appliesToKinds)
+    || !definition.appliesToKinds.length
+    || definition.appliesToKinds.some(kind => !/^[a-z][a-z0-9_-]*$/.test(String(kind)))
+  ) {
+    throw new TypeError(`Plugin search field applicable kinds are invalid: ${plugin.id}`);
+  }
+  return new Set(definition.appliesToKinds.map(String));
+}
+
 function browserPluginSearchFieldEnabled(plugin) {
   const key = browserSearchFieldKey(plugin);
   return Boolean(key && activeSearchFields().has(key));
@@ -111,6 +124,7 @@ function validateBrowserPluginSearchField(plugin) {
   if (!definition) return null;
   const key = browserSearchFieldKey(plugin);
   const labelText = String(definition.label || '').trim();
+  browserSearchFieldApplicableKinds(plugin);
   if (!/^[a-z][a-z0-9_-]*$/.test(key)) {
     throw new TypeError(`Plugin search field key is invalid: ${key}`);
   }
@@ -197,6 +211,29 @@ function browserVideoSearchFieldPlugins() {
   return browserVideoFilterPlugins().filter(plugin => (
     browserPluginSearchFieldEnabled(plugin) && searchKindEnabled(plugin.id)
   ));
+}
+
+function browserSearchFieldAppliesToCurrentContext(plugin) {
+  const applicableKinds = browserSearchFieldApplicableKinds(plugin);
+  if (!applicableKinds) return true;
+  const contextKind = searchContextKind();
+  if (contextKind) return applicableKinds.has(contextKind);
+  return selectedSearchKinds().some(kind => applicableKinds.has(kind));
+}
+
+function syncBrowserPluginSearchFieldVisibility() {
+  for (const plugin of browserPlugins.values()) {
+    if (!browserSearchFieldDefinition(plugin)) continue;
+    const label = searchInFields.querySelector(
+      `[data-browser-plugin-search-field="${plugin.id}"]`
+    );
+    if (!(label instanceof HTMLLabelElement)) continue;
+    const input = label.querySelector('input.search-field');
+    const applies = browserSearchFieldAppliesToCurrentContext(plugin);
+    label.hidden = !applies;
+    label.style.display = applies ? '' : 'none';
+    if (input instanceof HTMLInputElement) input.disabled = !applies;
+  }
 }
 
 function browserVideoFacetState(plugin) {
@@ -1183,7 +1220,7 @@ function searchUrl() {
   if (activeSearchPreset && activeSearchPreset !== scope) params.set('view', activeSearchPreset);
   const groupKey = searchPlaylistGroupKey || searchChannelGroupKey;
   if (groupKey) params.set('group', groupKey);
-  if (activeSearchFields().size !== searchFields.length) {
+  if (activeSearchFields().size !== applicableSearchFields().length) {
     params.set('in', searchFieldParamValue() || '__none__');
   }
   for (const [groupName, paramName] of Object.entries(searchMetaParamNames)) {
@@ -1549,10 +1586,14 @@ function groupCount(groupKey, membershipMap, childMap) {
 
 function activeSearchFields() {
   return new Set(
-    searchFields
+    applicableSearchFields()
       .filter(input => input.checked)
       .map(input => input.dataset.searchField)
   );
+}
+
+function applicableSearchFields() {
+  return searchFields.filter(input => !input.disabled);
 }
 
 function syncFilterGroup(parent, childFilters, dimChildrenWhenUnchecked = true) {
@@ -1748,6 +1789,7 @@ function searchKindForFacet(facetKey) {
 function refreshSearchAfterFilterChange(groupName, activatedFromHistory) {
   currentPage = 1;
   syncSearchKindFilter(searchKindForFacet(groupName), false);
+  syncBrowserPluginSearchFieldVisibility();
   if (selected.startsWith('__playlist__:')) {
     Object.assign(playlistVisibility, searchMetaVisibility.videos);
     Object.assign(playlistCompletionVisibility, searchMetaVisibility.completion);
@@ -3343,6 +3385,7 @@ function syncSearchFiltersForSelection() {
   const alreadyHidden = searchFilters.hidden;
   searchFilters.hidden = historySelected;
   searchFilterTree.hidden = historySelected;
+  syncBrowserPluginSearchFieldVisibility();
   const placeholders = {
     videos: 'Search videos',
     clips: 'Search clips',
