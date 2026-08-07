@@ -11,7 +11,7 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 - Collect subscription, owned-playlist creation, and playlist-item-added timestamps through the YouTube Data API.
 - Reconcile date-only live YouTube history observations with precise Takeout watch timestamps.
 - Cache video thumbnails and creator channel avatars locally.
-- Capture YouTube like/dislike reaction state during metadata fetches and expose a derived Liked videos view.
+- Capture YouTube `LIKE`, `DISLIKE`, and `INDIFFERENT` reaction state during metadata fetches and expose a derived Liked videos view.
 - Monitor and control the persistent queue for playlist scans, metadata fetches, history verification, and unavailable-video recovery from the admin page.
 
 ## Project Layout
@@ -152,8 +152,11 @@ Playlist and channel groups with children have independent disclosure controls.
 Collapsed branches persist in `navigation_group_tree_collapsed`; newly imported
 groups remain expanded until the user collapses them.
 The Admin **Update** action incrementally discovers new playlists, fetches recent
-history and Liked videos, refreshes due playlist memberships, and enriches
-metadata that has never been fetched. `update_daily` and `update_time` attach
+history, rescans playlists that are new, failed, or have a reported-count
+mismatch, and enriches metadata that has never been fetched. Metadata requested
+for new History events also refreshes reaction state. The expensive Liked videos
+system-playlist scan is reserved for Initialize and the explicit **Scan all
+playlists** action. `update_daily` and `update_time` attach
 the daily schedule to that complete Update workflow; the configured time uses
 the display timezone. Existing `history_fetch_daily` and `history_fetch_time`
 settings are migrated when an older config is loaded.

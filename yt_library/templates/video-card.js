@@ -200,8 +200,8 @@
 
   function reactionLabel(video) {
     const reaction = String((video || {}).reaction || '').trim().toUpperCase();
-    if (reaction === 'L') return 'Liked';
-    if (reaction === 'D') return 'Disliked';
+    if (reaction === 'LIKE') return 'Liked';
+    if (reaction === 'DISLIKE') return 'Disliked';
     return '';
   }
 
@@ -218,8 +218,8 @@
     const reaction = String((video || {}).reaction || '').trim().toUpperCase();
     return `
       <div class="reaction-line" title="${escapeHtml(reactionLabel(video) || 'No like/dislike captured')}">
-        ${thumbIconHtml('like', reaction === 'L')}
-        ${thumbIconHtml('dislike', reaction === 'D')}
+        ${thumbIconHtml('like', reaction === 'LIKE')}
+        ${thumbIconHtml('dislike', reaction === 'DISLIKE')}
       </div>
     `;
   }

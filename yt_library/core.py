@@ -2696,9 +2696,9 @@ def reaction_from_button_node(node: dict[str, Any]) -> str:
         if isinstance(item, dict) and item.get("iconType")
     }
     if "dislike" in icon_types or re.search(r"\bdislike(?:d)?\b", blob):
-        return "D"
+        return "DISLIKE"
     if "like" in icon_types or re.search(r"\blike(?:d)?\b", blob):
-        return "L"
+        return "LIKE"
     return ""
 
 
@@ -2709,10 +2709,8 @@ def extract_reaction_from_initial_data(initial_data: dict[str, Any]) -> str:
         like_status = node.get("likeStatusEntity")
         if isinstance(like_status, dict):
             status = str(like_status.get("likeStatus") or "").strip().upper()
-            if status == "LIKE":
-                return "L"
-            if status == "DISLIKE":
-                return "D"
+            if status in {"LIKE", "DISLIKE", "INDIFFERENT"}:
+                return status
         if node.get("isToggled") is True or node.get("isToggledButton") is True:
             reaction = reaction_from_button_node(node)
             if reaction:
@@ -6739,7 +6737,7 @@ def save_liked_video_reactions(
     now = utc_now()
     if replace:
         conn.execute(
-            "UPDATE videos SET reaction = '', updated_at = ? WHERE reaction = 'L'",
+            "UPDATE videos SET reaction = '', updated_at = ? WHERE reaction = 'LIKE'",
             (now,),
         )
     for video in deduped:
@@ -6765,7 +6763,7 @@ def save_liked_video_reactions(
             updated_at=now,
         )
         conn.execute(
-            "UPDATE videos SET reaction = 'L', updated_at = ? WHERE video_id = ?",
+            "UPDATE videos SET reaction = 'LIKE', updated_at = ? WHERE video_id = ?",
             (now, video_id),
         )
     return len(deduped), unavailable_count
@@ -6909,9 +6907,7 @@ def playlist_scan_candidate_rows(
     limit: int = 0,
     offset: int = 0,
     force: bool = False,
-    stale_days: int = 7,
 ) -> list[sqlite3.Row]:
-    stale_before = utc_days_ago(stale_days)
     where = ["p.playlist_id <> ''"]
     params: list[Any] = []
     if not force:
@@ -6923,11 +6919,9 @@ def playlist_scan_candidate_rows(
               ps.playlist_id IS NULL
               OR ps.scan_status <> 'ok'
               OR (p.video_count > 0 AND p.video_count <> COALESCE(ps.video_count, -1))
-              OR (ps.scanned_at IS NOT NULL AND ps.scanned_at < ?)
             )
             """
         )
-        params.append(stale_before)
     sql = f"""
         SELECT p.playlist_id,
                p.title,
@@ -7678,10 +7672,9 @@ def enqueue_all_playlist_scan_items(
     conn: sqlite3.Connection,
     *,
     force: bool = False,
-    stale_days: int = 7,
     discover_current: bool = False,
 ) -> dict[str, int]:
-    rows = playlist_scan_candidate_rows(conn, force=force, stale_days=stale_days)
+    rows = playlist_scan_candidate_rows(conn, force=force)
     queued_before = playlist_scan_queue_count(conn)
     if discover_current:
         enqueue_playlist_discovery_item(conn, mode="all")
@@ -7714,14 +7707,12 @@ def rebuild_playlist_scan_queue(
     conn: sqlite3.Connection,
     *,
     force: bool = False,
-    stale_days: int = 7,
     discover_current: bool = False,
 ) -> dict[str, int]:
     cleared = clear_playlist_scan_queue(conn)
     stats = enqueue_all_playlist_scan_items(
         conn,
         force=force,
-        stale_days=stale_days,
         discover_current=discover_current,
     )
     return {**stats, "cleared": cleared}
@@ -8338,7 +8329,7 @@ class LibraryQueuePlan:
     history_mode: str
     history_manual: bool
     playlist_selection: str
-    playlist_stale_days: int
+    include_liked_videos: bool
     metadata_selection: str
     metadata_stale_days: int
     replace_worker_types: tuple[str, ...] = ()
@@ -8351,7 +8342,7 @@ INITIALIZATION_QUEUE_PLAN = LibraryQueuePlan(
     history_mode="verify",
     history_manual=True,
     playlist_selection="all",
-    playlist_stale_days=0,
+    include_liked_videos=True,
     metadata_selection="due",
     metadata_stale_days=30,
 )
@@ -8362,7 +8353,7 @@ UPDATE_QUEUE_PLAN = LibraryQueuePlan(
     history_mode="recent",
     history_manual=False,
     playlist_selection="due",
-    playlist_stale_days=7,
+    include_liked_videos=False,
     metadata_selection="never",
     metadata_stale_days=30,
 )
@@ -8373,7 +8364,7 @@ REBUILD_QUEUE_PLAN = LibraryQueuePlan(
     history_mode="recent",
     history_manual=False,
     playlist_selection="due",
-    playlist_stale_days=7,
+    include_liked_videos=False,
     metadata_selection="due",
     metadata_stale_days=30,
     replace_worker_types=("account", "history", "metadata", "playlist"),
@@ -8406,7 +8397,6 @@ def enqueue_library_queue_plan(
     playlist_rows = playlist_scan_candidate_rows(
         conn,
         force=plan.playlist_selection == "all",
-        stale_days=plan.playlist_stale_days,
     )
     metadata_rows = metadata_queue_candidate_rows(
         conn,
@@ -8443,14 +8433,15 @@ def enqueue_library_queue_plan(
         priority=-1,
         manual=plan.history_manual,
     )
-    enqueue_playlist_scan_item(
-        conn,
-        LIKED_VIDEOS_PLAYLIST_ID,
-        title="Liked videos",
-        source_key=plan.name,
-        priority=0,
-        manual=False,
-    )
+    if plan.include_liked_videos:
+        enqueue_playlist_scan_item(
+            conn,
+            LIKED_VIDEOS_PLAYLIST_ID,
+            title="Liked videos",
+            source_key=plan.name,
+            priority=0,
+            manual=False,
+        )
 
     playlist_count = 0
     for index, row in enumerate(playlist_rows, start=1):
@@ -8483,7 +8474,13 @@ def enqueue_library_queue_plan(
         )
 
     queued_after = worker_queue_count(conn)
-    selected = 4 + bool(plan.playlist_discovery_mode) + playlist_count + len(metadata_rows)
+    selected = (
+        3
+        + bool(plan.playlist_discovery_mode)
+        + bool(plan.include_liked_videos)
+        + playlist_count
+        + len(metadata_rows)
+    )
     inserted = max(0, queued_after - queued_before_plan)
     return {
         "plan": plan.name,
@@ -8491,9 +8488,9 @@ def enqueue_library_queue_plan(
         "clips": 1,
         "discovery": 1 if plan.playlist_discovery_mode else 0,
         "history": 1,
-        "liked_videos": 1,
+        "liked_videos": 1 if plan.include_liked_videos else 0,
         "playlists": playlist_count,
-        "playlist_scans": playlist_count + 1,
+        "playlist_scans": playlist_count + (1 if plan.include_liked_videos else 0),
         "metadata": len(metadata_rows),
         "selected": selected,
         "inserted": inserted,

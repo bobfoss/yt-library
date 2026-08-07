@@ -933,9 +933,9 @@ Source parsers provide evidence for one best-known current state:
 - YouTube live history web state: recent/history ordering, date-level labels, and account-specific thumbnail progress state.
 - Takeout history zips: authoritative exported watch timestamps.
 - The newest Takeout export: current playlist membership, subscriptions, exact history timestamps, and recovery input.
-- YouTube's Liked videos system playlist: current per-video like state.
+- YouTube's Liked videos system playlist: full current per-video like state during initialization or an explicit all-playlist scan.
 - Archivarix: recovery evidence for deleted or memory-holed videos, including thumbnails, titles, descriptions, channel evidence, archive links, and not-found/deleted status.
-- YouTube watch and channel pages: enriched video/channel metadata, thumbnails, channel avatars, and watch progress when the direct page exposes it.
+- YouTube watch and channel pages: enriched video/channel metadata, thumbnails, channel avatars, watch progress, and raw `LIKE`, `DISLIKE`, or `INDIFFERENT` reaction state when the direct page exposes it. A missing reaction entity does not overwrite prior state.
 
 Each source has different reliability. Takeout is best for exact watch timestamps, current YouTube scans are best for present playlist and metadata state, and Archivarix is best-effort recovery evidence. Source fields are consumed during import instead of being retained as parallel metadata histories.
 
@@ -990,13 +990,16 @@ logs, retry policy, and error classification remain owned by each worker.
 YouTube metadata and Archivarix recovery have independent launch intervals and `max_in_flight` limits from the config file, so a slow request to one site does not stall the other site's cadence. Playlist and history tasks remain worker-specific and run through the same prioritized queue. The dispatcher checks SQLite again before each launch, so priority changes and newly queued work can affect later dispatches without rebuilding an in-memory batch.
 
 Initialize, Update, and Rebuild use one declarative library queue planner.
-Initialize selects a full playlist scan, full History verification, all Clip
-discovery, and due metadata without clearing pending work. Update adds only due
-playlist scans, recent History, new Clip and playlist discovery, and never-fetched
-metadata. Rebuild replaces the regenerable account, History, metadata, and
-playlist plan rows, while preserving pending Clip, Archivarix recovery, plugin,
-and future non-plan rows. It then applies the due-work plan and does not start the
-dispatcher automatically. Plugins receive `library_initialize` and
+Initialize selects a full playlist scan including Liked videos, full History
+verification, all Clip discovery, and due metadata without clearing pending
+work. Update adds only playlist scans with an integrity signal (never scanned,
+failed, or reported-count mismatch), recent History, new Clip and playlist
+discovery, and never-fetched metadata. Scan age alone does not make a playlist
+due; the explicit Scan all action is the force-refresh path. Update and Rebuild
+do not poll Liked videos. Rebuild replaces the regenerable account, History,
+metadata, and playlist plan rows, while preserving pending Clip, Archivarix
+recovery, plugin, and future non-plan rows. It then applies the due-work plan and
+does not start the dispatcher automatically. Plugins receive `library_initialize` and
 `library_update` hooks; Rebuild preserves plugin rows because the host contract
 does not define a generic rebuild hook.
 

@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -66,7 +66,7 @@ def delete_playlist_and_orphaned_unwatched_videos(
             SELECT v.video_id
             FROM videos v
             WHERE v.video_id IN ({placeholders})
-              AND COALESCE(v.reaction, '') = ''
+              AND upper(COALESCE(v.reaction, '')) NOT IN ('L', 'D', 'LIKE', 'DISLIKE')
               AND NOT EXISTS (
                 SELECT 1 FROM history_events he WHERE he.video_id = v.video_id
               )
@@ -967,6 +967,41 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (20, utc_now()),
+        )
+    if current_version < 21:
+        videos_sql_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'videos'"
+        ).fetchone()
+        videos_sql = str(videos_sql_row["sql"] or "") if videos_sql_row else ""
+        if "INDIFFERENT" not in videos_sql.upper():
+            conn.executescript(
+                """
+                ALTER TABLE videos RENAME COLUMN reaction TO legacy_reaction;
+                ALTER TABLE videos ADD COLUMN reaction TEXT NOT NULL DEFAULT ''
+                  CHECK (reaction IN ('', 'LIKE', 'DISLIKE', 'INDIFFERENT'));
+                UPDATE videos
+                SET reaction = CASE upper(trim(COALESCE(legacy_reaction, '')))
+                  WHEN 'L' THEN 'LIKE'
+                  WHEN 'LIKE' THEN 'LIKE'
+                  WHEN 'D' THEN 'DISLIKE'
+                  WHEN 'DISLIKE' THEN 'DISLIKE'
+                  WHEN 'INDIFFERENT' THEN 'INDIFFERENT'
+                  ELSE ''
+                END;
+                ALTER TABLE videos DROP COLUMN legacy_reaction;
+                """
+            )
+        playlist_run_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(playlist_scan_worker_runs)")
+        }
+        if "stale_days" in playlist_run_columns:
+            conn.execute(
+                "ALTER TABLE playlist_scan_worker_runs DROP COLUMN stale_days"
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (21, utc_now()),
         )
 
 

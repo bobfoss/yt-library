@@ -669,7 +669,6 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             lambda conn: enqueue_all_playlist_scan_items(
                 conn,
                 force=True,
-                stale_days=7,
                 discover_current=True,
             )
         )

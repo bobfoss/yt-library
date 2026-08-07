@@ -248,6 +248,12 @@ class SchemaTests(unittest.TestCase):
                 "  last_confirmed_at TEXT NOT NULL\n"
                 ");\n\n",
                 "",
+            ).replace(
+                (
+                    "  reaction TEXT NOT NULL DEFAULT ''\n"
+                    "    CHECK (reaction IN ('', 'LIKE', 'DISLIKE', 'INDIFFERENT')),\n"
+                ),
+                "  reaction TEXT NOT NULL DEFAULT '',\n",
             )
             raw = sqlite3.connect(db_path)
             try:
@@ -321,6 +327,12 @@ class SchemaTests(unittest.TestCase):
                 "  last_confirmed_at TEXT NOT NULL\n"
                 ");\n\n",
                 "",
+            ).replace(
+                (
+                    "  reaction TEXT NOT NULL DEFAULT ''\n"
+                    "    CHECK (reaction IN ('', 'LIKE', 'DISLIKE', 'INDIFFERENT')),\n"
+                ),
+                "  reaction TEXT NOT NULL DEFAULT '',\n",
             )
             raw = sqlite3.connect(db_path)
             try:
@@ -345,7 +357,10 @@ class SchemaTests(unittest.TestCase):
                     ],
                 )
                 raw.execute(
-                    "INSERT INTO videos(video_id, title) VALUES ('ownedvideo1', 'Owned video')"
+                    """
+                    INSERT INTO videos(video_id, title, reaction)
+                    VALUES ('ownedvideo1', 'Owned video', 'L')
+                    """
                 )
                 raw.execute(
                     """
@@ -377,6 +392,9 @@ class SchemaTests(unittest.TestCase):
                     WHERE playlist_id = 'PLforeign'
                     """
                 ).fetchone()
+                retained_reaction = conn.execute(
+                    "SELECT reaction FROM videos WHERE video_id = 'ownedvideo1'"
+                ).fetchone()[0]
             finally:
                 conn.close()
 
@@ -386,6 +404,7 @@ class SchemaTests(unittest.TestCase):
             dict(foreign),
             {"ownership": "others", "in_library": 1, "fetch_status": "unavailable"},
         )
+        self.assertEqual(retained_reaction, "LIKE")
 
     def test_migrate_adds_nullable_channel_first_seen_without_backfill(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -544,7 +563,10 @@ class SchemaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
             legacy_schema = core.SCHEMA.replace(
-                "  reaction TEXT NOT NULL DEFAULT '',\n",
+                (
+                    "  reaction TEXT NOT NULL DEFAULT ''\n"
+                    "    CHECK (reaction IN ('', 'LIKE', 'DISLIKE', 'INDIFFERENT')),\n"
+                ),
                 (
                     "  reaction TEXT NOT NULL DEFAULT '',\n"
                     "  watch_progress_percent INTEGER NOT NULL DEFAULT 0,\n"
@@ -1092,18 +1114,18 @@ class SchemaTests(unittest.TestCase):
             finally:
                 conn.close()
 
-        self.assertEqual(stats["selected"], 8)
-        self.assertEqual(stats["inserted"], 8)
+        self.assertEqual(stats["selected"], 7)
+        self.assertEqual(stats["inserted"], 7)
         self.assertEqual(stats["already_queued"], 0)
-        self.assertEqual(stats["queued"], 9)
+        self.assertEqual(stats["queued"], 8)
         self.assertEqual(repeated_stats["inserted"], 0)
-        self.assertEqual(repeated_stats["already_queued"], 8)
+        self.assertEqual(repeated_stats["already_queued"], 7)
         self.assertIn(existing["subject_key"], subjects)
         self.assertIn("playlist:discover-current", subjects)
         self.assertIn("history:recent", subjects)
         self.assertIn("account:sync", subjects)
         self.assertIn("clip:discover", subjects)
-        self.assertIn("playlist:scan:LL", subjects)
+        self.assertNotIn("playlist:scan:LL", subjects)
         self.assertIn("playlist:scan:PLupdate", subjects)
         self.assertNotIn("playlist:scan:PLremoved", subjects)
         self.assertIn("metadata:channel:UCupdatechannel", subjects)
@@ -1111,6 +1133,48 @@ class SchemaTests(unittest.TestCase):
         self.assertNotIn("metadata:video:oldupdate01", subjects)
         self.assertEqual(discovery["source_key"], "new")
         self.assertFalse(discovery["manual"])
+
+    def test_playlist_due_selection_ignores_scan_age_but_keeps_integrity_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.executemany(
+                        """
+                        INSERT INTO playlists(playlist_id, title, video_count)
+                        VALUES (?, ?, ?)
+                        """,
+                        (
+                            ("PLoldok", "Old complete scan", 2),
+                            ("PLerror", "Failed scan", 2),
+                            ("PLmismatch", "Count mismatch", 3),
+                        ),
+                    )
+                    conn.executemany(
+                        """
+                        INSERT INTO playlist_scans(
+                          playlist_id, scanned_at, video_count, unavailable_count, scan_status
+                        ) VALUES (?, '2020-01-01T00:00:00Z', ?, 0, ?)
+                        """,
+                        (
+                            ("PLoldok", 2, "ok"),
+                            ("PLerror", 2, "error"),
+                            ("PLmismatch", 2, "ok"),
+                        ),
+                    )
+
+                due_ids = {
+                    row["playlist_id"] for row in core.playlist_scan_candidate_rows(conn)
+                }
+                forced_ids = {
+                    row["playlist_id"]
+                    for row in core.playlist_scan_candidate_rows(conn, force=True)
+                }
+            finally:
+                conn.close()
+
+        self.assertEqual(due_ids, {"PLerror", "PLmismatch"})
+        self.assertEqual(forced_ids, {"PLoldok", "PLerror", "PLmismatch"})
 
     def test_rebuild_queue_replaces_plan_rows_and_preserves_non_plan_work(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1190,16 +1254,16 @@ class SchemaTests(unittest.TestCase):
         )
         self.assertEqual(stats["preserved"], 5)
         self.assertEqual(stats["metadata"], 2)
-        self.assertEqual(stats["playlist_scans"], 2)
-        self.assertEqual(stats["selected"], 8)
-        self.assertEqual(stats["inserted"], 7)
+        self.assertEqual(stats["playlist_scans"], 1)
+        self.assertEqual(stats["selected"], 7)
+        self.assertEqual(stats["inserted"], 6)
         self.assertEqual(stats["already_queued"], 1)
         self.assertNotIn("metadata:video:obsolete001", rows)
         self.assertNotIn("playlist:scan:PLobsolete", rows)
         self.assertNotIn("history:verify", rows)
         self.assertIn("history:recent", rows)
         self.assertIn("playlist:discover-current", rows)
-        self.assertIn("playlist:scan:LL", rows)
+        self.assertNotIn("playlist:scan:LL", rows)
         self.assertIn("playlist:scan:PLrebuild", rows)
         self.assertIn("metadata:video:duevideo001", rows)
         self.assertIn("metadata:channel:UCrebuildchannel", rows)
@@ -1622,6 +1686,44 @@ class SchemaTests(unittest.TestCase):
         )
         self.assertEqual([video["position"] for video in videos], [1, 2])
 
+    def test_metadata_indifferent_clears_a_known_reaction_while_missing_state_preserves_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "reaction001",
+                        title="Reaction test",
+                        reaction="LIKE",
+                        source="metadata",
+                    )
+                    core.upsert_video(
+                        conn,
+                        "reaction001",
+                        reaction="",
+                        source="metadata",
+                    )
+                preserved = conn.execute(
+                    "SELECT reaction FROM videos WHERE video_id = 'reaction001'"
+                ).fetchone()[0]
+
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "reaction001",
+                        reaction="INDIFFERENT",
+                        source="metadata",
+                    )
+                cleared = conn.execute(
+                    "SELECT reaction FROM videos WHERE video_id = 'reaction001'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(preserved, "LIKE")
+        self.assertEqual(cleared, "INDIFFERENT")
+
     def test_liked_video_sync_replaces_likes_without_creating_playlist_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
@@ -1629,8 +1731,8 @@ class SchemaTests(unittest.TestCase):
                 with conn:
                     core.upsert_video(conn, "oldliked123", title="Old like", source="metadata")
                     core.upsert_video(conn, "disliked1234", title="Disliked", source="metadata")
-                    conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'oldliked123'")
-                    conn.execute("UPDATE videos SET reaction = 'D' WHERE video_id = 'disliked1234'")
+                    conn.execute("UPDATE videos SET reaction = 'LIKE' WHERE video_id = 'oldliked123'")
+                    conn.execute("UPDATE videos SET reaction = 'DISLIKE' WHERE video_id = 'disliked1234'")
                     count, unavailable = core.save_liked_video_reactions(
                         conn,
                         [
@@ -1655,8 +1757,8 @@ class SchemaTests(unittest.TestCase):
                 self.assertEqual(count, 1)
                 self.assertEqual(unavailable, 0)
                 self.assertEqual(reactions["oldliked123"], "")
-                self.assertEqual(reactions["newliked123"], "L")
-                self.assertEqual(reactions["disliked1234"], "D")
+                self.assertEqual(reactions["newliked123"], "LIKE")
+                self.assertEqual(reactions["disliked1234"], "DISLIKE")
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM playlists").fetchone()[0], 0)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM playlist_items").fetchone()[0], 0)
 
@@ -1670,9 +1772,9 @@ class SchemaTests(unittest.TestCase):
                     row["video_id"]: row["reaction"]
                     for row in conn.execute("SELECT video_id, reaction FROM videos WHERE reaction <> ''")
                 }
-                self.assertEqual(merged_reactions["newliked123"], "L")
-                self.assertEqual(merged_reactions["partial12345"], "L")
-                self.assertEqual(merged_reactions["disliked1234"], "D")
+                self.assertEqual(merged_reactions["newliked123"], "LIKE")
+                self.assertEqual(merged_reactions["partial12345"], "LIKE")
+                self.assertEqual(merged_reactions["disliked1234"], "DISLIKE")
             finally:
                 conn.close()
 

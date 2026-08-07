@@ -1728,7 +1728,7 @@ class AdminServerTests(unittest.TestCase):
                 conn.close()
 
         self.assertEqual(result["dispatcher"], {"started": True})
-        self.assertEqual(result["queue"]["inserted"], 5)
+        self.assertEqual(result["queue"]["inserted"], 4)
         self.assertEqual(
             {row["subject_key"] for row in queue_rows},
             {
@@ -1736,7 +1736,6 @@ class AdminServerTests(unittest.TestCase):
                 "clip:discover",
                 "history:recent",
                 "playlist:discover-current",
-                "playlist:scan:LL",
             },
         )
         self.assertEqual(tuple(log)[0], "queue info")

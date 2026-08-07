@@ -37,6 +37,12 @@ function timezoneHelpers(displayTimezone) {
   return context.window.YTLibraryTime;
 }
 
+function videoCardHelpers() {
+  const context = { console, window: {} };
+  vm.runInNewContext(source('video-card.js'), context, { filename: 'video-card.js' });
+  return context.window.YTLibraryVideoCard;
+}
+
 test('all served browser assets have valid JavaScript syntax', () => {
   for (const name of assetNames) {
     assert.doesNotThrow(
@@ -44,6 +50,17 @@ test('all served browser assets have valid JavaScript syntax', () => {
       `${name} must parse`,
     );
   }
+});
+
+test('video cards render raw YouTube reaction statuses', () => {
+  const helpers = videoCardHelpers();
+
+  assert.equal(helpers.reactionLabel({ reaction: 'LIKE' }), 'Liked');
+  assert.equal(helpers.reactionLabel({ reaction: 'DISLIKE' }), 'Disliked');
+  assert.equal(helpers.reactionLabel({ reaction: 'INDIFFERENT' }), '');
+  assert.match(helpers.reactionIconsHtml({ reaction: 'LIKE' }), /reaction-icon like active/);
+  assert.match(helpers.reactionIconsHtml({ reaction: 'DISLIKE' }), /reaction-icon dislike active/);
+  assert.doesNotMatch(helpers.reactionIconsHtml({ reaction: 'INDIFFERENT' }), / active/);
 });
 
 test('timezone reset persists the detected zone in one request', () => {

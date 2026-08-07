@@ -83,7 +83,8 @@ CREATE TABLE IF NOT EXISTS videos (
   uploader_category TEXT NOT NULL DEFAULT '',
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
-  reaction TEXT NOT NULL DEFAULT '',
+  reaction TEXT NOT NULL DEFAULT ''
+    CHECK (reaction IN ('', 'LIKE', 'DISLIKE', 'INDIFFERENT')),
   is_playable INTEGER CHECK (is_playable IN (0, 1)),
   availability TEXT NOT NULL DEFAULT 'unknown',
   visibility_checked_at TEXT,
@@ -313,7 +314,6 @@ CREATE TABLE IF NOT EXISTS playlist_scan_worker_runs (
   delay_seconds REAL NOT NULL DEFAULT 0,
   requested_limit INTEGER NOT NULL DEFAULT 0,
   force INTEGER NOT NULL DEFAULT 0,
-  stale_days INTEGER NOT NULL DEFAULT 0,
   last_playlist_id TEXT NOT NULL DEFAULT '',
   message TEXT NOT NULL DEFAULT ''
 );

@@ -105,7 +105,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             "sourceclip1",
             title="Full source video",
             channel_id="UC_clip_source",
-            reaction="L",
+            reaction="LIKE",
             uploader_category="Music",
             thumbnail_path="video_thumbs/sourceclip1.jpg",
             source="youtube",
@@ -150,7 +150,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(clip["title"], "Distinct clip title")
         self.assertEqual(clip["source_video_title"], "Full source video")
         self.assertEqual(clip["source_channel_reference"], "@source-uploader")
-        self.assertEqual(clip["reaction"], "L")
+        self.assertEqual(clip["reaction"], "LIKE")
         self.assertEqual(clip["uploader_category"], "Music")
         self.assertEqual(clip["source_thumbnail_path"], "video_thumbs/sourceclip1.jpg")
 
@@ -446,7 +446,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.add_video("likedsource", "Liked source", "UC_subscribed_source")
         self.add_video("membersource", "Playlist member source", "UC_regular_source")
         self.add_video("othersource", "Other source", "UC_terminated_source")
-        self.conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'likedsource'")
+        self.conn.execute("UPDATE videos SET reaction = 'LIKE' WHERE video_id = 'likedsource'")
         self.conn.execute(
             "INSERT INTO playlists(playlist_id, title) VALUES ('PLsource', 'Source playlist')"
         )
@@ -1191,8 +1191,8 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.conn.execute(
             "UPDATE videos SET is_playable = 1, availability = 'unlisted' WHERE video_id = 'unlisted1'"
         )
-        self.conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'available1'")
-        self.conn.execute("UPDATE videos SET reaction = 'D' WHERE video_id = 'unavailable1'")
+        self.conn.execute("UPDATE videos SET reaction = 'LIKE' WHERE video_id = 'available1'")
+        self.conn.execute("UPDATE videos SET reaction = 'DISLIKE' WHERE video_id = 'unavailable1'")
         self.conn.execute(
             "UPDATE videos SET is_playable = 0, availability = 'private' WHERE video_id = 'unavailable1'"
         )
@@ -1647,7 +1647,7 @@ class NormalizedReadModelTests(unittest.TestCase):
 
     def test_library_bootstrap_contains_counts_without_card_collections(self) -> None:
         self.add_video("liked1", "Liked", "UC_subscribed")
-        self.conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'liked1'")
+        self.conn.execute("UPDATE videos SET reaction = 'LIKE' WHERE video_id = 'liked1'")
         self.conn.execute("UPDATE channels SET subscribed = 1 WHERE channel_id = 'UC_subscribed'")
         self.conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLone', 'One')")
         self.conn.execute(
@@ -1735,7 +1735,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             ("video-b", "Bravo Video"),
         ):
             core.upsert_video(self.conn, video_id, title=title, source="test")
-        self.conn.execute("UPDATE videos SET reaction = 'L'")
+        self.conn.execute("UPDATE videos SET reaction = 'LIKE'")
         self.conn.commit()
 
         statements: list[str] = []
@@ -1833,12 +1833,12 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.add_video("unavailable1", "Beta", "UC_other")
         self.add_video("members1", "Members", "UC_other")
         self.conn.execute("UPDATE channels SET subscribed = 1 WHERE channel_id = 'UC_subscribed'")
-        self.conn.execute("UPDATE videos SET is_playable = 1, reaction = 'L' WHERE video_id = 'available1'")
+        self.conn.execute("UPDATE videos SET is_playable = 1, reaction = 'LIKE' WHERE video_id = 'available1'")
         self.conn.execute(
-            "UPDATE videos SET is_playable = 0, availability = 'private', reaction = 'L' WHERE video_id = 'unavailable1'"
+            "UPDATE videos SET is_playable = 0, availability = 'private', reaction = 'LIKE' WHERE video_id = 'unavailable1'"
         )
         self.conn.execute(
-            "UPDATE videos SET is_playable = 0, availability = 'subscriber_only', reaction = 'L' WHERE video_id = 'members1'"
+            "UPDATE videos SET is_playable = 0, availability = 'subscriber_only', reaction = 'LIKE' WHERE video_id = 'members1'"
         )
         self.conn.execute("INSERT INTO playlists(playlist_id, title) VALUES ('PLone', 'One')")
         self.conn.executemany(
@@ -1981,10 +1981,10 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.add_video("private1", "Accessible private")
         self.add_video("unavailable1", "Inaccessible private")
         self.conn.execute(
-            "UPDATE videos SET is_playable = 1, availability = 'private', reaction = 'L' WHERE video_id = 'private1'"
+            "UPDATE videos SET is_playable = 1, availability = 'private', reaction = 'LIKE' WHERE video_id = 'private1'"
         )
         self.conn.execute(
-            "UPDATE videos SET is_playable = 0, availability = 'private', reaction = 'L' WHERE video_id = 'unavailable1'"
+            "UPDATE videos SET is_playable = 0, availability = 'private', reaction = 'LIKE' WHERE video_id = 'unavailable1'"
         )
         self.conn.commit()
 
@@ -2188,8 +2188,8 @@ class NormalizedReadModelTests(unittest.TestCase):
             WHERE video_id = ?
             """,
             [
-                ("Plain description", "L", "Music", "facet-alpha"),
-                ("Contains the needle", "D", "Education", "facet-beta"),
+                ("Plain description", "LIKE", "Music", "facet-alpha"),
+                ("Contains the needle", "DISLIKE", "Education", "facet-beta"),
                 ("Plugin-only match", "", "", "facet-gamma"),
             ],
         )

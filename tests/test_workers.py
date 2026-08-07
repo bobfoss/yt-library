@@ -53,7 +53,7 @@ class WorkerQueueTests(unittest.TestCase):
                 "source_channel": "Source uploader",
                 "source_duration_text": "0:21",
                 "source_uploader_category": "Music",
-                "source_reaction": "L",
+                "source_reaction": "LIKE",
                 "start_ms": 1_000,
                 "end_ms": 22_000,
                 "view_count": 4,
@@ -93,7 +93,7 @@ class WorkerQueueTests(unittest.TestCase):
 
         self.assertEqual(clip["title"], "Clip title")
         self.assertEqual(clip["source_video_id"], "sourceworker1")
-        self.assertEqual(source["reaction"], "L")
+        self.assertEqual(source["reaction"], "LIKE")
         self.assertEqual(source["uploader_category"], "Music")
         self.assertEqual([row["subject_key"] for row in queue], ["metadata:video:sourceworker1"])
         self.assertEqual(tuple(log), ("clip info", "UgkxWorkerClip123", "ok: Clip title"))
@@ -876,7 +876,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                     proxy_url="socks5h://127.0.0.1:1081",
                 )
@@ -1083,7 +1082,7 @@ class WorkerQueueTests(unittest.TestCase):
                 "thumbnail_path": "",
                 "channel_thumbnail_url": "",
                 "channel_thumbnail_path": "",
-                "reaction": "L",
+                "reaction": "LIKE",
                 "watch_progress_percent": "0",
                 "watch_resume_seconds": "0",
                 "yt_status": "OK",
@@ -1206,7 +1205,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -1294,7 +1292,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -1391,7 +1388,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=2,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -1468,7 +1464,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -1491,7 +1486,7 @@ class WorkerQueueTests(unittest.TestCase):
             try:
                 with conn:
                     core.upsert_video(conn, "oldliked123", title="Existing like", source="metadata")
-                    conn.execute("UPDATE videos SET reaction = 'L' WHERE video_id = 'oldliked123'")
+                    conn.execute("UPDATE videos SET reaction = 'LIKE' WHERE video_id = 'oldliked123'")
                     core.enqueue_playlist_scan_item(conn, "LL", manual=False)
             finally:
                 conn.close()
@@ -1537,7 +1532,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -1560,9 +1554,9 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
-        self.assertEqual(reactions["oldliked123"], "L")
-        self.assertEqual(reactions["newliked123"], "L")
-        self.assertEqual(reactions["newliked456"], "L")
+        self.assertEqual(reactions["oldliked123"], "LIKE")
+        self.assertEqual(reactions["newliked123"], "LIKE")
+        self.assertEqual(reactions["newliked456"], "LIKE")
         self.assertEqual(dict(run), {"found": 1, "failed": 0})
         self.assertEqual(log["level"], "info")
         self.assertIn("2 exposed of 3 reported", log["message"])
@@ -1618,7 +1612,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -1703,7 +1696,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -1792,7 +1784,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -1852,7 +1843,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -1927,7 +1917,6 @@ class WorkerQueueTests(unittest.TestCase):
                         delay=0,
                         limit=1,
                         force=False,
-                        stale_days=7,
                         record_summary=False,
                     )
             finally:
@@ -1966,7 +1955,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -2020,7 +2008,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -2104,7 +2091,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -2200,7 +2186,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -2253,7 +2238,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -2301,7 +2285,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                 )
 
@@ -3857,7 +3840,6 @@ class WorkerQueueTests(unittest.TestCase):
                     delay=0,
                     limit=1,
                     force=False,
-                    stale_days=7,
                     record_summary=False,
                     queue_id=selected_queue_id,
                 )

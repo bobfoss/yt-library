@@ -47,6 +47,13 @@ versioned migrations as well as creating a fresh current schema.
 - Initialize, Update, and Rebuild share a declarative library queue planner;
   Rebuild regenerates automatic core plan rows while preserving Clip,
   Archivarix-recovery, plugin, and future non-plan work.
+- Update and Rebuild no longer poll the costly Liked videos system playlist.
+  New History occurrences still queue direct metadata for their videos, where
+  raw `LIKE`, `DISLIKE`, and `INDIFFERENT` statuses update canonical reaction
+  state. Initialize and explicit Scan all retain the full Liked videos scan.
+- Ordinary playlists are not rescanned merely because seven days elapsed.
+  Automatic planning selects never-scanned, failed, or reported-count-mismatch
+  playlists; explicit Scan all remains the force-refresh path.
 - The compatibility `scan-hidden` and `recover-missing-thumbnails` commands now
   enqueue and wait on the same playlist-scan and placeholder-recovery workers as
   the Admin UI. Per-command filters, delays, cookie paths, thumbnail paths, and

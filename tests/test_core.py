@@ -1212,7 +1212,7 @@ class CoreHelperTests(unittest.TestCase):
         )
         self.assertEqual(detail["source_duration_text"], "1:01:01")
         self.assertEqual(detail["source_uploader_category"], "Travel & Events")
-        self.assertEqual(detail["source_reaction"], "L")
+        self.assertEqual(detail["source_reaction"], "LIKE")
         self.assertEqual(detail["view_count"], 12)
         self.assertEqual(detail["clipped_at_text"], "Clipped 4 months ago")
         self.assertEqual(detail["ownership"], "mine")
@@ -2170,8 +2170,8 @@ class CoreHelperTests(unittest.TestCase):
             }
         }
 
-        self.assertEqual(core.extract_reaction_from_initial_data(liked), "L")
-        self.assertEqual(core.extract_reaction_from_initial_data(disliked), "D")
+        self.assertEqual(core.extract_reaction_from_initial_data(liked), "LIKE")
+        self.assertEqual(core.extract_reaction_from_initial_data(disliked), "DISLIKE")
         self.assertEqual(core.extract_reaction_from_initial_data({"isToggled": False}), "")
 
     def test_extract_reaction_from_like_status_entity(self) -> None:
@@ -2203,9 +2203,9 @@ class CoreHelperTests(unittest.TestCase):
             }
         }
 
-        self.assertEqual(core.extract_reaction_from_initial_data(liked), "L")
-        self.assertEqual(core.extract_reaction_from_initial_data(disliked), "D")
-        self.assertEqual(core.extract_reaction_from_initial_data(indifferent), "")
+        self.assertEqual(core.extract_reaction_from_initial_data(liked), "LIKE")
+        self.assertEqual(core.extract_reaction_from_initial_data(disliked), "DISLIKE")
+        self.assertEqual(core.extract_reaction_from_initial_data(indifferent), "INDIFFERENT")
 
     def test_extract_channel_handle_aliases_from_browse_endpoints(self) -> None:
         initial_data = {

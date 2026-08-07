@@ -58,7 +58,6 @@ WORKER_RUN_SPECS: dict[WorkerRunKind, WorkerRunSpec] = {
                 "delay_seconds",
                 "requested_limit",
                 "force",
-                "stale_days",
                 "last_playlist_id",
             }
         ),

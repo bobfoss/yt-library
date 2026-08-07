@@ -383,7 +383,7 @@ def _video_candidate_query(
           FROM videos v
           LEFT JOIN channels ch ON ch.channel_id = v.channel_id
           LEFT JOIN history_stats hs ON hs.video_id = v.video_id
-          WHERE upper(v.reaction) = 'L'
+          WHERE upper(v.reaction) = 'LIKE'
           {query_clause}
         """
     else:
@@ -683,8 +683,8 @@ def video_collection_data(
     """
     reaction_category_sql = """
         CASE upper(COALESCE(reaction, ''))
-          WHEN 'L' THEN 'liked'
-          WHEN 'D' THEN 'disliked'
+          WHEN 'LIKE' THEN 'liked'
+          WHEN 'DISLIKE' THEN 'disliked'
           ELSE 'none'
         END
     """
@@ -1479,9 +1479,9 @@ def _omni_meta_counts(results: list[dict[str, Any]]) -> dict[str, dict[str, int]
 
 def _omni_video_reaction_category(result: dict[str, Any]) -> str:
     reaction = str(result["item"].get("reaction") or "").strip().upper()
-    if reaction == "L":
+    if reaction == "LIKE":
         return "liked"
-    if reaction == "D":
+    if reaction == "DISLIKE":
         return "disliked"
     return "none"
 
@@ -2157,7 +2157,7 @@ def omni_search_data(
               WHERE ({' OR '.join(f'({match})' for match in video_matches)})
                 AND (
                   :video_source = ''
-                  OR (:video_source = 'liked' AND upper(COALESCE(v.reaction, '')) = 'L')
+                  OR (:video_source = 'liked' AND upper(COALESCE(v.reaction, '')) = 'LIKE')
                   OR (
                     :video_source = 'playlist_member'
                     AND EXISTS (

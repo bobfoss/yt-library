@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -190,6 +191,83 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertEqual(version, database.SCHEMA_VERSION)
         self.assertIsNotNone(clip_table)
         self.assertIn("clip_id", queue_columns)
+
+    def test_database_module_migrates_reactions_from_version_20(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.executescript(
+                        """
+                        ALTER TABLE videos RENAME COLUMN reaction TO current_reaction;
+                        ALTER TABLE videos ADD COLUMN reaction TEXT NOT NULL DEFAULT '';
+                        ALTER TABLE videos DROP COLUMN current_reaction;
+                        ALTER TABLE playlist_scan_worker_runs
+                          ADD COLUMN stale_days INTEGER NOT NULL DEFAULT 0;
+                        """
+                    )
+                    conn.executemany(
+                        "INSERT INTO videos(video_id, title, reaction) VALUES (?, ?, ?)",
+                        (
+                            ("legacy-like", "Legacy like", "L"),
+                            ("legacy-dislike", "Legacy dislike", "D"),
+                            ("legacy-unknown", "Legacy unknown", ""),
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scan_worker_runs(
+                          run_id, status, started_at, stale_days, message
+                        ) VALUES ('legacy-playlist-run', 'complete',
+                                  '2026-08-01T00:00:00Z', 7, 'Preserve me')
+                        """
+                    )
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 21")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                reactions = {
+                    row["video_id"]: row["reaction"]
+                    for row in conn.execute(
+                        "SELECT video_id, reaction FROM videos ORDER BY video_id"
+                    )
+                }
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                videos_sql = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'videos'"
+                ).fetchone()[0]
+                playlist_run_columns = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(playlist_scan_worker_runs)")
+                }
+                playlist_run = conn.execute(
+                    """
+                    SELECT status, message
+                    FROM playlist_scan_worker_runs
+                    WHERE run_id = 'legacy-playlist-run'
+                    """
+                ).fetchone()
+                with self.assertRaises(sqlite3.IntegrityError):
+                    conn.execute(
+                        "UPDATE videos SET reaction = 'INVALID' WHERE video_id = 'legacy-like'"
+                    )
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertEqual(reactions["legacy-like"], "LIKE")
+        self.assertEqual(reactions["legacy-dislike"], "DISLIKE")
+        self.assertEqual(reactions["legacy-unknown"], "")
+        self.assertIn("INDIFFERENT", videos_sql)
+        self.assertNotIn("stale_days", playlist_run_columns)
+        self.assertEqual(tuple(playlist_run), ("complete", "Preserve me"))
 
 
 if __name__ == "__main__":

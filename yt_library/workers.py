@@ -952,7 +952,6 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
         delay: float,
         limit: int,
         force: bool,
-        stale_days: int,
         record_summary: bool = True,
         queue_id: int = 0,
         proxy_url: str = "",
@@ -966,7 +965,6 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 delay,
                 limit,
                 force,
-                stale_days,
                 record_summary,
                 queue_id,
                 proxy_url,
@@ -989,7 +987,6 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
         delay: float,
         limit: int,
         force: bool,
-        stale_days: int,
         record_summary: bool,
         queue_id: int = 0,
         proxy_url: str = "",
@@ -1014,7 +1011,6 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     delay_seconds=delay,
                     requested_limit=limit,
                     force=1 if force else 0,
-                    stale_days=stale_days,
                 )
                 if record_summary:
                     log_playlist_scan_event(conn, run_id, "info", f"Queued {initial_total} playlists")
@@ -1416,7 +1412,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         )
                     elif status == "error" and playlist_id == LIKED_VIDEOS_PLAYLIST_ID:
                         video_count = int(
-                            conn.execute("SELECT COUNT(*) FROM videos WHERE reaction = 'L'").fetchone()[0]
+                            conn.execute("SELECT COUNT(*) FROM videos WHERE reaction = 'LIKE'").fetchone()[0]
                             or 0
                         )
                         unavailable_count = 0
@@ -1432,7 +1428,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         if not replace_likes:
                             liked_total = int(
                                 conn.execute(
-                                    "SELECT COUNT(*) FROM videos WHERE reaction = 'L'"
+                                    "SELECT COUNT(*) FROM videos WHERE reaction = 'LIKE'"
                                 ).fetchone()[0]
                                 or 0
                             )
@@ -3172,7 +3168,6 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         delay=0.0,
                         limit=1,
                         force=False,
-                        stale_days=7,
                         record_summary=False,
                         queue_id=queue_id,
                         proxy_url=proxy_url,

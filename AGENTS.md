@@ -170,7 +170,11 @@ The database is a current-state model, not a metadata archive. `videos` owns can
 
 For hidden or memory-holed playlist videos, keep uncertainty visible. Preserve badges that distinguish `Unavailable`, `restored from Takeout`, `Takeout candidate`, and Archivarix statuses such as `DELETED_FULL_META` or `NOT_FOUND`. Avoid forcing ambiguous hidden-slot matches; show candidates when counts or positions do not support a confident mapping.
 
-Video like/dislike state is stored on `videos.reaction` as a compact per-video value: `L`, `D`, or empty. The `Liked videos` browser view is derived from canonical videos instead of being stored as a normal playlist.
+Video reaction state is stored on `videos.reaction` using YouTube's raw
+`LIKE`, `DISLIKE`, or `INDIFFERENT` status. Empty means the response did not
+contain a reliable reaction entity, so metadata upserts preserve the prior
+value. The `Liked videos` browser view is derived from canonical videos instead
+of being stored as a normal playlist.
 
 Store exact timestamps as ISO 8601 UTC with `Z`. Date-only live-history observations keep `watched_at` null and use `watch_date` plus ordinal order. Generate stable YouTube and Archivarix URLs from IDs and capture timestamps instead of storing them.
 
