@@ -233,11 +233,11 @@ class TemplateDomTests(unittest.TestCase):
 
     def test_detail_routes_select_their_category_navigation(self) -> None:
         self.assertIn(
-            "if (selected.startsWith('__video__:')) return 'videos';",
+            "return selected === '__search__' ? activeSearchScope : selectedEntityCategory();",
             server.INDEX_JS,
         )
         self.assertIn(
-            "if (selected.startsWith('__clip__:')) return 'clips';",
+            "return selectedEntityCategory();",
             server.INDEX_JS,
         )
         self.assertIn(

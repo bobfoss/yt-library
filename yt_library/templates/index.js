@@ -1270,9 +1270,17 @@ function selectedSearchKinds() {
     : selectedKinds;
 }
 
+function selectedEntityCategory() {
+  if (selected.startsWith('__video__:')) return 'videos';
+  if (selected.startsWith('__clip__:')) return 'clips';
+  if (selected.startsWith('__playlist__:')) return 'playlists';
+  if (selected.startsWith('__channel__:')) return 'channels';
+  return '';
+}
+
 function searchContextKind() {
   if (selected.startsWith('__playlist__:')) return 'videos';
-  return selected === '__search__' ? activeSearchScope : '';
+  return selected === '__search__' ? activeSearchScope : selectedEntityCategory();
 }
 
 function selectedSearchResultKinds() {
@@ -1621,11 +1629,12 @@ function activateSearchPreset(preset, groupKey = '') {
   void render().finally(() => finishSidebarNavigationProgress(progressToken));
 }
 
-function activateSearchFromHistory({ resetMetaVisibility = false } = {}) {
-  if (selected !== '__history__') return false;
+function activateSearchFromSelection({ resetMetaVisibility = false } = {}) {
+  if (selected === '__search__' || selected.startsWith('__playlist__:')) return false;
+  const scope = searchContextKind();
   selected = '__search__';
   activeSearchPreset = '';
-  activeSearchScope = '';
+  activeSearchScope = scope;
   searchPlaylistGroupKey = '';
   searchChannelGroupKey = '';
   searchSortExplicit = false;
@@ -1954,7 +1963,7 @@ function searchKindForFacet(facetKey) {
   return facetKey;
 }
 
-function refreshSearchAfterFilterChange(groupName, activatedFromHistory) {
+function refreshSearchAfterFilterChange(groupName, activatedFromSelection) {
   currentPage = 1;
   syncSearchKindFilter(searchKindForFacet(groupName), false);
   syncBrowserPluginSearchFieldVisibility();
@@ -1968,7 +1977,7 @@ function refreshSearchAfterFilterChange(groupName, activatedFromHistory) {
   }
   reconcileSearchPreset();
   showSearchMetaProgress(groupName);
-  syncSearchUrlAndRender(!activatedFromHistory);
+  syncSearchUrlAndRender(!activatedFromSelection);
 }
 
 function restoreEmptySearchKindFacets(facetKey) {
@@ -3574,6 +3583,7 @@ function toggleSearchFilterTreeNode(nodeId) {
 
 function syncSearchFiltersForSelection() {
   const historySelected = selected === '__history__';
+  const contextKind = searchContextKind();
   const alreadyHidden = searchFilters.hidden;
   searchFilters.hidden = historySelected;
   searchFilterTree.hidden = historySelected;
@@ -3586,8 +3596,8 @@ function syncSearchFiltersForSelection() {
   };
   search.placeholder = selected.startsWith('__playlist__:')
     ? 'Search this playlist'
-    : (placeholders[activeSearchScope] || 'Search everything');
-  if (!historySelected && renderedSearchFilterContext !== searchContextKind()) {
+    : (placeholders[contextKind] || 'Search everything');
+  if (!historySelected && renderedSearchFilterContext !== contextKind) {
     renderSearchMetaFilters();
   }
   if (!historySelected || alreadyHidden) return;
@@ -4523,11 +4533,7 @@ function searchNavigationHref() {
 
 function activeSidebarCategory() {
   if (selected === '__search__' && !activeSearchPreset) return activeSearchScope;
-  if (selected.startsWith('__video__:')) return 'videos';
-  if (selected.startsWith('__clip__:')) return 'clips';
-  if (selected.startsWith('__playlist__:')) return 'playlists';
-  if (selected.startsWith('__channel__:')) return 'channels';
-  return '';
+  return selectedEntityCategory();
 }
 
 function syncSidebarSelection() {
@@ -5665,14 +5671,9 @@ search.addEventListener('input', () => {
   if (!searchSortExplicit) searchResultsSort = preferredSearchResultsSort();
   const wasSearchRoute = selected === '__search__';
   if (!wasSearchRoute) {
-    activeSearchPreset = '';
-    activeSearchScope = '';
-    searchPlaylistGroupKey = '';
-    searchChannelGroupKey = '';
-    resetSearchMetaVisibility();
+    activateSearchFromSelection({ resetMetaVisibility: true });
     if (!searchSortExplicit) searchResultsSort = preferredSearchResultsSort();
   }
-  selected = '__search__';
   renderGroups();
   const changed = updateSearchUrl(wasSearchRoute);
   if (changed && !wasSearchRoute) return;
@@ -5770,8 +5771,8 @@ function handleMetaChange(event) {
     || target.dataset.searchCompletionMinimum !== undefined
     || String(target.dataset.metaAllFilter || '').startsWith('search-')
   );
-  const activatedFromHistory = searchFilterInteraction
-    ? activateSearchFromHistory()
+  const activatedFromSelection = searchFilterInteraction
+    ? activateSearchFromSelection()
     : false;
   if (target.dataset.searchCompletionMinimum !== undefined) {
     const previousMinimum = setPartialCompletionMinimum(target.value);
@@ -5791,7 +5792,7 @@ function handleMetaChange(event) {
     if (partialInput instanceof HTMLInputElement) partialInput.checked = true;
     syncMetaFilterGroup('search-completion');
     restoreEmptySearchKindFacets('completion');
-    refreshSearchAfterFilterChange('completion', activatedFromHistory);
+    refreshSearchAfterFilterChange('completion', activatedFromSelection);
     return;
   }
   const searchKindFilter = target.dataset.searchKindFilter;
@@ -5804,7 +5805,7 @@ function handleMetaChange(event) {
     } else {
       saveSearchOptInPreferences(searchKindFacetKeys(searchKindFilter));
     }
-    refreshSearchAfterFilterChange(searchKindFilter, activatedFromHistory);
+    refreshSearchAfterFilterChange(searchKindFilter, activatedFromSelection);
     return;
   }
   const searchPluginFacetFilter = target.dataset.searchPluginFacetFilter;
@@ -5825,7 +5826,7 @@ function handleMetaChange(event) {
       renderSearchMetaFilters();
     }
     syncMetaFilterGroup(`${clips ? 'search-clip-plugin' : 'search-plugin'}-${plugin.id}`);
-    refreshSearchAfterFilterChange(kind, activatedFromHistory);
+    refreshSearchAfterFilterChange(kind, activatedFromSelection);
     return;
   }
   const metaAllFilter = target.dataset.metaAllFilter;
@@ -5843,7 +5844,7 @@ function handleMetaChange(event) {
         renderSearchMetaFilters();
       }
       syncMetaFilterGroup(metaAllFilter);
-      refreshSearchAfterFilterChange('clips', activatedFromHistory);
+      refreshSearchAfterFilterChange('clips', activatedFromSelection);
     } else if (metaAllFilter.startsWith('search-plugin-')) {
       const pluginId = metaAllFilter.slice('search-plugin-'.length);
       const plugin = browserVideoFilterPlugins().find(item => item.id === pluginId);
@@ -5854,13 +5855,13 @@ function handleMetaChange(event) {
         renderSearchMetaFilters();
       }
       syncMetaFilterGroup(metaAllFilter);
-      refreshSearchAfterFilterChange('videos', activatedFromHistory);
+      refreshSearchAfterFilterChange('videos', activatedFromSelection);
     } else if (metaAllFilter.startsWith('search-')) {
       const facetKey = metaAllFilter.slice('search-'.length);
       saveSearchOptInPreferences([facetKey]);
       syncMetaFilterGroup(metaAllFilter);
       if (target.checked) restoreEmptySearchKindFacets(facetKey);
-      refreshSearchAfterFilterChange(facetKey, activatedFromHistory);
+      refreshSearchAfterFilterChange(facetKey, activatedFromSelection);
     } else {
       if (metaAllFilter === 'playlist-completion') {
         saveFilterPreference(
@@ -5889,7 +5890,7 @@ function handleMetaChange(event) {
     }
     syncMetaFilterGroup(`search-${groupName}`);
     if (target.checked) restoreEmptySearchKindFacets(groupName);
-    refreshSearchAfterFilterChange(groupName, activatedFromHistory);
+    refreshSearchAfterFilterChange(groupName, activatedFromSelection);
     return;
   }
   if (target.dataset.playlistDuplicatesFilter) {
@@ -6235,9 +6236,9 @@ function bindSearchField(input) {
       void render();
       return;
     }
-    const activatedFromHistory = activateSearchFromHistory({ resetMetaVisibility: true });
+    const activatedFromSelection = activateSearchFromSelection({ resetMetaVisibility: true });
     currentPage = 1;
-    syncSearchUrlAndRender(!activatedFromHistory);
+    syncSearchUrlAndRender(!activatedFromSelection);
   });
 }
 for (const input of searchFields) bindSearchField(input);

@@ -102,7 +102,7 @@ test('history hides search facets until the search box activates search', () => 
   );
   assert.match(
     indexSource,
-    /function activateSearchFromHistory[\s\S]{0,300}searchFilters\.hidden = false/,
+    /function activateSearchFromSelection[\s\S]{0,700}searchFilters\.hidden = false/,
   );
 });
 
@@ -129,6 +129,16 @@ test('browser routes use path scope as the authoritative search context', () => 
   assert.match(indexSource, /data-search-filter-section="\$\{escapeHtml\(kind\)\}"/);
   assert.match(indexSource, /window\.addEventListener\('popstate', handleBrowserLocationChange\)/);
   assert.doesNotMatch(indexSource, /window\.location\.hash|addEventListener\('hashchange'/);
+});
+
+test('entity details enter their scoped category context', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /function selectedEntityCategory\(\)[\s\S]{0,320}'__video__:'[\s\S]*?'videos'[\s\S]*?'__clip__:'[\s\S]*?'clips'[\s\S]*?'__playlist__:'[\s\S]*?'playlists'[\s\S]*?'__channel__:'[\s\S]*?'channels'/);
+  assert.match(indexSource, /function searchContextKind\(\)[\s\S]{0,180}selected === '__search__' \? activeSearchScope : selectedEntityCategory\(\)/);
+  assert.match(indexSource, /function activeSidebarCategory\(\)[\s\S]{0,160}return selectedEntityCategory\(\)/);
+  assert.match(indexSource, /function activateSearchFromSelection[\s\S]{0,240}const scope = searchContextKind\(\)[\s\S]{0,160}activeSearchScope = scope/);
+  assert.match(indexSource, /search\.placeholder = selected\.startsWith\('__playlist__:'\)[\s\S]{0,120}placeholders\[contextKind\]/);
 });
 
 test('playlist detail reuses the sidebar video search facets', () => {
@@ -459,10 +469,10 @@ test('search filters share deferred category dimming until refreshed results ren
   assert.match(indexSource, /function setSearchKindFilter\(kind, checked\)/);
   assert.match(indexSource, /function syncSearchKindFilter\(kind, applyDisabledStyles = true, assumeAllChecked = false\)/);
   assert.match(indexSource, /if \(applyDisabledStyles\) \{[\s\S]{0,300}row\.classList\.toggle\('dimmed'/);
-  assert.match(indexSource, /function refreshSearchAfterFilterChange\(groupName, activatedFromHistory\)/);
+  assert.match(indexSource, /function refreshSearchAfterFilterChange\(groupName, activatedFromSelection\)/);
   assert.match(indexSource, /refreshSearchAfterFilterChange[\s\S]{0,200}syncSearchKindFilter\(searchKindForFacet\(groupName\), false\)/);
-  assert.match(indexSource, /setSearchKindFilter\(searchKindFilter, target\.checked\)[\s\S]{0,800}refreshSearchAfterFilterChange\(searchKindFilter, activatedFromHistory\)/);
-  assert.match(indexSource, /syncMetaFilterGroup\(`search-\$\{groupName\}`\);[\s\S]{0,180}refreshSearchAfterFilterChange\(groupName, activatedFromHistory\)/);
+  assert.match(indexSource, /setSearchKindFilter\(searchKindFilter, target\.checked\)[\s\S]{0,800}refreshSearchAfterFilterChange\(searchKindFilter, activatedFromSelection\)/);
+  assert.match(indexSource, /syncMetaFilterGroup\(`search-\$\{groupName\}`\);[\s\S]{0,180}refreshSearchAfterFilterChange\(groupName, activatedFromSelection\)/);
   assert.match(indexSource, /function renderSearchMetaFilters[\s\S]*?for \(const kind of \[[\s\S]*?syncSearchKindFilter\(kind, true, countsPending\)/);
 });
 
