@@ -123,7 +123,7 @@ test('browser routes use path scope as the authoritative search context', () => 
   const indexSource = source('index.js');
 
   assert.match(indexSource, /const scopeByPath = \{[\s\S]*?'\/videos': 'videos'[\s\S]*?'\/clips': 'clips'[\s\S]*?'\/playlists': 'playlists'[\s\S]*?'\/channels': 'channels'/);
-  assert.match(indexSource, /return activeSearchScope[\s\S]{0,120}selectedKinds\.filter\(kind => kind === activeSearchScope\)/);
+  assert.match(indexSource, /const contextKind = searchContextKind\(\)[\s\S]{0,120}selectedKinds\.filter\(kind => kind === contextKind\)/);
   assert.match(indexSource, /const base = scope \? `\/\$\{scope\}` : '\/search'/);
   assert.match(indexSource, /if \(contextKind && kind !== contextKind\) return '';/);
   assert.match(indexSource, /data-search-filter-section="\$\{escapeHtml\(kind\)\}"/);
@@ -139,6 +139,8 @@ test('entity details enter their scoped category context', () => {
   assert.match(indexSource, /function activeSidebarCategory\(\)[\s\S]{0,160}return selectedEntityCategory\(\)/);
   assert.match(indexSource, /function activateSearchFromSelection[\s\S]{0,240}const scope = searchContextKind\(\)[\s\S]{0,160}activeSearchScope = scope/);
   assert.match(indexSource, /search\.placeholder = selected\.startsWith\('__playlist__:'\)[\s\S]{0,120}placeholders\[contextKind\]/);
+  assert.match(indexSource, /function hydrateEntitySearchFilters\(query, generation\)[\s\S]{0,420}fetchOmniSearch\(query, 1, \{ limit: 1 \}\)[\s\S]{0,220}renderSearchMetaFilters\(payload\)/);
+  assert.match(indexSource, /syncSearchFiltersForSelection\(\);[\s\S]{0,120}hydrateEntitySearchFilters\(query, generation\)/);
 });
 
 test('playlist detail reuses the sidebar video search facets', () => {
@@ -459,7 +461,7 @@ test('numbered browser pages cache and prefetch adjacent payloads', () => {
   assert.match(indexSource, /async function fetchHistoryPage\(channelId = '', page = currentPage\)/);
   assert.match(indexSource, /function historyYearPagePrefetches\(channelId, rows\)/);
   assert.match(indexSource, /const shifts = historyActivityYearOffset > 0 \? \[1, -1\] : \[1\]/);
-  assert.match(indexSource, /async function fetchOmniSearch\(query, page = currentPage\)/);
+  assert.match(indexSource, /async function fetchOmniSearch\(query, page = currentPage, \{ limit: limitOverride = null \} = \{\}\)/);
   assert.match(indexSource, /fetchVideoCollection\(\{[\s\S]*page = currentPage,/);
 });
 
