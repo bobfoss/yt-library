@@ -28,13 +28,32 @@ The app is intentionally compact but no longer single-file. `yt_library_manager.
 
 Primary surfaces:
 
-- `/`: playlist library browser with local groups, playlist pages, liked and unavailable-video views, omni-search, the paginated History view and heatmaps, thumbnails, channel avatars, and watch-progress bars.
-- `/history`: compatibility redirect to the main browser's History view.
+- `/` normalizes to `/search`.
+- `/search` is the unscoped omni-search across videos, clips, playlists, and channels.
+- `/videos`, `/clips`, `/playlists`, and `/channels` are canonical category-scoped search views. Query parameters refine text, fields, facets, sort, and pagination; they do not redefine the path's entity scope.
+- `/history` is the separate occurrence view. It preserves repeated watches, occurrence ordering, pagination, and the daily heatmap instead of collapsing videos into canonical search results.
+- `/videos/{id}`, `/clips/{id}`, `/playlists/{id}`, and `/channels/{id}` are detail views. Playlist details reuse the video facet model for their member list, while channel details retain their playlist and History tabs.
 - `/admin`: status dashboard and worker control plane for metadata, playlist scans, placeholder recovery, and history.
+
+Before 1.0, replaced hash routes and obsolete named-view URLs have no compatibility aliases. After 1.0, URL changes should preserve or deliberately migrate public links.
 
 Omni-search uses `/api/search` as its single read model. The server applies title/description and source filters, folds playlist and history evidence into one canonical video result, includes unresolved unavailable memberships, globally sorts and counts videos/channels/playlists, and only then returns the requested page. The browser does not merge a separate history result set.
 
 The main browser is also view-driven. `/api/bootstrap` returns only navigation structure and aggregate counts; playlist, video, channel, and detail endpoints fetch the current view's rows from SQLite with server-side filtering, sorting, and pagination. The browser caches completed request keys for navigation within the session and preserves the currently rendered view while a new page is loading. It does not download a whole-library metadata snapshot during startup.
+
+### Browser routes and search context
+
+The browser path is the authoritative search context. `/search` can enable or disable any result category. A scoped path always searches only its category, even if query parameters are copied or edited. Default and path-implied values should be omitted from generated URLs.
+
+The left sidebar has three distinct responsibilities:
+
+- **Search in** selects searchable fields such as titles, descriptions, and plugin-provided text fields.
+- Category sections own their facet trees. Video availability, reactions, completion, playlist membership, uploader category, and plugin video facets live under Videos; clip ownership lives under Clips; playlist availability and ownership live under Playlists; and channel subscription and status live under Channels. There is no separate **Search for** block.
+- Category and group names are real links. Plain clicks use in-app navigation, while browser link affordances such as status-bar targets and open-in-new-tab remain available.
+
+On `/search`, each category row is both the category link and the parent selector for its facets. On a scoped category page, the path supplies that parent selection, so the redundant category checkbox is omitted and only the applicable facets are shown. Playlist detail uses the same scoped video facets with the placeholder **Search this playlist**. History hides the facet trees and leaves the search box available; entering a query returns to `/search`. Detail navigation retains the last omni-search URL in session state so returning to Search restores the prior query, counts, filters, sort, and page.
+
+Named sidebar shortcuts such as Liked, Playlisted, Subscribed, and Terminated are represented by category facets rather than separate view implementations. Playlist and channel group trees remain real scoped navigation because they carry user-defined membership context.
 
 Global History and channel-scoped History use the same browser workflow for
 page and activity loading, occurrence-card rendering, pagination, adjacent-page
@@ -513,13 +532,6 @@ api.register({
       presentHashParam: 'with-example',
       absentHashParam: 'without-example',
     },
-    preset: {
-      id: 'example',
-      label: 'Example data',
-      section: 'videos',
-      sort: 'newest',
-      preserveQuery: true,
-    },
     forceRelevance: 'query',
     catalogCount: status => Number(status?.pluginStatus?.itemCount || 0),
     decorateCoreResults: async (results, host, {query}) => {},
@@ -529,8 +541,8 @@ api.register({
 ```
 
 `searchField` adds a checkbox under **Search in**. Its key follows the plugin ID
-syntax and must be unique. `videoFacet` adds a sibling video category under
-**Search for**, with independently selectable present and absent values. Both
+syntax and must be unique. `videoFacet` adds a facet under the Videos section,
+with independently selectable present and absent values. Both
 are enabled on a fresh search by default, so simply installing a plugin does
 not narrow the core video set. Optional
 `presentDisabledPreferenceKey`/`absentDisabledPreferenceKey` values may make
@@ -591,13 +603,6 @@ uses `catalogCount` for unloaded counts. The plugin owns the ordering within
 its separate result page. A plugin that participates in text relevance should
 set `forceRelevance` to `true` or `"query"`; otherwise users retain all normal
 sort options.
-
-`preset` adds a left-navigation item. Preset IDs follow the plugin ID syntax.
-For video facets, selecting the preset enables the present facet and disables
-the absent facet. `section` currently supports placement in the `videos`
-section, `sort` selects the initial host sort, `preserveQuery` controls whether
-the current query survives selection, and `emptyMessage` may be text or a
-function receiving `{query}`.
 
 A video-oriented plugin may expose read-only virtual videos for IDs absent from
 YTL:
@@ -1001,7 +1006,7 @@ Workers should be visible and interruptible from `/admin`. Queue counts, preview
 
 The UI should be a dense local operations tool rather than a marketing page.
 
-- Keep primary views immediately useful: playlist browser, history search, and admin dashboard.
+- Keep primary views immediately useful: unscoped search, scoped category lists, occurrence History, detail views, and the admin dashboard.
 - Prefer local playlist navigation; provide separate external links for opening YouTube.
 - Show channel avatars and creator links when normalized channel metadata exists.
 - Show actionable availability, visibility, and Archivarix status while keeping internal source and reconciliation-match labels out of the user interface.

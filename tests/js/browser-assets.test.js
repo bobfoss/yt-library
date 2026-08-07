@@ -108,7 +108,8 @@ test('browser routes use path scope as the authoritative search context', () => 
   assert.match(indexSource, /const scopeByPath = \{[\s\S]*?'\/videos': 'videos'[\s\S]*?'\/clips': 'clips'[\s\S]*?'\/playlists': 'playlists'[\s\S]*?'\/channels': 'channels'/);
   assert.match(indexSource, /return activeSearchScope[\s\S]{0,120}selectedKinds\.filter\(kind => kind === activeSearchScope\)/);
   assert.match(indexSource, /const base = scope \? `\/\$\{scope\}` : '\/search'/);
-  assert.match(indexSource, /if \(contextKind === kind\) return facetsHtml;/);
+  assert.match(indexSource, /if \(contextKind && kind !== contextKind\) return '';/);
+  assert.match(indexSource, /data-search-filter-section="\$\{escapeHtml\(kind\)\}"/);
   assert.match(indexSource, /window\.addEventListener\('popstate', handleBrowserLocationChange\)/);
   assert.doesNotMatch(indexSource, /window\.location\.hash|addEventListener\('hashchange'/);
 });
@@ -537,11 +538,15 @@ test('uploader category facet requires detected categories', () => {
 
 test('sidebar categories rely on scoped filters instead of named presets', () => {
   const indexSource = source('index.js');
+  const indexHtml = source('index.html');
 
-  assert.match(indexSource, /presetLink\('videos', 'Videos',/);
-  assert.match(indexSource, /presetLink\('clips', 'Clips',/);
-  assert.match(indexSource, /presetLink\('playlists', 'Playlists',/);
-  assert.match(indexSource, /presetLink\('channels', 'Channels',/);
+  assert.match(indexSource, /appendSearchCategory\(videoSection, 'videos', 'Videos',/);
+  assert.match(indexSource, /appendSearchCategory\(videoSection, 'clips', 'Clips',/);
+  assert.match(indexSource, /appendSearchCategory\(playlistSection, 'playlists', 'Playlists',/);
+  assert.match(indexSource, /appendSearchCategory\(channelSection, 'channels', 'Channels',/);
+  assert.match(indexSource, /function appendSearchCategory[\s\S]*data-search-kind-filter[\s\S]*class="search-kind-link"/);
+  assert.match(indexSource, /data-search-filter-slot/);
+  assert.doesNotMatch(indexHtml, />Search for</);
   assert.doesNotMatch(indexSource, /presetLink\('(playlisted|liked|subscribed|terminated)'/);
   assert.doesNotMatch(indexSource, /activeSearchPreset === '(playlisted|liked|subscribed|terminated)'/);
   assert.doesNotMatch(indexSource, /browserSearchPresets/);

@@ -99,8 +99,8 @@
     .card-layout-button:last-child { border-right: 0; }
     .card-layout-button:hover, .card-layout-button.active { background: var(--accent-soft); color: var(--ink); }
     .card-layout-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; }
-    .search-for-title { margin-top: 5px; }
-    .search-meta-groups { display: grid; gap: 10px; }
+    .search-filter-slot { display: grid; gap: 10px; padding: 3px 10px 5px; }
+    .search-meta-kind-children.search-filter-slot { padding: 0; }
     .search-meta-kind, .search-meta-facet {
       display: grid;
       grid-template-columns: 14px minmax(0, 1fr);
@@ -153,6 +153,8 @@
     .search-tree-toggle-spacer { width: 14px; height: 18px; }
     .search-meta-row-title { color: var(--ink); font-size: 13px; font-weight: 650; text-align: left; display: inline-flex; align-items: center; justify-content: flex-start; gap: 4px; }
     .search-meta-row-title input { accent-color: var(--accent); margin: 0; }
+    .search-kind-link { color: inherit; text-decoration: none; }
+    .search-kind-link:hover { color: var(--accent); }
     .filter-parent-checkbox {
       position: relative;
       display: inline-flex;
@@ -538,8 +540,6 @@
           <label class="filter"><input class="search-field" type="checkbox" data-search-field="titles" checked> Titles</label>
           <label class="filter"><input class="search-field" type="checkbox" data-search-field="descriptions" checked> Descriptions</label>
         </div>
-        <div class="filter-title search-for-title">Search for</div>
-        <div id="search-for-filters" class="search-meta-groups"></div>
       </div>
       <nav id="groups"></nav>
     </aside>

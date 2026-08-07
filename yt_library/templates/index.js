@@ -528,14 +528,15 @@ let pendingSearchMetaGroups = new Set();
 let searchMetaProgressDots = '';
 let searchInputTimer = null;
 let renderedSearchFilterContext = null;
+let renderedSearchFilterPayload = {};
 const search = document.getElementById('search');
 const searchNav = document.getElementById('search-nav');
 const historyNav = document.getElementById('history-nav');
 const searchFilters = document.getElementById('search-filters');
 const searchInFields = document.getElementById('search-in-fields');
-const searchForFilters = document.getElementById('search-for-filters');
 const refresh = document.getElementById('refresh');
 const groupsEl = document.getElementById('groups');
+const searchForFilters = groupsEl;
 const searchFields = [...document.querySelectorAll('.search-field')];
 
 function loadRetainedSearchUrl() {
@@ -3184,34 +3185,12 @@ function searchMetaFiltersHtml(
   const kindHtml = (titleText, kind, count, facetsHtml) => {
     const contextKind = searchContextKind();
     if (contextKind && kind !== contextKind) return '';
-    if (contextKind === kind) return facetsHtml;
-    if (hideEmptyFilters && count !== null && count !== undefined && Number(count) === 0) return '';
-    const kindEnabled = searchKindEnabled(kind);
-    const hasChildren = Boolean(facetsHtml.trim());
-    const nodeId = `kind:${kind}`;
-    const expanded = hasChildren && searchFilterTreeExpanded.has(nodeId);
-    const escapedTitle = escapeHtml(titleText);
     return `
-    <div class="search-meta-kind${kindEnabled ? '' : ' kind-disabled'}" data-search-tree-node="${escapeHtml(nodeId)}">
-      ${hasChildren
-        ? searchFilterTreeToggleHtml(nodeId, `${titleText} filters`)
-        : '<span class="search-tree-toggle-spacer" aria-hidden="true"></span>'}
-      <label class="search-meta-row-title">
-        ${parentFilterCheckboxHtml('data-search-kind-filter', kind)}
-        <span>${escapedTitle}</span>
-        <span class="count">${kindEnabled ? filterCountText(count) : ''}</span>
-        <span class="search-meta-progress" data-search-meta-progress="${kind}" aria-hidden="true"></span>
-      </label>
-      ${hasChildren ? `
-        <div
-          id="${escapeHtml(searchFilterTreeChildrenId(nodeId))}"
-          class="search-meta-kind-children"
-          data-search-tree-children
-          ${expanded ? '' : 'hidden'}
-        >${facetsHtml}</div>
-      ` : ''}
-    </div>
-  `;
+      <div
+        data-search-filter-section="${escapeHtml(kind)}"
+        data-search-filter-count="${escapeHtml(filterCountText(count))}"
+      >${facetsHtml}</div>
+    `;
   };
   const uploaderCategoryDefinitions = uploaderCategoryMetaFilterDefinitions(
     uploaderCategoryCounts,
@@ -3267,9 +3246,18 @@ function renderSearchMetaFilters({
   uploaderCategoryCounts = null,
   counts = null,
 } = {}) {
+  renderedSearchFilterPayload = {
+    metaCounts,
+    reactionCounts,
+    completionCounts,
+    playlistMembershipCounts,
+    uploaderCategoryCounts,
+    counts,
+  };
   renderedSearchFilterContext = searchContextKind();
   syncUploaderCategoryVisibility(uploaderCategoryCounts);
-  searchForFilters.innerHTML = searchMetaFiltersHtml(
+  const template = document.createElement('template');
+  template.innerHTML = searchMetaFiltersHtml(
     metaCounts,
     reactionCounts,
     completionCounts,
@@ -3277,6 +3265,18 @@ function renderSearchMetaFilters({
     uploaderCategoryCounts,
     counts,
   );
+  const sections = new Map(
+    [...template.content.querySelectorAll('[data-search-filter-section]')]
+      .map(section => [section.dataset.searchFilterSection, section]),
+  );
+  for (const slot of searchForFilters.querySelectorAll('[data-search-filter-slot]')) {
+    const kind = slot.dataset.searchFilterSlot || '';
+    const section = sections.get(kind);
+    slot.replaceChildren(...(section ? [...section.childNodes] : []));
+    const count = section?.dataset.searchFilterCount;
+    const kindCount = searchForFilters.querySelector(`[data-search-kind-count="${kind}"]`);
+    if (kindCount) kindCount.textContent = searchKindEnabled(kind) ? (count || '') : '';
+  }
   for (const key of ['videos', 'reactions', 'completion', 'membership', 'uploaderCategory', 'clipOwnership', 'playlistAvailability', 'playlistOwnership', 'channelSubscription', 'channelStatus']) {
     syncMetaFilterGroup(`search-${key}`);
   }
@@ -4152,6 +4152,76 @@ function presetLink(preset, label, count) {
   return link;
 }
 
+function searchFilterSlot(kind, className = 'search-filter-slot') {
+  const slot = document.createElement('div');
+  slot.className = className;
+  slot.dataset.searchFilterSlot = kind;
+  return slot;
+}
+
+function appendSearchCategory(section, kind, label, count) {
+  const contextKind = searchContextKind();
+  const filtersVisible = selected !== '__history__' && (!contextKind || contextKind === kind);
+  if (!filtersVisible) {
+    section.appendChild(presetLink(kind, label, count));
+    return;
+  }
+  if (contextKind === kind) {
+    section.appendChild(presetLink(kind, label, count));
+    section.appendChild(searchFilterSlot(kind));
+    return;
+  }
+
+  const nodeId = `kind:${kind}`;
+  const expanded = searchFilterTreeExpanded.has(nodeId);
+  const kindEnabled = searchKindEnabled(kind);
+  const root = document.createElement('div');
+  root.className = `search-meta-kind${kindEnabled ? '' : ' kind-disabled'}`;
+  root.dataset.searchTreeNode = nodeId;
+  root.innerHTML = `
+    ${searchFilterTreeToggleHtml(nodeId, `${label} filters`)}
+    <div class="search-meta-row-title">
+      ${parentFilterCheckboxHtml('data-search-kind-filter', kind)}
+      <a class="search-kind-link" href="${escapeHtml(searchPresetHref(kind))}">${escapeHtml(label)}</a>
+      <span class="count" data-search-kind-count="${escapeHtml(kind)}">${kindEnabled ? filterCountText(count) : ''}</span>
+      <span class="search-meta-progress" data-search-meta-progress="${escapeHtml(kind)}" aria-hidden="true"></span>
+    </div>
+  `;
+  const slot = searchFilterSlot(kind, 'search-meta-kind-children search-filter-slot');
+  slot.id = searchFilterTreeChildrenId(nodeId);
+  slot.dataset.searchTreeChildren = '';
+  slot.hidden = !expanded;
+  root.appendChild(slot);
+  root.querySelector('.search-kind-link')?.addEventListener('click', event => {
+    handleSidebarLinkClick(event, () => activateSearchPreset(kind));
+  });
+  section.appendChild(root);
+}
+
+function appendPluginSearchKinds() {
+  const plugins = browserResultSearchPlugins();
+  if (!plugins.length || selected === '__history__' || searchContextKind()) return;
+  const section = sectionFor('Extensions');
+  for (const plugin of plugins) {
+    const kind = plugin.id;
+    const label = plugin.search.label || kind;
+    const enabled = searchKindEnabled(kind);
+    const row = document.createElement('div');
+    row.className = `search-meta-kind${enabled ? '' : ' kind-disabled'}`;
+    row.innerHTML = `
+      <span class="search-tree-toggle-spacer" aria-hidden="true"></span>
+      <label class="search-meta-row-title">
+        ${parentFilterCheckboxHtml('data-search-kind-filter', kind)}
+        <span>${escapeHtml(label)}</span>
+        <span class="count" data-search-kind-count="${escapeHtml(kind)}">${enabled ? filterCountText(plugin.search.catalogCount?.(browserPluginStatus(kind))) : ''}</span>
+        <span class="search-meta-progress" data-search-meta-progress="${escapeHtml(kind)}" aria-hidden="true"></span>
+      </label>
+    `;
+    row.appendChild(searchFilterSlot(kind));
+    section.appendChild(row);
+  }
+}
+
 function searchNavigationHref() {
   if (selected !== '__search__' || activeSearchScope) return retainedSearchUrl || '/search';
   const params = new URLSearchParams();
@@ -4205,13 +4275,13 @@ function renderGroups() {
   const historyCount = historyNav?.querySelector('.count');
   if (historyCount) historyCount.textContent = counts.history || 0;
   const videoSection = sectionFor('Videos');
-  videoSection.appendChild(presetLink('videos', 'Videos', counts.videos || 0));
+  appendSearchCategory(videoSection, 'videos', 'Videos', counts.videos || 0);
   if (Number(counts.clips || 0) > 0) {
-    videoSection.appendChild(presetLink('clips', 'Clips', counts.clips));
+    appendSearchCategory(videoSection, 'clips', 'Clips', counts.clips);
   }
 
   const playlistSection = sectionFor('Playlists');
-  playlistSection.appendChild(presetLink('playlists', 'Playlists', counts.playlists || 0));
+  appendSearchCategory(playlistSection, 'playlists', 'Playlists', counts.playlists || 0);
   appendNavigationGroupTrees(
     playlistSection,
     playlistChildren.get('') || [],
@@ -4221,7 +4291,7 @@ function renderGroups() {
   );
 
   const channelSection = sectionFor('Channels');
-  channelSection.appendChild(presetLink('channels', 'Channels', counts.channels || 0));
+  appendSearchCategory(channelSection, 'channels', 'Channels', counts.channels || 0);
   appendNavigationGroupTrees(
     channelSection,
     channelChildren.get('') || [],
@@ -4229,6 +4299,8 @@ function renderGroups() {
     channelMemberships,
     channelChildren,
   );
+  appendPluginSearchKinds();
+  renderSearchMetaFilters(renderedSearchFilterPayload);
   syncSidebarSelection();
 }
 
