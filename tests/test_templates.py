@@ -233,6 +233,14 @@ class TemplateDomTests(unittest.TestCase):
 
     def test_detail_routes_select_their_category_navigation(self) -> None:
         self.assertIn(
+            "if (selected.startsWith('__video__:')) return 'videos';",
+            server.INDEX_JS,
+        )
+        self.assertIn(
+            "if (selected.startsWith('__clip__:')) return 'clips';",
+            server.INDEX_JS,
+        )
+        self.assertIn(
             "if (selected.startsWith('__playlist__:')) return 'playlists';",
             server.INDEX_JS,
         )

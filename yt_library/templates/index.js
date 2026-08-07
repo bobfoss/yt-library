@@ -4523,6 +4523,8 @@ function searchNavigationHref() {
 
 function activeSidebarCategory() {
   if (selected === '__search__' && !activeSearchPreset) return activeSearchScope;
+  if (selected.startsWith('__video__:')) return 'videos';
+  if (selected.startsWith('__clip__:')) return 'clips';
   if (selected.startsWith('__playlist__:')) return 'playlists';
   if (selected.startsWith('__channel__:')) return 'channels';
   return '';
