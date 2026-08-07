@@ -231,6 +231,20 @@ class TemplateDomTests(unittest.TestCase):
         )
         self.assertNotIn(None, script_sources | admin_script_sources)
 
+    def test_detail_routes_select_their_category_navigation(self) -> None:
+        self.assertIn(
+            "if (selected.startsWith('__playlist__:')) return 'playlists';",
+            server.INDEX_JS,
+        )
+        self.assertIn(
+            "if (selected.startsWith('__channel__:')) return 'channels';",
+            server.INDEX_JS,
+        )
+        self.assertIn(
+            "link.dataset.preset === activeCategory",
+            server.INDEX_JS,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

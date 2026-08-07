@@ -4521,10 +4521,18 @@ function searchNavigationHref() {
   return appendUrlParams('/search', params);
 }
 
+function activeSidebarCategory() {
+  if (selected === '__search__' && !activeSearchPreset) return activeSearchScope;
+  if (selected.startsWith('__playlist__:')) return 'playlists';
+  if (selected.startsWith('__channel__:')) return 'channels';
+  return '';
+}
+
 function syncSidebarSelection() {
   if (historyNav) historyNav.href = localViewHref('__history__');
   if (searchNav) searchNav.href = searchNavigationHref();
   const groupPresets = new Set(['playlist-group', 'channel-group']);
+  const activeCategory = activeSidebarCategory();
   for (const link of groupsEl.querySelectorAll('.group')) {
     const activeGroupKey = activeSearchPreset === 'channel-group'
       ? searchChannelGroupKey
@@ -4542,9 +4550,8 @@ function syncSidebarSelection() {
       && link.dataset.preset === activeSearchPreset
     );
     const activeScopedCategory = (
-      selected === '__search__'
-      && !activeSearchPreset
-      && link.dataset.preset === activeSearchScope
+      activeCategory
+      && link.dataset.preset === activeCategory
     );
     link.classList.toggle(
       'active',
