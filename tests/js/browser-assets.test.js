@@ -255,6 +255,16 @@ test('admin status polling clears stale running state on request failures', () =
   assert.match(adminSource, /renderServiceUnavailable\(statusError\);/);
 });
 
+test('admin status polling renders the Archivarix UTC reset countdown', () => {
+  const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
+
+  assert.match(adminHtml, /id="archivarixRequestsUtcRemaining"/);
+  assert.match(adminSource, /function fmtUtcWindowRemaining\(windowEndsAt, nowMs = Date\.now\(\)\)/);
+  assert.match(adminSource, /Math\.ceil\(\(windowEndMs - nowMs\) \/ 60000\)/);
+  assert.match(adminSource, /`\(\$\{archivarixRemaining\} remaining\)`/);
+});
+
 test('admin log level selector uses cumulative verbosity with error as the default', () => {
   const adminSource = source('admin.js');
   const adminHtml = source('admin.html');

@@ -46,6 +46,7 @@ const fields = {
   workerQueueElapsed: document.getElementById('workerQueueElapsed'),
   workerQueueEta: document.getElementById('workerQueueEta'),
   archivarixRequestsUtcDay: document.getElementById('archivarixRequestsUtcDay'),
+  archivarixRequestsUtcRemaining: document.getElementById('archivarixRequestsUtcRemaining'),
   archivarixRequestsTotal: document.getElementById('archivarixRequestsTotal'),
   dispatchModeDelay: document.getElementById('dispatchModeDelay'),
   dispatchModeThrottle: document.getElementById('dispatchModeThrottle'),
@@ -237,6 +238,15 @@ function fmtClockDuration(seconds) {
   const minutes = Math.floor((total % 3600) / 60);
   const remainingSeconds = total % 60;
   return [hours, minutes, remainingSeconds].map(value => String(value).padStart(2, '0')).join(':');
+}
+
+function fmtUtcWindowRemaining(windowEndsAt, nowMs = Date.now()) {
+  const windowEndMs = Date.parse(windowEndsAt || '');
+  if (!Number.isFinite(windowEndMs)) return '';
+  const totalMinutes = Math.max(0, Math.ceil((windowEndMs - nowMs) / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 }
 
 const queueTiming = {
@@ -811,6 +821,10 @@ function render(data) {
   fields.stopWorkerQueue.classList.toggle('danger', queueWorkerRunning || queueWorkerStopping);
   const archivarixRequestCounts = data.archivarixRequestCounts || {};
   fields.archivarixRequestsUtcDay.textContent = archivarixRequestCounts.current_utc_day || 0;
+  const archivarixRemaining = fmtUtcWindowRemaining(archivarixRequestCounts.window_ends_at);
+  fields.archivarixRequestsUtcRemaining.textContent = archivarixRemaining
+    ? `(${archivarixRemaining} remaining)`
+    : '';
   fields.archivarixRequestsTotal.textContent = archivarixRequestCounts.total || 0;
   const archivarixWindowTitle = archivarixRequestCounts.window_ends_at
     ? `Resets ${fmtTime(archivarixRequestCounts.window_ends_at)} (00:00 UTC)`
