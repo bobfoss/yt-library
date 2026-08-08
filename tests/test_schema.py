@@ -1134,6 +1134,47 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(discovery["source_key"], "new")
         self.assertFalse(discovery["manual"])
 
+    def test_update_queues_plan_work_before_pending_placeholder_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCpriority", title="Priority channel")
+                    core.upsert_video(
+                        conn,
+                        "priority001",
+                        title="Priority video",
+                        channel_id="UCpriority",
+                    )
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLpriority', 'Priority')"
+                    )
+                    core.enqueue_placeholder_recovery_item(
+                        conn,
+                        video_id="unavailable01",
+                        current_title="Unavailable video",
+                        priority=-500,
+                    )
+                    placeholder_subject = core.placeholder_queue_subject_key(
+                        "unavailable01"
+                    )
+                    core.enqueue_update_tasks(conn)
+
+                rows = conn.execute(
+                    "SELECT subject_key, priority FROM worker_queue ORDER BY priority"
+                ).fetchall()
+            finally:
+                conn.close()
+
+        placeholder_priority = next(
+            row["priority"] for row in rows if row["subject_key"] == placeholder_subject
+        )
+        update_priorities = [
+            row["priority"] for row in rows if row["subject_key"] != placeholder_subject
+        ]
+        self.assertTrue(update_priorities)
+        self.assertLess(max(update_priorities), placeholder_priority)
+
     def test_playlist_due_selection_ignores_scan_age_but_keeps_integrity_signals(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")

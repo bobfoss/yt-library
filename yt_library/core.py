@@ -8363,6 +8363,7 @@ class LibraryQueuePlan:
     metadata_selection: str
     metadata_stale_days: int
     replace_worker_types: tuple[str, ...] = ()
+    insert_before_worker_types: tuple[str, ...] = ()
 
 
 INITIALIZATION_QUEUE_PLAN = LibraryQueuePlan(
@@ -8386,6 +8387,7 @@ UPDATE_QUEUE_PLAN = LibraryQueuePlan(
     include_liked_videos=False,
     metadata_selection="never",
     metadata_stale_days=30,
+    insert_before_worker_types=("placeholder",),
 )
 REBUILD_QUEUE_PLAN = LibraryQueuePlan(
     name="rebuild",
@@ -8443,24 +8445,54 @@ def enqueue_library_queue_plan(
     preserved_by_type = worker_queue_counts_by_type(conn)
     queued_before_plan = worker_queue_count(conn)
 
-    enqueue_account_sync_task(conn, priority=-4, manual=False)
+    playlist_priorities = [
+        index
+        for index, row in enumerate(playlist_rows, start=1)
+        if row["playlist_id"] != LIKED_VIDEOS_PLAYLIST_ID
+    ]
+    playlist_count = len(playlist_priorities)
+    priority_ceiling = max(
+        [
+            0,
+            *playlist_priorities,
+            *(
+                1_000_000 + int(row["priority"] or 0) * 1_000_000 + index
+                for index, row in enumerate(metadata_rows, start=1)
+            ),
+        ]
+    )
+    priority_offset = 0
+    if plan.insert_before_worker_types:
+        placeholders = ", ".join("?" for _ in plan.insert_before_worker_types)
+        boundary = conn.execute(
+            f"""
+            SELECT MIN(priority) AS priority
+            FROM worker_queue
+            WHERE worker_type IN ({placeholders})
+            """,
+            plan.insert_before_worker_types,
+        ).fetchone()["priority"]
+        if boundary is not None:
+            priority_offset = min(0, int(boundary) - priority_ceiling - 1)
+
+    enqueue_account_sync_task(conn, priority=priority_offset - 4, manual=False)
     enqueue_clip_item(
         conn,
         task_type="discover",
         mode=plan.clip_discovery_mode,
-        priority=-3,
+        priority=priority_offset - 3,
         manual=False,
     )
     if plan.playlist_discovery_mode:
         enqueue_playlist_discovery_item(
             conn,
-            priority=-2,
+            priority=priority_offset - 2,
             mode=plan.playlist_discovery_mode,
         )
     enqueue_history_task(
         conn,
         plan.history_mode,
-        priority=-1,
+        priority=priority_offset - 1,
         manual=plan.history_manual,
     )
     if plan.include_liked_videos:
@@ -8469,11 +8501,10 @@ def enqueue_library_queue_plan(
             LIKED_VIDEOS_PLAYLIST_ID,
             title="Liked videos",
             source_key=plan.name,
-            priority=0,
+            priority=priority_offset,
             manual=False,
         )
 
-    playlist_count = 0
     for index, row in enumerate(playlist_rows, start=1):
         if row["playlist_id"] == LIKED_VIDEOS_PLAYLIST_ID:
             continue
@@ -8482,14 +8513,18 @@ def enqueue_library_queue_plan(
             row["playlist_id"] or "",
             title=row["title"] or "",
             source_key=plan.name,
-            priority=index,
+            priority=priority_offset + index,
             manual=False,
         )
-        playlist_count += 1
 
     for index, row in enumerate(metadata_rows, start=1):
         source = row["metadata_source"] or "history"
-        priority = 1_000_000 + int(row["priority"] or 0) * 1_000_000 + index
+        priority = (
+            priority_offset
+            + 1_000_000
+            + int(row["priority"] or 0) * 1_000_000
+            + index
+        )
         enqueue_metadata_item(
             conn,
             video_id=row["video_id"] or "",
