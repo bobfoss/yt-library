@@ -2445,6 +2445,53 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_watch_metadata_classifies_accessible_members_only_badge(self) -> None:
+        html = """
+        <html><body>
+        <script>
+        var ytInitialPlayerResponse = {
+          "playabilityStatus": {"status": "OK"},
+          "videoDetails": {"title": "Accessible members video", "author": "Creator"},
+          "microformat": {"playerMicroformatRenderer": {"isUnlisted": false}}
+        };
+        var ytInitialData = {
+          "contents": {"twoColumnWatchNextResults": {"results": {"results": {"contents": [{
+            "videoPrimaryInfoRenderer": {"badges": [{
+              "metadataBadgeRenderer": {
+                "style": "BADGE_STYLE_TYPE_MEMBERS_ONLY",
+                "label": "Members only"
+              }
+            }]}
+          }]}}}}
+        };
+        </script>
+        </body></html>
+        """
+
+        metadata = core.extract_watch_metadata(html, "members5678")
+
+        self.assertEqual(metadata["playability_status"], "OK")
+        self.assertEqual(metadata["availability"], "subscriber_only")
+        self.assertEqual(core.storable_watch_playability_value(metadata), 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.store_video_metadata(conn, metadata, "ok")
+                stored = conn.execute(
+                    """
+                    SELECT is_playable, availability
+                    FROM videos
+                    WHERE video_id = 'members5678'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    dict(stored),
+                    {"is_playable": 1, "availability": "subscriber_only"},
+                )
+            finally:
+                conn.close()
+
     def test_watch_metadata_fetch_uses_only_the_direct_video_page(self) -> None:
         opener = Mock()
         video_id = "-AbC123_def"

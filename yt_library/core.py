@@ -333,6 +333,32 @@ def watch_playability_availability(
     return ""
 
 
+def watch_primary_info_availability(initial_data: dict[str, Any]) -> str:
+    for node in walk(initial_data):
+        if not isinstance(node, dict):
+            continue
+        primary_info = node.get("videoPrimaryInfoRenderer")
+        if not isinstance(primary_info, dict):
+            continue
+        for badge_node in walk(primary_info.get("badges", [])):
+            if not isinstance(badge_node, dict):
+                continue
+            badge = badge_node.get("metadataBadgeRenderer")
+            if not isinstance(badge, dict):
+                badge = badge_node.get("badgeViewModel")
+            if not isinstance(badge, dict):
+                continue
+            style = str(badge.get("style") or badge.get("badgeStyle") or "").strip().upper()
+            label = str(badge.get("label") or badge.get("badgeText") or "").strip().lower()
+            if style in {"BADGE_STYLE_TYPE_MEMBERS_ONLY", "BADGE_MEMBERS_ONLY"} or label in {
+                "members only",
+                "members-only",
+            }:
+                return "subscriber_only"
+        return ""
+    return ""
+
+
 def playlist_zero_result_is_suspicious(
     parsed_count: int,
     ytdlp_error: str,
@@ -3292,7 +3318,11 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
     reaction = extract_reaction_from_initial_data(initial_data)
     status = str(playability.get("status") or "").strip()
     reason = text_from_runs(playability.get("reason")).strip()
-    availability = watch_playability_availability(playability, microformat, details)
+    availability = watch_primary_info_availability(initial_data) or watch_playability_availability(
+        playability,
+        microformat,
+        details,
+    )
     playability_status = status
     if reason and status and reason not in status:
         status = f"{status}: {reason}"
