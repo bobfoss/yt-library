@@ -205,12 +205,30 @@ test('playlist cards show visibility before counts and pluralize video counts', 
   assert.match(indexSource, /count === 1 \? 'video' : 'videos'/);
 });
 
-test('compact playlist cards hide playlist ids without removing them from other layouts', () => {
+test('native card ids are visible only in the detailed layout', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');
 
-  assert.match(indexSource, /class="playlist-id">\$\{escapeHtml\(playlist\.playlist_id\)\}/);
-  assert.match(indexHtml, /\.search-grid\.layout-compact \.playlist-id,/);
+  assert.match(
+    indexSource,
+    /class="playlist-id entity-card-id">\$\{escapeHtml\(playlist\.playlist_id\)\}/,
+  );
+  assert.match(
+    indexSource,
+    /class="video-id entity-card-id">\$\{escapeHtml\(video\.video_id\)\}/,
+  );
+  assert.match(
+    indexSource,
+    /class="clip-id entity-card-id">\$\{escapeHtml\(clip\.clip_id\)\}/,
+  );
+  assert.match(
+    indexSource,
+    /class="channel-id entity-card-id">\$\{escapeHtml\(channel\.channel_id\)\}/,
+  );
+  assert.match(
+    indexHtml,
+    /\.search-grid:not\(\.layout-detailed\) \.entity-card-id \{ display: none; \}/,
+  );
 });
 
 test('compact channel cards retain only a right-aligned YouTube link', () => {
@@ -222,11 +240,10 @@ test('compact channel cards retain only a right-aligned YouTube link', () => {
   );
 
   assert.match(channelCardSource, /className: 'channel-card'/);
-  assert.match(channelCardSource, /class="channel-id">\$\{escapeHtml\(channel\.channel_id\)\}/);
+  assert.match(channelCardSource, /class="channel-id entity-card-id">\$\{escapeHtml\(channel\.channel_id\)\}/);
   assert.match(channelCardSource, /class="channel-archivarix-id">Archivarix/);
   assert.match(channelCardSource, /class="playlist-link channel-youtube-link"/);
   assert.match(channelCardSource, /class="playlist-link channel-archivarix-link"/);
-  assert.match(indexHtml, /\.search-grid\.layout-compact \.channel-id,/);
   assert.match(indexHtml, /\.search-grid\.layout-compact \.channel-archivarix-link \{ display: none; \}/);
   assert.match(indexHtml, /\.search-grid\.layout-compact \.channel-card-links \{ justify-content: flex-end; \}/);
 });

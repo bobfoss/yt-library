@@ -101,7 +101,9 @@ views, with layout saved separately for Search, playlist detail, History,
 channel playlists, and channel History. Defaults are grid for Search, playlist
 detail, and channel playlists; compact for History; and detailed for channel
 History. Sort choices and page size are also saved as user preferences rather
-than encoded as permanent layout state in every URL.
+than encoded as permanent layout state in every URL. Native video, clip,
+playlist, and channel IDs are displayed on detailed cards only; grid and
+compact cards favor descriptive metadata.
 
 Global History and channel-scoped History use the same browser workflow for
 page and activity loading, occurrence-card rendering, pagination, adjacent-page

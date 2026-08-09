@@ -5344,7 +5344,7 @@ function cardFor(playlist, options = {}) {
       ${playlistStatusLabelHtml(playlist)}
     </div>
     <div class="details">
-      ${playlist.playlist_id ? `<span class="playlist-id">${escapeHtml(playlist.playlist_id)}</span>` : ''}
+      ${playlist.playlist_id ? `<span class="playlist-id entity-card-id">${escapeHtml(playlist.playlist_id)}</span>` : ''}
       ${playlistCreatedHtml(playlist)}
     </div>
     `,
@@ -5488,7 +5488,7 @@ function playlistVideoCardFor(video, options = {}) {
       duration ? `<span>${escapeHtml(duration)}</span>` : '',
     ],
     identifiers: [
-      video.video_id ? `<span class="video-id">${escapeHtml(video.video_id)}</span>` : '',
+      video.video_id ? `<span class="video-id entity-card-id">${escapeHtml(video.video_id)}</span>` : '',
       archivarixLinkHtml(video),
     ],
     recoveryHtml: archivarixStatusHtml(video),
@@ -5624,7 +5624,7 @@ function clipCardFor(clip, options = {}) {
       ${badgeRowsHtml(Array.isArray(clip.plugin_badges) ? clip.plugin_badges : [])}
       <div class="details">
         ${clipDurationLabel(clip) ? `<span>${escapeHtml(clipDurationLabel(clip))}</span>` : ''}
-        ${clip.clip_id ? `<span>${escapeHtml(clip.clip_id)}</span>` : ''}
+        ${clip.clip_id ? `<span class="clip-id entity-card-id">${escapeHtml(clip.clip_id)}</span>` : ''}
         ${availabilityHtml}
       </div>
       <div class="details">
@@ -5727,7 +5727,7 @@ function channelCardFor(channel, options = {}) {
       <span>${subscribedLabel}</span>
       ${channelNotificationHtml(channel)}
       ${status ? `<span class="badge">${escapeHtml(status)}</span>` : ''}
-      ${channel.channel_id ? `<span class="channel-id">${escapeHtml(channel.channel_id)}</span>` : ''}
+      ${channel.channel_id ? `<span class="channel-id entity-card-id">${escapeHtml(channel.channel_id)}</span>` : ''}
       ${channel.archivarix_channel_id ? `<span class="channel-archivarix-id">Archivarix ${escapeHtml(channel.archivarix_channel_id)}</span>` : ''}
     </div>
     ${channelDatesHtml(channel)}
