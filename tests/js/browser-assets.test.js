@@ -265,6 +265,13 @@ test('admin status polling renders the Archivarix UTC reset countdown', () => {
   assert.match(adminSource, /`\(\$\{archivarixRemaining\} remaining\)`/);
 });
 
+test('admin log messages identify completed Archivarix requests', () => {
+  const adminSource = source('admin.js');
+
+  assert.match(adminSource, /\['found', 'not found', 'thumbnail'\]\.includes/);
+  assert.match(adminSource, /return `Archivarix request: \$\{message\}`/);
+});
+
 test('admin log level selector uses cumulative verbosity with error as the default', () => {
   const adminSource = source('admin.js');
   const adminHtml = source('admin.html');

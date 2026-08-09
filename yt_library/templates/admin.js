@@ -380,6 +380,12 @@ function logMatchesLevel(log, selectedLevel = selectedLogLevel()) {
 
 function displayLogMessage(log) {
   const message = String(log.message || '');
+  if (
+    log.source === 'placeholder'
+    && ['found', 'not found', 'thumbnail'].includes(String(log.level || '').toLowerCase())
+  ) {
+    return `Archivarix request: ${message}`;
+  }
   if (log.source !== 'metadata' || log.level !== 'channel' || !log.identifier) return message;
   const redundantSuffix = ` (via ${log.identifier})`;
   return message.endsWith(redundantSuffix)
