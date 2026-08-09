@@ -663,6 +663,36 @@ function pluginProcessDetails(process) {
   ].filter(Boolean).join(' | ');
 }
 
+function formatByteCount(value) {
+  let amount = Math.max(0, Number(value) || 0);
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let unitIndex = 0;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex += 1;
+  }
+  const maximumFractionDigits = unitIndex > 0 && amount < 10 ? 1 : 0;
+  return `${amount.toLocaleString(undefined, { maximumFractionDigits })} ${units[unitIndex]}`;
+}
+
+function pluginAdminMetricsHtml(plugin) {
+  const metrics = plugin.adminMetrics || [];
+  if (!metrics.length) return '';
+  return `
+    <div class="grid plugin-metrics advanced-only">
+      ${metrics.map(metric => `
+        <div class="panel" data-plugin-metric="${escapeHtml(metric.id)}"
+             ${metric.description ? `title="${escapeHtml(metric.description)}"` : ''}>
+          <div class="metric">${escapeHtml(metric.label)}</div>
+          <div class="value">${metric.format === 'bytes'
+            ? formatByteCount(metric.value)
+            : Number(metric.value || 0).toLocaleString()}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
 function pluginProcessActionHtml(plugin, process, action, { includeSurface = false } = {}) {
   const ready = plugin.state === 'ready';
   const inputs = (action.inputs || []).map(input => `
@@ -740,6 +770,7 @@ function renderPluginWorkstreams(plugins) {
           <h3>${escapeHtml(plugin.name || plugin.id)}</h3>
           ${pluginEnabledControlHtml(plugin)}
         </div>
+        ${pluginAdminMetricsHtml(plugin)}
         ${pluginBlocks.join('') || `<p class="message">${escapeHtml(plugin.message || plugin.state || 'Unavailable')}</p>`}
       </section>
     `);

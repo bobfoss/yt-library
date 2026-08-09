@@ -305,6 +305,18 @@ test('advanced admin renders a generic persisted plugin enabled slider', () => {
   assert.match(adminSource, /fields\.pluginPanel\.classList\.toggle\('advanced-only', !hasBasicPlugin\)/);
 });
 
+test('advanced admin renders generic plugin metrics', () => {
+  const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
+
+  assert.match(adminHtml, /\.plugin-metrics/);
+  assert.match(adminSource, /function formatByteCount\(value\)/);
+  assert.match(adminSource, /function pluginAdminMetricsHtml\(plugin\)/);
+  assert.match(adminSource, /plugin\.adminMetrics \|\| \[\]/);
+  assert.match(adminSource, /data-plugin-metric=/);
+  assert.match(adminSource, /\$\{pluginAdminMetricsHtml\(plugin\)\}/);
+});
+
 test('history views render shared day dividers', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');

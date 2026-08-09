@@ -275,10 +275,19 @@ rows are retained while disabled and become eligible again after re-enabling.
 
 A ready plugin's generic status record contains `id`, `name`, `enabled`,
 `state`, `version`, `apiVersion`, sorted `capabilities`, optional
-`browserAssets`, optional `workerProcesses`, and the plugin's complete status
-object under `pluginStatus`. Unavailable records instead retain `id`, configured
-`name`, `enabled`, `state`, and `message`. Browser code should consume this
-generic shape and keep domain-specific details nested under `pluginStatus`.
+`browserAssets`, optional `workerProcesses`, optional `adminMetrics`, and the
+plugin's complete status object under `pluginStatus`. Unavailable records
+instead retain `id`, configured `name`, `enabled`, `state`, and `message`.
+Browser code should consume this generic shape and keep other domain-specific
+details nested under `pluginStatus`.
+
+Plugins may include `adminMetrics` in their `status()` object to expose up to
+12 read-only statistics in the Advanced Admin Plugins panel. The host validates
+and copies them to the generic status record. Each metric requires a unique
+ID-shaped `id`, a nonempty `label`, a nonnegative integer `value`, and a
+`format` of `integer` or `bytes`; `description` is optional and becomes hover
+text. The host owns number and byte formatting, and metrics never grant the
+plugin access to Admin DOM.
 
 ### Python plugin object
 

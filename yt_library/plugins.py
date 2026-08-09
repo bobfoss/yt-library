@@ -27,6 +27,8 @@ PLUGIN_BROWSER_ASSET_TYPES = {"script", "style"}
 PLUGIN_PROCESS_SERVICES = {"local", "youtube", "archivarix"}
 PLUGIN_ADMIN_SURFACES = {"none", "basic", "advanced"}
 PLUGIN_ADMIN_PLACEMENTS = {"plugin", "videos"}
+PLUGIN_ADMIN_METRIC_FORMATS = {"integer", "bytes"}
+PLUGIN_ADMIN_METRIC_LIMIT = 12
 PLUGIN_TASK_LIMIT = 250_000
 PLUGIN_TASK_PAYLOAD_BYTES = 64 * 1024
 PLUGIN_NAVIGATION_GROUP_LIMIT = 10_000
@@ -482,6 +484,58 @@ def _short_text(value: Any, *, maximum: int) -> str:
     return str(value or "").strip()[:maximum]
 
 
+def _plugin_admin_metrics(raw_metrics: Any) -> list[dict[str, Any]]:
+    if raw_metrics is None:
+        return []
+    if isinstance(raw_metrics, (str, bytes, Mapping)) or not isinstance(
+        raw_metrics, IterableCollection
+    ):
+        raise TypeError("Plugin admin metrics must be an iterable of objects")
+    raw_metrics = list(raw_metrics)
+    if len(raw_metrics) > PLUGIN_ADMIN_METRIC_LIMIT:
+        raise ValueError(
+            f"Plugins may expose at most {PLUGIN_ADMIN_METRIC_LIMIT} admin metrics"
+        )
+    metrics: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_metric in raw_metrics:
+        if not isinstance(raw_metric, Mapping):
+            raise TypeError("Plugin admin metrics must be objects")
+        metric_id = _short_text(raw_metric.get("id"), maximum=80)
+        if not PLUGIN_PROCESS_ID.fullmatch(metric_id):
+            raise ValueError(f"Invalid plugin admin metric ID: {metric_id or '<missing>'}")
+        if metric_id in seen:
+            raise ValueError(f"Duplicate plugin admin metric ID: {metric_id}")
+        seen.add(metric_id)
+        label = _short_text(raw_metric.get("label"), maximum=120)
+        if not label:
+            raise ValueError(f"Plugin admin metric {metric_id} requires a label")
+        metric_format = _short_text(
+            raw_metric.get("format") or "integer", maximum=20
+        ).lower()
+        if metric_format not in PLUGIN_ADMIN_METRIC_FORMATS:
+            raise ValueError(
+                f"Invalid plugin admin metric format for {metric_id}: {metric_format}"
+            )
+        value = raw_metric.get("value")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(
+                f"Plugin admin metric {metric_id} value must be a nonnegative integer"
+            )
+        metrics.append(
+            {
+                "id": metric_id,
+                "label": label,
+                "value": value,
+                "format": metric_format,
+                "description": _short_text(
+                    raw_metric.get("description"), maximum=250
+                ),
+            }
+        )
+    return metrics
+
+
 def _plugin_admin_inputs(
     worker_id: str,
     action_id: str,
@@ -881,6 +935,9 @@ class PluginManager:
             if not isinstance(plugin_status, dict):
                 raise TypeError("Plugin status must be a JSON object")
             payload["pluginStatus"] = plugin_status
+            admin_metrics = _plugin_admin_metrics(plugin_status.get("adminMetrics"))
+            if admin_metrics:
+                payload["adminMetrics"] = admin_metrics
             payload["state"] = str(plugin_status.get("state") or "ready")
         except Exception as exc:
             payload["state"] = "error"

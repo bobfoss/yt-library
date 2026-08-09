@@ -65,7 +65,25 @@ class FakePlugin:
         self.context = context
 
     def status(self):
-        return {"state": "ready", "database": {"available": True}}
+        return {
+            "state": "ready",
+            "database": {"available": True},
+            "adminMetrics": [
+                {
+                    "id": "items",
+                    "label": "Items",
+                    "value": 1234,
+                    "format": "integer",
+                },
+                {
+                    "id": "database-size",
+                    "label": "Database size",
+                    "value": 4096,
+                    "format": "bytes",
+                    "description": "Current plugin database file size.",
+                },
+            ],
+        }
 
     def handle_api(self, method, path, query):
         if method == "GET" and path == "search":
@@ -346,6 +364,25 @@ class PluginManagerTests(unittest.TestCase):
             self.assertEqual(status["state"], "ready")
             self.assertEqual(status["apiVersion"], PLUGIN_API_VERSION)
             self.assertEqual(status["browserAssets"], list(FakePlugin.browser_assets))
+            self.assertEqual(
+                status["adminMetrics"],
+                [
+                    {
+                        "id": "items",
+                        "label": "Items",
+                        "value": 1234,
+                        "format": "integer",
+                        "description": "",
+                    },
+                    {
+                        "id": "database-size",
+                        "label": "Database size",
+                        "value": 4096,
+                        "format": "bytes",
+                        "description": "Current plugin database file size.",
+                    },
+                ],
+            )
             self.assertEqual(response_status, 200)
             self.assertEqual(payload, {"query": "history"})
             asset_status, content_type, body = manager.handle_browser_asset(
@@ -649,6 +686,30 @@ class PluginManagerTests(unittest.TestCase):
         status = manager.statuses()[0]
         self.assertEqual(status["state"], "error")
         self.assertIn("Invalid plugin admin placement", status["message"])
+
+    def test_invalid_plugin_admin_metric_is_nonfatal(self) -> None:
+        class InvalidAdminMetricPlugin(FakePlugin):
+            def status(self):
+                return {
+                    "state": "ready",
+                    "adminMetrics": [
+                        {
+                            "id": "database-size",
+                            "label": "Database size",
+                            "value": -1,
+                            "format": "bytes",
+                        }
+                    ],
+                }
+
+        manager = PluginManager(
+            {"plugins": {"subtitles": {"enabled": True}}},
+            entry_points=[FakeEntryPoint(InvalidAdminMetricPlugin)],
+        )
+
+        status = manager.statuses()[0]
+        self.assertEqual(status["state"], "error")
+        self.assertIn("value must be a nonnegative integer", status["message"])
 
     def test_plugin_process_plans_queues_runs_and_logs_host_owned_work(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
