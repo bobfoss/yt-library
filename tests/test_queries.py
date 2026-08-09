@@ -2316,6 +2316,46 @@ class NormalizedReadModelTests(unittest.TestCase):
         filtered = history_search_data(self.conn, "fiber")
         self.assertEqual([row["video_id"] for row in filtered["watch"]], ["new123"])
 
+    def test_history_search_uses_live_ordinal_for_mixed_same_day_precision(self) -> None:
+        self.add_video("latest-date-only", "Latest date-only watch")
+        self.add_video("older-exact", "Older exact watch")
+        self.conn.executemany(
+            """
+            INSERT INTO history_events(
+              event_id, video_id, watched_at, watch_date, time_precision,
+              source_type, match_type, youtube_ordinal
+            ) VALUES (?, ?, ?, '2026-08-08', ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "youtube:latest-date-only",
+                    "latest-date-only",
+                    None,
+                    "date_only",
+                    "youtube",
+                    "youtube_only",
+                    1,
+                ),
+                (
+                    "my-activity:older-exact",
+                    "older-exact",
+                    "2026-08-09T04:55:45Z",
+                    "exact",
+                    "my_activity_youtube",
+                    "video_id_date",
+                    7,
+                ),
+            ],
+        )
+        self.conn.commit()
+
+        data = history_search_data(self.conn, "")
+
+        self.assertEqual(
+            [row["video_id"] for row in data["watch"]],
+            ["latest-date-only", "older-exact"],
+        )
+
     def test_history_search_hydrates_all_playlist_links_and_video_identity(self) -> None:
         self.add_video("historylinks", "Linked History Video", "UC_historylinks")
         self.conn.executemany(

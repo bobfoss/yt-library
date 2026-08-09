@@ -26,6 +26,19 @@ from .core import (
 )
 
 
+def _history_event_order_sql(alias: str = "he") -> str:
+    watch_date = (
+        f"COALESCE(NULLIF({alias}.watch_date, ''), "
+        f"substr({alias}.watched_at, 1, 10), '')"
+    )
+    return (
+        f"{watch_date} DESC, "
+        f"CASE WHEN {alias}.youtube_ordinal IS NULL THEN 1 ELSE 0 END, "
+        f"{alias}.youtube_ordinal, "
+        f"{alias}.watched_at DESC, "
+        f"{alias}.event_id"
+    )
+
 
 
 def clean_playlist_owner_name(value: str) -> str:
@@ -2680,6 +2693,7 @@ def history_search_data(
         conditions.append("v.channel_id = ?")
         params.append(channel_id)
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    ordering = _history_event_order_sql()
     filtered = conn.execute(
         f"""
         SELECT COUNT(*) AS count
@@ -2700,9 +2714,7 @@ def history_search_data(
               JOIN videos v ON v.video_id = he.video_id
               LEFT JOIN channels ch ON ch.channel_id = v.channel_id
               {where}
-              ORDER BY COALESCE(he.watched_at, he.watch_date || 'T23:59:59Z') DESC,
-                       CASE WHEN he.youtube_ordinal IS NULL THEN 1 ELSE 0 END,
-                       he.youtube_ordinal
+              ORDER BY {ordering}
               LIMIT ? OFFSET ?
             ),
             page_video_ids AS MATERIALIZED (
@@ -2757,9 +2769,7 @@ def history_search_data(
             JOIN videos v ON v.video_id = he.video_id
             LEFT JOIN channels ch ON ch.channel_id = v.channel_id
             JOIN counts ON counts.video_id = he.video_id
-            ORDER BY COALESCE(he.watched_at, he.watch_date || 'T23:59:59Z') DESC,
-                     CASE WHEN he.youtube_ordinal IS NULL THEN 1 ELSE 0 END,
-                     he.youtube_ordinal
+            ORDER BY {ordering}
             """,
             [*params, limit, offset],
         )
