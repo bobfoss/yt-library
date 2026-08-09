@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS clips (
   clipped_at TEXT,
   clipped_at_text TEXT NOT NULL DEFAULT '',
   clipped_at_observed_at TEXT,
+  youtube_feed_ordinal INTEGER,
   thumbnail_url TEXT NOT NULL DEFAULT '',
   availability TEXT NOT NULL DEFAULT 'unknown'
     CHECK (availability IN ('active', 'unavailable', 'unknown')),
@@ -418,6 +419,7 @@ CREATE INDEX IF NOT EXISTS idx_videos_availability ON videos(is_playable, availa
 CREATE INDEX IF NOT EXISTS idx_clips_owner ON clips(ownership, owner_channel_id);
 CREATE INDEX IF NOT EXISTS idx_clips_source_video ON clips(source_video_id);
 CREATE INDEX IF NOT EXISTS idx_clips_fetch ON clips(fetch_status, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_clips_feed_ordinal ON clips(youtube_feed_ordinal);
 CREATE INDEX IF NOT EXISTS idx_playlist_items_video ON playlist_items(video_id);
 CREATE INDEX IF NOT EXISTS idx_playlist_collaborators_order
   ON playlist_collaborators(playlist_id, position);

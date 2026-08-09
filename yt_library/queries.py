@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import calendar
+import re
 import sqlite3
 import urllib.parse
 from collections.abc import Collection, Mapping, Sequence
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -1311,6 +1313,53 @@ OMNI_SEARCH_CHANNEL_STATUS_FILTERS = ("active", "terminated")
 OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS = ("mine", "others", "ownership_unknown")
 
 
+_CLIP_RELATIVE_AGE_RE = re.compile(
+    r"^(?:clipped\s+)?(?:about\s+)?(?P<count>\d+|an?|one)\s+"
+    r"(?P<unit>second|minute|hour|day|week|month|year)s?\s+ago$",
+    re.IGNORECASE,
+)
+
+
+def _clip_relative_sort_date(label: str, observed_at: str) -> str:
+    normalized = " ".join((label or "").strip().split())
+    if not normalized or not observed_at:
+        return ""
+    try:
+        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    relative = normalized.casefold()
+    if relative.startswith("clipped "):
+        relative = relative[len("clipped ") :]
+    if relative in {"today", "just now"}:
+        return observed.date().isoformat()
+    if relative == "yesterday":
+        return (observed - timedelta(days=1)).date().isoformat()
+    match = _CLIP_RELATIVE_AGE_RE.match(normalized)
+    if not match:
+        return ""
+    raw_count = match.group("count").casefold()
+    count = int(raw_count) if raw_count.isdigit() else 1
+    unit = match.group("unit").casefold()
+    if unit in {"month", "year"}:
+        months = count * (12 if unit == "year" else 1)
+        month_index = observed.year * 12 + observed.month - 1 - months
+        year, zero_based_month = divmod(month_index, 12)
+        month = zero_based_month + 1
+        day = min(observed.day, calendar.monthrange(year, month)[1])
+        return observed.date().replace(year=year, month=month, day=day).isoformat()
+    seconds_per_unit = {
+        "second": 1,
+        "minute": 60,
+        "hour": 60 * 60,
+        "day": 24 * 60 * 60,
+        "week": 7 * 24 * 60 * 60,
+    }
+    return (
+        observed - timedelta(seconds=count * seconds_per_unit[unit])
+    ).date().isoformat()
+
+
 def _omni_like_pattern(query: str) -> str:
     escaped = query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
@@ -1353,8 +1402,13 @@ def _omni_result(
     elif kind == "clip":
         title = item.get("title") or item.get("clip_id") or ""
         clipped_at = item.get("clipped_at") or ""
-        sort_date = clipped_at or item.get("clipped_at_observed_at") or item.get("updated_at") or ""
-        sort_date_fallback = not bool(clipped_at)
+        relative_sort_date = _clip_relative_sort_date(
+            str(item.get("clipped_at_text") or ""),
+            str(item.get("clipped_at_observed_at") or ""),
+        )
+        sort_date = clipped_at or relative_sort_date
+        sort_date = sort_date or item.get("clipped_at_observed_at") or item.get("updated_at") or ""
+        sort_date_fallback = not bool(clipped_at or relative_sort_date)
         watch_count = 0
     elif kind == "channel":
         title = item.get("title") or item.get("channel_id") or ""
@@ -1379,6 +1433,7 @@ def _omni_result(
         "_sort_date_fallback": sort_date_fallback,
         "_watch_count": watch_count,
         "_history_ordinal": int(item.get("latest_youtube_ordinal") or 0),
+        "_clip_feed_ordinal": int(item.get("youtube_feed_ordinal") or 0),
     }
 
 
@@ -1392,13 +1447,21 @@ def _sort_omni_results(results: list[dict[str, Any]], sort: str) -> None:
     elif sort == "newest":
         results.sort(
             key=lambda result: (
-                not bool(result["_history_ordinal"]),
-                result["_history_ordinal"] or 0,
+                not bool(
+                    result["_history_ordinal"] or result["_clip_feed_ordinal"]
+                ),
+                result["_history_ordinal"] or result["_clip_feed_ordinal"] or 0,
             )
         )
         results.sort(key=lambda result: result["_sort_date"], reverse=True)
         results.sort(key=lambda result: result["_sort_date_fallback"])
     elif sort == "oldest":
+        results.sort(
+            key=lambda result: (
+                not bool(result["_clip_feed_ordinal"]),
+                -(result["_clip_feed_ordinal"] or 0),
+            )
+        )
         results.sort(key=lambda result: result["_sort_date"])
     elif sort == "most_watched":
         results.sort(key=lambda result: result["_watch_count"], reverse=True)

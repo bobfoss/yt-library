@@ -269,6 +269,39 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertNotIn("stale_days", playlist_run_columns)
         self.assertEqual(tuple(playlist_run), ("complete", "Preserve me"))
 
+    def test_database_module_migrates_clip_feed_order_from_version_21(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.execute("DROP INDEX idx_clips_feed_ordinal")
+                    conn.execute("ALTER TABLE clips DROP COLUMN youtube_feed_ordinal")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 22")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                clip_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(clips)")
+                }
+                index = conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'index' AND name = 'idx_clips_feed_ordinal'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertIn("youtube_feed_ordinal", clip_columns)
+        self.assertIsNotNone(index)
+
 
 if __name__ == "__main__":
     unittest.main()

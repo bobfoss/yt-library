@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -508,6 +508,17 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
                 conn.execute(
                     "ALTER TABLE history_events ADD COLUMN my_activity_event_id TEXT"
                 )
+    if 0 < current_version < 22:
+        clip_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'clips'"
+        ).fetchone()
+        clip_columns = (
+            {row["name"] for row in conn.execute("PRAGMA table_info(clips)")}
+            if clip_table
+            else set()
+        )
+        if clip_table and "youtube_feed_ordinal" not in clip_columns:
+            conn.execute("ALTER TABLE clips ADD COLUMN youtube_feed_ordinal INTEGER")
     _bootstrap_database(conn)
     if current_version < 2:
         conn.execute("DROP TABLE IF EXISTS app_settings")
@@ -1002,6 +1013,20 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (21, utc_now()),
+        )
+    if current_version < 22:
+        clip_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(clips)")
+        }
+        if "youtube_feed_ordinal" not in clip_columns:
+            conn.execute("ALTER TABLE clips ADD COLUMN youtube_feed_ordinal INTEGER")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_clips_feed_ordinal "
+            "ON clips(youtube_feed_ordinal)"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (22, utc_now()),
         )
 
 

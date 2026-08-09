@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from yt_library import core
 from yt_library.queries import (
@@ -200,6 +201,71 @@ class NormalizedReadModelTests(unittest.TestCase):
         detail = clip_detail_data(self.conn, "UgkxClipExample123")
         self.assertEqual(detail["title"], "Distinct clip title")
         self.assertEqual(detail["source_video_id"], "sourceclip1")
+
+    def test_clip_newest_and_oldest_use_relative_age_and_feed_order(self) -> None:
+        observed_at = "2026-08-05T12:00:00Z"
+        records = [
+            {
+                "clip_id": "newest-feed",
+                "title": "Newest feed clip",
+                "clipped_at_text": "Clipped 5 months ago",
+                "availability": "active",
+            },
+            {
+                "clip_id": "second-feed",
+                "title": "Second feed clip",
+                "clipped_at_text": "Clipped 5 months ago",
+                "availability": "active",
+            },
+            {
+                "clip_id": "oldest-feed",
+                "title": "Oldest feed clip",
+                "clipped_at_text": "Clipped 1 year ago",
+                "availability": "active",
+            },
+        ]
+        with patch("yt_library.core.utc_now", return_value=observed_at):
+            core.save_discovered_clips(self.conn, records)
+        core.save_clip_metadata(
+            self.conn,
+            {
+                "clip_id": "manual-middle",
+                "title": "Manual middle clip",
+                "clipped_at_text": "Clipped 6 months ago",
+                "availability": "active",
+            },
+            observed_at=observed_at,
+        )
+        self.conn.commit()
+
+        newest = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"clip"},
+            sort="newest",
+        )
+        oldest = omni_search_data(
+            self.conn,
+            "",
+            result_kinds={"clip"},
+            sort="oldest",
+        )
+
+        self.assertEqual(
+            [result["item"]["clip_id"] for result in newest["results"]],
+            ["newest-feed", "second-feed", "manual-middle", "oldest-feed"],
+        )
+        self.assertEqual(
+            [result["item"]["clip_id"] for result in oldest["results"]],
+            ["oldest-feed", "manual-middle", "second-feed", "newest-feed"],
+        )
+        self.assertEqual(
+            [
+                result["item"]["youtube_feed_ordinal"]
+                for result in newest["results"][:2]
+            ],
+            [1, 2],
+        )
 
     def test_channel_aliases_drive_all_external_channel_links(self) -> None:
         channel_id = "UC_alias_owner"

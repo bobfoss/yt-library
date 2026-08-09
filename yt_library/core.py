@@ -4498,10 +4498,11 @@ def save_clip_metadata(
           clip_id, title, owner_channel_id, owner_title, owner_thumbnail_url,
           owner_thumbnail_path, ownership, source_video_id, start_ms, end_ms,
           view_count, view_count_text, clipped_at, clipped_at_text,
-          clipped_at_observed_at, thumbnail_url, availability, fetch_status,
+          clipped_at_observed_at, youtube_feed_ordinal, thumbnail_url,
+          availability, fetch_status,
           fetch_error, fetched_at, last_seen_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(clip_id) DO UPDATE SET
           title=COALESCE(NULLIF(excluded.title, ''), clips.title),
           owner_channel_id=COALESCE(excluded.owner_channel_id, clips.owner_channel_id),
@@ -4519,6 +4520,10 @@ def save_clip_metadata(
           clipped_at_observed_at=COALESCE(
             clips.clipped_at_observed_at,
             excluded.clipped_at_observed_at
+          ),
+          youtube_feed_ordinal=COALESCE(
+            excluded.youtube_feed_ordinal,
+            clips.youtube_feed_ordinal
           ),
           thumbnail_url=COALESCE(NULLIF(excluded.thumbnail_url, ''), clips.thumbnail_url),
           availability=CASE WHEN excluded.availability <> 'unknown' THEN excluded.availability ELSE clips.availability END,
@@ -4544,6 +4549,7 @@ def save_clip_metadata(
             str(record.get("clipped_at") or "").strip() or None,
             str(record.get("clipped_at_text") or "").strip(),
             now if record.get("clipped_at_text") else None,
+            record.get("youtube_feed_ordinal"),
             str(record.get("thumbnail_url") or "").strip(),
             str(record.get("availability") or "unknown").strip(),
             str(record.get("fetch_status") or "").strip(),
@@ -4562,7 +4568,9 @@ def save_discovered_clips(
     existing_ids = {row["clip_id"] for row in conn.execute("SELECT clip_id FROM clips")}
     new_ids: list[str] = []
     now = utc_now()
-    for record in records:
+    for feed_ordinal, source_record in enumerate(records, start=1):
+        record = dict(source_record)
+        record["youtube_feed_ordinal"] = feed_ordinal
         clip_id = str(record.get("clip_id") or "").strip()
         if not clip_id:
             continue

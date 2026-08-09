@@ -39,6 +39,12 @@ Before 1.0, replaced hash routes and obsolete named-view URLs have no compatibil
 
 Omni-search uses `/api/search` as its single read model. The server applies title/description and source filters, folds playlist and history evidence into one canonical video result, includes unresolved unavailable memberships, globally sorts and counts videos, clips, playlists, and channels, and only then returns the requested page. The browser does not merge a separate history result set.
 
+Clip date sorting uses an exact `clipped_at` value when available. Otherwise it
+derives a coarse sortable date from YouTube's relative `clipped_at_text` and the
+time that label was first observed. `youtube_feed_ordinal` preserves the Clips
+feed's authoritative order within those coarse date buckets; manually scanned
+clips that are not present in the account feed have no feed ordinal.
+
 The main browser is also view-driven. `/api/bootstrap` returns only navigation structure and aggregate counts; playlist, video, channel, and detail endpoints fetch the current view's rows from SQLite with server-side filtering, sorting, and pagination. The browser caches completed request keys for navigation within the session and preserves the currently rendered view while a new page is loading. It does not download a whole-library metadata snapshot during startup.
 
 ### Browser routes and search context
