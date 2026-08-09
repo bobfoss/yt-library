@@ -817,8 +817,10 @@ references remain plugin-owned and never create YTL rows.
 
 Native and projected navigation hierarchies share one disclosure model. Parent
 rows expose a separate accessible toggle, while the group label remains the
-search action. Only collapsed node IDs are saved in config, so new groups are
-expanded by default and no plugin-specific state enters the core contract.
+search action. Count-free plugin container labels are not search actions, so
+both the container label and its adjacent chevron operate the same disclosure
+node. Only collapsed node IDs are saved in config, so new groups are expanded
+by default and no plugin-specific state enters the core contract.
 
 ### Host-owned worker queue
 
@@ -1090,7 +1092,9 @@ YTL owns no PocketTube-specific navigation records. The generic navigation host
 nests projected roots beneath a count-free
 plugin label in each applicable section. Plugin parents and their descendant
 branches use separate disclosure nodes whose collapsed IDs persist through the
-normal YTL configuration preference endpoint.
+normal YTL configuration preference endpoint. A plugin parent label toggles the
+same disclosure node as its adjacent chevron because the parent itself does not
+represent a searchable group.
 
 ## Storage Model
 

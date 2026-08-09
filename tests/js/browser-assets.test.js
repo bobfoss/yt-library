@@ -571,6 +571,7 @@ test('navigation group branches collapse with persisted disclosure state', () =>
   assert.match(indexSource, /toggle\.dataset\.groupTreeToggle = nodeId/);
   assert.match(indexSource, /aria-controls/);
   assert.match(indexSource, /childContainer\.hidden = !expanded/);
+  assert.match(indexSource, /for \(const control of associatedControls\)[\s\S]{0,120}control\.setAttribute\('aria-expanded'/);
   assert.match(indexSource, /function toggleNavigationGroupTreeNode\(/);
   assert.match(indexSource, /\/api\/settings\/navigation-group-tree/);
   assert.match(indexSource, /navigationGroupTreeSaveChain\.catch\(\(\) => \{\}\)\.then\(save\)/);
@@ -587,11 +588,15 @@ test('plugin navigation groups render beneath count-free persisted parents', () 
   assert.match(indexSource, /function appendPluginGroupTree\(/);
   assert.match(indexSource, /`plugin-root:\$\{pluginId\}`/);
   assert.match(indexSource, /replace\(\/\^YT\\s\+\/i, ''\)/);
+  assert.match(indexSource, /const labelNode = document\.createElement\('button'\)/);
   assert.match(indexSource, /labelNode\.className = 'group group-tree-label'/);
+  assert.match(indexSource, /labelNode\.dataset\.groupTreeLabel = nodeId/);
   assert.match(indexSource, /labelNode\.textContent = label/);
+  assert.match(indexSource, /labelNode\.setAttribute\('aria-controls', childContainer\.id\)/);
+  assert.match(indexSource, /labelNode\.addEventListener\('click',[\s\S]{0,180}toggleNavigationGroupTreeNode\(/);
   assert.match(indexSource, /appendNavigationGroupTrees\([\s\S]*'playlist-group'/);
   assert.match(indexSource, /appendNavigationGroupTrees\([\s\S]*'channel-group'/);
-  assert.match(indexHtml, /\.group-tree-label \{ cursor: default; font-weight: 600; \}/);
+  assert.match(indexHtml, /\.group-tree-label \{ cursor: pointer; font-weight: 600; \}/);
 });
 
 test('search filter tree folds facets and persists disclosure state', () => {

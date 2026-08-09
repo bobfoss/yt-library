@@ -4319,23 +4319,50 @@ function navigationGroupTreeNodeId(preset, groupKey) {
   return `${preset}:${groupKey}`;
 }
 
-function applyNavigationGroupTreeNodeState(nodeId, toggle, childContainer, label) {
+function applyNavigationGroupTreeNodeState(
+  nodeId,
+  toggle,
+  childContainer,
+  label,
+  associatedControls = [],
+) {
   const expanded = !navigationGroupTreeCollapsed.has(nodeId);
   toggle.setAttribute('aria-expanded', String(expanded));
   toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${label}`);
   toggle.title = `${expanded ? 'Collapse' : 'Expand'} ${label}`;
+  for (const control of associatedControls) {
+    control.setAttribute('aria-expanded', String(expanded));
+    control.title = `${expanded ? 'Collapse' : 'Expand'} ${label}`;
+  }
   childContainer.hidden = !expanded;
 }
 
-function toggleNavigationGroupTreeNode(nodeId, toggle, childContainer, label) {
+function toggleNavigationGroupTreeNode(
+  nodeId,
+  toggle,
+  childContainer,
+  label,
+  associatedControls = [],
+) {
   const wasCollapsed = navigationGroupTreeCollapsed.has(nodeId);
   if (wasCollapsed) navigationGroupTreeCollapsed.delete(nodeId);
   else navigationGroupTreeCollapsed.add(nodeId);
-  applyNavigationGroupTreeNodeState(nodeId, toggle, childContainer, label);
+  applyNavigationGroupTreeNodeState(
+    nodeId,
+    toggle,
+    childContainer,
+    label,
+    associatedControls,
+  );
   saveNavigationGroupTreePreference(nodeId, wasCollapsed);
 }
 
-function navigationGroupTreeToggleFor(nodeId, label, childContainer) {
+function navigationGroupTreeToggleFor(
+  nodeId,
+  label,
+  childContainer,
+  associatedControls = [],
+) {
   const childrenId = `navigation-group-tree-${++navigationGroupTreeDomId}`;
   childContainer.className = 'group-tree-children';
   childContainer.id = childrenId;
@@ -4345,9 +4372,21 @@ function navigationGroupTreeToggleFor(nodeId, label, childContainer) {
   toggle.dataset.groupTreeToggle = nodeId;
   toggle.setAttribute('aria-controls', childrenId);
   toggle.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>';
-  applyNavigationGroupTreeNodeState(nodeId, toggle, childContainer, label);
+  applyNavigationGroupTreeNodeState(
+    nodeId,
+    toggle,
+    childContainer,
+    label,
+    associatedControls,
+  );
   toggle.addEventListener('click', () => {
-    toggleNavigationGroupTreeNode(nodeId, toggle, childContainer, label);
+    toggleNavigationGroupTreeNode(
+      nodeId,
+      toggle,
+      childContainer,
+      label,
+      associatedControls,
+    );
   });
   return toggle;
 }
@@ -4409,10 +4448,28 @@ function appendPluginGroupTree(
   const row = document.createElement('div');
   row.className = 'group-tree-row plugin-group-tree-row';
   row.style.setProperty('--group-depth', '0');
-  row.appendChild(navigationGroupTreeToggleFor(nodeId, label, childContainer));
-  const labelNode = document.createElement('div');
+  const labelNode = document.createElement('button');
+  labelNode.type = 'button';
   labelNode.className = 'group group-tree-label';
+  labelNode.dataset.groupTreeLabel = nodeId;
   labelNode.textContent = label;
+  const toggle = navigationGroupTreeToggleFor(
+    nodeId,
+    label,
+    childContainer,
+    [labelNode],
+  );
+  labelNode.setAttribute('aria-controls', childContainer.id);
+  labelNode.addEventListener('click', () => {
+    toggleNavigationGroupTreeNode(
+      nodeId,
+      toggle,
+      childContainer,
+      label,
+      [labelNode],
+    );
+  });
+  row.appendChild(toggle);
   row.appendChild(labelNode);
   section.appendChild(row);
   for (const group of rootGroups) {
