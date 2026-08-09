@@ -2357,7 +2357,7 @@ def run_optional_account_sync(
 ) -> dict[str, Any]:
     """Collect optional account-level timestamp sources without blocking other work."""
 
-    retry_required = False
+    source_failed = False
     detected_proxy_error: ProxyUnavailableError | None = None
     proxy_url = configured_proxy(config)
     my_activity_cookie = config_path(config, "my_activity_cookies")
@@ -2425,7 +2425,7 @@ def run_optional_account_sync(
             finally:
                 conn.close()
         except (MyActivityError, OSError, RuntimeError) as exc:
-            retry_required = True
+            source_failed = True
             detected_proxy_error = proxy_unavailable_error(exc, proxy_url)
             conn = connect(db_path)
             try:
@@ -2437,6 +2437,13 @@ def run_optional_account_sync(
                     )
             finally:
                 conn.close()
+
+    if detected_proxy_error is not None:
+        return {
+            "completed": False,
+            "source_failed": source_failed,
+            "proxy_error": detected_proxy_error,
+        }
 
     token_path = config_path(config, "youtube_oauth_token")
     if not token_path.is_file():
@@ -2479,7 +2486,7 @@ def run_optional_account_sync(
             finally:
                 conn.close()
         except (YouTubeDataApiNotConfigured, YouTubeDataApiError, OSError, RuntimeError) as exc:
-            retry_required = True
+            source_failed = True
             detected_proxy_error = (
                 detected_proxy_error or proxy_unavailable_error(exc, proxy_url)
             )
@@ -2494,7 +2501,10 @@ def run_optional_account_sync(
             finally:
                 conn.close()
 
-    if not retry_required:
+    # Account synchronization is reproducible polling work. Consume ordinary
+    # source failures after logging them, but preserve every job when the
+    # configured proxy is unavailable so the whole queue can resume in place.
+    if detected_proxy_error is None:
         conn = connect(db_path)
         try:
             with conn:
@@ -2502,7 +2512,8 @@ def run_optional_account_sync(
         finally:
             conn.close()
     return {
-        "completed": not retry_required,
+        "completed": detected_proxy_error is None,
+        "source_failed": source_failed,
         "proxy_error": detected_proxy_error,
     }
 
@@ -3265,22 +3276,21 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                     launched_at = time.monotonic()
                     if account_result["completed"] and not self._stop.is_set():
                         self._mark_completed()
-                    else:
+                    proxy_error = account_result.get("proxy_error")
+                    if isinstance(proxy_error, ProxyUnavailableError):
                         deferred_queue_ids.add(queue_id)
-                        proxy_error = account_result.get("proxy_error")
-                        if isinstance(proxy_error, ProxyUnavailableError):
-                            conn = connect(db_path)
-                            try:
-                                with conn:
-                                    record_proxy_hold(
-                                        conn,
-                                        self,
-                                        proxy_error,
-                                        queue_id=queue_id,
-                                    )
-                            finally:
-                                conn.close()
-                            proxy_blocked = True
+                        conn = connect(db_path)
+                        try:
+                            with conn:
+                                record_proxy_hold(
+                                    conn,
+                                    self,
+                                    proxy_error,
+                                    queue_id=queue_id,
+                                )
+                        finally:
+                            conn.close()
+                        proxy_blocked = True
                 else:
                     self._drop_unknown_row(db_path, row)
                     self._mark_completed()

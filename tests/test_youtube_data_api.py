@@ -252,7 +252,7 @@ class YouTubeDataApiTests(unittest.TestCase):
         self.assertTrue(any("My Activity cookies are not configured" in value for value in messages))
         self.assertTrue(any("OAuth is not configured" in value for value in messages))
 
-    def test_optional_account_sync_retains_queue_item_when_configured_source_fails(self) -> None:
+    def test_optional_account_sync_consumes_queue_item_when_configured_source_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             db_path = root / "library.sqlite3"
@@ -282,9 +282,10 @@ class YouTubeDataApiTests(unittest.TestCase):
             finally:
                 conn.close()
 
-        self.assertFalse(result["completed"])
+        self.assertTrue(result["completed"])
+        self.assertTrue(result["source_failed"])
         self.assertIsNone(result["proxy_error"])
-        self.assertEqual(remaining, 1)
+        self.assertEqual(remaining, 0)
 
     def test_channel_date_sort_prefers_subscription_date(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

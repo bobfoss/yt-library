@@ -3812,6 +3812,7 @@ class WorkerQueueTests(unittest.TestCase):
             root = Path(temp_dir)
             db_path = root / "library.sqlite3"
             (root / "my_activity_cookies.txt").write_text("provided", encoding="utf-8")
+            (root / "youtube_oauth_token.json").write_text("provided", encoding="utf-8")
             conn = migrated_connection(db_path)
             try:
                 with conn:
@@ -3842,7 +3843,9 @@ class WorkerQueueTests(unittest.TestCase):
                 side_effect=network.ProxyUnavailableError(
                     "SOCKS5 proxy 127.0.0.1:1081 is unavailable"
                 ),
-            ) as fetch_activity:
+            ) as fetch_activity, patch(
+                "yt_library.workers.build_youtube_data_service"
+            ) as build_data_service:
                 dispatcher._run(
                     db_path,
                     root / "youtube-cookies.txt",
@@ -3871,11 +3874,12 @@ class WorkerQueueTests(unittest.TestCase):
                 conn.close()
 
             self.assertEqual(fetch_activity.call_count, 1)
+            build_data_service.assert_not_called()
             self.assertTrue(
                 any("pending items were retained" in message for message in messages)
             )
 
-    def test_account_failure_is_deferred_until_the_next_queue_run(self) -> None:
+    def test_account_failure_is_consumed_until_the_next_update(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             db_path = root / "library.sqlite3"
@@ -3905,7 +3909,7 @@ class WorkerQueueTests(unittest.TestCase):
 
             conn = core.connect(db_path)
             try:
-                self.assertEqual(core.worker_queue_type_count(conn, "account"), 1)
+                self.assertEqual(core.worker_queue_type_count(conn, "account"), 0)
                 self.assertFalse(core.external_service_block(conn, "proxy")["blocked"])
             finally:
                 conn.close()
