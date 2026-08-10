@@ -257,6 +257,10 @@ The left-navigation library lists are named omni-search presets. Search returns 
 - Make parent-child relationships in hierarchical filters more visually obvious, including enabled, disabled, selected, and partially selected states.
 - Begin publishing versioned releases through GitHub with a defined versioning and release process.
 - Maintain a changelog for each released version that summarizes user-facing changes, fixes, schema impact, and operational notes.
+- Package YT Library as a supported Docker image and add a documented Docker
+  Compose and CI workflow covering first-run initialization, schema upgrades,
+  persistent config/database/cookie/thumbnail mounts, health checks, and
+  versioned image publishing alongside GitHub releases.
 - Beginning with the 1.0 release, preserve or redirect existing browser URLs when route or parameter formatting changes. Pre-1.0 URLs do not require compatibility handling.
 
 ## Deferred Decisions
