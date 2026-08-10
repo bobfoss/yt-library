@@ -559,6 +559,7 @@ def upsert_channel(
     archivarix_channel_id: str = "",
     status: str = "",
     status_reason: str = "",
+    replace_status: bool = False,
     fetch_status: str = "",
     fetch_error: str = "",
     first_seen_at: str | None = None,
@@ -574,6 +575,8 @@ def upsert_channel(
     now = updated_at or utc_now()
     existing = conn.execute("SELECT * FROM channels WHERE channel_id = ?", (channel_id,)).fetchone()
     if existing:
+        merged_status = status if replace_status else existing["status"]
+        merged_status_reason = status_reason if replace_status else existing["status_reason"]
         conn.execute(
             """
             UPDATE channels
@@ -600,8 +603,8 @@ def upsert_channel(
                 merge_channel_value(existing["thumbnail_url"], thumbnail_url),
                 merge_channel_value(existing["thumbnail_path"], thumbnail_path),
                 merge_channel_value(existing["archivarix_channel_id"], archivarix_channel_id),
-                merge_channel_value(existing["status"], status),
-                merge_channel_value(existing["status_reason"], status_reason),
+                merged_status,
+                merged_status_reason,
                 merge_channel_value(existing["fetch_status"], fetch_status),
                 fetch_error if fetch_status else existing["fetch_error"],
                 earliest_timestamp(existing["first_seen_at"], first_seen_at) or None,
@@ -3220,7 +3223,7 @@ def extract_channel_notification_level(
     return ""
 
 
-def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, str]:
+def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, Any]:
     initial_data = extract_json_assignment(html_text, "ytInitialData")
     title = ""
     channel_url = youtube_channel_url(channel_id)
@@ -3229,23 +3232,33 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
     description = ""
     status = ""
     status_reason = ""
+    channel_status_observed = False
     for node in walk(initial_data):
         if not isinstance(node, dict):
             continue
         renderer = node.get("channelMetadataRenderer")
         if not isinstance(renderer, dict):
             continue
+        renderer_channel_id = str(renderer.get("externalId") or "").strip()
+        if not renderer_channel_id:
+            renderer_channel_id = youtube_channel_id_from_url(
+                str(renderer.get("channelUrl") or "")
+            )
+        if not renderer_channel_id or (channel_id and renderer_channel_id != channel_id):
+            continue
         title = str(renderer.get("title") or title or "").strip()
         description = str(renderer.get("description") or description or "").strip()
-        found_channel_id = str(renderer.get("externalId") or found_channel_id or "").strip()
+        found_channel_id = renderer_channel_id
         channel_url = youtube_path_url(str(renderer.get("channelUrl") or "")) or channel_url
         avatar = renderer.get("avatar")
         if isinstance(avatar, dict):
             thumbnail_url = pick_thumbnail(avatar.get("thumbnails", [])) or thumbnail_url
+        channel_status_observed = True
         break
     lower_text = html.unescape(re.sub(r"\s+", " ", html_text)).lower()
     if "this account has been terminated" in lower_text:
         status = "terminated"
+        channel_status_observed = True
         found = re.search(
             r"(This account has been terminated[^<\"{}]+)",
             html_text,
@@ -3258,6 +3271,7 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
     elif "this channel was removed because it violated our community guidelines" in lower_text:
         status = "terminated"
         status_reason = "This channel was removed because it violated YouTube Community Guidelines."
+        channel_status_observed = True
     if not thumbnail_url:
         thumbnail_url = extract_channel_thumbnail_url(initial_data)
     if not title:
@@ -3276,13 +3290,17 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
         "channel_thumbnail_url": absolute_url(thumbnail_url),
         "channel_status": status,
         "channel_status_reason": status_reason,
+        "channel_status_observed": channel_status_observed,
         "channel_subscribed": "" if subscribed is None else str(int(subscribed)),
         "channel_notification_level": notification_level,
         "archivarix_channel_id": "",
     }
 
 
-def merge_channel_metadata(primary: dict[str, str], fallback: dict[str, str]) -> dict[str, str]:
+def merge_channel_metadata(
+    primary: dict[str, Any],
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
     subscribed = primary.get("channel_subscribed", "")
     if subscribed not in {"0", "1"}:
         subscribed = fallback.get("channel_subscribed", "")
@@ -3293,6 +3311,21 @@ def merge_channel_metadata(primary: dict[str, str], fallback: dict[str, str]) ->
         notification_level = normalize_channel_notification_level(
             fallback.get("channel_notification_level", "")
         )
+    primary_status_observed = bool(primary.get("channel_status_observed"))
+    channel_status = (
+        str(primary.get("channel_status") or "").strip()
+        if primary_status_observed
+        else str(primary.get("channel_status") or fallback.get("channel_status") or "").strip()
+    )
+    channel_status_reason = (
+        str(primary.get("channel_status_reason") or "").strip()
+        if primary_status_observed
+        else str(
+            primary.get("channel_status_reason")
+            or fallback.get("channel_status_reason")
+            or ""
+        ).strip()
+    )
     return {
         "channel_id": primary.get("channel_id", "") or fallback.get("channel_id", ""),
         "channel": primary.get("channel", "") or fallback.get("channel", ""),
@@ -3300,8 +3333,9 @@ def merge_channel_metadata(primary: dict[str, str], fallback: dict[str, str]) ->
         "channel_description": primary.get("channel_description", "") or fallback.get("channel_description", ""),
         "channel_aliases": primary.get("channel_aliases", "") or fallback.get("channel_aliases", ""),
         "channel_thumbnail_url": primary.get("channel_thumbnail_url", "") or fallback.get("channel_thumbnail_url", ""),
-        "channel_status": primary.get("channel_status", "") or fallback.get("channel_status", ""),
-        "channel_status_reason": primary.get("channel_status_reason", "") or fallback.get("channel_status_reason", ""),
+        "channel_status": channel_status,
+        "channel_status_reason": channel_status_reason,
+        "channel_status_observed": primary_status_observed,
         "channel_subscribed": subscribed if subscribed in {"0", "1"} else "",
         "channel_notification_level": notification_level,
         "archivarix_channel_id": primary.get("archivarix_channel_id", "") or fallback.get("archivarix_channel_id", ""),
@@ -3332,7 +3366,7 @@ def fetch_channel_metadata(
     thumb_dir: Path,
     require_authenticated: bool = False,
     proxy_url: str = "",
-) -> dict[str, str]:
+) -> dict[str, Any]:
     channel_url = youtube_channel_url(channel_id)
     page = request_text(opener, channel_url)
     authenticated = youtube_page_is_authenticated(page)
@@ -3647,7 +3681,7 @@ def enrich_archivarix_video_channel(
 
 def store_channel_metadata(
     conn: sqlite3.Connection,
-    metadata: dict[str, str],
+    metadata: dict[str, Any],
     status: str,
     error: str = "",
     updated_at: str | None = None,
@@ -3665,6 +3699,7 @@ def store_channel_metadata(
         archivarix_channel_id=metadata.get("archivarix_channel_id", ""),
         status=metadata.get("channel_status", ""),
         status_reason=metadata.get("channel_status_reason", ""),
+        replace_status=status == "ok" and bool(metadata.get("channel_status_observed")),
         fetch_status=status,
         fetch_error=error,
         fetched_at=now,

@@ -1741,6 +1741,223 @@ class CoreHelperTests(unittest.TestCase):
         )
         self.assertEqual(metadata["channel_id"], channel_id)
 
+    def test_channel_status_observation_requires_matching_youtube_evidence(self) -> None:
+        channel_id = "UCchannel12345678901234"
+        active_page = f"""
+            <script>var ytInitialData = {json.dumps({
+                "metadata": {
+                    "channelMetadataRenderer": {
+                        "title": "Active Channel",
+                        "externalId": channel_id,
+                        "channelUrl": f"/channel/{channel_id}",
+                    }
+                }
+            })};</script>
+        """
+        active = core.extract_channel_page_metadata(active_page, channel_id)
+        self.assertTrue(active["channel_status_observed"])
+        self.assertEqual(active["channel_status"], "")
+
+        other_channel_page = f"""
+            <script>var ytInitialData = {json.dumps({
+                "metadata": {
+                    "channelMetadataRenderer": {
+                        "title": "Wrong Channel",
+                        "externalId": "UCotherchannel1234567890",
+                    }
+                }
+            })};</script>
+        """
+        other = core.extract_channel_page_metadata(other_channel_page, channel_id)
+        self.assertFalse(other["channel_status_observed"])
+        self.assertEqual(other["channel_id"], channel_id)
+        self.assertEqual(other["channel"], "")
+
+        terminated = core.extract_channel_page_metadata(
+            "<html>This account has been terminated for violating YouTube policy.</html>",
+            channel_id,
+        )
+        self.assertTrue(terminated["channel_status_observed"])
+        self.assertEqual(terminated["channel_status"], "terminated")
+        self.assertTrue(terminated["channel_status_reason"])
+
+        inconclusive_pages = {
+            "generic title": "<title>YouTube</title>",
+            "login": "<title>Sign in - YouTube</title> ServiceLogin",
+            "consent": "<title>Before you continue</title> consent.youtube.com",
+            "captcha": "<title>YouTube</title><div class='g-recaptcha'></div>",
+            "parsing": "<script>var ytInitialData = {not-json};</script>",
+        }
+        for label, page in inconclusive_pages.items():
+            with self.subTest(label=label):
+                metadata = core.extract_channel_page_metadata(page, channel_id)
+                self.assertFalse(metadata["channel_status_observed"])
+                self.assertEqual(metadata["channel_status"], "")
+
+    def test_channel_metadata_merge_respects_youtube_status_authority(self) -> None:
+        archivarix_deleted = {
+            "channel_id": "UCchannel12345678901234",
+            "channel": "Recovered Channel",
+            "channel_status": "deleted",
+            "channel_status_reason": "Deleted/terminated channel reported by Archivarix.",
+        }
+        active_youtube = {
+            "channel_id": "UCchannel12345678901234",
+            "channel": "Live Channel",
+            "channel_status": "",
+            "channel_status_reason": "",
+            "channel_status_observed": True,
+        }
+
+        active = core.merge_channel_metadata(active_youtube, archivarix_deleted)
+        self.assertEqual(active["channel_status"], "")
+        self.assertEqual(active["channel_status_reason"], "")
+        self.assertTrue(active["channel_status_observed"])
+
+        fallback = core.merge_channel_metadata(
+            {
+                "channel_id": "UCchannel12345678901234",
+                "channel_status": "",
+                "channel_status_reason": "",
+                "channel_status_observed": False,
+            },
+            archivarix_deleted,
+        )
+        self.assertEqual(fallback["channel_status"], "deleted")
+        self.assertEqual(
+            fallback["channel_status_reason"],
+            "Deleted/terminated channel reported by Archivarix.",
+        )
+        self.assertFalse(fallback["channel_status_observed"])
+
+    def test_channel_status_transitions_require_authoritative_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                def stored_status(channel_id: str) -> tuple[str, str]:
+                    row = conn.execute(
+                        "SELECT status, status_reason FROM channels WHERE channel_id = ?",
+                        (channel_id,),
+                    ).fetchone()
+                    return row["status"], row["status_reason"]
+
+                for prior_status in ("terminated", "deleted"):
+                    channel_id = f"UC_{prior_status}"
+                    with conn:
+                        core.upsert_channel(
+                            conn,
+                            channel_id,
+                            title="Recovered Channel",
+                            status=prior_status,
+                            status_reason=f"Previously {prior_status}",
+                        )
+                        core.store_channel_metadata(
+                            conn,
+                            {
+                                "channel_id": channel_id,
+                                "channel": "Recovered Channel",
+                                "channel_status": "",
+                                "channel_status_reason": "",
+                                "channel_status_observed": True,
+                            },
+                            "ok",
+                        )
+                    self.assertEqual(stored_status(channel_id), ("", ""))
+
+                channel_id = "UC_active_transition"
+                with conn:
+                    core.upsert_channel(conn, channel_id, title="Active Channel")
+                    core.store_channel_metadata(
+                        conn,
+                        {
+                            "channel_id": channel_id,
+                            "channel": "Active Channel",
+                            "channel_status": "terminated",
+                            "channel_status_reason": "This account has been terminated.",
+                            "channel_status_observed": True,
+                        },
+                        "ok",
+                    )
+                self.assertEqual(
+                    stored_status(channel_id),
+                    ("terminated", "This account has been terminated."),
+                )
+
+                with conn:
+                    core.store_channel_metadata(
+                        conn,
+                        {
+                            "channel_id": channel_id,
+                            "channel": "Active Channel",
+                            "channel_status": "",
+                            "channel_status_reason": "",
+                            "channel_status_observed": True,
+                        },
+                        "ok",
+                    )
+                    core.store_channel_metadata(
+                        conn,
+                        {
+                            "channel_id": channel_id,
+                            "channel": "Active Channel",
+                            "channel_status": "",
+                            "channel_status_reason": "",
+                            "channel_status_observed": True,
+                        },
+                        "ok",
+                    )
+                self.assertEqual(stored_status(channel_id), ("", ""))
+            finally:
+                conn.close()
+
+    def test_inconclusive_channel_updates_preserve_status_and_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                channel_id = "UC_preserved_status"
+                with conn:
+                    core.upsert_channel(
+                        conn,
+                        channel_id,
+                        title="Known Channel",
+                        status="terminated",
+                        status_reason="Known YouTube termination",
+                    )
+                updates = (
+                    ("ok", "", ""),
+                    ("error", "", ""),
+                    (
+                        "ok",
+                        "deleted",
+                        "Deleted/terminated channel reported by Archivarix.",
+                    ),
+                )
+                for fetch_status, incoming_status, incoming_reason in updates:
+                    with self.subTest(fetch_status=fetch_status, incoming_status=incoming_status):
+                        with conn:
+                            core.store_channel_metadata(
+                                conn,
+                                {
+                                    "channel_id": channel_id,
+                                    "channel": "Known Channel",
+                                    "channel_status": incoming_status,
+                                    "channel_status_reason": incoming_reason,
+                                    "channel_status_observed": False,
+                                },
+                                fetch_status,
+                                "transport or parsing failure" if fetch_status == "error" else "",
+                            )
+                        row = conn.execute(
+                            "SELECT status, status_reason FROM channels WHERE channel_id = ?",
+                            (channel_id,),
+                        ).fetchone()
+                        self.assertEqual(
+                            (row["status"], row["status_reason"]),
+                            ("terminated", "Known YouTube termination"),
+                        )
+            finally:
+                conn.close()
+
     def test_channel_notification_level_preserves_unknown_and_clears_unsubscribed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")

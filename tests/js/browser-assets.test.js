@@ -321,6 +321,21 @@ test('compact channel cards retain only a right-aligned YouTube link', () => {
   assert.match(indexHtml, /\.search-grid\.layout-compact \.channel-card-links \{ justify-content: flex-end; \}/);
 });
 
+test('channel cards render only exceptional persisted statuses', () => {
+  const indexSource = source('index.js');
+  const channelCardSource = namedFunctionSource(indexSource, 'channelCardFor');
+  const channelDetailSource = namedFunctionSource(indexSource, 'channelDetailCardFor');
+
+  for (const cardSource of [channelCardSource, channelDetailSource]) {
+    assert.match(cardSource, /const status = String\(channel\.status \|\| ''\)\.toLowerCase\(\)/);
+    assert.match(
+      cardSource,
+      /\$\{status \? `<span class="badge">\$\{escapeHtml\(status\)\}<\/span>` : ''\}/,
+    );
+    assert.doesNotMatch(cardSource, /status \|\| ['"]active['"]/i);
+  }
+});
+
 test('playlist cards render one owner separately from collaborators', () => {
   const indexSource = source('index.js');
   const videoCardSource = source('video-card.js');

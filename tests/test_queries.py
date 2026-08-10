@@ -88,6 +88,91 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(search_item["uploader_category"], "Music")
         self.assertEqual(history_item["uploader_category"], "Music")
 
+    def test_channel_status_transition_is_consistent_across_read_models(self) -> None:
+        channel_id = "UC_status_transition"
+        core.upsert_channel(
+            self.conn,
+            channel_id,
+            title="Recovered Channel",
+            status="terminated",
+            status_reason="Previously terminated",
+        )
+        self.conn.execute(
+            """
+            INSERT INTO playlists(playlist_id, title, owner_channel_id)
+            VALUES ('PLstatusowner', 'Status owner playlist', ?)
+            """,
+            (channel_id,),
+        )
+        self.conn.commit()
+
+        terminated_list = channel_list_data(self.conn)
+        terminated_omni = omni_search_data(
+            self.conn,
+            "Recovered Channel",
+            result_kinds={"channel"},
+        )
+        terminated_detail = channel_detail_data(self.conn, channel_id)
+        terminated_playlist = playlist_detail_data(self.conn, "PLstatusowner")
+        terminated_admin = core.admin_status(self.db_path, include_logs=False)
+
+        self.assertEqual(terminated_list["counts"]["terminated"], 1)
+        self.assertEqual(terminated_omni["metaCounts"]["channels"]["terminated"], 1)
+        self.assertEqual(terminated_omni["results"][0]["channelStatus"], "terminated")
+        self.assertEqual(terminated_omni["results"][0]["item"]["status"], "terminated")
+        self.assertEqual(terminated_detail["status"], "terminated")
+        self.assertEqual(terminated_playlist["owner_channel_status"], "terminated")
+        self.assertEqual(terminated_admin["channelCounts"]["terminated"], 1)
+
+        with self.conn:
+            core.store_channel_metadata(
+                self.conn,
+                {
+                    "channel_id": channel_id,
+                    "channel": "Recovered Channel",
+                    "channel_status": "",
+                    "channel_status_reason": "",
+                    "channel_status_observed": True,
+                },
+                "ok",
+            )
+
+        active_list = channel_list_data(self.conn)
+        active_omni = omni_search_data(
+            self.conn,
+            "Recovered Channel",
+            result_kinds={"channel"},
+        )
+        active_filtered = omni_search_data(
+            self.conn,
+            "Recovered Channel",
+            result_kinds={"channel"},
+            channel_status_filters={"active"},
+        )
+        terminated_filtered = omni_search_data(
+            self.conn,
+            "Recovered Channel",
+            result_kinds={"channel"},
+            channel_status_filters={"terminated"},
+        )
+        active_detail = channel_detail_data(self.conn, channel_id)
+        active_playlist = playlist_detail_data(self.conn, "PLstatusowner")
+        active_admin = core.admin_status(self.db_path, include_logs=False)
+
+        self.assertEqual(active_list["counts"]["terminated"], 0)
+        self.assertEqual(active_list["counts"]["non_subscribed"], 1)
+        self.assertEqual(active_omni["metaCounts"]["channels"]["active"], 1)
+        self.assertEqual(active_omni["metaCounts"]["channels"]["terminated"], 0)
+        self.assertEqual(active_omni["results"][0]["channelStatus"], "active")
+        self.assertEqual(active_omni["results"][0]["item"]["status"], "")
+        self.assertEqual(active_omni["results"][0]["item"]["status_reason"], "")
+        self.assertEqual(active_filtered["total"], 1)
+        self.assertEqual(terminated_filtered["total"], 0)
+        self.assertEqual(active_detail["status"], "")
+        self.assertEqual(active_detail["status_reason"], "")
+        self.assertEqual(active_playlist["owner_channel_status"], "")
+        self.assertEqual(active_admin["channelCounts"]["terminated"], 0)
+
     def test_clip_search_uses_clip_identity_and_inherits_source_video_facets(self) -> None:
         core.upsert_channel(
             self.conn,

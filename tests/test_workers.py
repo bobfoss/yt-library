@@ -3630,7 +3630,13 @@ class WorkerQueueTests(unittest.TestCase):
             conn = migrated_connection(db_path)
             try:
                 with conn:
-                    core.upsert_channel(conn, channel_id, title="Queued Channel")
+                    core.upsert_channel(
+                        conn,
+                        channel_id,
+                        title="Queued Channel",
+                        status="terminated",
+                        status_reason="Previously terminated",
+                    )
                     core.enqueue_metadata_item(
                         conn,
                         video_id=channel_id,
@@ -3657,6 +3663,7 @@ class WorkerQueueTests(unittest.TestCase):
                 "archivarix_channel_id": "",
                 "channel_status": "",
                 "channel_status_reason": "",
+                "channel_status_observed": True,
                 "channel_subscribed": "1",
                 "channel_notification_level": "all",
             }
@@ -3694,12 +3701,14 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(log["message"], "ok: Fetched Channel")
                 channel_state = conn.execute(
                     """
-                    SELECT subscribed, notification_level
+                    SELECT status, status_reason, subscribed, notification_level
                     FROM channels
                     WHERE channel_id = ?
                     """,
                     (channel_id,),
                 ).fetchone()
+                self.assertEqual(channel_state["status"], "")
+                self.assertEqual(channel_state["status_reason"], "")
                 self.assertEqual(channel_state["subscribed"], 1)
                 self.assertEqual(channel_state["notification_level"], "all")
                 display_log = core.worker_log_snapshot(conn)["metadataLogs"][0]
@@ -3726,6 +3735,75 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(legacy_log["subject_title"], "Fetched Channel")
             finally:
                 conn.close()
+
+    def test_channel_fetch_failures_preserve_termination_state(self) -> None:
+        failures = {
+            "transport": urllib.error.URLError("offline for test"),
+            "proxy": urllib.error.URLError("proxy unavailable for test"),
+            "timeout": TimeoutError("channel fetch timed out"),
+            "authentication": core.YouTubeAuthenticationError(
+                "YouTube login session is not accepted by YouTube",
+                "operation=channel page; logged_in=false; markers=captcha",
+            ),
+        }
+        for label, failure in failures.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp_dir:
+                db_path = Path(temp_dir) / "library.sqlite3"
+                channel_id = f"UC_preserve_{label}"
+                conn = migrated_connection(db_path)
+                try:
+                    with conn:
+                        core.upsert_channel(
+                            conn,
+                            channel_id,
+                            title="Terminated Channel",
+                            status="terminated",
+                            status_reason="Known YouTube termination",
+                        )
+                        core.enqueue_metadata_item(
+                            conn,
+                            video_id=channel_id,
+                            channel_id=channel_id,
+                            channel_title="Terminated Channel",
+                            metadata_source="channel",
+                            priority=0,
+                            manual=True,
+                        )
+                finally:
+                    conn.close()
+
+                worker = MetadataWorker()
+                with (
+                    patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                    patch(
+                        "yt_library.workers.fetch_channel_metadata",
+                        side_effect=failure,
+                    ),
+                ):
+                    worker._run(
+                        f"test-channel-{label}",
+                        db_path,
+                        Path(temp_dir) / "cookies.txt",
+                        Path(temp_dir) / "thumbs",
+                        delay=0,
+                        limit=1,
+                        force=False,
+                        stale_days=30,
+                        record_summary=False,
+                    )
+
+                conn = core.connect(db_path)
+                try:
+                    row = conn.execute(
+                        "SELECT status, status_reason FROM channels WHERE channel_id = ?",
+                        (channel_id,),
+                    ).fetchone()
+                    self.assertEqual(
+                        (row["status"], row["status_reason"]),
+                        ("terminated", "Known YouTube termination"),
+                    )
+                finally:
+                    conn.close()
 
     def test_manual_channel_worker_does_not_backfill_first_seen_after_handle_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
