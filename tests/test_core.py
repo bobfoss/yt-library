@@ -18,6 +18,7 @@ from unittest.mock import Mock, patch
 
 from yt_library import core, network, request_pacing
 from yt_library.config import load_config
+from yt_library.queries import video_detail_data
 from yt_library.workers import (
     MetadataWorker,
     PlaceholderRecoveryWorker,
@@ -3543,6 +3544,93 @@ class CoreHelperTests(unittest.TestCase):
                 self.assertEqual(youtube_current["availability"], "public")
                 self.assertEqual(youtube_current["archivarix_status"], "NOT_FOUND")
                 self.assertEqual(youtube_current["media_available"], 1)
+            finally:
+                conn.close()
+
+    def test_archivarix_media_availability_tracks_only_authoritative_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                def media_available(video_id: str) -> int | None:
+                    return conn.execute(
+                        "SELECT media_available FROM video_recovery WHERE video_id = ?",
+                        (video_id,),
+                    ).fetchone()["media_available"]
+
+                with conn:
+                    core.save_video_recovery(
+                        conn,
+                        "mediaToOne",
+                        None,
+                        "error",
+                        "temporary failure",
+                    )
+                self.assertIsNone(media_available("mediaToOne"))
+
+                with conn:
+                    core.save_video_recovery(
+                        conn,
+                        "mediaToOne",
+                        {"videoFileUrl": "https://archive.example/media.mp4"},
+                        "found",
+                        "",
+                    )
+                    core.save_video_recovery(
+                        conn,
+                        "mediaToZero",
+                        {"videoFileUrl": "   "},
+                        "found",
+                        "",
+                    )
+                self.assertEqual(media_available("mediaToOne"), 1)
+                self.assertEqual(media_available("mediaToZero"), 0)
+
+                with conn:
+                    core.save_video_recovery(
+                        conn,
+                        "mediaToOne",
+                        {"videoFileUrl": "\t  "},
+                        "found",
+                        "",
+                    )
+                self.assertEqual(media_available("mediaToOne"), 0)
+                self.assertEqual(video_detail_data(conn, "mediaToOne")["video_file_url"], "")
+
+                with conn:
+                    core.save_video_recovery(
+                        conn,
+                        "mediaToOne",
+                        {"videoFileUrl": "https://archive.example/media-restored.mp4"},
+                        "found",
+                        "",
+                    )
+                self.assertEqual(media_available("mediaToOne"), 1)
+                self.assertTrue(video_detail_data(conn, "mediaToOne")["video_file_url"])
+
+                non_authoritative_statuses = (
+                    "error",
+                    "timeout",
+                    "rate_limited",
+                    "thumbnail_only",
+                    "stopped",
+                    "not_found",
+                )
+                for search_status in non_authoritative_statuses:
+                    with self.subTest(search_status=search_status):
+                        with conn:
+                            core.save_video_recovery(
+                                conn,
+                                "mediaToOne",
+                                None,
+                                search_status,
+                                "non-authoritative result",
+                                thumbnail_path=(
+                                    "archivarix_thumbs/mediaToOne.jpg"
+                                    if search_status == "thumbnail_only"
+                                    else ""
+                                ),
+                            )
+                        self.assertEqual(media_available("mediaToOne"), 1)
             finally:
                 conn.close()
 

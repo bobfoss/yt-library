@@ -5338,6 +5338,13 @@ def save_video_recovery(
     recovered_status = (video or {}).get("status") or ""
     if search_status == "not_found":
         recovered_status = "NOT_FOUND"
+    media_available: int | None = None
+    if search_status == "found":
+        media_available = (
+            1
+            if str((video or {}).get("videoFileUrl") or "").strip()
+            else 0
+        )
     archivarix_channel_id = str((video or {}).get("channelId") or "")
     channel_id = upsert_channel(
         conn,
@@ -5387,7 +5394,7 @@ def save_video_recovery(
             recovered_status,
             archivarix_channel_id if not archivarix_channel_id.startswith("UC") else "",
             archive_capture_timestamp(str((video or {}).get("archiveUrl") or "")),
-            1 if (video or {}).get("videoFileUrl") else None,
+            media_available,
             now,
             search_status,
             search_error,
