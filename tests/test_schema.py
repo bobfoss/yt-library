@@ -2235,7 +2235,7 @@ class SchemaTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_recovered_live_video_is_playable(self) -> None:
+    def test_recovered_live_video_keeps_youtube_availability_unknown(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
             core.ROOT = Path(temp_dir)
@@ -2261,14 +2261,16 @@ class SchemaTests(unittest.TestCase):
 
                     row = conn.execute(
                         """
-                        SELECT is_playable, availability
-                        FROM videos
-                        WHERE video_id = 'KRhofr57Na8'
+                        SELECT v.is_playable, v.availability, vr.archivarix_status
+                        FROM videos v
+                        JOIN video_recovery vr ON vr.video_id = v.video_id
+                        WHERE v.video_id = 'KRhofr57Na8'
                         """
                     ).fetchone()
                     self.assertIsNotNone(row)
-                    self.assertEqual(row["is_playable"], 1)
-                    self.assertEqual(row["availability"], "public")
+                    self.assertIsNone(row["is_playable"])
+                    self.assertEqual(row["availability"], "unknown")
+                    self.assertEqual(row["archivarix_status"], "LIVE")
                 finally:
                     conn.close()
             finally:

@@ -22,6 +22,7 @@ from .core import (
     preferred_youtube_channel_reference,
     preferred_youtube_channel_url,
     video_availability_category as _video_availability_category,
+    video_availability_category_sql as _video_availability_category_sql,
     wayback_video_url,
     youtube_channel_ref_from_url,
     youtube_playlist_url,
@@ -88,25 +89,17 @@ def _video_collection_category_sql(
     source_quality: str = "source_quality",
     match_type: str = "match_type",
 ) -> str:
+    availability_category_sql = _video_availability_category_sql(
+        video_id=video_id,
+        availability=availability,
+        is_playable=is_playable,
+    )
     return f"""
         CASE
           WHEN {source_quality} = 'takeout'
            AND {match_type} = 'ambiguous_hidden_candidate'
             THEN 'removed'
-          WHEN COALESCE({video_id}, '') = '' THEN 'unavailable'
-          WHEN lower(COALESCE({availability}, '')) = 'subscriber_only'
-            THEN 'members_only'
-          WHEN lower(COALESCE({availability}, '')) IN ('public', 'unlisted')
-            THEN lower({availability})
-          WHEN lower(COALESCE({availability}, '')) = 'private'
-           AND {is_playable} = 1
-            THEN 'private'
-          WHEN lower(COALESCE({availability}, '')) IN (
-            'private', 'deleted', 'removed', 'unavailable', 'needs_auth', 'premium_only'
-          ) THEN 'unavailable'
-          WHEN {is_playable} = 1 THEN 'public'
-          WHEN {is_playable} = 0 THEN 'unavailable'
-          ELSE 'unknown'
+          ELSE ({availability_category_sql})
         END
     """
 
@@ -704,6 +697,7 @@ def video_collection_data(
     partial_min_percent = _bounded_partial_min_percent(partial_min_percent)
     params["partial_min_percent"] = partial_min_percent
     collection_category_sql = _video_collection_category_sql()
+    availability_category_sql = _video_availability_category_sql()
     completion_category_sql = """
         CASE
           WHEN COALESCE(video_id, '') = '' THEN 'unknown'
@@ -743,6 +737,7 @@ def video_collection_data(
         ),
         categorized AS (
           SELECT candidate_occurrences.*,
+                 {availability_category_sql} AS availability_category,
                  {collection_category_sql} AS collection_category,
                  {completion_category_sql} AS completion_category,
                  {reaction_category_sql} AS reaction_category,
@@ -1276,6 +1271,7 @@ def projected_video_data(projection: Mapping[str, Any]) -> dict[str, Any]:
         "latest_watch_at": "",
         "latest_youtube_ordinal": 0,
         "collection_category": "unknown",
+        "availability_category": "unknown",
         "recovered_status": "",
         "archive_url": "",
         "video_file_url": "",
@@ -1511,7 +1507,9 @@ def _assign_omni_meta_categories(
     for result in results:
         item = result["item"]
         if result["kind"] == "video":
-            category = _video_availability_category(item)
+            availability_category = _video_availability_category(item)
+            item["availability_category"] = availability_category
+            category = item.get("collection_category") or availability_category
         elif result["kind"] == "clip":
             result["clipOwnership"] = (
                 "ownership_unknown"
@@ -1797,7 +1795,7 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
                COALESCE(v.channel_id, '') AS channel_id,
                COALESCE(ch.title, '') AS channel,
                v.duration_text,
-               COALESCE(v.is_playable, 0) AS is_playable,
+               v.is_playable,
                v.availability,
                v.title AS metadata_title,
                v.description AS metadata_description,
@@ -1838,6 +1836,7 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
         if not hydrated_item:
             continue
         item = dict(hydrated_item)
+        item["availability_category"] = _video_availability_category(item)
         if "collection_category" in result["item"]:
             item["collection_category"] = result["item"]["collection_category"]
         _hydrate_video_identity(item, item.get("playlist_id") or "")
@@ -2381,7 +2380,8 @@ def omni_search_data(
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
             plugin_search_hit = bool(item.pop("plugin_search_hit"))
-            item["collection_category"] = _video_availability_category(item)
+            item["availability_category"] = _video_availability_category(item)
+            item["collection_category"] = item["availability_category"]
             result = _omni_result(
                 "video",
                 0 if title_hit else 3,
@@ -2491,6 +2491,7 @@ def omni_search_data(
                     "watch_count": 0,
                     "watch_dates": [],
                     "collection_category": "unavailable",
+                    "availability_category": "unavailable",
                     "playlist_url": youtube_playlist_url(item.get("playlist_id") or ""),
                     "playlist_links": [
                         {
@@ -2780,6 +2781,11 @@ def history_search_data(
         params.append(channel_id)
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     ordering = _history_event_order_sql()
+    availability_category_sql = _video_availability_category_sql(
+        video_id="v.video_id",
+        availability="v.availability",
+        is_playable="v.is_playable",
+    )
     filtered = conn.execute(
         f"""
         SELECT COUNT(*) AS count
@@ -2845,6 +2851,10 @@ def history_search_data(
                    v.reaction,
                    v.is_playable,
                    v.availability,
+                   {availability_category_sql} AS availability_category,
+                   COALESCE(vr.archivarix_status, '') AS recovered_status,
+                   vr.archive_capture_at,
+                   vr.media_available,
                    COALESCE(he.watch_progress_percent, 0) AS watch_progress_percent,
                    COALESCE(he.watch_resume_seconds, 0) AS watch_resume_seconds,
                    counts.watch_count,
@@ -2854,6 +2864,7 @@ def history_search_data(
             JOIN history_events he ON he.event_id = page.event_id
             JOIN videos v ON v.video_id = he.video_id
             LEFT JOIN channels ch ON ch.channel_id = v.channel_id
+            LEFT JOIN video_recovery vr ON vr.video_id = v.video_id
             JOIN counts ON counts.video_id = he.video_id
             ORDER BY {ordering}
             """,
@@ -2863,6 +2874,15 @@ def history_search_data(
     _add_video_playlist_links(conn, rows)
     for row in rows:
         _hydrate_video_identity(row)
+        row["archive_url"] = wayback_video_url(
+            row.get("video_id") or "",
+            row.get("archive_capture_at"),
+        )
+        row["video_file_url"] = (
+            archivarix_media_url(row.get("video_id") or "")
+            if row.get("media_available")
+            else ""
+        )
         row["source_label"] = history_source_type_label(row.get("source_type") or "")
         row["time_quality_label"] = history_time_quality_label(row.get("time_quality") or "")
         row["match_label"] = history_match_type_label(row.get("match_type") or "")

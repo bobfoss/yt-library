@@ -2187,6 +2187,147 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["private1"],
         )
 
+    def test_archivarix_evidence_stays_separate_from_all_video_availability_views(self) -> None:
+        canonical_states = (
+            ("recoveryPublic", "Recovery public", "public", "public"),
+            ("recoveryList", "Recovery unlisted", "unlisted", "unlisted"),
+            ("recoveryPriv", "Recovery private", "private", "private"),
+            (
+                "recoveryMemb",
+                "Recovery members only",
+                "subscriber_only",
+                "members_only",
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLrecovery', 'Recovery')"
+        )
+        for position, (video_id, title, availability, _) in enumerate(
+            canonical_states,
+            start=1,
+        ):
+            core.upsert_video(
+                self.conn,
+                video_id,
+                title=title,
+                reaction="LIKE",
+                is_playable=1,
+                availability=availability,
+                source="metadata",
+            )
+            self.conn.execute(
+                """
+                INSERT INTO playlist_items(playlist_id, position, video_id)
+                VALUES ('PLrecovery', ?, ?)
+                """,
+                (position, video_id),
+            )
+            core.save_video_recovery(
+                self.conn,
+                video_id,
+                {"title": f"Archived {title}", "status": "DELETED_FULL_META"},
+                "found",
+                "",
+            )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES ('recovery-history', 'recoveryPublic', '2026-08-09', 'date_only')
+            """
+        )
+        self.conn.commit()
+
+        collection = video_collection_data(self.conn, scope="liked", sort="title")
+        self.assertEqual(
+            {
+                category: collection["counts"][category]
+                for category in ("public", "unlisted", "private", "members_only", "unavailable")
+            },
+            {
+                "public": 1,
+                "unlisted": 1,
+                "private": 1,
+                "members_only": 1,
+                "unavailable": 0,
+            },
+        )
+        self.assertEqual(
+            {
+                row["video_id"]: (
+                    row["availability_category"],
+                    row["collection_category"],
+                    row["recovered_status"],
+                )
+                for row in collection["results"]
+            },
+            {
+                video_id: (category, category, "DELETED_FULL_META")
+                for video_id, _, _, category in canonical_states
+            },
+        )
+        unavailable = video_collection_data(
+            self.conn,
+            scope="liked",
+            include_public=False,
+            include_unlisted=False,
+            include_private=False,
+            include_unavailable=True,
+            include_members_only=False,
+            include_unknown=False,
+            include_removed=False,
+        )
+        self.assertEqual(unavailable["results"], [])
+        self.assertEqual(unavailable["counts"], collection["counts"])
+
+        search = omni_search_data(
+            self.conn,
+            "Recovery",
+            result_kinds={"video"},
+            sort="title",
+            limit=20,
+        )
+        for category in ("public", "unlisted", "private", "members_only"):
+            self.assertEqual(search["metaCounts"]["videos"][category], 1)
+        self.assertEqual(search["metaCounts"]["videos"]["unavailable"], 0)
+        self.assertEqual(
+            {
+                result["item"]["video_id"]: (
+                    result["metaCategory"],
+                    result["item"]["availability_category"],
+                    result["item"]["recovered_status"],
+                )
+                for result in search["results"]
+            },
+            {
+                video_id: (category, category, "DELETED_FULL_META")
+                for video_id, _, _, category in canonical_states
+            },
+        )
+        public_only = omni_search_data(
+            self.conn,
+            "Recovery",
+            result_kinds={"video"},
+            video_meta_filters={"public"},
+            sort="title",
+            limit=20,
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in public_only["results"]],
+            ["recoveryPublic"],
+        )
+        self.assertEqual(public_only["metaCounts"], search["metaCounts"])
+
+        detail = video_detail_data(self.conn, "recoveryPublic")
+        self.assertEqual(detail["availability_category"], "public")
+        self.assertEqual(detail["recovered_status"], "DELETED_FULL_META")
+        history = history_search_data(self.conn, "Recovery public")["watch"][0]
+        self.assertEqual(history["availability_category"], "public")
+        self.assertEqual(history["recovered_status"], "DELETED_FULL_META")
+        self.assertEqual(
+            playlist_detail_data(self.conn, "PLrecovery")["unavailable_count"],
+            0,
+        )
+
     def test_playlist_video_collection_filters_by_completion_with_stable_counts(self) -> None:
         for video_id, title in [
             ("complete1", "Complete"),

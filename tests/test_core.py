@@ -3175,7 +3175,8 @@ class CoreHelperTests(unittest.TestCase):
 
                 row = conn.execute(
                     """
-                    SELECT title, description, metadata_source
+                    SELECT title, description, is_playable, availability,
+                           metadata_source, last_checked_at
                     FROM videos
                     WHERE video_id = 'rXJrevMFMFw'
                     """
@@ -3185,9 +3186,146 @@ class CoreHelperTests(unittest.TestCase):
                     {
                         "title": "Astronomer Visualizes The True Scale Of The Universe",
                         "description": "Current YouTube description",
+                        "is_playable": None,
+                        "availability": "unknown",
                         "metadata_source": "metadata",
+                        "last_checked_at": None,
                     },
                 )
+            finally:
+                conn.close()
+
+    def test_archivarix_statuses_do_not_override_canonical_youtube_availability(self) -> None:
+        recovery_cases = (
+            ("LIVE", "found", {"status": "LIVE"}),
+            ("DELETED_FULL_META", "found", {"status": "DELETED_FULL_META"}),
+            ("DELETED_ID_ONLY", "found", {"status": "DELETED_ID_ONLY"}),
+            ("NOT_FOUND", "not_found", None),
+        )
+        canonical_cases = (
+            ("public", 1, "public"),
+            ("unlisted", 1, "unlisted"),
+            ("private", 1, "private"),
+            ("subscriber_only", 1, "members_only"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    for state_index, (availability, is_playable, _) in enumerate(
+                        canonical_cases
+                    ):
+                        for recovery_index, (_, search_status, video) in enumerate(
+                            recovery_cases
+                        ):
+                            video_id = f"state{state_index}{recovery_index}video"
+                            core.upsert_video(
+                                conn,
+                                video_id,
+                                title=f"Canonical {availability}",
+                                is_playable=is_playable,
+                                availability=availability,
+                                source="metadata",
+                            )
+                            core.save_video_recovery(
+                                conn,
+                                video_id,
+                                video,
+                                search_status,
+                                "",
+                            )
+
+                for state_index, (availability, is_playable, category) in enumerate(
+                    canonical_cases
+                ):
+                    for recovery_index, (status, _, _) in enumerate(recovery_cases):
+                        video_id = f"state{state_index}{recovery_index}video"
+                        row = conn.execute(
+                            """
+                            SELECT v.video_id, v.availability, v.is_playable,
+                                   vr.archivarix_status
+                            FROM videos v
+                            JOIN video_recovery vr ON vr.video_id = v.video_id
+                            WHERE v.video_id = ?
+                            """,
+                            (video_id,),
+                        ).fetchone()
+                        with self.subTest(availability=availability, status=status):
+                            self.assertEqual(row["availability"], availability)
+                            self.assertEqual(row["is_playable"], is_playable)
+                            self.assertEqual(row["archivarix_status"], status)
+                            self.assertEqual(
+                                core.video_availability_category(dict(row)),
+                                category,
+                            )
+            finally:
+                conn.close()
+
+    def test_archivarix_recovery_is_independent_before_and_after_youtube_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.save_video_recovery(
+                        conn,
+                        "recoverFirst",
+                        {
+                            "title": "Recovered identity",
+                            "description": "Recovered description",
+                            "status": "DELETED_FULL_META",
+                            "videoFileUrl": "https://archive.example/video.mp4",
+                        },
+                        "found",
+                        "",
+                    )
+                recovery_first = conn.execute(
+                    """
+                    SELECT v.title, v.is_playable, v.availability,
+                           vr.archivarix_status, vr.media_available
+                    FROM videos v
+                    JOIN video_recovery vr ON vr.video_id = v.video_id
+                    WHERE v.video_id = 'recoverFirst'
+                    """
+                ).fetchone()
+                self.assertEqual(recovery_first["title"], "Recovered identity")
+                self.assertIsNone(recovery_first["is_playable"])
+                self.assertEqual(recovery_first["availability"], "unknown")
+                self.assertEqual(recovery_first["archivarix_status"], "DELETED_FULL_META")
+                self.assertEqual(recovery_first["media_available"], 1)
+
+                with conn:
+                    core.store_video_metadata(
+                        conn,
+                        {
+                            "video_id": "recoverFirst",
+                            "title": "Current YouTube identity",
+                            "playability_status": "OK",
+                            "yt_status": "OK",
+                        },
+                        "ok",
+                    )
+                    core.save_video_recovery(
+                        conn,
+                        "recoverFirst",
+                        {"title": "Older recovered identity", "status": "NOT_FOUND"},
+                        "not_found",
+                        "",
+                    )
+
+                youtube_current = conn.execute(
+                    """
+                    SELECT v.title, v.is_playable, v.availability,
+                           vr.archivarix_status, vr.media_available
+                    FROM videos v
+                    JOIN video_recovery vr ON vr.video_id = v.video_id
+                    WHERE v.video_id = 'recoverFirst'
+                    """
+                ).fetchone()
+                self.assertEqual(youtube_current["title"], "Current YouTube identity")
+                self.assertEqual(youtube_current["is_playable"], 1)
+                self.assertEqual(youtube_current["availability"], "public")
+                self.assertEqual(youtube_current["archivarix_status"], "NOT_FOUND")
+                self.assertEqual(youtube_current["media_available"], 1)
             finally:
                 conn.close()
 

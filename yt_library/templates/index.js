@@ -2173,7 +2173,7 @@ function wasRemovedFromPlaylist(video) {
 }
 
 function isUnavailablePlaylistVideo(video) {
-  return !Number(video.is_playable || 0) || Boolean(unavailableLabel(video));
+  return videoAvailabilityValue(video) === 'unavailable';
 }
 
 function wasRemovedByMeFromPlaylist(video) {
@@ -3711,38 +3711,14 @@ function playlistSourceLinksHtml(video) {
 }
 
 function unavailableLabel(video) {
-  if (Object.prototype.hasOwnProperty.call(video, 'is_playable') && !video.is_playable) {
-    return availabilityLabel(video.availability);
-  }
-  const status = String(video.recovered_status || '');
-  if (status === 'NOT_FOUND' || status.startsWith('DELETED_')) return 'Unavailable';
-  const title = String(video.title || '').trim().toLowerCase().replace(/^[\[\(]+|[\]\)]+$/g, '');
-  if (title === 'private video' || title === 'deleted video') return video.title || 'Unavailable';
-  return '';
-}
-
-function availabilityLabel(value) {
-  const availability = String(value || '').trim();
-  if (availability.toLowerCase() === 'subscriber_only') return 'Members only';
-  return availability;
+  return videoAvailabilityValue(video) === 'unavailable' ? 'Unavailable' : '';
 }
 
 function videoAvailabilityValue(video) {
-  const availability = String(video.availability || '').trim().toLowerCase();
-  if (availability === 'subscriber_only') return 'members_only';
-  if (availability === 'private' && Number(video.is_playable) === 1) return 'private';
-  if (['public', 'unlisted', 'unknown'].includes(availability)) return availability;
-  if (['private', 'deleted', 'removed', 'unavailable', 'needs_auth', 'premium_only'].includes(availability)) {
-    return 'unavailable';
-  }
-  const recoveredStatus = String(video.recovered_status || '').trim().toUpperCase();
-  if (recoveredStatus === 'LIVE') return 'public';
-  if (recoveredStatus === 'NOT_FOUND' || recoveredStatus.startsWith('DELETED_')) return 'unavailable';
-  if (Object.prototype.hasOwnProperty.call(video, 'is_playable')) {
-    if (video.is_playable === true || Number(video.is_playable) === 1) return 'public';
-    if (video.is_playable === false || video.is_playable === 0) return 'unavailable';
-  }
-  return 'unknown';
+  const category = String(video.availability_category || '').trim().toLowerCase();
+  return ['public', 'unlisted', 'private', 'members_only', 'unavailable', 'unknown'].includes(category)
+    ? category
+    : 'unknown';
 }
 
 function videoAvailabilityHtml(video) {

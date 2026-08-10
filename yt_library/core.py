@@ -196,7 +196,7 @@ def history_time_quality_note(time_quality: str) -> str:
     return HISTORY_TIME_QUALITY_NOTES.get(time_quality or "", "")
 
 
-def video_availability_from_recovery_status(status: str) -> str:
+def video_availability_from_youtube_status(status: str) -> str:
     status = (status or "").strip()
     status_upper = status.upper()
     if status_upper == "LIVE":
@@ -206,15 +206,11 @@ def video_availability_from_recovery_status(status: str) -> str:
     return ""
 
 
-def is_playable_from_recovery_status(status: str) -> int:
-    return 1 if (status or "").strip().upper() == "LIVE" else 0
-
-
 def normalize_video_availability(
     video_id: str,
     availability: str = "",
     is_playable: bool | int | None = None,
-    recovered_status: str = "",
+    youtube_status: str = "",
 ) -> str:
     if not video_id:
         return "unknown"
@@ -232,9 +228,9 @@ def normalize_video_availability(
         return "public"
     if availability:
         return lowered
-    recovered_availability = video_availability_from_recovery_status(recovered_status)
-    if recovered_availability:
-        return recovered_availability
+    status_availability = video_availability_from_youtube_status(youtube_status)
+    if status_availability:
+        return status_availability
     if is_playable:
         return "public"
     if is_playable is False or is_playable == 0:
@@ -248,9 +244,6 @@ def video_availability_category(item: Mapping[str, Any]) -> str:
     availability = str(item.get("availability") or "").strip().lower()
     if availability == "subscriber_only":
         return "members_only"
-    recovered_status = str(item.get("recovered_status") or "").strip().upper()
-    if recovered_status == "NOT_FOUND" or recovered_status.startswith("DELETED_"):
-        return "unavailable"
     if availability in {"public", "unlisted"}:
         return availability
     if availability == "private":
@@ -272,6 +265,32 @@ def video_availability_category(item: Mapping[str, Any]) -> str:
     if item.get("is_playable") is False or item.get("is_playable") == 0:
         return "unavailable"
     return "unknown"
+
+
+def video_availability_category_sql(
+    *,
+    video_id: str = "video_id",
+    availability: str = "availability",
+    is_playable: str = "is_playable",
+) -> str:
+    return f"""
+        CASE
+          WHEN COALESCE({video_id}, '') = '' THEN 'unavailable'
+          WHEN lower(COALESCE({availability}, '')) = 'subscriber_only'
+            THEN 'members_only'
+          WHEN lower(COALESCE({availability}, '')) IN ('public', 'unlisted')
+            THEN lower({availability})
+          WHEN lower(COALESCE({availability}, '')) = 'private'
+           AND {is_playable} = 1
+            THEN 'private'
+          WHEN lower(COALESCE({availability}, '')) IN (
+            'private', 'deleted', 'removed', 'unavailable', 'needs_auth', 'premium_only'
+          ) THEN 'unavailable'
+          WHEN {is_playable} = 1 THEN 'public'
+          WHEN {is_playable} = 0 THEN 'unavailable'
+          ELSE 'unknown'
+        END
+    """
 
 
 def playlist_entry_is_unavailable(title: str, availability: str = "") -> bool:
@@ -720,14 +739,20 @@ def upsert_video(
     else:
         canonical_title = ""
     canonical_channel = channel_id if authoritative and channel_id else ((existing["channel_id"] if existing else None) or channel_id)
-    incoming_playability = None if is_playable is None else int(bool(is_playable))
+    youtube_owned_state = source != "archivarix"
+    incoming_playability = (
+        None
+        if is_playable is None or not youtube_owned_state
+        else int(bool(is_playable))
+    )
+    incoming_availability = availability if youtube_owned_state else ""
     canonical_playability = incoming_playability if incoming_playability is not None else (existing["is_playable"] if existing else None)
     canonical_availability = normalize_video_availability(
         video_id,
-        availability,
+        incoming_availability,
         canonical_playability,
     )
-    if not availability and existing and incoming_playability is None:
+    if not incoming_availability and existing and incoming_playability is None:
         canonical_availability = existing["availability"]
     last_seen = now if incoming_playability == 1 else (existing["last_seen_available_at"] if existing else None)
     metadata_source = source if authoritative and source else (existing["metadata_source"] if existing else source)
@@ -3498,7 +3523,7 @@ def store_video_metadata(
         updated_at=now,
     )
     playability = storable_watch_playability_value(metadata)
-    recovered_availability = video_availability_from_recovery_status(metadata.get("yt_status", ""))
+    status_availability = video_availability_from_youtube_status(metadata.get("yt_status", ""))
     availability = (
         normalize_video_availability(
             metadata.get("video_id", ""),
@@ -3506,7 +3531,7 @@ def store_video_metadata(
             playability,
             metadata.get("yt_status", ""),
         )
-        if playability is not None or (metadata.get("availability") or "").strip() or recovered_availability
+        if playability is not None or (metadata.get("availability") or "").strip() or status_availability
         else ""
     )
     upsert_video(
@@ -5297,7 +5322,6 @@ def save_video_recovery(
         archivarix_channel_id=archivarix_channel_id if not archivarix_channel_id.startswith("UC") else "",
         source="archivarix",
     )
-    playability = is_playable_from_recovery_status(recovered_status) if recovered_status else None
     upsert_video(
         conn,
         video_id,
@@ -5309,10 +5333,7 @@ def save_video_recovery(
         upload_date=str((video or {}).get("uploadDate") or ""),
         thumbnail_url=thumbnail_url,
         thumbnail_path=thumbnail_path,
-        is_playable=playability,
-        availability=video_availability_from_recovery_status(recovered_status),
         source="archivarix",
-        checked_at=now,
         updated_at=now,
     )
     conn.execute(

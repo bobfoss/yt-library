@@ -22,6 +22,13 @@ function source(name) {
   return fs.readFileSync(path.join(templateDirectory, name), 'utf8');
 }
 
+function namedFunctionSource(script, name) {
+  const start = script.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${name} must exist`);
+  const next = script.indexOf('\nfunction ', start + 1);
+  return script.slice(start, next === -1 ? script.length : next);
+}
+
 function timezoneHelpers(displayTimezone) {
   const context = {
     CustomEvent: class CustomEvent {},
@@ -62,6 +69,70 @@ test('video cards render raw YouTube reaction statuses', () => {
   assert.match(helpers.reactionIconsHtml({ reaction: 'LIKE' }), /reaction-icon like active/);
   assert.match(helpers.reactionIconsHtml({ reaction: 'DISLIKE' }), /reaction-icon dislike active/);
   assert.doesNotMatch(helpers.reactionIconsHtml({ reaction: 'INDIFFERENT' }), / active/);
+});
+
+test('video cards and details render server availability separately from Archivarix evidence', () => {
+  const indexSource = source('index.js');
+  const context = {
+    badgeRowsHtml(rows) {
+      return rows.map(row => row.label).filter(Boolean).join(' ');
+    },
+    escapeHtml(value) {
+      return String(value);
+    },
+    visibilityLabelHtml(_category, label) {
+      return label;
+    },
+  };
+  vm.runInNewContext(
+    [
+      namedFunctionSource(indexSource, 'videoAvailabilityValue'),
+      namedFunctionSource(indexSource, 'videoAvailabilityHtml'),
+      namedFunctionSource(indexSource, 'archivarixStatusLabel'),
+      namedFunctionSource(indexSource, 'archivarixStatusHtml'),
+    ].join('\n'),
+    context,
+    { filename: 'video-availability-functions.js' },
+  );
+
+  const publicWithRecovery = {
+    availability_category: 'public',
+    availability: 'unavailable',
+    is_playable: 0,
+    recovered_status: 'DELETED_FULL_META',
+  };
+  assert.equal(context.videoAvailabilityValue(publicWithRecovery), 'public');
+  assert.match(context.videoAvailabilityHtml(publicWithRecovery), />Public</);
+  assert.doesNotMatch(context.videoAvailabilityHtml(publicWithRecovery), /Unavailable/);
+  assert.match(
+    context.archivarixStatusHtml(publicWithRecovery),
+    /Archivarix: DELETED_FULL_META/,
+  );
+  assert.equal(
+    context.videoAvailabilityValue({
+      availability_category: 'unknown',
+      recovered_status: 'LIVE',
+    }),
+    'unknown',
+  );
+  assert.equal(
+    context.videoAvailabilityValue({ availability_category: 'members_only' }),
+    'members_only',
+  );
+
+  const availabilityValueSource = namedFunctionSource(
+    indexSource,
+    'videoAvailabilityValue',
+  );
+  assert.doesNotMatch(availabilityValueSource, /recovered_status|\.availability\b|is_playable/);
+  assert.match(
+    namedFunctionSource(indexSource, 'videoDetailCardFor'),
+    /videoAvailabilityHtml\(video\)[\s\S]*archivarixStatusHtml\(video\)/,
+  );
+  assert.match(
+    namedFunctionSource(indexSource, 'playlistVideoCardFor'),
+    /archivarixStatusHtml\(video\)[\s\S]*videoAvailabilityHtml\(video\)/,
+  );
 });
 
 test('timezone reset persists the detected zone in one request', () => {
