@@ -231,6 +231,28 @@ test('playlist detail reuses the sidebar video search facets', () => {
   assert.doesNotMatch(indexSource, /function playlistVideoFiltersHtml/);
 });
 
+test('playlist filter refreshes share the search progress lifecycle', () => {
+  const indexSource = source('index.js');
+  const renderStart = indexSource.indexOf('async function render()');
+  const playlistStart = indexSource.indexOf("if (selected.startsWith('__playlist__:')) {", renderStart);
+  const historyStart = indexSource.indexOf("if (selected === '__history__')", playlistStart);
+  const playlistSource = indexSource.slice(playlistStart, historyStart);
+
+  assert.match(
+    indexSource,
+    /function stopSearchFilterProgress\(\) \{\s*stopSearchMetaProgress\(\);\s*stopSearchHeaderProgress\(\);\s*\}/,
+  );
+  assert.match(
+    indexSource,
+    /if \(selected !== '__search__' && !selected\.startsWith\('__playlist__:'\)\) \{\s*searchResultsRendered = false;\s*stopSearchMetaProgress\(\);/,
+  );
+  assert.equal(
+    (playlistSource.match(/stopSearchFilterProgress\(\);/g) || []).length,
+    2,
+    'the active playlist render must clear progress after success or failure',
+  );
+});
+
 test('internal channel links prefer aliases while channel queries use canonical ids', () => {
   const indexSource = source('index.js');
 

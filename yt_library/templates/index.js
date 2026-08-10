@@ -2441,6 +2441,11 @@ function stopSearchMetaProgress() {
   updateSearchMetaProgress('');
 }
 
+function stopSearchFilterProgress() {
+  stopSearchMetaProgress();
+  stopSearchHeaderProgress();
+}
+
 function showSearchMetaProgress(groupName) {
   const progressGroup = searchKindForFacet(groupName);
   pendingSearchMetaGroups.add(progressGroup);
@@ -4877,7 +4882,7 @@ async function render() {
   const generation = ++renderGeneration;
   cancelAdjacentPagePrefetch();
   setDocumentTitle();
-  if (selected !== '__search__') {
+  if (selected !== '__search__' && !selected.startsWith('__playlist__:')) {
     searchResultsRendered = false;
     stopSearchMetaProgress();
   }
@@ -5116,8 +5121,7 @@ async function render() {
       payload = await fetchOmniSearch(query);
     } catch (error) {
       if (generation !== renderGeneration) return;
-      stopSearchMetaProgress();
-      stopSearchHeaderProgress();
+      stopSearchFilterProgress();
       stopSearchProgress();
       searchResultsRendered = false;
       title.textContent = 'Search unavailable';
@@ -5135,8 +5139,7 @@ async function render() {
       generation,
     );
     if (generation !== renderGeneration) return;
-    stopSearchMetaProgress();
-    stopSearchHeaderProgress();
+    stopSearchFilterProgress();
     stopSearchProgress();
     const total = Number(payload.total || 0);
     const remoteLimit = Number(payload.limit || pageSizeNumber() || 100);
@@ -5206,8 +5209,26 @@ async function render() {
           duplicatesOnly: playlistDuplicatesOnly,
         }),
       ]);
+      if (generation !== renderGeneration) return;
+      if (playlistDuplicatesOnly && Number(payload.duplicateCount || 0) === 0) {
+        playlistDuplicatesOnly = false;
+        updateCurrentUrl(true);
+        payload = await fetchVideoCollection({
+          playlistId,
+          sort: playlistViewSort,
+          query: search.value.trim(),
+          visibility: playlistVisibility,
+          completion: searchMetaVisibility.completion,
+          reactions: searchMetaVisibility.reactions,
+          uploaderCategories: searchMetaVisibility.uploaderCategory,
+          useSearchFacets: true,
+          partialMinimumPercent: partialCompletionMinimumPercent,
+          duplicatesOnly: false,
+        });
+      }
     } catch (error) {
       if (generation !== renderGeneration) return;
+      stopSearchFilterProgress();
       title.textContent = 'Playlist not found';
       meta.textContent = playlistId;
       grid.replaceChildren();
@@ -5216,23 +5237,7 @@ async function render() {
       return;
     }
     if (generation !== renderGeneration) return;
-    if (playlistDuplicatesOnly && Number(payload.duplicateCount || 0) === 0) {
-      playlistDuplicatesOnly = false;
-      updateCurrentUrl(true);
-      payload = await fetchVideoCollection({
-        playlistId,
-        sort: playlistViewSort,
-        query: search.value.trim(),
-        visibility: playlistVisibility,
-        completion: searchMetaVisibility.completion,
-        reactions: searchMetaVisibility.reactions,
-        uploaderCategories: searchMetaVisibility.uploaderCategory,
-        useSearchFacets: true,
-        partialMinimumPercent: partialCompletionMinimumPercent,
-        duplicatesOnly: false,
-      });
-      if (generation !== renderGeneration) return;
-    }
+    stopSearchFilterProgress();
     setDocumentTitle(playlist.title || playlistId);
     const rows = payload.results || [];
     const distinctVideoCount = Number(
