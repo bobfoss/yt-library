@@ -2425,6 +2425,95 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_placeholder_recovery_targets_queue_only_canonically_unavailable_videos(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLcanonical', 'Canonical')"
+                    )
+                    for video_id, availability, is_playable in (
+                        ("publickeep1", "public", 1),
+                        ("memberskeep", "subscriber_only", 1),
+                        ("unavailkeep", "unavailable", 0),
+                        ("unavailcurr", "unavailable", 0),
+                        ("terminalrec", "unavailable", 0),
+                    ):
+                        core.upsert_video(
+                            conn,
+                            video_id,
+                            title=video_id,
+                            availability=availability,
+                            is_playable=is_playable,
+                            source="metadata",
+                        )
+                    conn.executemany(
+                        """
+                        INSERT INTO playlist_items(
+                          playlist_id, position, video_id, membership_state
+                        ) VALUES ('PLcanonical', ?, ?, ?)
+                        """,
+                        (
+                            (1, "publickeep1", "retained_unavailable"),
+                            (2, "memberskeep", "retained_unavailable"),
+                            (3, "unavailkeep", "retained_unavailable"),
+                            (4, "unavailcurr", "current"),
+                            (5, "terminalrec", "retained_unavailable"),
+                        ),
+                    )
+                    core.save_video_recovery(
+                        conn,
+                        "terminalrec",
+                        None,
+                        "not_found",
+                        "",
+                    )
+                    first = core.enqueue_placeholder_recovery_targets(
+                        conn,
+                        "PLcanonical",
+                    )
+                    second = core.enqueue_placeholder_recovery_targets(
+                        conn,
+                        "PLcanonical",
+                    )
+
+                queued_ids = {
+                    row["video_id"]
+                    for row in conn.execute(
+                        """
+                        SELECT video_id
+                        FROM worker_queue
+                        WHERE worker_type = 'placeholder'
+                        """
+                    )
+                }
+                memberships = {
+                    row["video_id"]: row["membership_state"]
+                    for row in conn.execute(
+                        """
+                        SELECT video_id, membership_state
+                        FROM playlist_items
+                        WHERE playlist_id = 'PLcanonical'
+                        """
+                    )
+                }
+                self.assertEqual(first, {"inserted": 2, "existing": 0})
+                self.assertEqual(second, {"inserted": 0, "existing": 2})
+                self.assertEqual(queued_ids, {"unavailkeep", "unavailcurr"})
+                self.assertEqual(
+                    memberships,
+                    {
+                        "publickeep1": "retained_unavailable",
+                        "memberskeep": "retained_unavailable",
+                        "unavailkeep": "retained_unavailable",
+                        "unavailcurr": "current",
+                        "terminalrec": "retained_unavailable",
+                    },
+                )
+            finally:
+                conn.close()
+
     def test_worker_queue_events_capture_add_update_and_remove(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")

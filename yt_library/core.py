@@ -5080,9 +5080,14 @@ def placeholder_recovery_candidate_rows(
 ) -> list[sqlite3.Row]:
     if order_by not in {"playlist", "video"}:
         raise ValueError(f"Unsupported placeholder recovery order: {order_by}")
+    availability_category_sql = video_availability_category_sql(
+        video_id="v.video_id",
+        availability="v.availability",
+        is_playable="v.is_playable",
+    )
     where = [
         "pi.video_id IS NOT NULL",
-        "(pi.membership_state = 'retained_unavailable' OR v.is_playable = 0)",
+        f"({availability_category_sql}) = 'unavailable'",
     ]
     if not include_completed:
         where.append("(r.video_id IS NULL OR r.search_status = 'error')")
@@ -5095,17 +5100,6 @@ def placeholder_recovery_candidate_rows(
         params.append(video_id)
     if only_missing_thumbnails:
         where.append("(r.video_id IS NULL OR v.thumbnail_path = '')")
-    if likely_unavailable_only:
-        where.append(
-            """
-            EXISTS (
-              SELECT 1
-              FROM playlist_scans likely_scan
-              WHERE likely_scan.playlist_id = pi.playlist_id
-                AND likely_scan.unavailable_count > 0
-            )
-            """
-        )
     ordering = (
         "pi.video_id"
         if order_by == "video"

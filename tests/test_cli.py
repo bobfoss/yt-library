@@ -14,56 +14,86 @@ from tests.support import migrated_connection
 
 
 class QueuedCliTests(unittest.TestCase):
-    def test_recovery_candidate_selector_preserves_legacy_filters(self) -> None:
+    def test_recovery_candidate_selector_uses_current_canonical_availability(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
             try:
                 with conn:
                     conn.executemany(
                         "INSERT INTO playlists(playlist_id, title) VALUES (?, ?)",
-                        (("PLlikely", "Likely"), ("PLother", "Other")),
+                        (("PLpositive", "Positive stale count"), ("PLzero", "Zero stale count")),
                     )
-                    core.upsert_video(
-                        conn,
-                        "likelyvideo1",
-                        title="Likely video",
-                        thumbnail_path="cached.jpg",
-                        is_playable=False,
-                        source="test",
-                    )
-                    core.upsert_video(
-                        conn,
-                        "othervideo01",
-                        title="Other video",
-                        is_playable=False,
-                        source="test",
-                    )
+                    for video_id, title, availability, is_playable, thumbnail in (
+                        ("publicretain", "Public retained", "public", 1, "cached.jpg"),
+                        ("membersret1", "Members retained", "subscriber_only", 1, "cached.jpg"),
+                        ("unavailret1", "Unavailable retained", "unavailable", 0, "cached.jpg"),
+                        ("unavailcurr", "Unavailable current", "unavailable", 0, ""),
+                        ("terminal001", "Terminal unavailable", "unavailable", 0, ""),
+                        ("retryerror1", "Retry recovery error", "unavailable", 0, "cached.jpg"),
+                        ("transition1", "Availability transition", "public", 1, "cached.jpg"),
+                    ):
+                        core.upsert_video(
+                            conn,
+                            video_id,
+                            title=title,
+                            thumbnail_path=thumbnail,
+                            is_playable=is_playable,
+                            availability=availability,
+                            source="metadata",
+                        )
                     conn.executemany(
                         """
                         INSERT INTO playlist_items(
                           playlist_id, position, video_id, membership_state
-                        ) VALUES (?, 1, ?, 'retained_unavailable')
+                        ) VALUES (?, ?, ?, ?)
                         """,
-                        (("PLlikely", "likelyvideo1"), ("PLother", "othervideo01")),
+                        (
+                            ("PLpositive", 1, "publicretain", "retained_unavailable"),
+                            ("PLpositive", 2, "transition1", "retained_unavailable"),
+                            ("PLzero", 1, "membersret1", "retained_unavailable"),
+                            ("PLzero", 2, "unavailret1", "retained_unavailable"),
+                            ("PLzero", 3, "unavailcurr", "current"),
+                            ("PLzero", 4, "terminal001", "retained_unavailable"),
+                            ("PLzero", 5, "retryerror1", "current"),
+                        ),
                     )
-                    conn.execute(
+                    conn.executemany(
                         """
                         INSERT INTO playlist_scans(
                           playlist_id, scanned_at, video_count, unavailable_count, scan_status
-                        ) VALUES ('PLlikely', ?, 1, 1, 'ok')
+                        ) VALUES (?, ?, ?, ?, 'ok')
                         """,
-                        (core.utc_now(),),
+                        (
+                            ("PLpositive", core.utc_now(), 2, 1),
+                            ("PLzero", core.utc_now(), 5, 0),
+                        ),
                     )
                     core.save_video_recovery(
                         conn,
-                        "likelyvideo1",
+                        "terminal001",
                         None,
                         "not_found",
                         "",
                         "",
                         "",
                     )
+                    core.save_video_recovery(
+                        conn,
+                        "retryerror1",
+                        None,
+                        "error",
+                        "temporary failure",
+                    )
 
+                automatic = core.placeholder_recovery_candidate_rows(
+                    conn,
+                    order_by="video",
+                )
+                completed = core.placeholder_recovery_candidate_rows(
+                    conn,
+                    include_completed=True,
+                    order_by="video",
+                )
                 likely = core.placeholder_recovery_candidate_rows(
                     conn,
                     include_completed=True,
@@ -79,15 +109,62 @@ class QueuedCliTests(unittest.TestCase):
                 exact = core.placeholder_recovery_candidate_rows(
                     conn,
                     include_completed=True,
-                    video_id="othervideo01",
+                    video_id="unavailcurr",
+                    order_by="video",
+                )
+                forced = core.playlist_placeholder_recovery_rows(
+                    conn,
+                    force=True,
+                    playlist_id="PLzero",
+                )
+
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "transition1",
+                        is_playable=0,
+                        availability="unavailable",
+                        source="metadata",
+                    )
+                    core.upsert_video(
+                        conn,
+                        "unavailret1",
+                        is_playable=1,
+                        availability="public",
+                        source="metadata",
+                    )
+                transitioned = core.placeholder_recovery_candidate_rows(
+                    conn,
                     order_by="video",
                 )
             finally:
                 conn.close()
 
-        self.assertEqual([row["video_id"] for row in likely], ["likelyvideo1"])
-        self.assertEqual([row["video_id"] for row in missing], ["othervideo01"])
-        self.assertEqual([row["video_id"] for row in exact], ["othervideo01"])
+        self.assertEqual(
+            [row["video_id"] for row in automatic],
+            ["retryerror1", "unavailcurr", "unavailret1"],
+        )
+        self.assertEqual(
+            [row["video_id"] for row in completed],
+            ["retryerror1", "terminal001", "unavailcurr", "unavailret1"],
+        )
+        self.assertEqual(
+            [row["video_id"] for row in likely],
+            ["retryerror1", "terminal001", "unavailcurr", "unavailret1"],
+        )
+        self.assertEqual(
+            [row["video_id"] for row in missing],
+            ["terminal001", "unavailcurr", "unavailret1"],
+        )
+        self.assertEqual([row["video_id"] for row in exact], ["unavailcurr"])
+        self.assertEqual(
+            {row["video_id"] for row in forced},
+            {"retryerror1", "terminal001", "unavailcurr", "unavailret1"},
+        )
+        self.assertEqual(
+            [row["video_id"] for row in transitioned],
+            ["retryerror1", "transition1", "unavailcurr"],
+        )
 
     def test_scan_hidden_enqueues_selected_playlists_with_cookie_override(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
