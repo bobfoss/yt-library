@@ -169,7 +169,8 @@ class TemplateDomTests(unittest.TestCase):
         self.assertNotIn("backfillChannelFirstSeen", self.admin.ids)
 
     def test_admin_queue_actions_explain_rebuild_and_clear_scope(self) -> None:
-        self.assertIn("preserves pending Clip, Archivarix recovery, plugin", server.ADMIN_JS)
+        self.assertIn("preserving manual requests", server.ADMIN_JS)
+        self.assertIn("pending Clip and Archivarix recovery work, plugin jobs", server.ADMIN_JS)
         self.assertIn("will not start automatically", server.ADMIN_JS)
         self.assertIn("removes all pending core, Clip, Archivarix recovery, and plugin jobs", server.ADMIN_JS)
 

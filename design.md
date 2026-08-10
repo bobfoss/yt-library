@@ -1144,9 +1144,9 @@ failed, or reported-count mismatch), recent History, new Clip and playlist
 discovery, and never-fetched metadata. Scan age alone does not make a playlist
 due; the explicit Scan all action is the force-refresh path. Update and Rebuild
 do not poll Liked videos. Rebuild replaces the regenerable account, History,
-metadata, and playlist plan rows, while preserving pending Clip, Archivarix
-recovery, plugin, and future non-plan rows. It then applies the due-work plan and
-does not start the dispatcher automatically. Plugins receive `library_initialize` and
+metadata, and playlist plan rows, while preserving manual requests plus pending
+Clip, Archivarix recovery, plugin, and future non-plan rows. It then applies the
+due-work plan and does not start the dispatcher automatically. Plugins receive `library_initialize` and
 `library_update` hooks; Rebuild preserves plugin rows because the host contract
 does not define a generic rebuild hook.
 

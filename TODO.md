@@ -45,8 +45,8 @@ versioned migrations as well as creating a fresh current schema.
 - YouTube and Archivarix cookie paths, launch intervals, and concurrency limits have explicit config keys.
 - The persistent queue dispatches tasks by priority and applies independent YouTube and Archivarix launch cadence and concurrency limits.
 - Initialize, Update, and Rebuild share a declarative library queue planner;
-  Rebuild regenerates automatic core plan rows while preserving Clip,
-  Archivarix-recovery, plugin, and future non-plan work.
+  Rebuild regenerates automatic core plan rows while preserving manual requests,
+  Clip, Archivarix-recovery, plugin, and future non-plan work.
 - Update and Rebuild no longer poll the costly Liked videos system playlist.
   New History occurrences still queue direct metadata for their videos, where
   raw `LIKE`, `DISLIKE`, and `INDIFFERENT` statuses update canonical reaction

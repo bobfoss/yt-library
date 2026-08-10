@@ -504,6 +504,24 @@ test('Archivarix automatic retry is an immediate config-backed advanced switch',
   );
 });
 
+test('queue maintenance controls keep rebuild advanced and rely on automatic status polling', () => {
+  const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
+
+  assert.match(
+    adminHtml,
+    /id="startWorkerQueue"[\s\S]{0,160}id="stopWorkerQueue"[\s\S]{0,160}id="rebuildWorkerQueue"/,
+  );
+  assert.match(
+    adminHtml,
+    /id="rebuildWorkerQueue" class="advanced-only"[^>]*>Rebuild automatic queue<\/button>/,
+  );
+  assert.doesNotMatch(adminHtml, /id="refresh"/);
+  assert.doesNotMatch(adminSource, /getElementById\('refresh'\)/);
+  assert.match(adminSource, /setInterval\(\(\) => \{[\s\S]{0,100}loadStatus\(\)/);
+  assert.match(adminSource, /preserving manual requests/);
+});
+
 test('search filter bootstrap defers leaves until facet counts arrive', () => {
   const indexSource = source('index.js');
 

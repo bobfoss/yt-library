@@ -1595,7 +1595,7 @@ document.getElementById('startWorkerQueue').addEventListener('click', () => post
 fields.retryProxy.addEventListener('click', () => post('/api/admin/proxy/retry').catch(error => alert(error.message)));
 document.getElementById('retryArchivarix').addEventListener('click', () => post('/api/admin/archivarix/retry').catch(error => alert(error.message)));
 document.getElementById('rebuildWorkerQueue').addEventListener('click', () => {
-  const warning = 'Rebuild automatic library work? This replaces pending account, metadata, playlist, and History jobs; preserves pending Clip, Archivarix recovery, plugin, and other non-plan jobs; and queues current Clip and playlist discovery. The rebuilt queue will not start automatically.';
+  const warning = 'Rebuild automatic library work? This replaces automatically planned account, metadata, playlist, and History jobs while preserving manual requests, pending Clip and Archivarix recovery work, plugin jobs, and other non-plan jobs. It also queues current Clip and playlist discovery. The rebuilt queue will not start automatically.';
   if (!confirm(warning)) return;
   post('/api/admin/queue/rebuild').catch(error => alert(error.message));
 });
@@ -1604,7 +1604,6 @@ document.getElementById('clearWorkerQueue').addEventListener('click', () => {
   post('/api/admin/queue/clear').catch(error => alert(error.message));
 });
 document.getElementById('stopWorkerQueue').addEventListener('click', () => stopWorkersNow().catch(error => alert(error.message)));
-document.getElementById('refresh').addEventListener('click', () => loadStatus({ force: true }).catch(error => alert(error.message)));
 for (const field of [
   fields.jobDispatchDelay,
   fields.requestDelayMin,

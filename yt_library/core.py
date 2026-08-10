@@ -7592,6 +7592,24 @@ def clear_worker_queue_type(conn: sqlite3.Connection, worker_type: str) -> int:
     return count
 
 
+def clear_automatic_worker_queue_type(conn: sqlite3.Connection, worker_type: str) -> int:
+    worker_type = (worker_type or "").strip()
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM worker_queue
+        WHERE worker_type = ? AND COALESCE(manual, 0) = 0
+        """,
+        (worker_type,),
+    ).fetchone()
+    count = int(row["count"] or 0)
+    conn.execute(
+        "DELETE FROM worker_queue WHERE worker_type = ? AND COALESCE(manual, 0) = 0",
+        (worker_type,),
+    )
+    return count
+
+
 def clear_worker_queue(conn: sqlite3.Connection) -> int:
     count = worker_queue_count(conn)
     conn.execute("DELETE FROM worker_queue")
@@ -8561,7 +8579,7 @@ def enqueue_library_queue_plan(
     )
 
     cleared_by_type = {
-        worker_type: clear_worker_queue_type(conn, worker_type)
+        worker_type: clear_automatic_worker_queue_type(conn, worker_type)
         for worker_type in plan.replace_worker_types
     }
     preserved_by_type = worker_queue_counts_by_type(conn)

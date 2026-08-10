@@ -1217,7 +1217,7 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(due_ids, {"PLerror", "PLmismatch"})
         self.assertEqual(forced_ids, {"PLoldok", "PLerror", "PLmismatch"})
 
-    def test_rebuild_queue_replaces_plan_rows_and_preserves_non_plan_work(self) -> None:
+    def test_rebuild_queue_replaces_automatic_plan_rows_and_preserves_manual_work(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
             try:
@@ -1232,8 +1232,8 @@ class SchemaTests(unittest.TestCase):
                     conn.execute(
                         "INSERT INTO playlists(playlist_id, title) VALUES ('PLrebuild', 'Due playlist')"
                     )
-                    core.enqueue_account_sync_task(conn)
-                    core.enqueue_history_task(conn, "verify")
+                    core.enqueue_account_sync_task(conn, manual=False)
+                    core.enqueue_history_task(conn, "verify", manual=False)
                     core.enqueue_metadata_item(
                         conn,
                         video_id="obsolete001",
@@ -1263,13 +1263,15 @@ class SchemaTests(unittest.TestCase):
                         """
                         INSERT INTO worker_queue(
                           subject_key, worker_type, task_type, current_title,
-                          created_at, updated_at
-                        ) VALUES (?, ?, 'test', ?, ?, ?)
+                          manual, created_at, updated_at
+                        ) VALUES (?, ?, 'test', ?, ?, ?, ?)
                         """,
                         (
-                            ("placeholder:preserved", "placeholder", "Recovery", now, now),
-                            ("plugin:example:fetch:1", "plugin", "Plugin", now, now),
-                            ("future:preserved", "future", "Future", now, now),
+                            ("account:manual-preserved", "account", "Manual account", 1, now, now),
+                            ("history:manual-preserved", "history", "Manual history", 1, now, now),
+                            ("placeholder:preserved", "placeholder", "Recovery", 0, now, now),
+                            ("plugin:example:fetch:1", "plugin", "Plugin", 0, now, now),
+                            ("future:preserved", "future", "Future", 0, now, now),
                         ),
                     )
 
@@ -1287,22 +1289,37 @@ class SchemaTests(unittest.TestCase):
 
         self.assertEqual(
             stats["cleared_by_type"],
-            {"account": 1, "history": 1, "metadata": 1, "playlist": 1},
+            {"account": 1, "history": 1, "metadata": 0, "playlist": 0},
         )
         self.assertEqual(
             stats["preserved_by_type"],
-            {"clip": 2, "future": 1, "placeholder": 1, "plugin": 1},
+            {
+                "account": 1,
+                "clip": 2,
+                "future": 1,
+                "history": 1,
+                "metadata": 1,
+                "placeholder": 1,
+                "playlist": 1,
+                "plugin": 1,
+            },
         )
-        self.assertEqual(stats["preserved"], 5)
+        self.assertEqual(stats["preserved"], 9)
         self.assertEqual(stats["metadata"], 2)
         self.assertEqual(stats["playlist_scans"], 1)
         self.assertEqual(stats["selected"], 7)
         self.assertEqual(stats["inserted"], 6)
         self.assertEqual(stats["already_queued"], 1)
-        self.assertNotIn("metadata:video:obsolete001", rows)
-        self.assertNotIn("playlist:scan:PLobsolete", rows)
+        self.assertIn("metadata:video:obsolete001", rows)
+        self.assertTrue(rows["metadata:video:obsolete001"]["manual"])
+        self.assertIn("playlist:scan:PLobsolete", rows)
+        self.assertTrue(rows["playlist:scan:PLobsolete"]["manual"])
         self.assertNotIn("history:verify", rows)
         self.assertIn("history:recent", rows)
+        self.assertIn("account:manual-preserved", rows)
+        self.assertTrue(rows["account:manual-preserved"]["manual"])
+        self.assertIn("history:manual-preserved", rows)
+        self.assertTrue(rows["history:manual-preserved"]["manual"])
         self.assertIn("playlist:discover-current", rows)
         self.assertNotIn("playlist:scan:LL", rows)
         self.assertIn("playlist:scan:PLrebuild", rows)

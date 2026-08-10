@@ -2101,7 +2101,7 @@ class AdminServerTests(unittest.TestCase):
             conn = migrated_connection(db_path)
             try:
                 with conn:
-                    core.enqueue_account_sync_task(conn)
+                    core.enqueue_account_sync_task(conn, manual=False)
                     now = core.utc_now()
                     conn.execute(
                         """
