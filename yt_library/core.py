@@ -6872,7 +6872,7 @@ def save_liked_video_reactions(
             continue
         seen_video_ids.add(video_id)
         deduped.append(video)
-        if not video.get("is_playable", True):
+        if video_availability_category(video) == "unavailable":
             unavailable_count += 1
 
     now = utc_now()

@@ -1836,6 +1836,75 @@ class SchemaTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_liked_video_sync_counts_only_canonically_unavailable_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                videos = [
+                    {
+                        "video_id": "publiclike1",
+                        "title": "Public like",
+                        "availability": "public",
+                        "is_playable": True,
+                    },
+                    {
+                        "video_id": "unlistedlk1",
+                        "title": "Unlisted like",
+                        "availability": "unlisted",
+                        "is_playable": True,
+                    },
+                    {
+                        "video_id": "memberslike",
+                        "title": "Members-only like",
+                        "availability": "subscriber_only",
+                        "is_playable": False,
+                    },
+                    {
+                        "video_id": "unavailabl1",
+                        "title": "Unavailable like",
+                        "availability": "unavailable",
+                        "is_playable": False,
+                    },
+                    {
+                        "video_id": "",
+                        "title": "Missing ID",
+                        "availability": "unavailable",
+                        "is_playable": False,
+                    },
+                    {
+                        "video_id": "unavailabl1",
+                        "title": "Duplicate unavailable like",
+                        "availability": "unavailable",
+                        "is_playable": False,
+                    },
+                ]
+
+                with conn:
+                    video_count, unavailable_count = core.save_liked_video_reactions(
+                        conn,
+                        videos,
+                    )
+                reactions = {
+                    row["video_id"]: row["reaction"]
+                    for row in conn.execute(
+                        "SELECT video_id, reaction FROM videos ORDER BY video_id"
+                    )
+                }
+            finally:
+                conn.close()
+
+        self.assertEqual(video_count, 4)
+        self.assertEqual(unavailable_count, 2)
+        self.assertEqual(
+            reactions,
+            {
+                "memberslike": "LIKE",
+                "publiclike1": "LIKE",
+                "unavailabl1": "LIKE",
+                "unlistedlk1": "LIKE",
+            },
+        )
+
     def test_playlist_queue_rebuild_includes_liked_video_sync(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
