@@ -215,11 +215,35 @@ decisions rather than another general cleanup pass.
 
 ## Ranked Remaining Cleanup
 
-### 1. Foreign Playlist Continuation Extraction
+### 1. Verify Canonical Availability After Legacy Archivarix Writes
+
+Archivarix evidence no longer changes canonical YouTube availability as of
+commit `07c3ee7`. The live-data audit found 194 videos that are canonically
+public and playable while retaining `DELETED_*` or `NOT_FOUND` recovery
+evidence; those rows are correct and require no repair.
+
+Six videos have prior positive YouTube evidence but may have had their canonical
+state overwritten by the legacy recovery writer:
+
+- `BslivGNpEr8`
+- `Hzay9vX0h04`
+- `PCfINZpmxcc`
+- `c6Ggs-KZ98s`
+- `pmBjwBHNZkU`
+- `xj27uGjAKwA`
+
+Targeted direct YouTube rescans on 2026-08-10 returned inconclusive
+`no_metadata` for all six, so their existing canonical state was preserved.
+Retry these IDs individually when direct YouTube observation can provide a
+conclusive availability result. Do not infer replacement availability from
+Archivarix status, prior playability, titles, or playlist membership. Preserve
+their `video_recovery` evidence throughout verification.
+
+### 2. Foreign Playlist Continuation Extraction
 
 Foreign playlists can expose fewer rows than their reported count. Continue preserving the best nonzero scan and logging reported versus exposed counts. Investigate continuation behavior only with a concrete fixture and never synthesize unavailable rows from a count gap.
 
-### 2. Saved Searches and History Layouts
+### 3. Saved Searches and History Layouts
 
 The left-navigation library lists are named omni-search presets. Search returns one card per distinct video, playlist, or channel, while History remains a dedicated occurrence view with its activity heatmap, year navigation, date jumps, and chronological repeated watches. Do not add the History heatmap to Search unless a distinct-video activity design is defined.
 
@@ -246,7 +270,9 @@ The left-navigation library lists are named omni-search presets. Search returns 
 
 ## Suggested Order
 
-1. Investigate foreign playlist continuation extraction when a reproducible fixture is available.
-2. Define the History layout extension and the saved-search preset specification.
-3. Persist scheduled Update last-run and failure status across service restarts.
-4. Improve the visual hierarchy and partial-selection states of nested filters.
+1. Retry the six legacy Archivarix-write candidates only when direct YouTube
+   metadata can produce conclusive availability evidence.
+2. Investigate foreign playlist continuation extraction when a reproducible fixture is available.
+3. Define the History layout extension and the saved-search preset specification.
+4. Persist scheduled Update last-run and failure status across service restarts.
+5. Improve the visual hierarchy and partial-selection states of nested filters.
