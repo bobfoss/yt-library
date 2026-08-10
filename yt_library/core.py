@@ -595,6 +595,12 @@ def useful_video_title(value: str, video_id: str = "") -> bool:
     title = (value or "").strip()
     if title == (video_id or "").strip():
         return False
+    if re.match(
+        r"^(?:https?://)?(?:www\.)?(?:youtube\.com/watch(?:\?|$)|youtu\.be/)",
+        title,
+        re.IGNORECASE,
+    ):
+        return False
     return title.lower().strip("[]() ") not in {
         "",
         "youtube",
@@ -7140,6 +7146,14 @@ def worker_log_select(name: str) -> str:
             FROM {table} l
             LEFT JOIN playlists p ON p.playlist_id = l.playlist_id
         """
+    if name == "placeholderRecoveryLogs":
+        return f"""
+            SELECT l.*,
+                   COALESCE(NULLIF(v.title, ''), '') AS subject_title,
+                   l.video_id AS display_id
+            FROM {table} l
+            LEFT JOIN videos v ON v.video_id = l.video_id
+        """
     if name == "metadataLogs":
         identifier_condition = """
             v.video_id IS NOT NULL
@@ -7329,8 +7343,10 @@ def _normalized_worker_log(name: str, row: sqlite3.Row) -> dict[str, Any]:
     if not subject:
         if name == "metadataLogs":
             subject = "" if identifier else (row["video_id"] or "")
-        elif name in {"liveHistoryLogs", "placeholderRecoveryLogs"}:
+        elif name == "liveHistoryLogs":
             subject = row["video_id"] or ""
+        elif name == "placeholderRecoveryLogs":
+            subject = ""
         elif name == "playlistScanLogs":
             subject = row["playlist_id"] or ""
         elif name == "pluginWorkerLogs":

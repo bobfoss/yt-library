@@ -2288,7 +2288,7 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
                     return
                 if status == "found":
                     level = "found"
-                    message = f"found: {title}"
+                    message = str((video or {}).get("status") or "found").strip()
                 elif status == "thumbnail_only":
                     level = "thumbnail"
                     message = f"thumbnail only: {title}"

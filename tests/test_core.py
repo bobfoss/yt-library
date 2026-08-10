@@ -1859,6 +1859,13 @@ class CoreHelperTests(unittest.TestCase):
         video_id = "abc12345678"
         self.assertEqual(core.video_title_or_blank(video_id, video_id), "")
         self.assertEqual(core.video_title_or_blank("Unavailable video", video_id), "")
+        self.assertEqual(
+            core.video_title_or_blank(
+                f"https://www.youtube.com/watch?v={video_id}",
+                video_id,
+            ),
+            "",
+        )
         self.assertEqual(core.video_title_or_blank("A real title", video_id), "A real title")
 
         history_row = core.parse_history_lockup({"contentId": video_id}, "2026-07-30")

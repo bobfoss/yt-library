@@ -2949,6 +2949,78 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_placeholder_found_log_uses_archivarix_status_and_recovered_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            video_id = "abc12345678"
+            placeholder_url = f"https://www.youtube.com/watch?v={video_id}"
+            recovered_title = "Recovered Archivarix title"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        video_id,
+                        title=placeholder_url,
+                        source="youtube_history",
+                    )
+                    core.enqueue_placeholder_recovery_item(
+                        conn,
+                        video_id=video_id,
+                        current_title=placeholder_url,
+                    )
+            finally:
+                conn.close()
+
+            with (
+                patch("yt_library.workers.archivarix_session_status", return_value=(True, "")),
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.recover_archivarix_video",
+                    return_value=(
+                        {
+                            "title": recovered_title,
+                            "status": "DELETED_FULL_META",
+                        },
+                        "",
+                        "",
+                        "found",
+                        "",
+                    ),
+                ),
+            ):
+                PlaceholderRecoveryWorker()._run(
+                    "test-placeholder-found",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                )
+
+            conn = core.connect(db_path)
+            try:
+                video = conn.execute(
+                    "SELECT title FROM videos WHERE video_id = ?",
+                    (video_id,),
+                ).fetchone()
+                log = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM placeholder_recovery_worker_log
+                    WHERE run_id = ?
+                    """,
+                    ("test-placeholder-found",),
+                ).fetchone()
+                rows, total = core.worker_log_page(conn, source="placeholder")
+            finally:
+                conn.close()
+
+        self.assertEqual(video["title"], recovered_title)
+        self.assertEqual(tuple(log), ("found", "DELETED_FULL_META"))
+        self.assertEqual(total, 1)
+        self.assertEqual(rows[0]["identifier"], video_id)
+        self.assertEqual(rows[0]["subject_id"], recovered_title)
+        self.assertEqual(rows[0]["message"], "DELETED_FULL_META")
+
     def test_placeholder_timeout_exhaustion_keeps_queue_entry_and_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
