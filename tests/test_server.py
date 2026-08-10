@@ -7,6 +7,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
@@ -1697,6 +1698,109 @@ class AdminServerTests(unittest.TestCase):
         self.assertTrue(config["admin_advanced"])
         self.assertTrue(payload["admin_advanced"])
         self.assertTrue(response["settings"]["adminAdvanced"])
+
+    def test_archivarix_auto_retry_setting_saves_and_updates_live_scheduler(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "yt_library.config.json"
+            config = load_config(config_path)
+            handler = object.__new__(server.LibraryHandler)
+            handler.path = "/api/admin/archivarix-auto-retry?enabled=0"
+            handler.config_data = config
+            handler.send_json = Mock()
+
+            with patch.object(
+                server.UPDATE_SCHEDULER,
+                "schedule_changed",
+            ) as schedule_changed:
+                handler.do_POST()
+
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            response = handler.send_json.call_args.args[0]
+
+        self.assertFalse(config["archivarix_auto_retry"])
+        self.assertFalse(payload["archivarix_auto_retry"])
+        self.assertFalse(response["settings"]["archivarixAutoRetry"])
+        schedule_changed.assert_called_once_with(config)
+
+    def test_archivarix_auto_retry_due_only_after_rate_limit_utc_day(self) -> None:
+        current = datetime(2026, 8, 10, 0, 0, tzinfo=timezone.utc)
+        prior_rate_limit = {
+            "blocked": True,
+            "reason_code": "rate_limited",
+            "blocked_at": "2026-08-09T23:59:59Z",
+        }
+
+        self.assertTrue(server.archivarix_auto_retry_due(prior_rate_limit, current))
+        self.assertFalse(
+            server.archivarix_auto_retry_due(
+                {**prior_rate_limit, "blocked_at": "2026-08-10T00:00:00Z"},
+                current,
+            )
+        )
+        self.assertFalse(
+            server.archivarix_auto_retry_due(
+                {**prior_rate_limit, "reason_code": "authentication_error"},
+                current,
+            )
+        )
+
+    def test_archivarix_automatic_retry_clears_hold_logs_and_starts_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.set_external_service_block(
+                        conn,
+                        "archivarix",
+                        "rate_limited",
+                        "Archivarix daily search limit reached",
+                    )
+                    conn.execute(
+                        "UPDATE external_service_blocks SET blocked_at = ? WHERE service = ?",
+                        ("2020-01-01T00:00:00Z", "archivarix"),
+                    )
+            finally:
+                conn.close()
+            config = load_config(Path(temp_dir) / "config.json")
+            cookie_file = Path(temp_dir) / "youtube-cookies.txt"
+            video_thumbs = Path(temp_dir) / "video-thumbs"
+
+            with (
+                patch.object(
+                    server.WORKER_QUEUE_DISPATCHER,
+                    "allow_archivarix_retry",
+                ) as allow_retry,
+                patch.object(
+                    server.WORKER_QUEUE_DISPATCHER,
+                    "start",
+                    return_value={"started": True},
+                ) as start,
+            ):
+                result = server.retry_archivarix_queue(
+                    db_path,
+                    cookie_file,
+                    video_thumbs,
+                    config,
+                    automatic=True,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                block = core.external_service_block(conn, "archivarix")
+                log = conn.execute(
+                    "SELECT level, message FROM metadata_worker_log ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertTrue(result["retried"])
+        self.assertTrue(result["cleared"])
+        self.assertFalse(block["blocked"])
+        self.assertEqual(log["level"], "queue info")
+        self.assertIn("new UTC day", log["message"])
+        allow_retry.assert_called_once_with()
+        start.assert_called_once_with(db_path, cookie_file, video_thumbs, config)
 
     def test_update_schedule_endpoint_saves_and_updates_live_scheduler(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

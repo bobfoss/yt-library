@@ -69,6 +69,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "archivarix_stream_timeout_seconds": 30.0,
     "archivarix_retry_attempts": 3,
     "archivarix_retry_backoff_seconds": 2.0,
+    "archivarix_auto_retry": True,
 }
 
 _LEGACY_YOUTUBE_REQUEST_INTERVAL_SECONDS = 5.0
@@ -512,6 +513,13 @@ def configured_archivarix_retry_backoff(config: dict[str, Any]) -> float:
     )
 
 
+def configured_archivarix_auto_retry(config: dict[str, Any]) -> bool:
+    value = config.get("archivarix_auto_retry", DEFAULT_CONFIG["archivarix_auto_retry"])
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 CONFIG_NORMALIZERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "display_timezone": configured_display_timezone,
     "week_start": configured_week_start,
@@ -542,6 +550,7 @@ CONFIG_NORMALIZERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "archivarix_stream_timeout_seconds": configured_archivarix_stream_timeout,
     "archivarix_retry_attempts": configured_archivarix_retry_attempts,
     "archivarix_retry_backoff_seconds": configured_archivarix_retry_backoff,
+    "archivarix_auto_retry": configured_archivarix_auto_retry,
     "proxy": configured_proxy_address,
     "use_proxy": configured_use_proxy,
 }

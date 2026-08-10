@@ -99,7 +99,7 @@ versioned migrations as well as creating a fresh current schema.
 - Archivarix authentication and rate-limit failures persist a service block linked to the triggering placeholder run and queue item.
 - The dispatcher preserves blocked placeholder tasks and continues eligible YouTube, playlist, and history work.
 - Admin shows the block reason and local time and provides a deliberate retry action after credentials or quota state changes.
-- Service restarts retain the block, and Archivarix does not retry automatically without an explicit retry request.
+- Service restarts retain the block. A default-on Advanced setting automatically retries rate-limited Archivarix work after the next UTC-day boundary; authentication, proxy, timeout, and request failures still require deliberate recovery.
 
 ### Shared Collection Card Rendering
 

@@ -27,6 +27,7 @@ from .config import (
     SORT_PREFERENCE_VALUES,
     WEEK_STARTS,
     configured_archivarix_max_in_flight,
+    configured_archivarix_auto_retry,
     configured_admin_advanced,
     configured_channel_history_card_layout,
     configured_channel_playlist_card_layout,
@@ -169,6 +170,7 @@ PREFERENCE_POST_PATHS = frozenset(
 ADMIN_CONFIGURATION_POST_PATHS = frozenset(
     {
         "/api/admin/update-schedule",
+        "/api/admin/archivarix-auto-retry",
         "/api/admin/advanced",
         "/api/admin/settings",
         "/api/admin/service/restart",
@@ -457,6 +459,7 @@ class UpdateScheduler:
         self._next_run_at: datetime | None = None
         self._last_queued_at = ""
         self._last_error = ""
+        self._archivarix_checked_utc_date = ""
 
     def start(
         self,
@@ -473,6 +476,7 @@ class UpdateScheduler:
             self._config_data = config_data
             self._plugin_manager = plugin_manager
             self._next_run_at = self._calculate_next_run(config_data)
+            self._archivarix_checked_utc_date = ""
             if self._thread and self._thread.is_alive():
                 self._wake.set()
                 return
@@ -497,6 +501,7 @@ class UpdateScheduler:
             self._config_data = config_data
             self._next_run_at = self._calculate_next_run(config_data)
             self._last_error = ""
+            self._archivarix_checked_utc_date = ""
         self._wake.set()
 
     def status(self, config_data: dict[str, Any]) -> dict[str, Any]:
@@ -531,6 +536,31 @@ class UpdateScheduler:
                 cookie_file = self._cookie_file
                 video_thumbs = self._video_thumbs
                 plugin_manager = self._plugin_manager
+                archivarix_checked_utc_date = self._archivarix_checked_utc_date
+            current_utc_date = datetime.now(timezone.utc).date().isoformat()
+            if (
+                config_data
+                and configured_archivarix_auto_retry(config_data)
+                and db_path
+                and cookie_file
+                and video_thumbs
+                and archivarix_checked_utc_date != current_utc_date
+            ):
+                try:
+                    retry_archivarix_queue(
+                        db_path,
+                        cookie_file,
+                        video_thumbs,
+                        config_data,
+                        plugin_manager=plugin_manager,
+                        automatic=True,
+                    )
+                except Exception as exc:
+                    with self._lock:
+                        self._last_error = str(exc)
+                else:
+                    with self._lock:
+                        self._archivarix_checked_utc_date = current_utc_date
             if (
                 not config_data
                 or configured_update_frequency(config_data) == "off"
@@ -572,6 +602,66 @@ class UpdateScheduler:
 
 
 UPDATE_SCHEDULER = UpdateScheduler()
+
+
+def _parse_utc_timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat((value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def archivarix_auto_retry_due(
+    block: Mapping[str, Any],
+    now: datetime | None = None,
+) -> bool:
+    if not block.get("blocked") or block.get("reason_code") != "rate_limited":
+        return False
+    blocked_at = _parse_utc_timestamp(str(block.get("blocked_at") or ""))
+    if blocked_at is None:
+        return False
+    current_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return blocked_at.date() < current_utc.date()
+
+
+def retry_archivarix_queue(
+    db_path: Path,
+    cookie_file: Path,
+    video_thumbs: Path,
+    config_data: dict[str, Any],
+    *,
+    plugin_manager: PluginManager | None = None,
+    automatic: bool = False,
+) -> dict[str, Any]:
+    conn = connect(db_path)
+    try:
+        with conn:
+            block = external_service_block(conn, "archivarix")
+            if automatic and not archivarix_auto_retry_due(block):
+                return {"retried": False, "cleared": False, "dispatcher": {}}
+            cleared = clear_external_service_block(conn, "archivarix")
+            if automatic and not cleared:
+                return {"retried": False, "cleared": False, "dispatcher": {}}
+            if automatic:
+                log_worker_queue_event(
+                    conn,
+                    "info",
+                    "Archivarix automatic retry started for the new UTC day.",
+                )
+    finally:
+        conn.close()
+
+    WORKER_QUEUE_DISPATCHER.allow_archivarix_retry()
+    dispatcher_args = (db_path, cookie_file, video_thumbs, config_data)
+    dispatcher = (
+        WORKER_QUEUE_DISPATCHER.start(*dispatcher_args, plugin_manager)
+        if plugin_manager is not None
+        else WORKER_QUEUE_DISPATCHER.start(*dispatcher_args)
+    )
+    return {"retried": True, "cleared": cleared, "dispatcher": dispatcher}
 
 
 class LibraryHandler(http.server.SimpleHTTPRequestHandler):
@@ -1701,6 +1791,18 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             )
             self.send_json({"ok": True, "settings": self.admin_settings()})
             return
+        if parsed.path == "/api/admin/archivarix-auto-retry":
+            enabled = (params.get("enabled") or [""])[0].strip().lower()
+            if enabled not in {"0", "1", "false", "true", "no", "yes", "off", "on"}:
+                self.send_json({"error": "Auto retry must be enabled or disabled"}, status=400)
+                return
+            retry_enabled = enabled in {"1", "true", "yes", "on"}
+            self._update_config(
+                lambda config: config.__setitem__("archivarix_auto_retry", retry_enabled)
+            )
+            UPDATE_SCHEDULER.schedule_changed(self.config_data)
+            self.send_json({"ok": True, "settings": self.admin_settings()})
+            return
         if parsed.path == "/api/admin/settings":
             timezone_name = (params.get("display_timezone") or [""])[0].strip()
             week_start = (
@@ -2010,7 +2112,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 self.cookie_file,
                 self.video_thumbs,
                 self.config_data,
-                plugin_manager=self.plugin_manager,
+                plugin_manager=getattr(self, "plugin_manager", None),
             )
             self.send_json({"ok": True, **result})
             return
@@ -2144,15 +2246,14 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "dispatcher": dispatcher})
             return
         if parsed.path == "/api/admin/archivarix/retry":
-            conn = connect(self.db_path)
-            try:
-                with conn:
-                    cleared = clear_external_service_block(conn, "archivarix")
-            finally:
-                conn.close()
-            WORKER_QUEUE_DISPATCHER.allow_archivarix_retry()
-            dispatcher = self._start_worker_queue()
-            self.send_json({"ok": True, "cleared": cleared, "dispatcher": dispatcher})
+            result = retry_archivarix_queue(
+                self.db_path,
+                self.cookie_file,
+                self.video_thumbs,
+                self.config_data,
+                plugin_manager=self.plugin_manager,
+            )
+            self.send_json({"ok": True, **result})
             return
         if parsed.path == "/api/admin/proxy/retry":
             conn = connect(self.db_path)
@@ -2415,6 +2516,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "updateHourMinute": configured_update_hour_minute(self.config_data),
             "updateTime": configured_update_time(self.config_data),
             "updateSchedule": UPDATE_SCHEDULER.status(self.config_data),
+            "archivarixAutoRetry": configured_archivarix_auto_retry(self.config_data),
             "adminAdvanced": configured_admin_advanced(self.config_data),
         }
 

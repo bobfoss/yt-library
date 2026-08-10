@@ -15,6 +15,7 @@ from yt_library.config import (
     ConfigStore,
     DEFAULT_CONFIG,
     configured_admin_advanced,
+    configured_archivarix_auto_retry,
     configured_archivarix_max_in_flight,
     configured_archivarix_request_timeout,
     configured_archivarix_retry_attempts,
@@ -266,6 +267,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(configured_archivarix_stream_timeout(config), 30.0)
             self.assertEqual(configured_archivarix_retry_attempts(config), 3)
             self.assertEqual(configured_archivarix_retry_backoff(config), 2.0)
+            self.assertTrue(configured_archivarix_auto_retry(config))
             self.assertNotIn("cookies", config)
             self.assertNotIn("pockettube_export", config)
             self.assertNotIn("youtube_proxy", config)
@@ -291,6 +293,9 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(configured_hide_empty_filters({}))
         self.assertTrue(configured_hide_empty_filters({"hide_empty_filters": "yes"}))
         self.assertFalse(configured_hide_empty_filters({"hide_empty_filters": False}))
+        self.assertTrue(configured_archivarix_auto_retry({}))
+        self.assertTrue(configured_archivarix_auto_retry({"archivarix_auto_retry": "yes"}))
+        self.assertFalse(configured_archivarix_auto_retry({"archivarix_auto_retry": False}))
         self.assertEqual(configured_search_card_layout({}), "grid")
         self.assertEqual(configured_playlist_card_layout({}), "grid")
         self.assertEqual(configured_history_card_layout({}), "compact")

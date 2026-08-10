@@ -65,6 +65,7 @@ const fields = {
   proxyBlockMessage: document.getElementById('proxyBlockMessage'),
   archivarixBlock: document.getElementById('archivarixBlock'),
   archivarixBlockMessage: document.getElementById('archivarixBlockMessage'),
+  archivarixAutoRetry: document.getElementById('archivarixAutoRetry'),
   placeholderRunStatus: document.getElementById('placeholderRunStatus'),
   placeholderRunDetails: document.getElementById('placeholderRunDetails'),
   displayTimezone: document.getElementById('displayTimezone'),
@@ -124,6 +125,10 @@ let hideEmptyFiltersSaving = false;
 let hideEmptyFiltersDirty = false;
 let hideEmptyFiltersRevision = 0;
 let savedHideEmptyFilters = true;
+let archivarixAutoRetrySaving = false;
+let archivarixAutoRetryDirty = false;
+let archivarixAutoRetryRevision = 0;
+let savedArchivarixAutoRetry = true;
 let updateScheduleSaving = false;
 let updateScheduleDirty = false;
 let updateScheduleRevision = 0;
@@ -827,6 +832,10 @@ function render(data) {
     savedHideEmptyFilters = settings.hideEmptyFilters !== false;
     fields.hideEmptyFilters.checked = savedHideEmptyFilters;
   }
+  if (!archivarixAutoRetrySaving && !archivarixAutoRetryDirty) {
+    savedArchivarixAutoRetry = settings.archivarixAutoRetry !== false;
+    fields.archivarixAutoRetry.checked = savedArchivarixAutoRetry;
+  }
   if (!updateScheduleSaving && !updateScheduleDirty) {
     fields.updateFrequency.value = settings.updateFrequency || 'off';
     fields.updateTime.value = settings.updateTime || '03:00';
@@ -1164,6 +1173,33 @@ async function saveHideEmptyFilters() {
     hideEmptyFiltersSaving = false;
     if (hideEmptyFiltersDirty || hideEmptyFiltersRevision !== saveRevision) {
       saveHideEmptyFilters();
+    }
+  }
+}
+
+async function saveArchivarixAutoRetry() {
+  if (archivarixAutoRetrySaving || !archivarixAutoRetryDirty) return;
+  const saveRevision = archivarixAutoRetryRevision;
+  const enabled = fields.archivarixAutoRetry.checked;
+  archivarixAutoRetrySaving = true;
+  archivarixAutoRetryDirty = false;
+  try {
+    const payload = await AdminTransport.postJson('/api/admin/archivarix-auto-retry', {
+      enabled: enabled ? '1' : '0',
+    });
+    savedArchivarixAutoRetry = payload.settings?.archivarixAutoRetry !== false;
+    if (archivarixAutoRetryRevision === saveRevision) {
+      fields.archivarixAutoRetry.checked = savedArchivarixAutoRetry;
+    }
+  } catch (error) {
+    if (archivarixAutoRetryRevision === saveRevision) {
+      fields.archivarixAutoRetry.checked = savedArchivarixAutoRetry;
+    }
+    alert(error.message);
+  } finally {
+    archivarixAutoRetrySaving = false;
+    if (archivarixAutoRetryDirty || archivarixAutoRetryRevision !== saveRevision) {
+      saveArchivarixAutoRetry();
     }
   }
 }
@@ -1614,6 +1650,11 @@ fields.hideEmptyFilters.addEventListener('change', () => {
   hideEmptyFiltersDirty = true;
   hideEmptyFiltersRevision += 1;
   saveHideEmptyFilters();
+});
+fields.archivarixAutoRetry.addEventListener('change', () => {
+  archivarixAutoRetryDirty = true;
+  archivarixAutoRetryRevision += 1;
+  saveArchivarixAutoRetry();
 });
 fields.useProxy.addEventListener('change', () => { settingsDirty = true; });
 fields.proxyUrl.addEventListener('input', () => { settingsDirty = true; });

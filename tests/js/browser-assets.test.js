@@ -403,6 +403,19 @@ test('zero-count filters use the config-backed shared visibility path', () => {
   );
 });
 
+test('Archivarix automatic retry is an immediate config-backed advanced switch', () => {
+  const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
+
+  assert.match(adminHtml, /id="archivarixAutoRetry"[^>]*checked/);
+  assert.match(adminHtml, /Auto Retry Archivarix/);
+  assert.match(adminSource, /AdminTransport\.postJson\('\/api\/admin\/archivarix-auto-retry'/);
+  assert.match(
+    adminSource,
+    /fields\.archivarixAutoRetry\.addEventListener\('change',[\s\S]{0,200}saveArchivarixAutoRetry\(\)/,
+  );
+});
+
 test('search filter bootstrap defers leaves until facet counts arrive', () => {
   const indexSource = source('index.js');
 
