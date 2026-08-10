@@ -1788,6 +1788,13 @@ class NormalizedReadModelTests(unittest.TestCase):
             "INSERT INTO playlist_scans(playlist_id, scanned_at, video_count, unavailable_count) VALUES (?, '2026-07-01', ?, ?)",
             [("PLz", 2, 1), ("PLa", 5, 0)],
         )
+        self.add_video("playlist-unavailable", "Unavailable playlist video")
+        self.conn.execute(
+            "UPDATE videos SET availability = 'unavailable', is_playable = 0 WHERE video_id = 'playlist-unavailable'"
+        )
+        self.conn.execute(
+            "INSERT INTO playlist_items(playlist_id, position, video_id) VALUES ('PLz', 1, 'playlist-unavailable')"
+        )
         self.conn.commit()
 
         data = playlist_list_data(
@@ -1818,6 +1825,77 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         unavailable = playlist_list_data(self.conn, unavailable_only=True)
         self.assertEqual([row["playlist_id"] for row in unavailable["results"]], ["PLz"])
+
+    def test_playlist_summaries_use_current_video_availability(self) -> None:
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title, visibility) VALUES ('PLmembers', 'Members', 'private')"
+        )
+        self.conn.execute(
+            """
+            INSERT INTO playlist_scans(
+              playlist_id, scanned_at, video_count, unavailable_count
+            ) VALUES ('PLmembers', '2026-07-01', 1, 1)
+            """
+        )
+        self.add_video("members-video", "Members video")
+        self.conn.execute(
+            """
+            UPDATE videos
+            SET availability = 'subscriber_only', is_playable = 0
+            WHERE video_id = 'members-video'
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO playlist_items(playlist_id, position, video_id)
+            VALUES ('PLmembers', 1, 'members-video')
+            """
+        )
+        self.conn.commit()
+
+        detail = playlist_detail_data(self.conn, "PLmembers")
+        listed = playlist_list_data(self.conn)["results"][0]
+        searched = next(
+            result["item"]
+            for result in omni_search_data(
+                self.conn,
+                "Members",
+                result_kinds={"playlist"},
+            )["results"]
+        )
+
+        self.assertEqual(detail["unavailable_count"], 0)
+        self.assertEqual(listed["unavailable_count"], 0)
+        self.assertEqual(searched["unavailable_count"], 0)
+
+        self.conn.execute(
+            """
+            UPDATE videos
+            SET availability = 'unavailable', is_playable = 0
+            WHERE video_id = 'members-video'
+            """
+        )
+        self.conn.commit()
+
+        self.assertEqual(
+            playlist_detail_data(self.conn, "PLmembers")["unavailable_count"],
+            1,
+        )
+        self.assertEqual(
+            playlist_list_data(self.conn)["results"][0]["unavailable_count"],
+            1,
+        )
+        self.assertEqual(
+            next(
+                result["item"]
+                for result in omni_search_data(
+                    self.conn,
+                    "Members",
+                    result_kinds={"playlist"},
+                )["results"]
+            )["unavailable_count"],
+            1,
+        )
 
     def test_playlist_and_channel_lists_apply_pagination_in_sql(self) -> None:
         self.conn.executemany(

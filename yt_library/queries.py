@@ -21,6 +21,7 @@ from .core import (
     playlist_match_type_note,
     preferred_youtube_channel_reference,
     preferred_youtube_channel_url,
+    video_availability_category as _video_availability_category,
     wayback_video_url,
     youtube_channel_ref_from_url,
     youtube_playlist_url,
@@ -79,6 +80,68 @@ def library_bootstrap_data(conn: sqlite3.Connection) -> dict[str, Any]:
     return {"groups": groups, "memberships": memberships, "counts": counts}
 
 
+def _video_collection_category_sql(
+    *,
+    video_id: str = "video_id",
+    availability: str = "availability",
+    is_playable: str = "is_playable",
+    source_quality: str = "source_quality",
+    match_type: str = "match_type",
+) -> str:
+    return f"""
+        CASE
+          WHEN {source_quality} = 'takeout'
+           AND {match_type} = 'ambiguous_hidden_candidate'
+            THEN 'removed'
+          WHEN COALESCE({video_id}, '') = '' THEN 'unavailable'
+          WHEN lower(COALESCE({availability}, '')) = 'subscriber_only'
+            THEN 'members_only'
+          WHEN lower(COALESCE({availability}, '')) IN ('public', 'unlisted')
+            THEN lower({availability})
+          WHEN lower(COALESCE({availability}, '')) = 'private'
+           AND {is_playable} = 1
+            THEN 'private'
+          WHEN lower(COALESCE({availability}, '')) IN (
+            'private', 'deleted', 'removed', 'unavailable', 'needs_auth', 'premium_only'
+          ) THEN 'unavailable'
+          WHEN {is_playable} = 1 THEN 'public'
+          WHEN {is_playable} = 0 THEN 'unavailable'
+          ELSE 'unknown'
+        END
+    """
+
+
+def _playlist_unavailable_counts_ctes() -> str:
+    category_sql = _video_collection_category_sql(
+        video_id="pi.video_id",
+        availability=(
+            "CASE WHEN pi.video_id IS NULL "
+            "THEN pi.unavailable_kind ELSE v.availability END"
+        ),
+        is_playable="v.is_playable",
+        source_quality="pi.source_quality",
+        match_type="pi.match_type",
+    )
+    return f"""
+        playlist_video_categories AS (
+          SELECT pi.playlist_id,
+                 CASE
+                   WHEN COALESCE(pi.video_id, '') <> '' THEN 'video:' || pi.video_id
+                   ELSE 'slot:' || pi.playlist_id || ':' || pi.position
+                 END AS count_key,
+                 {category_sql} AS collection_category
+          FROM playlist_items pi
+          LEFT JOIN videos v ON v.video_id = pi.video_id
+        ),
+        playlist_unavailable_counts AS (
+          SELECT playlist_id, COUNT(DISTINCT count_key) AS unavailable_count
+          FROM playlist_video_categories
+          WHERE collection_category = 'unavailable'
+          GROUP BY playlist_id
+        )
+    """
+
+
 def _attach_playlist_collaborators(
     conn: sqlite3.Connection,
     playlists: list[dict[str, Any]],
@@ -125,10 +188,11 @@ def _playlist_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = [
         dict(row)
         for row in conn.execute(
-            """
+            f"""
+            WITH {_playlist_unavailable_counts_ctes()}
             SELECT p.*,
                    COALESCE(s.video_count, 0) AS scanned_video_count,
-                   COALESCE(s.unavailable_count, 0) AS unavailable_count,
+                   COALESCE(puc.unavailable_count, 0) AS unavailable_count,
                    s.scanned_at,
                    COALESCE(s.scan_status, '') AS scan_status,
                    COALESCE(ch.title, '') AS owner_channel_title,
@@ -137,6 +201,8 @@ def _playlist_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                    COALESCE(ch.status, '') AS owner_channel_status
             FROM playlists p
             LEFT JOIN playlist_scans s ON s.playlist_id = p.playlist_id
+            LEFT JOIN playlist_unavailable_counts puc
+              ON puc.playlist_id = p.playlist_id
             LEFT JOIN channels ch ON ch.channel_id = p.owner_channel_id
             ORDER BY p.title COLLATE NOCASE
             """
@@ -201,11 +267,12 @@ def playlist_list_data(
         "group_key": group_key.strip(),
         "unavailable_only": int(unavailable_only),
     }
-    filtered_cte = """
-        WITH playlist_rows AS (
+    filtered_cte = f"""
+        WITH {_playlist_unavailable_counts_ctes()},
+        playlist_rows AS (
           SELECT p.*,
                  COALESCE(s.video_count, 0) AS scanned_video_count,
-                 COALESCE(s.unavailable_count, 0) AS unavailable_count,
+                 COALESCE(puc.unavailable_count, 0) AS unavailable_count,
                  s.scanned_at,
                  COALESCE(s.scan_status, '') AS scan_status,
                  CASE
@@ -218,6 +285,8 @@ def playlist_list_data(
                  COALESCE(ch.status, '') AS owner_channel_status
           FROM playlists p
           LEFT JOIN playlist_scans s ON s.playlist_id = p.playlist_id
+          LEFT JOIN playlist_unavailable_counts puc
+            ON puc.playlist_id = p.playlist_id
           LEFT JOIN channels ch ON ch.channel_id = p.owner_channel_id
           WHERE (
               :pattern = '%%'
@@ -241,7 +310,7 @@ def playlist_list_data(
                   )
               )
             )
-            AND (:unavailable_only = 0 OR COALESCE(s.unavailable_count, 0) > 0)
+            AND (:unavailable_only = 0 OR COALESCE(puc.unavailable_count, 0) > 0)
         ),
         categorized AS (
           SELECT playlist_rows.*,
@@ -465,38 +534,6 @@ def _bounded_partial_min_percent(value: Any) -> int:
         return 1
 
 
-def _video_availability_category(item: dict[str, Any]) -> str:
-    if not item.get("video_id"):
-        return "unavailable"
-    availability = str(item.get("availability") or "").strip().lower()
-    if availability == "subscriber_only":
-        return "members_only"
-    status = str(item.get("recovered_status") or "")
-    if status == "NOT_FOUND" or status.startswith("DELETED_"):
-        return "unavailable"
-    if availability in {"public", "unlisted"}:
-        return availability
-    if availability == "private":
-        return (
-            "private"
-            if item.get("is_playable") is True or item.get("is_playable") == 1
-            else "unavailable"
-        )
-    if availability in {
-        "deleted",
-        "removed",
-        "unavailable",
-        "needs_auth",
-        "premium_only",
-    }:
-        return "unavailable"
-    if item.get("is_playable") is True or item.get("is_playable") == 1:
-        return "public"
-    if item.get("is_playable") is False or item.get("is_playable") == 0:
-        return "unavailable"
-    return "unknown"
-
-
 def _video_collection_category(item: dict[str, Any]) -> str:
     if (
         item.get("source_quality") == "takeout"
@@ -666,24 +703,7 @@ def video_collection_data(
     )
     partial_min_percent = _bounded_partial_min_percent(partial_min_percent)
     params["partial_min_percent"] = partial_min_percent
-    collection_category_sql = """
-        CASE
-          WHEN source_quality = 'takeout' AND match_type = 'ambiguous_hidden_candidate'
-            THEN 'removed'
-          WHEN COALESCE(video_id, '') = '' THEN 'unavailable'
-          WHEN lower(COALESCE(availability, '')) = 'subscriber_only' THEN 'members_only'
-          WHEN lower(COALESCE(availability, '')) IN ('public', 'unlisted')
-            THEN lower(availability)
-          WHEN lower(COALESCE(availability, '')) = 'private' AND is_playable = 1
-            THEN 'private'
-          WHEN lower(COALESCE(availability, '')) IN (
-            'private', 'deleted', 'removed', 'unavailable', 'needs_auth', 'premium_only'
-          ) THEN 'unavailable'
-          WHEN is_playable = 1 THEN 'public'
-          WHEN is_playable = 0 THEN 'unavailable'
-          ELSE 'unknown'
-        END
-    """
+    collection_category_sql = _video_collection_category_sql()
     completion_category_sql = """
         CASE
           WHEN COALESCE(video_id, '') = '' THEN 'unknown'
@@ -2155,9 +2175,10 @@ def omni_search_data(
         playlist_title_hit = playlist_title_match if not query or search_titles else "0"
         for row in conn.execute(
             f"""
+            WITH {_playlist_unavailable_counts_ctes()}
             SELECT p.*,
                    COALESCE(ps.video_count, 0) AS scanned_video_count,
-                   COALESCE(ps.unavailable_count, 0) AS unavailable_count,
+                   COALESCE(puc.unavailable_count, 0) AS unavailable_count,
                    ps.scanned_at,
                    COALESCE(ps.scan_status, '') AS scan_status,
                    COALESCE(owner.title, '') AS owner_channel_title,
@@ -2168,6 +2189,8 @@ def omni_search_data(
                    CASE WHEN {playlist_title_hit} THEN 1 ELSE 0 END AS title_hit
             FROM playlists p
             LEFT JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
+            LEFT JOIN playlist_unavailable_counts puc
+              ON puc.playlist_id = p.playlist_id
             LEFT JOIN channels owner ON owner.channel_id = p.owner_channel_id
             LEFT JOIN (
               SELECT pi.playlist_id,

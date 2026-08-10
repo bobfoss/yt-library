@@ -2550,6 +2550,10 @@ class CoreHelperTests(unittest.TestCase):
                     "ok",
                     "",
                 )
+                scan = conn.execute(
+                    "SELECT unavailable_count FROM playlist_scans WHERE playlist_id = 'PLmembers'"
+                ).fetchone()
+                self.assertEqual(scan["unavailable_count"], 0)
 
                 core.store_video_metadata(
                     conn,
@@ -2769,6 +2773,26 @@ class CoreHelperTests(unittest.TestCase):
             "subscriber_only",
         )
         self.assertEqual(core.normalize_video_availability("", "private", None, "LIVE"), "unknown")
+        self.assertEqual(
+            core.video_availability_category(
+                {
+                    "video_id": "members5678",
+                    "availability": "subscriber_only",
+                    "is_playable": 0,
+                }
+            ),
+            "members_only",
+        )
+        self.assertEqual(
+            core.video_availability_category(
+                {
+                    "video_id": "missing5678",
+                    "availability": "unavailable",
+                    "is_playable": 0,
+                }
+            ),
+            "unavailable",
+        )
 
     def test_history_reconciliation_labels_describe_current_fields(self) -> None:
         self.assertEqual(core.history_source_type_label("takeout_youtube"), "Takeout + YouTube")

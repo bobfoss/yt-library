@@ -27,7 +27,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass, field
@@ -238,6 +238,38 @@ def normalize_video_availability(
     if is_playable:
         return "public"
     if is_playable is False or is_playable == 0:
+        return "unavailable"
+    return "unknown"
+
+
+def video_availability_category(item: Mapping[str, Any]) -> str:
+    if not item.get("video_id"):
+        return "unavailable"
+    availability = str(item.get("availability") or "").strip().lower()
+    if availability == "subscriber_only":
+        return "members_only"
+    recovered_status = str(item.get("recovered_status") or "").strip().upper()
+    if recovered_status == "NOT_FOUND" or recovered_status.startswith("DELETED_"):
+        return "unavailable"
+    if availability in {"public", "unlisted"}:
+        return availability
+    if availability == "private":
+        return (
+            "private"
+            if item.get("is_playable") is True or item.get("is_playable") == 1
+            else "unavailable"
+        )
+    if availability in {
+        "deleted",
+        "removed",
+        "unavailable",
+        "needs_auth",
+        "premium_only",
+    }:
+        return "unavailable"
+    if item.get("is_playable") is True or item.get("is_playable") == 1:
+        return "public"
+    if item.get("is_playable") is False or item.get("is_playable") == 0:
         return "unavailable"
     return "unknown"
 
@@ -6512,7 +6544,9 @@ def save_playlist_scan(
         cleaned["position"] = next_position
         normalized_videos.append(cleaned)
     videos = normalized_videos
-    unavailable_count = sum(1 for video in videos if not video["is_playable"])
+    unavailable_count = sum(
+        1 for video in videos if video_availability_category(video) == "unavailable"
+    )
     now = utc_now()
     existing_playlist = conn.execute(
         "SELECT ownership, library_missing_at FROM playlists WHERE playlist_id = ?",
