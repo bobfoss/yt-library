@@ -1217,6 +1217,47 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(detail["clipped_at_text"], "Clipped 4 months ago")
         self.assertEqual(detail["ownership"], "mine")
 
+    def test_clip_ids_cannot_enter_video_storage_or_metadata_queue(self) -> None:
+        clip_id = "UgkxUIUr7iJI7JSqsEGWEYebU5mV1PaMbz9s"
+        video_id_with_similar_prefix = "Ugk12345678"
+
+        self.assertTrue(core.is_youtube_clip_id(clip_id))
+        self.assertFalse(core.is_youtube_clip_id(video_id_with_similar_prefix))
+        self.assertEqual(core.extract_clip_id(clip_id), clip_id)
+        self.assertEqual(core.extract_clip_id(video_id_with_similar_prefix), "")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                routed = core.enqueue_worker_queue_target(conn, clip_id)
+                self.assertEqual(routed["worker_type"], "clip")
+                self.assertEqual(routed["clip_id"], clip_id)
+
+                with self.assertRaisesRegex(ValueError, "clip IDs"):
+                    core.upsert_video(conn, clip_id, source="test")
+                with self.assertRaisesRegex(ValueError, "clip IDs"):
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id=clip_id,
+                        metadata_source="provided",
+                    )
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT video_id FROM videos WHERE video_id = ?",
+                        (clip_id,),
+                    ).fetchone()
+                )
+
+                core.upsert_video(conn, video_id_with_similar_prefix, source="test")
+                self.assertIsNotNone(
+                    conn.execute(
+                        "SELECT video_id FROM videos WHERE video_id = ?",
+                        (video_id_with_similar_prefix,),
+                    ).fetchone()
+                )
+            finally:
+                conn.close()
+
     def test_playlist_owner_visibility_helpers(self) -> None:
         self.assertEqual(core.normalize_playlist_visibility(" Public playlist "), "public")
         self.assertEqual(core.split_playlist_owner_visibility("Private"), ("", "private"))

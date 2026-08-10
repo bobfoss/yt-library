@@ -648,6 +648,18 @@ def video_title_or_blank(value: Any, video_id: str = "") -> str:
     return title if useful_video_title(title, video_id) else ""
 
 
+def is_youtube_clip_id(value: str) -> bool:
+    candidate = (value or "").strip().rstrip(",")
+    return len(candidate) != 11 and bool(
+        re.fullmatch(r"Ugk[A-Za-z0-9_-]+", candidate)
+    )
+
+
+def reject_clip_id_as_video(video_id: str) -> None:
+    if is_youtube_clip_id(video_id):
+        raise ValueError("YouTube clip IDs cannot be stored or queued as video IDs")
+
+
 def upsert_video(
     conn: sqlite3.Connection,
     video_id: str,
@@ -676,6 +688,7 @@ def upsert_video(
     video_id = (video_id or "").strip()
     if not video_id:
         return ""
+    reject_clip_id_as_video(video_id)
     now = updated_at or utc_now()
     channel_id = upsert_channel(
         conn,
@@ -1268,7 +1281,7 @@ def extract_playlist_id(value: str) -> str | None:
 
 def extract_clip_id(value: str) -> str:
     value = (value or "").strip().rstrip(",")
-    if re.fullmatch(r"Ugk[A-Za-z0-9_-]+", value):
+    if is_youtube_clip_id(value):
         return value
     parsed = urllib.parse.urlparse(value)
     parts = [part for part in parsed.path.strip("/").split("/") if part]
@@ -8273,6 +8286,7 @@ def enqueue_metadata_item(
     video_id = (video_id or "").strip()
     channel_id = (channel_id or "").strip()
     metadata_source = (metadata_source or "").strip() or "history"
+    reject_clip_id_as_video(video_id)
     subject_key = metadata_queue_subject_key(video_id, channel_id, metadata_source)
     if not video_id and not channel_id:
         raise ValueError("Metadata queue item needs a video ID or channel ID")
