@@ -2414,6 +2414,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             sort="playlist_order",
         )
         self.assertEqual(unfiltered["total"], 3)
+        self.assertEqual(unfiltered["distinctTotal"], 2)
         self.assertEqual(unfiltered["duplicateCount"], 2)
         self.assertEqual(
             [(row["video_id"], row["position"]) for row in unfiltered["results"]],
@@ -2427,6 +2428,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             sort="playlist_order",
         )
         self.assertEqual(duplicates["total"], 2)
+        self.assertEqual(duplicates["distinctTotal"], 2)
         self.assertEqual(duplicates["duplicateCount"], 2)
         self.assertEqual(
             [(row["video_id"], row["position"]) for row in duplicates["results"]],

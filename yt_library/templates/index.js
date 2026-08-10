@@ -4516,6 +4516,12 @@ function presetLink(preset, label, count) {
   return link;
 }
 
+function setPresetLinkCount(preset, count) {
+  const link = groupsEl.querySelector(`.group[data-preset="${preset}"]`);
+  const countNode = link?.querySelector('.count');
+  if (countNode) countNode.textContent = filterCountText(count);
+}
+
 function searchFilterSlot(kind, className = 'search-filter-slot') {
   const slot = document.createElement('div');
   slot.className = className;
@@ -5229,11 +5235,15 @@ async function render() {
     }
     setDocumentTitle(playlist.title || playlistId);
     const rows = payload.results || [];
+    const distinctVideoCount = Number(
+      payload.distinctTotal
+      ?? Object.values(payload.counts || {}).reduce((sum, value) => sum + Number(value || 0), 0),
+    );
     renderSearchMetaFilters({
       metaCounts: {
         videos: {
           ...(payload.counts || {}),
-          total: Object.values(payload.counts || {}).reduce((sum, value) => sum + Number(value || 0), 0),
+          total: distinctVideoCount,
         },
         videoPlugins: payload.metaCounts?.videoPlugins || {},
       },
@@ -5241,6 +5251,7 @@ async function render() {
       completionCounts: payload.completionCounts || null,
       uploaderCategoryCounts: payload.uploaderCategoryCounts || null,
     });
+    setPresetLinkCount('videos', distinctVideoCount);
     const playlistCount = playlistVideoCountLabel(playlist);
     const playlistHeadingMeta = [
       playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : '',

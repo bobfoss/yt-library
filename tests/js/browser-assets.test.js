@@ -226,6 +226,8 @@ test('playlist detail reuses the sidebar video search facets', () => {
   assert.match(indexSource, /fetchVideoCollection\(\{[\s\S]{0,500}useSearchFacets: true/);
   assert.match(indexSource, /reactionCounts: payload\.reactionCounts/);
   assert.match(indexSource, /uploaderCategoryCounts: payload\.uploaderCategoryCounts/);
+  assert.match(indexSource, /const distinctVideoCount = Number\([\s\S]{0,180}payload\.distinctTotal/);
+  assert.match(indexSource, /setPresetLinkCount\('videos', distinctVideoCount\)/);
   assert.doesNotMatch(indexSource, /function playlistVideoFiltersHtml/);
 });
 

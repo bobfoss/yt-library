@@ -835,6 +835,7 @@ def video_collection_data(
         for category, count in uploader_category_counts.items()
         if category != "total"
     )
+    distinct_total = sum(counts.values())
 
     filter_params = dict(params)
     category_placeholders = ", ".join(
@@ -1046,6 +1047,7 @@ def video_collection_data(
     return {
         "results": results,
         "total": total,
+        "distinctTotal": distinct_total,
         "counts": counts,
         "completionCounts": completion_counts,
         "reactionCounts": reaction_counts,
