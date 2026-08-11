@@ -3775,6 +3775,7 @@ function videoTypeDecoratorHtml(video) {
     isVideoRecord ? video?.video_type || '' : video,
   ).trim().toLowerCase();
   if (videoType === 'video') {
+    if (isVideoRecord) return '';
     return `
       <span class="video-type-decorator" title="Video" role="img" aria-label="Video">
         <svg class="video-type-icon youtube-video-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28.57 20" focusable="false" aria-hidden="true">

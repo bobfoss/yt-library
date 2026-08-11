@@ -795,13 +795,14 @@ test('video type facet precedes availability in search and playlist requests', (
   assert.match(indexSource, /params\.set\('video_type', metaFilterParamValue\(videoTypes\)\)/);
 });
 
-test('video cards decorate Videos, Shorts, and Live after plugin metadata', () => {
+test('video cards decorate Shorts and Live while filters also decorate Videos', () => {
   const indexSource = source('index.js');
   const videoCardSource = source('video-card.js');
   const indexHtml = source('index.html');
   const typeDecoratorSource = namedFunctionSource(indexSource, 'videoTypeDecoratorHtml');
 
   assert.match(typeDecoratorSource, /videoType === 'video'/);
+  assert.match(typeDecoratorSource, /if \(isVideoRecord\) return '';/);
   assert.match(typeDecoratorSource, /class="video-type-icon youtube-video-icon"/);
   assert.match(typeDecoratorSource, /fill="#FF0000"/);
   assert.match(typeDecoratorSource, /videoType === 'short'/);
