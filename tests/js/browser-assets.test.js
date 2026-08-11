@@ -854,6 +854,10 @@ test('video cards render observed feature metadata outside compact layouts', () 
   assert.match(featureSource, /Location:/);
   assert.match(videoCardSource, /\$\{options\.featureMetadataHtml \|\| ''\}/);
   assert.match(indexHtml, /\.search-grid\.layout-compact \.video-feature-metadata,/);
+  assert.match(
+    indexHtml,
+    /\.video-feature-metadata \.badge,[\s\S]{0,100}\.video-feature-metadata \.video-location \{ color: var\(--accent\); \}/,
+  );
 });
 
 test('video type filters reuse the card decorators', () => {
