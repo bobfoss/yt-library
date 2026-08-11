@@ -820,6 +820,7 @@ test('video cards decorate Shorts and Live after plugin metadata', () => {
     namedFunctionSource(indexSource, 'playlistVideoCardFor'),
     /typeDecoratorHtml: videoTypeDecoratorHtml\(video\)/,
   );
+  assert.match(indexHtml, /\.video-type-decorator \{[\s\S]{0,220}font-size: 13px;[\s\S]{0,100}font-weight: 400;/);
   assert.match(indexHtml, /\.video-type-icon \{[\s\S]{0,180}width: 16px;[\s\S]{0,100}fill: currentColor;/);
 });
 
