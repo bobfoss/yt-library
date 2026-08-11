@@ -1861,6 +1861,9 @@ class NormalizedReadModelTests(unittest.TestCase):
                 "UPDATE videos SET video_type = ? WHERE video_id = ?",
                 (video_type, video_id),
             )
+        self.conn.execute(
+            "UPDATE videos SET broadcast_status = 'live' WHERE video_id = 'type-live'"
+        )
         self.conn.commit()
 
         unfiltered = omni_search_data(
@@ -1895,6 +1898,33 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["type-short"],
         )
         self.assertEqual(shorts["videoTypeCounts"], unfiltered["videoTypeCounts"])
+
+        no_livestream_statuses = omni_search_data(
+            self.conn,
+            "type facet",
+            result_kinds={"video"},
+            video_broadcast_status_filters=set(),
+            sort="title",
+            limit=100,
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in no_livestream_statuses["results"]],
+            ["type-movie", "type-short", "type-unknown", "type-video"],
+        )
+
+        active_livestreams = omni_search_data(
+            self.conn,
+            "type facet",
+            result_kinds={"video"},
+            video_type_filters={"livestream"},
+            video_broadcast_status_filters={"live"},
+            sort="title",
+            limit=100,
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in active_livestreams["results"]],
+            ["type-live"],
+        )
 
     def test_omni_search_filters_partial_completion_by_minimum_percentage(self) -> None:
         for video_id, title in (
@@ -2823,7 +2853,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.assertEqual(live["videoTypeCounts"], unfiltered["videoTypeCounts"])
 
-    def test_video_collection_broadcast_status_facet_excludes_ordinary_videos_from_counts(self) -> None:
+    def test_video_collection_broadcast_status_facet_only_filters_livestreams(self) -> None:
         self.conn.execute(
             "INSERT INTO playlists(playlist_id, title) VALUES ('PLbroadcast', 'Broadcasts')"
         )
@@ -2873,6 +2903,27 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(
             active["broadcastStatusCounts"],
             unfiltered["broadcastStatusCounts"],
+        )
+
+        active_livestreams = video_collection_data(
+            self.conn,
+            playlist_id="PLbroadcast",
+            video_type_filters={"livestream"},
+            broadcast_status_filters={"live"},
+        )
+        self.assertEqual(
+            [row["video_id"] for row in active_livestreams["results"]],
+            ["broadcast-live"],
+        )
+
+        no_livestream_statuses = video_collection_data(
+            self.conn,
+            playlist_id="PLbroadcast",
+            broadcast_status_filters=set(),
+        )
+        self.assertEqual(
+            [row["video_id"] for row in no_livestream_statuses["results"]],
+            ["broadcast-ordinary"],
         )
 
     def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:

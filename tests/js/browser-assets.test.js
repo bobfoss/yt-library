@@ -675,7 +675,7 @@ test('single-facet result kinds use the same parent state calculation', () => {
   const end = indexSource.indexOf('\nfunction searchKindForFacet(', start);
   const functionSource = indexSource.slice(start, end);
 
-  assert.match(functionSource, /const facetSelections = facetKeys\.map/);
+  assert.match(functionSource, /const facetSelections = parentFacetKeys\.map/);
   assert.match(functionSource, /parent\.checked = everyFacetHasSelection/);
   assert.match(functionSource, /parent\.indeterminate = everyFacetHasSelection && !allChildrenSelected/);
   assert.doesNotMatch(functionSource, /facetKeys\.length > 1/);
@@ -796,6 +796,17 @@ test('video type facet precedes availability in search and playlist requests', (
   assert.match(indexSource, /video_broadcast_status: metaFilterParamValue\(searchMetaVisibility\.broadcastStatus\)/);
   assert.match(indexSource, /params\.set\('video_type', metaFilterParamValue\(videoTypes\)\)/);
   assert.match(indexSource, /params\.set\('broadcast_status', metaFilterParamValue\(broadcastStatuses\)\)/);
+});
+
+test('broadcast status is nested under livestreams without governing other video types', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+
+  assert.match(indexSource, /const nestedBroadcastStatusFacet = facetHtml\(\{[\s\S]*?key: 'broadcastStatus'/);
+  assert.match(indexSource, /definition\.key === 'livestream'[\s\S]*?nestedHtml: nestedBroadcastStatusFacet/);
+  assert.match(indexSource, /facetKeys\.filter\(key => key !== 'broadcastStatus'\)/);
+  assert.match(indexSource, /function syncNestedBroadcastStatusFacet\(\)[\s\S]*?videoType\.livestream/);
+  assert.match(indexHtml, /\.meta-filter-nested-content \{ margin-left: 18px; \}/);
 });
 
 test('video cards decorate Shorts, Live, and Movies while filters also decorate Videos', () => {

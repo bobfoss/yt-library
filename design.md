@@ -916,6 +916,8 @@ task.
   lifecycle state (`upcoming`, `live`, `ended`, empty for confirmed
   non-broadcast, or null when unobserved/inconclusive). Plugins must keep their
   own domain state, such as live-chat capture and replay availability.
+  In browser filters, broadcast status is nested beneath Livestreams and
+  constrains only livestream rows; other video types pass through independently.
 - `context.library_clips()` streams dictionaries with `clip_id`, `title`,
   `source_video_id`, `source_title`, `start_ms`, `end_ms`, and `availability`,
   ordered by clip ID.

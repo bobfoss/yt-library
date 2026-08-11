@@ -1951,7 +1951,10 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true, assumeAllChecked
   }
   const facetKeys = searchKindFacetKeys(kind);
   if (!facetKeys.length) return;
-  const facetSelections = facetKeys.map(key => (
+  const parentFacetKeys = kind === 'videos'
+    ? facetKeys.filter(key => key !== 'broadcastStatus')
+    : facetKeys;
+  const facetSelections = parentFacetKeys.map(key => (
     [...searchFilterRegion.querySelectorAll(`[data-meta-child-filter="search-${key}"]`)]
       .map(input => input.checked)
   )).filter(values => values.length);
@@ -1984,6 +1987,17 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true, assumeAllChecked
     }
     parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !everyFacetHasSelection);
   }
+}
+
+function syncNestedBroadcastStatusFacet() {
+  const facet = searchFilterRegion.querySelector(
+    '[data-search-tree-node="facet:broadcastStatus"]'
+  );
+  if (!(facet instanceof HTMLElement)) return;
+  const enabled = Boolean(searchMetaVisibility.videoType.livestream);
+  facet.classList.toggle('dimmed', !enabled);
+  for (const input of facet.querySelectorAll('input')) input.disabled = !enabled;
+  for (const button of facet.querySelectorAll('button')) button.disabled = !enabled;
 }
 
 function searchKindForFacet(facetKey) {
@@ -3296,7 +3310,8 @@ function metaFilterChildrenHtml({
     counts,
     definitions,
   );
-  return applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '', minimumPercent = null, minimumAttribute = '' }) => minimumPercent === null ? `
+  return applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '', minimumPercent = null, minimumAttribute = '', nestedHtml = '' }) => {
+    const filterHtml = minimumPercent === null ? `
         <label class="meta-filter meta-filter-child">
           <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
           ${visibilityIcon
@@ -3315,7 +3330,15 @@ function metaFilterChildrenHtml({
             <span>% <span class="meta-filter-count">${filterCountText(metaFilterCount(counts, key))}</span></span>
           </span>
         </div>
-  `).join('');
+    `;
+    if (!nestedHtml) return filterHtml;
+    return `
+      <div class="meta-filter-nested-option">
+        ${filterHtml}
+        <div class="meta-filter-nested-content">${nestedHtml}</div>
+      </div>
+    `;
+  }).join('');
 }
 
 function parentFilterCheckboxHtml(dataAttribute, value) {
@@ -3505,12 +3528,24 @@ function searchMetaFiltersHtml(
   const uploaderCategoryDefinitions = uploaderCategoryMetaFilterDefinitions(
     uploaderCategoryCounts,
   );
+  const nestedBroadcastStatusFacet = facetHtml({
+    key: 'broadcastStatus',
+    visibility: searchMetaVisibility.broadcastStatus,
+    definitions: broadcastStatusMetaFilterDefinitions,
+    counts: broadcastStatusCounts,
+    allLabel: 'Broadcast status',
+    kind: 'videos',
+  });
+  const nestedVideoTypeDefinitions = videoTypeMetaFilterDefinitions.map(definition => (
+    definition.key === 'livestream'
+      ? { ...definition, nestedHtml: nestedBroadcastStatusFacet }
+      : definition
+  ));
   const clipCount = metaCounts?.clips?.total;
   const showClips = !hideEmptyFilters || Number(clipCount ?? data?.counts?.clips ?? 0) > 0;
   return [
     kindHtml('Videos', 'videos', metaCounts?.videos?.total, [
-      facetHtml({ key: 'videoType', visibility: searchMetaVisibility.videoType, definitions: videoTypeMetaFilterDefinitions, counts: videoTypeCounts, allLabel: 'Type', kind: 'videos' }),
-      facetHtml({ key: 'broadcastStatus', visibility: searchMetaVisibility.broadcastStatus, definitions: broadcastStatusMetaFilterDefinitions, counts: broadcastStatusCounts, allLabel: 'Broadcast status', kind: 'videos' }),
+      facetHtml({ key: 'videoType', visibility: searchMetaVisibility.videoType, definitions: nestedVideoTypeDefinitions, counts: videoTypeCounts, allLabel: 'Type', kind: 'videos' }),
       facetHtml({ key: 'videos', visibility: searchMetaVisibility.videos, definitions: visibleVideoMetaFilterDefinitions(metaCounts?.videos, { includeRemoved: selected.startsWith('__playlist__:') }), counts: metaCounts?.videos, allLabel: 'Availability', kind: 'videos' }),
       facetHtml({ key: 'reactions', visibility: searchMetaVisibility.reactions, definitions: reactionMetaFilterDefinitions, counts: reactionCounts, allLabel: 'Reactions', kind: 'videos' }),
       facetHtml({ key: 'completion', visibility: searchMetaVisibility.completion, definitions: completionMetaFilterDefinitions(partialCompletionMinimumPercent, 'search-completion-minimum'), counts: completionCounts, allLabel: 'Completion', kind: 'videos' }),
@@ -3615,6 +3650,7 @@ function renderSearchMetaFilters({
   ]) {
     syncSearchKindFilter(kind, true, countsPending);
   }
+  syncNestedBroadcastStatusFacet();
   updateSearchMetaProgress();
 }
 
