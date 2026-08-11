@@ -1117,6 +1117,13 @@ The database models the best-known current state of YouTube. Imports and scans r
 
 Parsers may use titles, channels, descriptions, and URLs transiently to update canonical entities, then discard those source copies. Metadata revisions and complete historical playlist snapshots are intentionally not retained.
 
+Nullable categorical and text video features use a deliberate three-way state.
+`NULL` means the feature has not been authoritatively observed, an empty string
+means a successful scan observed the ordinary or absent state, and a named value
+means the feature was present. Numeric observations such as maximum video height
+are either `NULL` or the measured value. Failed or unavailable scans preserve
+prior observations instead of collapsing unknown and absent into the same value.
+
 Runtime settings, including the display timezone, request launch intervals, concurrency limits, cookie paths, and bind address, live in `yt_library.config.json`, not in SQLite. An empty display timezone is treated as UTC by the server until the browser detects an IANA timezone and saves it through the settings endpoint.
 
 Unknown playlist slots use `NULL` video IDs and structured unavailable state. Stable YouTube video, playlist, and channel URLs are generated from IDs. Wayback links are generated from a video ID plus the retained capture timestamp.

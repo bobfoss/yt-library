@@ -272,6 +272,7 @@
         ? `<div class="video-availability-row">${options.availabilityHtml}<span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>${options.typeDecoratorHtml || ''}${options.compactAvailabilityHtml || ''}</div>`
         : ''}
       ${options.movieMetadataHtml || ''}
+      ${options.featureMetadataHtml || ''}
       ${badgeRowsHtml(options.badges)}
       ${detailRowHtml(options.details)}
       ${detailRowHtml(options.durationDetails, 'details video-duration-details')}

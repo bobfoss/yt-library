@@ -121,6 +121,43 @@ class NormalizedReadModelTests(unittest.TestCase):
             self.assertEqual(item["movie_release_date"], "2019")
             self.assertEqual(item["movie_offer"], "Buy or rent")
 
+    def test_video_read_models_expose_feature_metadata(self) -> None:
+        core.upsert_video(
+            self.conn,
+            "feature12345",
+            title="Feature Video",
+            max_video_height=4320,
+            spatial_format="360",
+            stereo_layout="left_right",
+            dynamic_range="hdr",
+            license="Creative Commons Attribution license",
+            location_name="Maui",
+            source="metadata",
+        )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES ('feature-history', 'feature12345', '2026-08-03', 'date_only')
+            """
+        )
+        self.conn.commit()
+
+        detail = video_detail_data(self.conn, "feature12345")
+        search_item = next(
+            result["item"]
+            for result in omni_search_data(self.conn, "Feature Video")["results"]
+            if result["kind"] == "video"
+        )
+        history_item = history_search_data(self.conn, "Feature Video")["watch"][0]
+
+        for item in (detail, search_item, history_item):
+            self.assertEqual(item["max_video_height"], 4320)
+            self.assertEqual(item["spatial_format"], "360")
+            self.assertEqual(item["stereo_layout"], "left_right")
+            self.assertEqual(item["dynamic_range"], "hdr")
+            self.assertEqual(item["license"], "Creative Commons Attribution license")
+            self.assertEqual(item["location_name"], "Maui")
+
     def test_channel_status_transition_is_consistent_across_read_models(self) -> None:
         channel_id = "UC_status_transition"
         core.upsert_channel(

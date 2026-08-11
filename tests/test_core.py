@@ -2802,6 +2802,235 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_watch_metadata_extracts_resolution_360_and_hdr_features(self) -> None:
+        player = {
+            "playabilityStatus": {"status": "OK"},
+            "videoDetails": {"videoId": "feature360a", "title": "Feature Video"},
+            "streamingData": {
+                "adaptiveFormats": [
+                    {
+                        "mimeType": "video/webm; codecs=\"vp9\"",
+                        "height": 4320,
+                        "qualityLabel": "4320s",
+                        "projectionType": "EQUIRECTANGULAR",
+                    },
+                    {
+                        "mimeType": "video/webm; codecs=\"vp9.2\"",
+                        "height": 2160,
+                        "qualityLabel": "2160p60 HDR",
+                        "transferCharacteristics": (
+                            "COLOR_TRANSFER_CHARACTERISTICS_SMPTEST2084"
+                        ),
+                    },
+                    {"mimeType": "audio/webm; codecs=\"opus\""},
+                ]
+            },
+        }
+        html = (
+            "<script>var ytInitialPlayerResponse = "
+            + json.dumps(player)
+            + "; var ytInitialData = {};</script>"
+        )
+
+        metadata = core.extract_watch_metadata(html, "feature360a")
+
+        self.assertEqual(metadata["max_video_height"], 4320)
+        self.assertEqual(metadata["spatial_format"], "360")
+        self.assertEqual(metadata["stereo_layout"], "")
+        self.assertEqual(metadata["dynamic_range"], "hdr")
+
+    def test_watch_metadata_extracts_vr180_and_location_features(self) -> None:
+        player = {
+            "playabilityStatus": {"status": "OK"},
+            "videoDetails": {"videoId": "featurevr180", "title": "Maui"},
+            "playerConfig": {"vrConfig": {"partialSpherical": True}},
+            "streamingData": {
+                "adaptiveFormats": [
+                    {
+                        "mimeType": "video/webm; codecs=\"vp9\"",
+                        "height": 2160,
+                        "qualityLabel": "2160s",
+                        "projectionType": "MESH",
+                    }
+                ]
+            },
+        }
+        initial = {
+            "videoPrimaryInfoRenderer": {
+                "badges": [{"metadataBadgeRenderer": {"label": "VR180"}}],
+                "superTitleLink": {
+                    "runs": [{"text": "MAUI"}],
+                    "accessibility": {
+                        "accessibilityData": {
+                            "label": (
+                                "Link to a location restricted search for videos "
+                                "geo tagged with Maui"
+                            )
+                        }
+                    },
+                },
+            }
+        }
+        html = (
+            "<script>var ytInitialPlayerResponse = "
+            + json.dumps(player)
+            + "; var ytInitialData = "
+            + json.dumps(initial)
+            + ";</script>"
+        )
+
+        metadata = core.extract_watch_metadata(html, "featurevr180")
+
+        self.assertEqual(metadata["spatial_format"], "vr180")
+        self.assertEqual(metadata["location_name"], "MAUI")
+
+    def test_watch_metadata_extracts_stereo_and_license_features(self) -> None:
+        player = {
+            "playabilityStatus": {"status": "OK"},
+            "videoDetails": {"videoId": "feature3dabc", "title": "Stereo Video"},
+            "streamingData": {
+                "adaptiveFormats": [
+                    {
+                        "mimeType": "video/mp4; codecs=\"avc1\"",
+                        "height": 1080,
+                        "projectionType": "RECTANGULAR",
+                        "stereoLayout": "STEREO_LAYOUT_LEFT_RIGHT",
+                    }
+                ]
+            },
+        }
+        initial = {
+            "metadataRowContainerRenderer": {
+                "rows": [
+                    {
+                        "metadataRowRenderer": {
+                            "title": {"simpleText": "License"},
+                            "contents": [
+                                {
+                                    "simpleText": (
+                                        "Creative Commons Attribution license "
+                                        "(reuse allowed)"
+                                    )
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        }
+        html = (
+            "<script>var ytInitialPlayerResponse = "
+            + json.dumps(player)
+            + "; var ytInitialData = "
+            + json.dumps(initial)
+            + ";</script>"
+        )
+
+        metadata = core.extract_watch_metadata(html, "feature3dabc")
+
+        self.assertEqual(metadata["max_video_height"], 1080)
+        self.assertEqual(metadata["spatial_format"], "")
+        self.assertEqual(metadata["stereo_layout"], "left_right")
+        self.assertEqual(metadata["dynamic_range"], "sdr")
+        self.assertEqual(
+            metadata["license"],
+            "Creative Commons Attribution license (reuse allowed)",
+        )
+
+    def test_failed_feature_observation_preserves_prior_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "featurekeep1",
+                        title="Known feature video",
+                        max_video_height=2160,
+                        spatial_format="360",
+                        stereo_layout="left_right",
+                        dynamic_range="hdr",
+                        license="Creative Commons Attribution license",
+                        location_name="Maui",
+                        source="metadata",
+                    )
+                    core.upsert_video(
+                        conn,
+                        "featurekeep1",
+                        source="metadata",
+                    )
+                stored = conn.execute(
+                    """
+                    SELECT max_video_height, spatial_format, stereo_layout,
+                           dynamic_range, license, location_name
+                    FROM videos
+                    WHERE video_id = 'featurekeep1'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    dict(stored),
+                    {
+                        "max_video_height": 2160,
+                        "spatial_format": "360",
+                        "stereo_layout": "left_right",
+                        "dynamic_range": "hdr",
+                        "license": "Creative Commons Attribution license",
+                        "location_name": "Maui",
+                    },
+                )
+            finally:
+                conn.close()
+
+    def test_empty_feature_observation_clears_prior_special_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "featureclear",
+                        title="Former special feature video",
+                        max_video_height=4320,
+                        spatial_format="360",
+                        stereo_layout="left_right",
+                        dynamic_range="hdr",
+                        license="Creative Commons Attribution license",
+                        location_name="Maui",
+                        source="metadata",
+                    )
+                    core.upsert_video(
+                        conn,
+                        "featureclear",
+                        max_video_height=1080,
+                        spatial_format="",
+                        stereo_layout="",
+                        dynamic_range="sdr",
+                        license="",
+                        location_name="",
+                        source="metadata",
+                    )
+                stored = conn.execute(
+                    """
+                    SELECT max_video_height, spatial_format, stereo_layout,
+                           dynamic_range, license, location_name
+                    FROM videos
+                    WHERE video_id = 'featureclear'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    dict(stored),
+                    {
+                        "max_video_height": 1080,
+                        "spatial_format": "",
+                        "stereo_layout": "",
+                        "dynamic_range": "sdr",
+                        "license": "",
+                        "location_name": "",
+                    },
+                )
+            finally:
+                conn.close()
+
     def test_watch_metadata_classifies_accessible_private_visibility(self) -> None:
         html = """
         <html><body>

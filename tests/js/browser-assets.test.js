@@ -837,6 +837,25 @@ test('video cards decorate Shorts, Live, and Movies while filters also decorate 
   assert.match(indexHtml, /\.youtube-video-icon \{[\s\S]{0,100}width: 19px;[\s\S]{0,80}height: 13px;[\s\S]{0,80}flex-basis: 19px;/);
 });
 
+test('video cards render observed feature metadata outside compact layouts', () => {
+  const indexSource = source('index.js');
+  const videoCardSource = source('video-card.js');
+  const indexHtml = source('index.html');
+  const featureSource = namedFunctionSource(indexSource, 'videoFeatureMetadataHtml');
+
+  assert.match(featureSource, /height >= 4320/);
+  assert.match(featureSource, /height >= 2160/);
+  assert.match(featureSource, /height >= 720/);
+  assert.match(featureSource, /spatialFormat === '360'/);
+  assert.match(featureSource, /spatialFormat === 'vr180'/);
+  assert.match(featureSource, /stereoLayout === 'left_right'/);
+  assert.match(featureSource, /dynamicRange === 'hdr'/);
+  assert.match(featureSource, /includes\('creative commons'\)/);
+  assert.match(featureSource, /Location:/);
+  assert.match(videoCardSource, /\$\{options\.featureMetadataHtml \|\| ''\}/);
+  assert.match(indexHtml, /\.search-grid\.layout-compact \.video-feature-metadata,/);
+});
+
 test('video type filters reuse the card decorators', () => {
   const indexSource = source('index.js');
   const definitionsStart = indexSource.indexOf('const videoTypeMetaFilterDefinitions');

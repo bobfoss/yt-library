@@ -53,6 +53,16 @@ class DatabaseModuleTests(unittest.TestCase):
                 video_columns
             )
         )
+        self.assertTrue(
+            {
+                "max_video_height",
+                "spatial_format",
+                "stereo_layout",
+                "dynamic_range",
+                "license",
+                "location_name",
+            }.issubset(video_columns)
+        )
         self.assertIn("payload_json", queue_columns)
         self.assertIn("plugin_subject_id", queue_columns)
         self.assertIn("clip_id", queue_columns)
@@ -388,6 +398,49 @@ class DatabaseModuleTests(unittest.TestCase):
                 video_columns
             )
         )
+
+    def test_database_module_migrates_video_features_from_version_24(self) -> None:
+        feature_columns = {
+            "max_video_height",
+            "spatial_format",
+            "stereo_layout",
+            "dynamic_range",
+            "license",
+            "location_name",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO videos(video_id, title) VALUES ('featurekeep1', 'Keep me')"
+                    )
+                    for column in feature_columns:
+                        conn.execute(f"ALTER TABLE videos DROP COLUMN {column}")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 25")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                video_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+                }
+                retained = conn.execute(
+                    "SELECT title FROM videos WHERE video_id = 'featurekeep1'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertEqual(retained, "Keep me")
+        self.assertTrue(feature_columns.issubset(video_columns))
 
 
 if __name__ == "__main__":

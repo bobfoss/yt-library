@@ -699,6 +699,12 @@ def upsert_video(
     movie_rating: str = "",
     movie_release_date: str = "",
     movie_offer: str = "",
+    max_video_height: int | None = None,
+    spatial_format: str | None = None,
+    stereo_layout: str | None = None,
+    dynamic_range: str | None = None,
+    license: str | None = None,
+    location_name: str | None = None,
     thumbnail_url: str = "",
     thumbnail_path: str = "",
     reaction: str = "",
@@ -742,6 +748,14 @@ def upsert_video(
             return ""
         return current(name, incoming)
 
+    def current_observation(name: str, incoming: Any) -> Any:
+        if incoming is None:
+            return existing[name] if existing else None
+        if authoritative:
+            return incoming.strip() if isinstance(incoming, str) else incoming
+        existing_value = existing[name] if existing else None
+        return existing_value if existing_value is not None else incoming
+
     incoming_title = video_title_or_blank(title, video_id)
     existing_title = str(existing["title"] or "").strip() if existing else ""
     if incoming_title and (authoritative or not useful_video_title(existing_title, video_id)):
@@ -780,6 +794,12 @@ def upsert_video(
         current_movie_field("movie_rating", movie_rating),
         current_movie_field("movie_release_date", movie_release_date),
         current_movie_field("movie_offer", movie_offer),
+        current_observation("max_video_height", max_video_height),
+        current_observation("spatial_format", spatial_format),
+        current_observation("stereo_layout", stereo_layout),
+        current_observation("dynamic_range", dynamic_range),
+        current_observation("license", license),
+        current_observation("location_name", location_name),
         current("thumbnail_url", thumbnail_url),
         current("thumbnail_path", thumbnail_path),
         current("reaction", reaction),
@@ -799,6 +819,7 @@ def upsert_video(
             UPDATE videos SET
               title=?, description=?, channel_id=?, duration_text=?, view_count=?, upload_date=?,
               uploader_category=?, video_type=?, movie_rating=?, movie_release_date=?, movie_offer=?,
+              max_video_height=?, spatial_format=?, stereo_layout=?, dynamic_range=?, license=?, location_name=?,
               thumbnail_url=?, thumbnail_path=?, reaction=?, is_playable=?,
               availability=?, metadata_source=?,
               fetch_status=?, fetch_error=?, fetched_at=?, last_seen_available_at=?,
@@ -813,10 +834,11 @@ def upsert_video(
             INSERT INTO videos(
               video_id, title, description, channel_id, duration_text, view_count, upload_date,
               uploader_category, video_type, movie_rating, movie_release_date, movie_offer,
+              max_video_height, spatial_format, stereo_layout, dynamic_range, license, location_name,
               thumbnail_url, thumbnail_path, reaction, is_playable, availability, metadata_source,
               fetch_status, fetch_error, fetched_at, last_seen_available_at,
               last_checked_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (video_id, *values),
         )
@@ -3499,7 +3521,139 @@ def youtube_movie_metadata(
     }
 
 
-def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
+def youtube_video_feature_metadata(
+    player: Mapping[str, Any],
+    initial_data: Mapping[str, Any],
+) -> dict[str, Any]:
+    playability = player.get("playabilityStatus", {})
+    details = player.get("videoDetails", {})
+    page_observed = (
+        str(playability.get("status") or "").strip().upper() == "OK"
+        and bool(details)
+    )
+    streaming_data = player.get("streamingData", {})
+    formats = [
+        item
+        for key in ("formats", "adaptiveFormats")
+        for item in streaming_data.get(key, [])
+        if isinstance(item, dict)
+        and str(item.get("mimeType") or "").lower().startswith("video/")
+    ]
+    formats_observed = page_observed and bool(formats)
+    if not formats_observed:
+        max_video_height = None
+        spatial_format = None
+        stereo_layout = None
+        dynamic_range = None
+    else:
+        heights = []
+        for item in formats:
+            try:
+                height = int(item.get("height") or 0)
+            except (TypeError, ValueError):
+                height = 0
+            if height > 0:
+                heights.append(height)
+        max_video_height = max(heights) if heights else None
+
+        primary_info = _first_youtube_renderer(initial_data, "videoPrimaryInfoRenderer")
+        badge_labels = {
+            str(badge.get("label") or "").strip().casefold()
+            for node in primary_info.get("badges", [])
+            if isinstance(node, dict)
+            and isinstance((badge := node.get("metadataBadgeRenderer")), dict)
+        }
+        vr_config = player.get("playerConfig", {}).get("vrConfig", {})
+        partial_spherical = vr_config.get("partialSpherical")
+        projections = {
+            str(item.get("projectionType") or "").strip().upper()
+            for item in formats
+            if item.get("projectionType")
+        }
+        if "vr180" in badge_labels or partial_spherical is True:
+            spatial_format = "vr180"
+        elif "EQUIRECTANGULAR" in projections or (
+            "MESH" in projections and partial_spherical is False
+        ):
+            spatial_format = "360"
+        elif "MESH" in projections:
+            spatial_format = None
+        else:
+            spatial_format = ""
+
+        stereo_values = {
+            str(item.get("stereoLayout") or "").strip().upper()
+            for item in formats
+            if item.get("stereoLayout")
+        }
+        if "STEREO_LAYOUT_LEFT_RIGHT" in stereo_values:
+            stereo_layout = "left_right"
+        elif "STEREO_LAYOUT_TOP_BOTTOM" in stereo_values:
+            stereo_layout = "top_bottom"
+        else:
+            stereo_layout = ""
+
+        hdr_transfers = {
+            "COLOR_TRANSFER_CHARACTERISTICS_SMPTEST2084",
+            "COLOR_TRANSFER_CHARACTERISTICS_ARIB_STD_B67",
+        }
+        is_hdr = any(
+            "HDR" in str(item.get("qualityLabel") or "").upper()
+            or str(item.get("transferCharacteristics") or "").upper()
+            in hdr_transfers
+            for item in formats
+        )
+        dynamic_range = "hdr" if is_hdr else "sdr"
+
+    license_label = None
+    location_name = None
+    if page_observed:
+        license_label = ""
+        row_container = _first_youtube_renderer(
+            initial_data,
+            "metadataRowContainerRenderer",
+        )
+        for row in row_container.get("rows", []):
+            renderer = row.get("metadataRowRenderer", {}) if isinstance(row, dict) else {}
+            label = text_from_runs(renderer.get("title") or {}).strip().casefold()
+            if label != "license":
+                continue
+            values = [
+                text_from_runs(value).strip()
+                for value in renderer.get("contents", [])
+                if isinstance(value, dict) and text_from_runs(value).strip()
+            ]
+            license_label = ", ".join(values)
+            break
+
+        location_name = ""
+        primary_info = _first_youtube_renderer(initial_data, "videoPrimaryInfoRenderer")
+        super_title = primary_info.get("superTitleLink", {})
+        accessibility_labels = [
+            str(node.get("label") or "").strip()
+            for node in walk(super_title)
+            if isinstance(node, dict)
+            and node.get("label")
+            and (
+                "accessibility" in node
+                or set(node).issubset({"label"})
+            )
+        ]
+        location_accessibility = " ".join(accessibility_labels).casefold()
+        if "location restricted" in location_accessibility or "geo tagged" in location_accessibility:
+            location_name = text_from_runs(super_title).strip()
+
+    return {
+        "max_video_height": max_video_height,
+        "spatial_format": spatial_format,
+        "stereo_layout": stereo_layout,
+        "dynamic_range": dynamic_range,
+        "license": license_label,
+        "location_name": location_name,
+    }
+
+
+def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, Any]:
     player = extract_json_assignment(html_text, "ytInitialPlayerResponse")
     initial_data = extract_json_assignment(html_text, "ytInitialData")
     details = player.get("videoDetails", {}) if isinstance(player, dict) else {}
@@ -3542,6 +3696,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         channel_url = ""
         channel_thumbnail_url = ""
     movie_metadata = youtube_movie_metadata(details, initial_data)
+    feature_metadata = youtube_video_feature_metadata(player, initial_data)
     return {
         "video_id": video_id,
         "title": title,
@@ -3555,6 +3710,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         "uploader_category": str(microformat.get("category") or "").strip(),
         "video_type": youtube_video_type(details, microformat),
         **movie_metadata,
+        **feature_metadata,
         "thumbnail_url": thumbnail_url,
         "channel_thumbnail_url": channel_thumbnail_url,
         "reaction": reaction,
@@ -3569,7 +3725,7 @@ def fetch_watch_metadata(
     video_id: str,
     thumb_dir: Path,
     require_authenticated: bool = False,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     watch_url = f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}"
     page = request_text(opener, watch_url)
     if require_authenticated and not youtube_page_is_authenticated(page):
@@ -3637,7 +3793,7 @@ def resolve_metadata_target(
 
 def store_video_metadata(
     conn: sqlite3.Connection,
-    metadata: dict[str, str],
+    metadata: dict[str, Any],
     status: str,
     error: str = "",
     updated_at: str | None = None,
@@ -3684,6 +3840,12 @@ def store_video_metadata(
         movie_rating=metadata.get("movie_rating", ""),
         movie_release_date=metadata.get("movie_release_date", ""),
         movie_offer=metadata.get("movie_offer", ""),
+        max_video_height=metadata.get("max_video_height"),
+        spatial_format=metadata.get("spatial_format"),
+        stereo_layout=metadata.get("stereo_layout"),
+        dynamic_range=metadata.get("dynamic_range"),
+        license=metadata.get("license"),
+        location_name=metadata.get("location_name"),
         thumbnail_url=metadata.get("thumbnail_url", ""),
         thumbnail_path=metadata.get("thumbnail_path", ""),
         reaction=metadata.get("reaction", ""),

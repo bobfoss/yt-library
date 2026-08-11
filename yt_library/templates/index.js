@@ -3834,6 +3834,32 @@ function movieMetadataHtml(video) {
   ], 'details movie-metadata');
 }
 
+function videoFeatureMetadataHtml(video) {
+  const height = Number(video?.max_video_height || 0);
+  const spatialFormat = String(video?.spatial_format || '').trim().toLowerCase();
+  const stereoLayout = String(video?.stereo_layout || '').trim().toLowerCase();
+  const dynamicRange = String(video?.dynamic_range || '').trim().toLowerCase();
+  const license = String(video?.license || '').trim();
+  const locationName = String(video?.location_name || '').trim();
+  const features = [];
+  if (height >= 4320) features.push('<span class="badge">8K</span>');
+  else if (height >= 2160) features.push('<span class="badge">4K</span>');
+  else if (height >= 720) features.push('<span class="badge">HD</span>');
+  if (spatialFormat === '360') features.push('<span class="badge">360°</span>');
+  if (spatialFormat === 'vr180') features.push('<span class="badge">VR180</span>');
+  if (stereoLayout === 'left_right' || stereoLayout === 'top_bottom') {
+    features.push('<span class="badge">3D</span>');
+  }
+  if (dynamicRange === 'hdr') features.push('<span class="badge">HDR</span>');
+  if (license.toLowerCase().includes('creative commons')) {
+    features.push(`<span class="badge" title="${escapeHtml(license)}">CC</span>`);
+  }
+  if (locationName) {
+    features.push(`<span class="video-location">Location: ${escapeHtml(locationName)}</span>`);
+  }
+  return detailRowHtml(features, 'details video-feature-metadata');
+}
+
 function archivarixStatusLabel(video) {
   const status = String(video.recovered_status || '');
   if (status === 'NOT_FOUND') return 'Archivarix: No results found';
@@ -4880,6 +4906,7 @@ function videoDetailCardFor(video) {
           ${videoTypeDecoratorHtml(video)}
         </div>
         ${movieMetadataHtml(video)}
+        ${videoFeatureMetadataHtml(video)}
         ${badgeRowsHtml([
           { label: video.virtual_video ? 'Not in library' : '' },
           { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
@@ -5683,6 +5710,7 @@ function playlistVideoCardFor(video, options = {}) {
     availabilityHtml: videoAvailabilityHtml(video),
     typeDecoratorHtml: videoTypeDecoratorHtml(video),
     movieMetadataHtml: movieMetadataHtml(video),
+    featureMetadataHtml: videoFeatureMetadataHtml(video),
     compactAvailabilityHtml: duration
       ? `<span class="compact-video-duration">${escapeHtml(duration)}</span>`
       : '',

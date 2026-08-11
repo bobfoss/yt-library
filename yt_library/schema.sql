@@ -86,6 +86,12 @@ CREATE TABLE IF NOT EXISTS videos (
   movie_rating TEXT NOT NULL DEFAULT '',
   movie_release_date TEXT NOT NULL DEFAULT '',
   movie_offer TEXT NOT NULL DEFAULT '',
+  max_video_height INTEGER CHECK (max_video_height IS NULL OR max_video_height > 0),
+  spatial_format TEXT CHECK (spatial_format IS NULL OR spatial_format IN ('', '360', 'vr180')),
+  stereo_layout TEXT CHECK (stereo_layout IS NULL OR stereo_layout IN ('', 'left_right', 'top_bottom')),
+  dynamic_range TEXT CHECK (dynamic_range IS NULL OR dynamic_range IN ('sdr', 'hdr')),
+  license TEXT,
+  location_name TEXT,
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
   reaction TEXT NOT NULL DEFAULT ''
