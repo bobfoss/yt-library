@@ -3406,10 +3406,7 @@ def youtube_video_type(
     details: Mapping[str, Any],
     microformat: Mapping[str, Any],
 ) -> str:
-    if details.get("isLiveContent") is True or isinstance(
-        microformat.get("liveBroadcastDetails"),
-        Mapping,
-    ):
+    if details.get("isLiveContent") is True:
         return "live"
     canonical_url = str(microformat.get("canonicalUrl") or "").strip()
     canonical_path = urllib.parse.urlparse(canonical_url).path.rstrip("/")

@@ -795,6 +795,48 @@ test('video type facet precedes availability in search and playlist requests', (
   assert.match(indexSource, /params\.set\('video_type', metaFilterParamValue\(videoTypes\)\)/);
 });
 
+test('video cards decorate Shorts and Live after plugin metadata', () => {
+  const indexSource = source('index.js');
+  const videoCardSource = source('video-card.js');
+  const indexHtml = source('index.html');
+  const typeDecoratorSource = namedFunctionSource(indexSource, 'videoTypeDecoratorHtml');
+
+  assert.match(typeDecoratorSource, /videoType === 'short'/);
+  assert.match(typeDecoratorSource, /class="video-type-icon shorts-icon"/);
+  assert.match(typeDecoratorSource, /fill="#f03"/);
+  assert.match(typeDecoratorSource, /videoType === 'live'/);
+  assert.match(typeDecoratorSource, /class="video-type-icon live-icon"/);
+  assert.match(typeDecoratorSource, /isVideoRecord \? '<span class="video-type-label">Live<\/span>' : ''/);
+  assert.match(typeDecoratorSource, /return '';/);
+  assert.match(
+    videoCardSource,
+    /data-entity-card-slot="primaryMetadata"><\/span>\$\{options\.typeDecoratorHtml \|\| ''\}/,
+  );
+  assert.match(
+    namedFunctionSource(indexSource, 'videoDetailCardFor'),
+    /data-entity-card-slot="primaryMetadata"><\/span>[\s\S]{0,100}videoTypeDecoratorHtml\(video\)/,
+  );
+  assert.match(
+    namedFunctionSource(indexSource, 'playlistVideoCardFor'),
+    /typeDecoratorHtml: videoTypeDecoratorHtml\(video\)/,
+  );
+  assert.match(indexHtml, /\.video-type-icon \{[\s\S]{0,180}width: 16px;[\s\S]{0,100}fill: currentColor;/);
+});
+
+test('video type filters reuse the Shorts and Live card decorators', () => {
+  const indexSource = source('index.js');
+  const definitionsStart = indexSource.indexOf('const videoTypeMetaFilterDefinitions');
+  const definitionsEnd = indexSource.indexOf('function visibleVideoMetaFilterDefinitions');
+  assert.notEqual(definitionsStart, -1);
+  assert.notEqual(definitionsEnd, -1);
+  const definitions = indexSource.slice(definitionsStart, definitionsEnd);
+  const typeDecoratorSource = namedFunctionSource(indexSource, 'videoTypeDecoratorHtml');
+
+  assert.match(definitions, /key: 'short'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('short'\)/);
+  assert.match(definitions, /key: 'live'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('live'\)/);
+  assert.match(typeDecoratorSource, /const isVideoRecord = typeof video !== 'string'/);
+});
+
 test('sidebar keeps facet trees separate from category navigation', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');

@@ -2661,6 +2661,29 @@ class CoreHelperTests(unittest.TestCase):
                 },
                 "live",
             ),
+            (
+                "premiere123",
+                {
+                    "videoDetails": {
+                        "title": "A completed Premiere",
+                        "isLiveContent": False,
+                    },
+                    "microformat": {
+                        "playerMicroformatRenderer": {
+                            "isShortsEligible": False,
+                            "canonicalUrl": (
+                                "https://www.youtube.com/watch?v=premiere123"
+                            ),
+                            "liveBroadcastDetails": {
+                                "isLiveNow": False,
+                                "startTimestamp": "2026-05-08T22:00:06+00:00",
+                                "endTimestamp": "2026-05-08T22:20:42+00:00",
+                            },
+                        }
+                    },
+                },
+                "video",
+            ),
         )
         for video_id, player, expected_type in fixtures:
             with self.subTest(video_type=expected_type):

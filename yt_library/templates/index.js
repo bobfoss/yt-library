@@ -3157,8 +3157,8 @@ const videoMetaFilterDefinitions = [
 ];
 const videoTypeMetaFilterDefinitions = [
   { key: 'video', label: 'Videos' },
-  { key: 'short', label: 'Shorts' },
-  { key: 'live', label: 'Live' },
+  { key: 'short', label: 'Shorts', decoratorHtml: videoTypeDecoratorHtml('short') },
+  { key: 'live', label: 'Live', decoratorHtml: videoTypeDecoratorHtml('live') },
   { key: 'unknown', label: 'Unknown' },
 ];
 function visibleVideoMetaFilterDefinitions(counts, { includeRemoved = true } = {}) {
@@ -3759,6 +3759,34 @@ function videoAvailabilityHtml(video) {
     return '<div class="video-availability unavailable">Unavailable</div>';
   }
   return '<div class="video-availability">Unknown</div>';
+}
+
+function videoTypeDecoratorHtml(video) {
+  const isVideoRecord = typeof video !== 'string';
+  const videoType = String(
+    isVideoRecord ? video?.video_type || '' : video,
+  ).trim().toLowerCase();
+  if (videoType === 'short') {
+    return `
+      <span class="video-type-decorator" title="Shorts" role="img" aria-label="Shorts">
+        <svg class="video-type-icon shorts-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+          <path d="m19.45,3.88c1.12,1.82.48,4.15-1.42,5.22l-1.32.74.94.41c1.36.58,2.27,1.85,2.35,3.27.08,1.43-.68,2.77-1.97,3.49l-8,4.47c-1.91,1.06-4.35.46-5.48-1.35-1.12-1.82-.48-4.15,1.42-5.22l1.33-.74-.94-.41c-1.36-.58-2.27-1.85-2.35-3.27-.08-1.43.68-2.77,1.97-3.49l8-4.47c1.91-1.06,4.35-.46,5.48,1.35Z" fill="#f03"></path>
+          <path d="m10,15l5-3-5-3v6Z" fill="#fff"></path>
+        </svg>
+      </span>
+    `;
+  }
+  if (videoType === 'live') {
+    return `
+      <span class="video-type-decorator" title="Live" role="img" aria-label="Live">
+        <svg class="video-type-icon live-icon" xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24" focusable="false" aria-hidden="true">
+          <path clip-rule="evenodd" d="M18.364 4.224a1 1 0 011.414 0 11 11 0 010 15.557 1 1 0 01-1.414-1.414 9 9 0 000-12.729 1 1 0 010-1.414ZM4.222 4.222a1 1 0 011.414 1.415 9 9 0 000 12.728 1 1 0 11-1.414 1.414 11.002 11.002 0 010-15.557Zm3.181 3.181a1.002 1.002 0 011.415 1.415 4.503 4.503 0 00-.975 4.904c.226.545.558 1.042.975 1.46a1.001 1.001 0 01-1.415 1.414 6.502 6.502 0 010-9.193Zm7.779 0c.39-.39 1.024-.39 1.415 0a6.5 6.5 0 010 9.193 1.001 1.001 0 01-1.415-1.415 4.5 4.5 0 000-6.363 1.001 1.001 0 010-1.415ZM12 10a2 2 0 110 4 2 2 0 010-4Z" fill-rule="evenodd"></path>
+        </svg>
+        ${isVideoRecord ? '<span class="video-type-label">Live</span>' : ''}
+      </span>
+    `;
+  }
+  return '';
 }
 
 function archivarixStatusLabel(video) {
@@ -4795,6 +4823,7 @@ function videoDetailCardFor(video) {
         <div class="video-availability-row">
           ${videoAvailabilityHtml(video)}
           <span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>
+          ${videoTypeDecoratorHtml(video)}
         </div>
         ${badgeRowsHtml([
           { label: video.virtual_video ? 'Not in library' : '' },
@@ -5528,6 +5557,7 @@ function playlistVideoCardFor(video, options = {}) {
     watchDateHtml: options.watchDateHtml || '',
     latestWatchDateHtml: options.latestWatchDateHtml || '',
     availabilityHtml: videoAvailabilityHtml(video),
+    typeDecoratorHtml: videoTypeDecoratorHtml(video),
     compactAvailabilityHtml: duration
       ? `<span class="compact-video-duration">${escapeHtml(duration)}</span>`
       : '',
