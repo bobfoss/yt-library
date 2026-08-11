@@ -848,11 +848,16 @@ test('video cards decorate Shorts, Live, and Movies while filters also decorate 
   assert.match(typeDecoratorSource, /class="video-type-icon shorts-icon"/);
   assert.match(typeDecoratorSource, /fill="#f03"/);
   assert.match(typeDecoratorSource, /videoType === 'livestream'/);
-  assert.match(typeDecoratorSource, /liveBroadcastIconHtml\(\)/);
+  assert.match(typeDecoratorSource, /broadcastStatus === 'live' \? liveNowBroadcastIconHtml\(\) : liveBroadcastIconHtml\(\)/);
   assert.match(
     namedFunctionSource(indexSource, 'liveBroadcastIconHtml'),
     /class="video-type-icon live-icon"/,
   );
+  assert.match(
+    namedFunctionSource(indexSource, 'liveNowBroadcastIconHtml'),
+    /class="video-type-icon live-now-icon"[\s\S]*?viewBox="0 0 12 12"[\s\S]*?M2\.111 2\.111/,
+  );
+  assert.match(indexHtml, /\.live-now-icon \{[\s\S]*?padding: 2px;[\s\S]*?background: #f03;[\s\S]*?fill: #fff;/);
   assert.match(typeDecoratorSource, /broadcastStatusLabel\(video\)/);
   assert.match(namedFunctionSource(indexSource, 'broadcastStatusLabel'), /status === 'live'\) return 'Live now'/);
   assert.match(namedFunctionSource(indexSource, 'broadcastStatusLabel'), /status === 'ended'\) return 'Streamed live'/);
@@ -918,7 +923,7 @@ test('video type filters reuse the card decorators', () => {
   assert.match(definitions, /key: 'video'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('video'\)/);
   assert.match(definitions, /key: 'short'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('short'\)/);
   assert.match(definitions, /key: 'livestream'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('livestream'\)/);
-  assert.match(definitions, /key: 'live'[\s\S]{0,100}decoratorHtml: liveBroadcastIconHtml\(\)/);
+  assert.match(definitions, /key: 'live'[\s\S]{0,100}decoratorHtml: liveNowBroadcastIconHtml\(\)/);
   assert.match(definitions, /key: 'ended'[\s\S]{0,100}decoratorHtml: liveBroadcastIconHtml\(\)/);
   assert.match(definitions, /key: 'movie'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('movie'\)/);
   assert.match(typeDecoratorSource, /const isVideoRecord = typeof video !== 'string'/);

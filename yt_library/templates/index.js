@@ -3191,7 +3191,7 @@ const videoTypeMetaFilterDefinitions = [
   { key: 'unknown', label: 'Unknown' },
 ];
 const broadcastStatusMetaFilterDefinitions = [
-  { key: 'live', label: 'Live now', decoratorHtml: liveBroadcastIconHtml() },
+  { key: 'live', label: 'Live now', decoratorHtml: liveNowBroadcastIconHtml() },
   { key: 'ended', label: 'Streamed live', decoratorHtml: liveBroadcastIconHtml() },
   { key: 'upcoming', label: 'Upcoming', decoratorHtml: liveBroadcastIconHtml() },
   { key: 'unknown', label: 'Unknown status' },
@@ -3868,6 +3868,14 @@ function liveBroadcastIconHtml() {
   `;
 }
 
+function liveNowBroadcastIconHtml() {
+  return `
+    <svg class="video-type-icon live-now-icon" xmlns="http://www.w3.org/2000/svg" height="12" viewBox="0 0 12 12" width="12" focusable="false" aria-hidden="true">
+      <path clip-rule="evenodd" d="M2.111 2.111a.5.5 0 11.707.707 4.501 4.501 0 000 6.364.5.5 0 01-.707.707 5.5 5.5 0 010-7.778Zm7.07 0a.5.5 0 01.708 0 5.5 5.5 0 010 7.778.5.5 0 11-.707-.707 4.5 4.5 0 000-6.364.5.5 0 010-.707ZM3.703 3.702a.5.5 0 11.707.707 2.25 2.25 0 000 3.182.5.5 0 01-.707.707 3.25 3.25 0 01-.705-3.542 3.25 3.25 0 01.705-1.054Zm3.889 0a.5.5 0 01.707 0 3.25 3.25 0 010 4.596.5.5 0 01-.707-.707 2.25 2.25 0 000-3.182.5.5 0 010-.707ZM6 5a1 1 0 110 2 1 1 0 010-2Z" fill-rule="evenodd"></path>
+    </svg>
+  `;
+}
+
 function broadcastStatusLabel(video) {
   const status = String(video?.broadcast_status || '').trim().toLowerCase();
   if (status === 'live') return 'Live now';
@@ -3903,10 +3911,11 @@ function videoTypeDecoratorHtml(video) {
     `;
   }
   if (videoType === 'livestream') {
+    const broadcastStatus = String(video?.broadcast_status || '').trim().toLowerCase();
     const label = isVideoRecord ? broadcastStatusLabel(video) : '';
     return `
       <span class="video-type-decorator" title="${escapeHtml(label || 'Livestream')}" role="img" aria-label="${escapeHtml(label || 'Livestream')}">
-        ${liveBroadcastIconHtml()}
+        ${broadcastStatus === 'live' ? liveNowBroadcastIconHtml() : liveBroadcastIconHtml()}
         ${label ? `<span class="video-type-label">${escapeHtml(label)}</span>` : ''}
       </span>
     `;
