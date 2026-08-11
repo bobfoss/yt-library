@@ -675,10 +675,12 @@ test('single-facet result kinds use the same parent state calculation', () => {
   const end = indexSource.indexOf('\nfunction searchKindForFacet(', start);
   const functionSource = indexSource.slice(start, end);
 
-  assert.match(functionSource, /const facetSelections = parentFacetKeys\.map/);
+  assert.match(functionSource, /const facetSelections = facetKeys\.map/);
+  assert.match(functionSource, /inputs\.every\(input => input\.closest\('\.meta-filter-nested-content'\)\)/);
   assert.match(functionSource, /parent\.checked = everyFacetHasSelection/);
   assert.match(functionSource, /parent\.indeterminate = everyFacetHasSelection && !allChildrenSelected/);
   assert.doesNotMatch(functionSource, /facetKeys\.length > 1/);
+  assert.doesNotMatch(functionSource, /key !== 'broadcastStatus'/);
   assert.doesNotMatch(functionSource, /data-meta-child-filter="search-\$\{kind\}"/);
   assert.match(
     indexSource,
@@ -761,7 +763,7 @@ test('search filter tree folds facets and persists disclosure state', () => {
   const indexHtml = source('index.html');
   const indexSource = source('index.js');
 
-  assert.match(indexHtml, /\.app \{[^}]*grid-template-columns: 340px minmax\(0, 1fr\)/);
+  assert.match(indexHtml, /grid-template-columns: fit-content\(var\(--sidebar-max-width\)\) minmax\(0, 1fr\)/);
   assert.match(indexHtml, /\.search-tree-toggle[\s\S]*transition: transform 160ms ease/);
   assert.match(indexHtml, /\.search-tree-toggle\[aria-expanded="true"\][\s\S]*rotate\(90deg\)/);
   assert.match(indexHtml, /\.meta-filter input \{ accent-color: var\(--accent\); margin: 0; \}/);
@@ -798,20 +800,38 @@ test('video type facet precedes availability in search and playlist requests', (
   assert.match(indexSource, /params\.set\('broadcast_status', metaFilterParamValue\(broadcastStatuses\)\)/);
 });
 
-test('broadcast status options are direct collapsible children of livestreams', () => {
+test('filter tree recursively renders broadcast status under livestreams', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');
 
-  assert.match(indexSource, /const nestedBroadcastStatusFilters = broadcastStatusCounts === null[\s\S]*?metaFilterChildrenHtml\(\{[\s\S]*?groupName: 'search-broadcastStatus'/);
+  assert.match(indexSource, /key: 'livestream',[\s\S]{0,180}childFacetKey: 'broadcastStatus'/);
+  assert.match(indexSource, /function metaFilterChildrenHtml\(\{[\s\S]{0,240}childFacets = \{\}[\s\S]{0,120}treePath = \[\]/);
+  assert.match(indexSource, /const childFacet = childFacets\[childFacetKey\]/);
+  assert.match(indexSource, /const childHtml = metaFilterChildrenHtml\(\{[\s\S]{0,180}childFacets,[\s\S]{0,120}treePath: \[\.\.\.branchPath, key\]/);
+  assert.match(indexSource, /const nodeId = searchFilterTreeNodeId\('facet', \.\.\.branchPath, key\)/);
+  assert.match(indexSource, /const childDisabled = disabled \|\| !visibility\[key\]/);
+  assert.match(indexSource, /disabled: childDisabled/);
+  assert.match(indexSource, /const videoTypeChildFacets = \{[\s\S]*?broadcastStatus: \{[\s\S]*?groupName: 'search-broadcastStatus'[\s\S]*?counts: broadcastStatusCounts/);
+  assert.doesNotMatch(indexSource, /enabled: Boolean\(searchMetaVisibility\.videoType\.livestream\)/);
+  assert.match(indexSource, /facetHtml\(\{ key: 'videoType',[\s\S]{0,300}childFacets: videoTypeChildFacets/);
   assert.doesNotMatch(indexSource, /allLabel: 'Broadcast status'/);
-  assert.match(indexSource, /definition\.key === 'livestream'[\s\S]*?nestedHtml: nestedBroadcastStatusFilters/);
-  assert.match(indexSource, /nestedNodeId: 'facet:videoType-livestream'/);
-  assert.match(indexSource, /searchFilterTreeToggleHtml\(nestedNodeId, label\)/);
+  assert.doesNotMatch(indexSource, /nestedHtml/);
+  assert.doesNotMatch(indexSource, /nestedNodeId/);
+  assert.doesNotMatch(indexSource, /syncNestedBroadcastStatusFacet/);
+  assert.match(indexSource, /searchFilterTreeToggleHtml\(nodeId, label\)/);
   assert.match(indexSource, /nestedExpanded \? '' : 'hidden'/);
-  assert.match(indexSource, /facetKeys\.filter\(key => key !== 'broadcastStatus'\)/);
-  assert.match(indexSource, /function syncNestedBroadcastStatusFacet\(\)[\s\S]*?facet:videoType-livestream[\s\S]*?videoType\.livestream/);
   assert.match(indexHtml, /\.meta-filter-nested-option > \.search-tree-toggle \{[^}]*left: -18px;/);
   assert.match(indexHtml, /\.meta-filter-nested-content \{ margin-left: 18px; \}/);
+});
+
+test('desktop sidebar grows with filter content within responsive bounds', () => {
+  const indexHtml = source('index.html');
+
+  assert.match(indexHtml, /--sidebar-min-width: 340px/);
+  assert.match(indexHtml, /--sidebar-max-width: min\(440px, 42vw\)/);
+  assert.match(indexHtml, /grid-template-columns: fit-content\(var\(--sidebar-max-width\)\) minmax\(0, 1fr\)/);
+  assert.match(indexHtml, /aside \{[\s\S]{0,180}width: max-content;[\s\S]{0,120}min-width: var\(--sidebar-min-width\);[\s\S]{0,120}max-width: var\(--sidebar-max-width\)/);
+  assert.match(indexHtml, /@media \(max-width: 760px\)[\s\S]*?aside \{ width: auto; min-width: 0; max-width: none;/);
 });
 
 test('video cards decorate Shorts, Live, and Movies while filters also decorate Videos', () => {
