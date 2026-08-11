@@ -38,7 +38,7 @@
     }
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); overflow: hidden; }
-    .app { display: grid; grid-template-columns: 300px minmax(0, 1fr); height: 100vh; min-height: 0; }
+    .app { display: grid; grid-template-columns: 340px minmax(0, 1fr); height: 100vh; min-height: 0; }
     aside { border-right: 1px solid var(--line); background: var(--panel); padding: 18px 14px; position: sticky; top: 0; height: 100vh; overflow: auto; }
     main { min-width: 0; min-height: 0; padding: 24px; display: flex; flex-direction: column; }
     h1 { font-size: 20px; margin: 0 0 14px; }
@@ -187,7 +187,8 @@
     .search-progress-status { color: var(--muted); display: inline-flex; min-width: 8em; font-size: 14px; }
     .search-progress-status[hidden] { display: none; }
     .search-meta-controls { display: grid; gap: 5px; }
-    .meta-filter-nested-option { display: grid; gap: 5px; min-width: 0; }
+    .meta-filter-nested-option { position: relative; display: grid; gap: 5px; min-width: 0; }
+    .meta-filter-nested-option > .search-tree-toggle { position: absolute; top: 0; left: -18px; }
     .meta-filter-nested-content { margin-left: 18px; }
     .search-meta-controls .meta-filter,
     .search-meta-facet > .meta-filter { margin-left: 0; }

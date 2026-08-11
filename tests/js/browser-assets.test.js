@@ -761,7 +761,7 @@ test('search filter tree folds facets and persists disclosure state', () => {
   const indexHtml = source('index.html');
   const indexSource = source('index.js');
 
-  assert.match(indexHtml, /\.app \{[^}]*grid-template-columns: 300px minmax\(0, 1fr\)/);
+  assert.match(indexHtml, /\.app \{[^}]*grid-template-columns: 340px minmax\(0, 1fr\)/);
   assert.match(indexHtml, /\.search-tree-toggle[\s\S]*transition: transform 160ms ease/);
   assert.match(indexHtml, /\.search-tree-toggle\[aria-expanded="true"\][\s\S]*rotate\(90deg\)/);
   assert.match(indexHtml, /\.meta-filter input \{ accent-color: var\(--accent\); margin: 0; \}/);
@@ -798,14 +798,19 @@ test('video type facet precedes availability in search and playlist requests', (
   assert.match(indexSource, /params\.set\('broadcast_status', metaFilterParamValue\(broadcastStatuses\)\)/);
 });
 
-test('broadcast status is nested under livestreams without governing other video types', () => {
+test('broadcast status options are direct collapsible children of livestreams', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');
 
-  assert.match(indexSource, /const nestedBroadcastStatusFacet = facetHtml\(\{[\s\S]*?key: 'broadcastStatus'/);
-  assert.match(indexSource, /definition\.key === 'livestream'[\s\S]*?nestedHtml: nestedBroadcastStatusFacet/);
+  assert.match(indexSource, /const nestedBroadcastStatusFilters = broadcastStatusCounts === null[\s\S]*?metaFilterChildrenHtml\(\{[\s\S]*?groupName: 'search-broadcastStatus'/);
+  assert.doesNotMatch(indexSource, /allLabel: 'Broadcast status'/);
+  assert.match(indexSource, /definition\.key === 'livestream'[\s\S]*?nestedHtml: nestedBroadcastStatusFilters/);
+  assert.match(indexSource, /nestedNodeId: 'facet:videoType-livestream'/);
+  assert.match(indexSource, /searchFilterTreeToggleHtml\(nestedNodeId, label\)/);
+  assert.match(indexSource, /nestedExpanded \? '' : 'hidden'/);
   assert.match(indexSource, /facetKeys\.filter\(key => key !== 'broadcastStatus'\)/);
-  assert.match(indexSource, /function syncNestedBroadcastStatusFacet\(\)[\s\S]*?videoType\.livestream/);
+  assert.match(indexSource, /function syncNestedBroadcastStatusFacet\(\)[\s\S]*?facet:videoType-livestream[\s\S]*?videoType\.livestream/);
+  assert.match(indexHtml, /\.meta-filter-nested-option > \.search-tree-toggle \{[^}]*left: -18px;/);
   assert.match(indexHtml, /\.meta-filter-nested-content \{ margin-left: 18px; \}/);
 });
 

@@ -370,6 +370,7 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(valid_navigation_group_tree_node("channel-group:"))
         self.assertFalse(valid_navigation_group_tree_node("bad node"))
         self.assertTrue(valid_search_filter_tree_node("facet:plugin-subtitles"))
+        self.assertTrue(valid_search_filter_tree_node("facet:videoType-livestream"))
         self.assertFalse(valid_search_filter_tree_node("facet:bad node"))
         self.assertTrue(valid_filter_preference_key("plugins.subtitles.search"))
         self.assertTrue(

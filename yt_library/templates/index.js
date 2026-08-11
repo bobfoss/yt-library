@@ -1990,14 +1990,13 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true, assumeAllChecked
 }
 
 function syncNestedBroadcastStatusFacet() {
-  const facet = searchFilterRegion.querySelector(
-    '[data-search-tree-node="facet:broadcastStatus"]'
+  const content = searchFilterRegion.querySelector(
+    '[data-search-tree-node="facet:videoType-livestream"] > .meta-filter-nested-content'
   );
-  if (!(facet instanceof HTMLElement)) return;
+  if (!(content instanceof HTMLElement)) return;
   const enabled = Boolean(searchMetaVisibility.videoType.livestream);
-  facet.classList.toggle('dimmed', !enabled);
-  for (const input of facet.querySelectorAll('input')) input.disabled = !enabled;
-  for (const button of facet.querySelectorAll('button')) button.disabled = !enabled;
+  content.classList.toggle('dimmed', !enabled);
+  for (const input of content.querySelectorAll('input')) input.disabled = !enabled;
 }
 
 function searchKindForFacet(facetKey) {
@@ -3310,7 +3309,7 @@ function metaFilterChildrenHtml({
     counts,
     definitions,
   );
-  return applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '', minimumPercent = null, minimumAttribute = '', nestedHtml = '' }) => {
+  return applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '', minimumPercent = null, minimumAttribute = '', nestedHtml = '', nestedNodeId = '' }) => {
     const filterHtml = minimumPercent === null ? `
         <label class="meta-filter meta-filter-child">
           <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''}>
@@ -3332,10 +3331,17 @@ function metaFilterChildrenHtml({
         </div>
     `;
     if (!nestedHtml) return filterHtml;
+    const nestedExpanded = searchFilterTreeExpanded.has(nestedNodeId);
     return `
-      <div class="meta-filter-nested-option">
+      <div class="meta-filter-nested-option" data-search-tree-node="${escapeHtml(nestedNodeId)}">
+        ${searchFilterTreeToggleHtml(nestedNodeId, label)}
         ${filterHtml}
-        <div class="meta-filter-nested-content">${nestedHtml}</div>
+        <div
+          id="${escapeHtml(searchFilterTreeChildrenId(nestedNodeId))}"
+          class="meta-filter-nested-content"
+          data-search-tree-children
+          ${nestedExpanded ? '' : 'hidden'}
+        >${nestedHtml}</div>
       </div>
     `;
   }).join('');
@@ -3528,17 +3534,24 @@ function searchMetaFiltersHtml(
   const uploaderCategoryDefinitions = uploaderCategoryMetaFilterDefinitions(
     uploaderCategoryCounts,
   );
-  const nestedBroadcastStatusFacet = facetHtml({
-    key: 'broadcastStatus',
-    visibility: searchMetaVisibility.broadcastStatus,
-    definitions: broadcastStatusMetaFilterDefinitions,
-    counts: broadcastStatusCounts,
-    allLabel: 'Broadcast status',
-    kind: 'videos',
-  });
+  const nestedBroadcastStatusFilters = broadcastStatusCounts === null
+    || broadcastStatusCounts === undefined
+    ? ''
+    : metaFilterChildrenHtml({
+        groupName: 'search-broadcastStatus',
+        filterAttribute: 'search-meta-filter',
+        filterValuePrefix: 'broadcastStatus:',
+        visibility: searchMetaVisibility.broadcastStatus,
+        definitions: broadcastStatusMetaFilterDefinitions,
+        counts: broadcastStatusCounts,
+      });
   const nestedVideoTypeDefinitions = videoTypeMetaFilterDefinitions.map(definition => (
     definition.key === 'livestream'
-      ? { ...definition, nestedHtml: nestedBroadcastStatusFacet }
+      ? {
+          ...definition,
+          nestedHtml: nestedBroadcastStatusFilters,
+          nestedNodeId: 'facet:videoType-livestream',
+        }
       : definition
   ));
   const clipCount = metaCounts?.clips?.total;
