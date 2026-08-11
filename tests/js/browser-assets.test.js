@@ -821,7 +821,7 @@ test('filter tree recursively renders broadcast status under livestreams', () =>
   assert.match(indexSource, /searchFilterTreeToggleHtml\(nodeId, label\)/);
   assert.match(indexSource, /nestedExpanded \? '' : 'hidden'/);
   assert.match(indexHtml, /\.meta-filter-nested-option > \.search-tree-toggle \{[^}]*left: -18px;/);
-  assert.match(indexHtml, /\.meta-filter-nested-content \{ margin-left: 18px; \}/);
+  assert.match(indexHtml, /\.meta-filter-nested-content \{ display: grid; gap: 5px; margin-left: 18px; \}/);
 });
 
 test('desktop sidebar grows with filter content within responsive bounds', () => {
@@ -848,7 +848,7 @@ test('video cards decorate Shorts, Live, and Movies while filters also decorate 
   assert.match(typeDecoratorSource, /class="video-type-icon shorts-icon"/);
   assert.match(typeDecoratorSource, /fill="#f03"/);
   assert.match(typeDecoratorSource, /videoType === 'livestream'/);
-  assert.match(typeDecoratorSource, /broadcastStatus === 'live' \? liveNowBroadcastIconHtml\(\) : liveBroadcastIconHtml\(\)/);
+  assert.match(typeDecoratorSource, /!isVideoRecord \|\| broadcastStatus === 'live' \? liveNowBroadcastIconHtml\(\) : liveBroadcastIconHtml\(\)/);
   assert.match(
     namedFunctionSource(indexSource, 'liveBroadcastIconHtml'),
     /class="video-type-icon live-icon"/,
@@ -927,6 +927,7 @@ test('video type filters reuse the card decorators', () => {
   assert.match(definitions, /key: 'ended'[\s\S]{0,100}decoratorHtml: liveBroadcastIconHtml\(\)/);
   assert.match(definitions, /key: 'movie'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('movie'\)/);
   assert.match(typeDecoratorSource, /const isVideoRecord = typeof video !== 'string'/);
+  assert.match(typeDecoratorSource, /!isVideoRecord \|\| broadcastStatus === 'live'/);
 });
 
 test('sidebar keeps facet trees separate from category navigation', () => {

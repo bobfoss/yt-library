@@ -3915,7 +3915,7 @@ function videoTypeDecoratorHtml(video) {
     const label = isVideoRecord ? broadcastStatusLabel(video) : '';
     return `
       <span class="video-type-decorator" title="${escapeHtml(label || 'Livestream')}" role="img" aria-label="${escapeHtml(label || 'Livestream')}">
-        ${broadcastStatus === 'live' ? liveNowBroadcastIconHtml() : liveBroadcastIconHtml()}
+        ${!isVideoRecord || broadcastStatus === 'live' ? liveNowBroadcastIconHtml() : liveBroadcastIconHtml()}
         ${label ? `<span class="video-type-label">${escapeHtml(label)}</span>` : ''}
       </span>
     `;
