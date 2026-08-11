@@ -696,6 +696,10 @@ def upsert_video(
     upload_date: str = "",
     uploader_category: str = "",
     video_type: str = "",
+    broadcast_status: str | None = None,
+    broadcast_started_at: str | None = None,
+    broadcast_ended_at: str | None = None,
+    broadcast_status_checked_at: str | None = None,
     movie_rating: str = "",
     movie_release_date: str = "",
     movie_offer: str = "",
@@ -756,6 +760,19 @@ def upsert_video(
         existing_value = existing[name] if existing else None
         return existing_value if existing_value is not None else incoming
 
+    def current_broadcast_field(name: str, incoming: str | None) -> str | None:
+        if broadcast_status is None:
+            return existing[name] if existing else None
+        if authoritative and broadcast_status == "":
+            return ""
+        if incoming is None:
+            return existing[name] if existing else None
+        incoming = incoming.strip()
+        if authoritative and incoming:
+            return incoming
+        existing_value = existing[name] if existing else None
+        return existing_value if existing_value not in {None, ""} else incoming
+
     incoming_title = video_title_or_blank(title, video_id)
     existing_title = str(existing["title"] or "").strip() if existing else ""
     if incoming_title and (authoritative or not useful_video_title(existing_title, video_id)):
@@ -791,6 +808,13 @@ def upsert_video(
         current("upload_date", upload_date),
         current("uploader_category", uploader_category),
         current("video_type", video_type),
+        current_observation("broadcast_status", broadcast_status),
+        current_broadcast_field("broadcast_started_at", broadcast_started_at),
+        current_broadcast_field("broadcast_ended_at", broadcast_ended_at),
+        current_observation(
+            "broadcast_status_checked_at",
+            broadcast_status_checked_at if broadcast_status is not None else None,
+        ),
         current_movie_field("movie_rating", movie_rating),
         current_movie_field("movie_release_date", movie_release_date),
         current_movie_field("movie_offer", movie_offer),
@@ -818,7 +842,9 @@ def upsert_video(
             """
             UPDATE videos SET
               title=?, description=?, channel_id=?, duration_text=?, view_count=?, upload_date=?,
-              uploader_category=?, video_type=?, movie_rating=?, movie_release_date=?, movie_offer=?,
+              uploader_category=?, video_type=?, broadcast_status=?, broadcast_started_at=?,
+              broadcast_ended_at=?, broadcast_status_checked_at=?,
+              movie_rating=?, movie_release_date=?, movie_offer=?,
               max_video_height=?, spatial_format=?, stereo_layout=?, dynamic_range=?, license=?, location_name=?,
               thumbnail_url=?, thumbnail_path=?, reaction=?, is_playable=?,
               availability=?, metadata_source=?,
@@ -833,12 +859,14 @@ def upsert_video(
             """
             INSERT INTO videos(
               video_id, title, description, channel_id, duration_text, view_count, upload_date,
-              uploader_category, video_type, movie_rating, movie_release_date, movie_offer,
+              uploader_category, video_type, broadcast_status, broadcast_started_at,
+              broadcast_ended_at, broadcast_status_checked_at,
+              movie_rating, movie_release_date, movie_offer,
               max_video_height, spatial_format, stereo_layout, dynamic_range, license, location_name,
               thumbnail_url, thumbnail_path, reaction, is_playable, availability, metadata_source,
               fetch_status, fetch_error, fetched_at, last_seen_available_at,
               last_checked_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (video_id, *values),
         )
@@ -3442,7 +3470,7 @@ def youtube_video_type(
     microformat: Mapping[str, Any],
 ) -> str:
     if details.get("isLiveContent") is True:
-        return "live"
+        return "livestream"
     canonical_url = str(microformat.get("canonicalUrl") or "").strip()
     canonical_path = urllib.parse.urlparse(canonical_url).path.rstrip("/")
     if microformat.get("isShortsEligible") is True or canonical_path.startswith(
@@ -3454,6 +3482,65 @@ def youtube_video_type(
     if microformat.get("isShortsEligible") is False or canonical_path == "/watch":
         return "video"
     return ""
+
+
+def youtube_broadcast_metadata(
+    details: Mapping[str, Any],
+    microformat: Mapping[str, Any],
+    *,
+    observed_at: str | None = None,
+) -> dict[str, str | None]:
+    if "isLiveContent" not in details:
+        return {
+            "broadcast_status": None,
+            "broadcast_started_at": None,
+            "broadcast_ended_at": None,
+        }
+    if details.get("isLiveContent") is not True:
+        return {
+            "broadcast_status": "",
+            "broadcast_started_at": "",
+            "broadcast_ended_at": "",
+        }
+
+    live_details = microformat.get("liveBroadcastDetails")
+    if not isinstance(live_details, Mapping):
+        live_details = {}
+
+    def normalized_timestamp(name: str) -> str:
+        value = str(live_details.get(name) or "").strip()
+        if not value:
+            return ""
+        try:
+            return normalize_utc_timestamp(value)
+        except ValueError:
+            return ""
+
+    started_at = normalized_timestamp("startTimestamp")
+    ended_at = normalized_timestamp("endTimestamp")
+    if live_details.get("isLiveNow") is True or details.get("isLive") is True:
+        status = "live"
+    elif details.get("isUpcoming") is True:
+        status = "upcoming"
+    elif ended_at:
+        status = "ended"
+    elif started_at:
+        comparison_time = observed_at or utc_now()
+        try:
+            status = (
+                "upcoming"
+                if normalize_utc_timestamp(started_at) > normalize_utc_timestamp(comparison_time)
+                else "ended"
+            )
+        except ValueError:
+            status = None
+    else:
+        status = None
+    return {
+        "broadcast_status": status,
+        "broadcast_started_at": started_at or None,
+        "broadcast_ended_at": ended_at or None,
+    }
 
 
 def youtube_movie_metadata(
@@ -3697,6 +3784,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, Any]:
         channel_thumbnail_url = ""
     movie_metadata = youtube_movie_metadata(details, initial_data)
     feature_metadata = youtube_video_feature_metadata(player, initial_data)
+    broadcast_metadata = youtube_broadcast_metadata(details, microformat)
     return {
         "video_id": video_id,
         "title": title,
@@ -3709,6 +3797,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, Any]:
         "upload_date": str(microformat.get("uploadDate") or microformat.get("publishDate") or ""),
         "uploader_category": str(microformat.get("category") or "").strip(),
         "video_type": youtube_video_type(details, microformat),
+        **broadcast_metadata,
         **movie_metadata,
         **feature_metadata,
         "thumbnail_url": thumbnail_url,
@@ -3837,6 +3926,12 @@ def store_video_metadata(
         upload_date=metadata.get("upload_date", ""),
         uploader_category=metadata.get("uploader_category", ""),
         video_type=metadata.get("video_type", ""),
+        broadcast_status=metadata.get("broadcast_status"),
+        broadcast_started_at=metadata.get("broadcast_started_at"),
+        broadcast_ended_at=metadata.get("broadcast_ended_at"),
+        broadcast_status_checked_at=(
+            now if metadata.get("broadcast_status") is not None else None
+        ),
         movie_rating=metadata.get("movie_rating", ""),
         movie_release_date=metadata.get("movie_release_date", ""),
         movie_offer=metadata.get("movie_offer", ""),
@@ -8400,7 +8495,9 @@ def metadata_queue_candidate_rows(
     conditions: list[str] = []
     params: list[Any] = []
     if never_fetched_only:
-        conditions.append("fetched_at IS NULL")
+        conditions.append(
+            "(fetched_at IS NULL OR broadcast_status IN ('upcoming', 'live'))"
+        )
     elif not force:
         conditions.append(
             "(fetch_status = 'error' OR fetched_at IS NULL OR fetched_at < ?)"
@@ -8424,7 +8521,8 @@ def metadata_queue_candidate_rows(
                  ch.fetched_at,
                  ch.title,
                  ch.thumbnail_path,
-                 '' AS latest_history_at
+                 '' AS latest_history_at,
+                 '' AS broadcast_status
           FROM channels ch
           UNION ALL
           SELECT v.video_id,
@@ -8438,7 +8536,8 @@ def metadata_queue_candidate_rows(
                  v.fetched_at,
                  v.title,
                  v.thumbnail_path,
-                 COALESCE(h.latest_history_at, '') AS latest_history_at
+                 COALESCE(h.latest_history_at, '') AS latest_history_at,
+                 COALESCE(v.broadcast_status, '') AS broadcast_status
           FROM videos v
           LEFT JOIN channels ch ON ch.channel_id = v.channel_id
           LEFT JOIN playlist_items pi ON pi.video_id = v.video_id

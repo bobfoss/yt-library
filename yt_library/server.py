@@ -226,6 +226,7 @@ def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, Any]
         "completion_filters": query_set_param(params, "completion"),
         "reaction_filters": query_set_param(params, "reaction"),
         "video_type_filters": query_set_param(params, "video_type"),
+        "broadcast_status_filters": query_set_param(params, "broadcast_status"),
         "uploader_category_filters": query_set_param(params, "uploader_category"),
         "partial_min_percent": query_partial_min_percent(
             params,
@@ -1463,6 +1464,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         "video_playlist_membership",
                     ),
                     video_type_filters=query_set_param(params, "video_type"),
+                    video_broadcast_status_filters=query_set_param(
+                        params,
+                        "video_broadcast_status",
+                    ),
                     video_uploader_category_filters=query_set_param(
                         params,
                         "video_uploader_category",

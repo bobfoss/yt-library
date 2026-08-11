@@ -442,6 +442,65 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertEqual(retained, "Keep me")
         self.assertTrue(feature_columns.issubset(video_columns))
 
+    def test_database_module_migrates_broadcast_metadata_from_version_25(self) -> None:
+        broadcast_columns = {
+            "broadcast_status",
+            "broadcast_started_at",
+            "broadcast_ended_at",
+            "broadcast_status_checked_at",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.executescript(
+                        """
+                        ALTER TABLE videos RENAME COLUMN video_type TO current_video_type;
+                        ALTER TABLE videos ADD COLUMN video_type TEXT NOT NULL DEFAULT ''
+                          CHECK (video_type IN ('', 'video', 'short', 'live', 'movie'));
+                        UPDATE videos
+                        SET video_type = CASE current_video_type
+                          WHEN 'livestream' THEN 'live'
+                          ELSE current_video_type
+                        END;
+                        ALTER TABLE videos DROP COLUMN current_video_type;
+                        ALTER TABLE videos DROP COLUMN broadcast_status;
+                        ALTER TABLE videos DROP COLUMN broadcast_started_at;
+                        ALTER TABLE videos DROP COLUMN broadcast_ended_at;
+                        ALTER TABLE videos DROP COLUMN broadcast_status_checked_at;
+                        INSERT INTO videos(video_id, title, video_type)
+                        VALUES ('legacy-live', 'Legacy live stream', 'live');
+                        DELETE FROM schema_migrations WHERE version >= 26;
+                        """
+                    )
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                video_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+                }
+                retained = conn.execute(
+                    "SELECT title, video_type, broadcast_status "
+                    "FROM videos WHERE video_id = 'legacy-live'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertTrue(broadcast_columns.issubset(video_columns))
+        self.assertEqual(
+            tuple(retained),
+            ("Legacy live stream", "livestream", None),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

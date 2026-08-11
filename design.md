@@ -909,7 +909,13 @@ task.
 
 - `context.plugin_id` identifies the current plugin.
 - `context.library_videos()` streams dictionaries with `video_id`, `title`,
-  `availability`, and `is_playable`, ordered by video ID.
+  `availability`, `is_playable`, `video_type`, `broadcast_status`,
+  `broadcast_started_at`, `broadcast_ended_at`, and
+  `broadcast_status_checked_at`, ordered by video ID. A `video_type` of
+  `livestream` is durable identity; `broadcast_status` is the current observed
+  lifecycle state (`upcoming`, `live`, `ended`, empty for confirmed
+  non-broadcast, or null when unobserved/inconclusive). Plugins must keep their
+  own domain state, such as live-chat capture and replay availability.
 - `context.library_clips()` streams dictionaries with `clip_id`, `title`,
   `source_video_id`, `source_title`, `start_ms`, `end_ms`, and `availability`,
   ordered by clip ID.

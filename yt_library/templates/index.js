@@ -407,7 +407,8 @@ let playlistDuplicatesOnly = false;
 let completionMinimumInputTimer = null;
 const noUploaderCategoryFilter = '__no_category__';
 const defaultSearchMetaVisibility = {
-  videoType: { video: true, short: true, live: true, movie: true, unknown: true },
+  videoType: { video: true, short: true, livestream: true, movie: true, unknown: true },
+  broadcastStatus: { live: true, ended: true, upcoming: true, unknown: true },
   videos: {
     public: true,
     unlisted: true,
@@ -451,6 +452,7 @@ let searchMetaVisibility = Object.fromEntries(
 let uploaderCategorySelectionExplicit = false;
 const searchMetaParamNames = {
   videoType: 'vt',
+  broadcastStatus: 'vbs',
   videos: 'vm',
   reactions: 'vr',
   completion: 'vc',
@@ -608,12 +610,14 @@ let adjacentPagePrefetchCancel = null;
 let adjacentPagePrefetchGeneration = 0;
 let videoMetaCountsCache = new Map();
 let videoTypeCountsCache = new Map();
+let videoBroadcastStatusCountsCache = new Map();
 let videoCompletionCountsCache = new Map();
 let videoReactionCountsCache = new Map();
 let videoUploaderCategoryCountsCache = new Map();
 let videoPluginFacetCountsCache = new Map();
 let omniMetaCountsCache = new Map();
 let omniVideoTypeCountsCache = new Map();
+let omniBroadcastStatusCountsCache = new Map();
 let omniVideoPluginFacetCountsCache = new Map();
 let omniClipPluginFacetCountsCache = new Map();
 let omniReactionCountsCache = new Map();
@@ -695,12 +699,14 @@ async function loadData({ preserveSearchContent = false } = {}) {
   viewDataCache = new Map();
   videoMetaCountsCache = new Map();
   videoTypeCountsCache = new Map();
+  videoBroadcastStatusCountsCache = new Map();
   videoCompletionCountsCache = new Map();
   videoReactionCountsCache = new Map();
   videoUploaderCategoryCountsCache = new Map();
   videoPluginFacetCountsCache = new Map();
   omniMetaCountsCache = new Map();
   omniVideoTypeCountsCache = new Map();
+  omniBroadcastStatusCountsCache = new Map();
   omniVideoPluginFacetCountsCache = new Map();
   omniClipPluginFacetCountsCache = new Map();
   omniReactionCountsCache = new Map();
@@ -1475,6 +1481,7 @@ function applySearchLocation(pathname, params) {
   applySearchPresetState(appliedPreset, params.get('group') || '');
   const metaParamValues = {
     videoType: params.get(searchMetaParamNames.videoType),
+    broadcastStatus: params.get(searchMetaParamNames.broadcastStatus),
     videos: params.get(searchMetaParamNames.videos),
     reactions: params.get(searchMetaParamNames.reactions),
     completion: params.get(searchMetaParamNames.completion),
@@ -1782,6 +1789,7 @@ function metaFilterGroupVisibility(groupName) {
   }
   const groups = {
     'search-videoType': searchMetaVisibility.videoType,
+    'search-broadcastStatus': searchMetaVisibility.broadcastStatus,
     'search-videos': searchMetaVisibility.videos,
     'search-reactions': searchMetaVisibility.reactions,
     'search-completion': searchMetaVisibility.completion,
@@ -1844,6 +1852,7 @@ function syncMetaFilterGroup(groupName, assumeAllChecked = false) {
 
 const searchVideoFacetKeys = [
   'videoType',
+  'broadcastStatus',
   'videos',
   'reactions',
   'completion',
@@ -3166,9 +3175,15 @@ const videoMetaFilterDefinitions = [
 const videoTypeMetaFilterDefinitions = [
   { key: 'video', label: 'Videos', decoratorHtml: videoTypeDecoratorHtml('video') },
   { key: 'short', label: 'Shorts', decoratorHtml: videoTypeDecoratorHtml('short') },
-  { key: 'live', label: 'Live', decoratorHtml: videoTypeDecoratorHtml('live') },
+  { key: 'livestream', label: 'Livestreams', decoratorHtml: videoTypeDecoratorHtml('livestream') },
   { key: 'movie', label: 'Movies', decoratorHtml: videoTypeDecoratorHtml('movie') },
   { key: 'unknown', label: 'Unknown' },
+];
+const broadcastStatusMetaFilterDefinitions = [
+  { key: 'live', label: 'Live now', decoratorHtml: liveBroadcastIconHtml() },
+  { key: 'ended', label: 'Streamed live', decoratorHtml: liveBroadcastIconHtml() },
+  { key: 'upcoming', label: 'Upcoming', decoratorHtml: liveBroadcastIconHtml() },
+  { key: 'unknown', label: 'Unknown status' },
 ];
 function visibleVideoMetaFilterDefinitions(counts, { includeRemoved = true } = {}) {
   return videoMetaFilterDefinitions.filter(({ key }) => (
@@ -3388,6 +3403,7 @@ function searchFilterTreeToggleHtml(nodeId, label) {
 function searchMetaFiltersHtml(
   metaCounts,
   videoTypeCounts,
+  broadcastStatusCounts,
   reactionCounts,
   completionCounts,
   playlistMembershipCounts,
@@ -3494,6 +3510,7 @@ function searchMetaFiltersHtml(
   return [
     kindHtml('Videos', 'videos', metaCounts?.videos?.total, [
       facetHtml({ key: 'videoType', visibility: searchMetaVisibility.videoType, definitions: videoTypeMetaFilterDefinitions, counts: videoTypeCounts, allLabel: 'Type', kind: 'videos' }),
+      facetHtml({ key: 'broadcastStatus', visibility: searchMetaVisibility.broadcastStatus, definitions: broadcastStatusMetaFilterDefinitions, counts: broadcastStatusCounts, allLabel: 'Broadcast status', kind: 'videos' }),
       facetHtml({ key: 'videos', visibility: searchMetaVisibility.videos, definitions: visibleVideoMetaFilterDefinitions(metaCounts?.videos, { includeRemoved: selected.startsWith('__playlist__:') }), counts: metaCounts?.videos, allLabel: 'Availability', kind: 'videos' }),
       facetHtml({ key: 'reactions', visibility: searchMetaVisibility.reactions, definitions: reactionMetaFilterDefinitions, counts: reactionCounts, allLabel: 'Reactions', kind: 'videos' }),
       facetHtml({ key: 'completion', visibility: searchMetaVisibility.completion, definitions: completionMetaFilterDefinitions(partialCompletionMinimumPercent, 'search-completion-minimum'), counts: completionCounts, allLabel: 'Completion', kind: 'videos' }),
@@ -3537,6 +3554,7 @@ function searchMetaFiltersHtml(
 function renderSearchMetaFilters({
   metaCounts = null,
   videoTypeCounts = null,
+  broadcastStatusCounts = null,
   reactionCounts = null,
   completionCounts = null,
   playlistMembershipCounts = null,
@@ -3547,6 +3565,7 @@ function renderSearchMetaFilters({
   renderedSearchFilterPayload = {
     metaCounts,
     videoTypeCounts,
+    broadcastStatusCounts,
     reactionCounts,
     completionCounts,
     playlistMembershipCounts,
@@ -3559,6 +3578,7 @@ function renderSearchMetaFilters({
   template.innerHTML = searchMetaFiltersHtml(
     metaCounts,
     videoTypeCounts,
+    broadcastStatusCounts,
     reactionCounts,
     completionCounts,
     playlistMembershipCounts,
@@ -3577,7 +3597,7 @@ function renderSearchMetaFilters({
     const kindCount = searchFilterRegion.querySelector(`[data-search-kind-count="${kind}"]`);
     if (kindCount) kindCount.textContent = searchKindEnabled(kind) ? (count || '') : '';
   }
-  for (const key of ['videoType', 'videos', 'reactions', 'completion', 'membership', 'uploaderCategory', 'clipOwnership', 'playlistAvailability', 'playlistOwnership', 'channelSubscription', 'channelStatus']) {
+  for (const key of ['videoType', 'broadcastStatus', 'videos', 'reactions', 'completion', 'membership', 'uploaderCategory', 'clipOwnership', 'playlistAvailability', 'playlistOwnership', 'channelSubscription', 'channelStatus']) {
     syncMetaFilterGroup(`search-${key}`, countsPending);
   }
   for (const plugin of browserVideoFilterPlugins()) {
@@ -3770,6 +3790,22 @@ function videoAvailabilityHtml(video) {
   return '<div class="video-availability">Unknown</div>';
 }
 
+function liveBroadcastIconHtml() {
+  return `
+    <svg class="video-type-icon live-icon" xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24" focusable="false" aria-hidden="true">
+      <path clip-rule="evenodd" d="M18.364 4.224a1 1 0 011.414 0 11 11 0 010 15.557 1 1 0 01-1.414-1.414 9 9 0 000-12.729 1 1 0 010-1.414ZM4.222 4.222a1 1 0 011.414 1.415 9 9 0 000 12.728 1 1 0 11-1.414 1.414 11.002 11.002 0 010-15.557Zm3.181 3.181a1.002 1.002 0 011.415 1.415 4.503 4.503 0 00-.975 4.904c.226.545.558 1.042.975 1.46a1.001 1.001 0 01-1.415 1.414 6.502 6.502 0 010-9.193Zm7.779 0c.39-.39 1.024-.39 1.415 0a6.5 6.5 0 010 9.193 1.001 1.001 0 01-1.415-1.415 4.5 4.5 0 000-6.363 1.001 1.001 0 010-1.415ZM12 10a2 2 0 110 4 2 2 0 010-4Z" fill-rule="evenodd"></path>
+    </svg>
+  `;
+}
+
+function broadcastStatusLabel(video) {
+  const status = String(video?.broadcast_status || '').trim().toLowerCase();
+  if (status === 'live') return 'Live now';
+  if (status === 'ended') return 'Streamed live';
+  if (status === 'upcoming') return 'Upcoming live';
+  return 'Livestream';
+}
+
 function videoTypeDecoratorHtml(video) {
   const isVideoRecord = typeof video !== 'string';
   const videoType = String(
@@ -3796,13 +3832,12 @@ function videoTypeDecoratorHtml(video) {
       </span>
     `;
   }
-  if (videoType === 'live') {
+  if (videoType === 'livestream') {
+    const label = isVideoRecord ? broadcastStatusLabel(video) : '';
     return `
-      <span class="video-type-decorator" title="Live" role="img" aria-label="Live">
-        <svg class="video-type-icon live-icon" xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24" focusable="false" aria-hidden="true">
-          <path clip-rule="evenodd" d="M18.364 4.224a1 1 0 011.414 0 11 11 0 010 15.557 1 1 0 01-1.414-1.414 9 9 0 000-12.729 1 1 0 010-1.414ZM4.222 4.222a1 1 0 011.414 1.415 9 9 0 000 12.728 1 1 0 11-1.414 1.414 11.002 11.002 0 010-15.557Zm3.181 3.181a1.002 1.002 0 011.415 1.415 4.503 4.503 0 00-.975 4.904c.226.545.558 1.042.975 1.46a1.001 1.001 0 01-1.415 1.414 6.502 6.502 0 010-9.193Zm7.779 0c.39-.39 1.024-.39 1.415 0a6.5 6.5 0 010 9.193 1.001 1.001 0 01-1.415-1.415 4.5 4.5 0 000-6.363 1.001 1.001 0 010-1.415ZM12 10a2 2 0 110 4 2 2 0 010-4Z" fill-rule="evenodd"></path>
-        </svg>
-        ${isVideoRecord ? '<span class="video-type-label">Live</span>' : ''}
+      <span class="video-type-decorator" title="${escapeHtml(label || 'Livestream')}" role="img" aria-label="${escapeHtml(label || 'Livestream')}">
+        ${liveBroadcastIconHtml()}
+        ${label ? `<span class="video-type-label">${escapeHtml(label)}</span>` : ''}
       </span>
     `;
   }
@@ -4061,6 +4096,7 @@ async function fetchOmniSearch(query, page = currentPage) {
   ]);
   const metaCountsCache = omniMetaCountsCache;
   const videoTypeCountsCache = omniVideoTypeCountsCache;
+  const broadcastStatusCountsCache = omniBroadcastStatusCountsCache;
   const videoPluginFacetCountsCache = omniVideoPluginFacetCountsCache;
   const clipPluginFacetCountsCache = omniClipPluginFacetCountsCache;
   const reactionCountsCache = omniReactionCountsCache;
@@ -4074,6 +4110,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     playlist_group_key: searchPlaylistGroupKey,
     channel_group_key: searchChannelGroupKey,
     video_type: metaFilterParamValue(searchMetaVisibility.videoType),
+    video_broadcast_status: metaFilterParamValue(searchMetaVisibility.broadcastStatus),
     video_meta: metaFilterParamValue(searchMetaVisibility.videos, ['removed']),
     video_reaction: metaFilterParamValue(searchMetaVisibility.reactions),
     video_completion: metaFilterParamValue(searchMetaVisibility.completion),
@@ -4103,6 +4140,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     searchPlaylistGroupKey,
     searchChannelGroupKey,
     metaFilterParamValue(searchMetaVisibility.videoType),
+    metaFilterParamValue(searchMetaVisibility.broadcastStatus),
     metaFilterParamValue(searchMetaVisibility.videos, ['removed']),
     metaFilterParamValue(searchMetaVisibility.reactions),
     metaFilterParamValue(searchMetaVisibility.completion),
@@ -4212,6 +4250,12 @@ async function fetchOmniSearch(query, page = currentPage) {
     if (!videoTypeCountsCache.has(metaCountsKey)) {
       videoTypeCountsCache.set(metaCountsKey, { ...(payload.videoTypeCounts || {}) });
     }
+    if (!broadcastStatusCountsCache.has(metaCountsKey)) {
+      broadcastStatusCountsCache.set(
+        metaCountsKey,
+        { ...(payload.broadcastStatusCounts || {}) },
+      );
+    }
     if (!completionCountsCache.has(metaCountsKey)) {
       completionCountsCache.set(metaCountsKey, { ...(payload.completionCounts || {}) });
     }
@@ -4236,6 +4280,7 @@ async function fetchOmniSearch(query, page = currentPage) {
       ...payload,
       metaCounts: stableMetaCounts,
       videoTypeCounts: videoTypeCountsCache.get(metaCountsKey),
+      broadcastStatusCounts: broadcastStatusCountsCache.get(metaCountsKey),
       reactionCounts: reactionCountsCache.get(metaCountsKey),
       completionCounts: completionCountsCache.get(metaCountsKey),
       playlistMembershipCounts: playlistMembershipCountsCache.get(metaCountsKey),
@@ -4289,6 +4334,7 @@ async function fetchVideoCollection({
   query = '',
   visibility = playlistVisibility,
   videoTypes = null,
+  broadcastStatuses = null,
   completion = null,
   reactions = null,
   uploaderCategories = null,
@@ -4322,6 +4368,7 @@ async function fetchVideoCollection({
     searchFieldsValue,
     browserVideoSearchFieldPlugins().map(plugin => plugin.id),
     videoTypes ? metaFilterParamValue(videoTypes) : '',
+    broadcastStatuses ? metaFilterParamValue(broadcastStatuses) : '',
     metaFilterParamValue(visibility),
     completion ? metaFilterParamValue(completion) : '',
     reactions ? metaFilterParamValue(reactions) : '',
@@ -4346,6 +4393,9 @@ async function fetchVideoCollection({
   });
   if (useSearchFacets) params.set('search_fields', searchFieldsValue);
   if (videoTypes) params.set('video_type', metaFilterParamValue(videoTypes));
+  if (broadcastStatuses) {
+    params.set('broadcast_status', metaFilterParamValue(broadcastStatuses));
+  }
   if (completion) params.set('completion', metaFilterParamValue(completion));
   if (completion) params.set('completion_min_percent', String(partialMinimumPercent));
   if (reactions) params.set('reaction', metaFilterParamValue(reactions));
@@ -4377,6 +4427,12 @@ async function fetchVideoCollection({
   if (!videoTypeCountsCache.has(metaCountsKey)) {
     videoTypeCountsCache.set(metaCountsKey, { ...(payload.videoTypeCounts || {}) });
   }
+  if (!videoBroadcastStatusCountsCache.has(metaCountsKey)) {
+    videoBroadcastStatusCountsCache.set(
+      metaCountsKey,
+      { ...(payload.broadcastStatusCounts || {}) },
+    );
+  }
   if (!videoCompletionCountsCache.has(metaCountsKey)) {
     videoCompletionCountsCache.set(metaCountsKey, { ...(payload.completionCounts || {}) });
   }
@@ -4403,6 +4459,7 @@ async function fetchVideoCollection({
     ...payload,
     counts: metaCountsCache.get(metaCountsKey),
     videoTypeCounts: videoTypeCountsCache.get(metaCountsKey),
+    broadcastStatusCounts: videoBroadcastStatusCountsCache.get(metaCountsKey),
     completionCounts: videoCompletionCountsCache.get(metaCountsKey),
     reactionCounts: videoReactionCountsCache.get(metaCountsKey),
     uploaderCategoryCounts: videoUploaderCategoryCountsCache.get(metaCountsKey),
@@ -5416,6 +5473,7 @@ async function render() {
           query: search.value.trim(),
           visibility: playlistVisibility,
           videoTypes: searchMetaVisibility.videoType,
+          broadcastStatuses: searchMetaVisibility.broadcastStatus,
           completion: searchMetaVisibility.completion,
           reactions: searchMetaVisibility.reactions,
           uploaderCategories: searchMetaVisibility.uploaderCategory,
@@ -5434,6 +5492,7 @@ async function render() {
           query: search.value.trim(),
           visibility: playlistVisibility,
           videoTypes: searchMetaVisibility.videoType,
+          broadcastStatuses: searchMetaVisibility.broadcastStatus,
           completion: searchMetaVisibility.completion,
           reactions: searchMetaVisibility.reactions,
           uploaderCategories: searchMetaVisibility.uploaderCategory,
@@ -5469,6 +5528,7 @@ async function render() {
         videoPlugins: payload.metaCounts?.videoPlugins || {},
       },
       videoTypeCounts: payload.videoTypeCounts || null,
+      broadcastStatusCounts: payload.broadcastStatusCounts || null,
       reactionCounts: payload.reactionCounts || null,
       completionCounts: payload.completionCounts || null,
       uploaderCategoryCounts: payload.uploaderCategoryCounts || null,
@@ -5518,6 +5578,7 @@ async function render() {
       query: search.value.trim(),
       visibility: playlistVisibility,
       videoTypes: searchMetaVisibility.videoType,
+      broadcastStatuses: searchMetaVisibility.broadcastStatus,
       completion: searchMetaVisibility.completion,
       reactions: searchMetaVisibility.reactions,
       uploaderCategories: searchMetaVisibility.uploaderCategory,

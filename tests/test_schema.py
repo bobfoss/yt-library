@@ -1489,6 +1489,44 @@ class SchemaTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_update_rechecks_active_and_upcoming_broadcasts_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                fetched_at = core.utc_now()
+                with conn:
+                    for video_id, status in (
+                        ("active12345", "live"),
+                        ("future12345", "upcoming"),
+                        ("ended123456", "ended"),
+                        ("ordinary12", ""),
+                    ):
+                        core.upsert_video(
+                            conn,
+                            video_id,
+                            title=video_id,
+                            video_type=("video" if status == "" else "livestream"),
+                            broadcast_status=status,
+                            broadcast_status_checked_at=fetched_at,
+                            fetch_status="ok",
+                            fetched_at=fetched_at,
+                            source="youtube",
+                        )
+
+                candidates = core.metadata_queue_candidate_rows(
+                    conn,
+                    limit=10,
+                    metadata_kind="video",
+                    never_fetched_only=True,
+                )
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            {row["video_id"] for row in candidates},
+            {"active12345", "future12345"},
+        )
+
     def test_save_playlist_scan_updates_playlist_metadata(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:

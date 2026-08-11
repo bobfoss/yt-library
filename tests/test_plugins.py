@@ -262,6 +262,45 @@ class FakeEntryPoint:
 
 
 class PluginManagerTests(unittest.TestCase):
+    def test_planning_context_exposes_generic_broadcast_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "live1234567",
+                        title="Active stream",
+                        video_type="livestream",
+                        broadcast_status="live",
+                        broadcast_started_at="2026-08-11T10:00:00Z",
+                        broadcast_ended_at=None,
+                        broadcast_status_checked_at="2026-08-11T10:05:00Z",
+                        source="youtube",
+                    )
+                videos = list(
+                    PluginPlanningContext(conn, "example").library_videos()
+                )
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            videos,
+            [
+                {
+                    "video_id": "live1234567",
+                    "title": "Active stream",
+                    "availability": "unknown",
+                    "is_playable": None,
+                    "video_type": "livestream",
+                    "broadcast_status": "live",
+                    "broadcast_started_at": "2026-08-11T10:00:00Z",
+                    "broadcast_ended_at": None,
+                    "broadcast_status_checked_at": "2026-08-11T10:05:00Z",
+                }
+            ],
+        )
+
     def test_planning_context_exposes_canonical_clip_sources_and_bounds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")

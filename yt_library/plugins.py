@@ -61,7 +61,9 @@ class PluginPlanningContext:
     def library_videos(self) -> Iterable[dict[str, Any]]:
         rows = self._conn.execute(
             """
-            SELECT video_id, title, availability, is_playable
+            SELECT video_id, title, availability, is_playable,
+                   video_type, broadcast_status, broadcast_started_at,
+                   broadcast_ended_at, broadcast_status_checked_at
             FROM videos
             WHERE video_id <> ''
             ORDER BY video_id

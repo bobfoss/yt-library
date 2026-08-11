@@ -699,14 +699,19 @@ class AdminServerTests(unittest.TestCase):
         ):
             handler._handle_library_get(
                 urllib.parse.urlparse(
-                    "/api/search?video_type=short,live"
+                    "/api/search?video_type=short,livestream"
+                    "&video_broadcast_status=live,ended"
                     "&video_uploader_category=Science+%26+Technology,__no_category__&limit=1"
                 )
             )
 
         self.assertEqual(
             search_data.call_args.kwargs["video_type_filters"],
-            {"short", "live"},
+            {"short", "livestream"},
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["video_broadcast_status_filters"],
+            {"live", "ended"},
         )
         self.assertEqual(
             search_data.call_args.kwargs["video_uploader_category_filters"],

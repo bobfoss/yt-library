@@ -2632,7 +2632,7 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_watch_metadata_classifies_shorts_and_live_video_types(self) -> None:
+    def test_watch_metadata_classifies_shorts_and_livestream_video_types(self) -> None:
         fixtures = (
             (
                 "short123456",
@@ -2659,7 +2659,7 @@ class CoreHelperTests(unittest.TestCase):
                         }
                     },
                 },
-                "live",
+                "livestream",
             ),
             (
                 "premiere123",
@@ -2695,6 +2695,71 @@ class CoreHelperTests(unittest.TestCase):
                 )
                 metadata = core.extract_watch_metadata(html, video_id)
                 self.assertEqual(metadata["video_type"], expected_type)
+
+    def test_youtube_broadcast_metadata_distinguishes_lifecycle_states(self) -> None:
+        observed_at = "2026-08-11T12:00:00Z"
+        cases = (
+            (
+                {"isLiveContent": True, "isLive": True},
+                {
+                    "liveBroadcastDetails": {
+                        "isLiveNow": True,
+                        "startTimestamp": "2026-08-11T11:00:00+00:00",
+                    }
+                },
+                ("live", "2026-08-11T11:00:00Z", None),
+            ),
+            (
+                {"isLiveContent": True, "isUpcoming": True},
+                {
+                    "liveBroadcastDetails": {
+                        "startTimestamp": "2026-08-12T11:00:00+00:00",
+                    }
+                },
+                ("upcoming", "2026-08-12T11:00:00Z", None),
+            ),
+            (
+                {"isLiveContent": True},
+                {
+                    "liveBroadcastDetails": {
+                        "startTimestamp": "2026-08-10T11:00:00+00:00",
+                        "endTimestamp": "2026-08-10T12:00:00+00:00",
+                    }
+                },
+                ("ended", "2026-08-10T11:00:00Z", "2026-08-10T12:00:00Z"),
+            ),
+            (
+                {"isLiveContent": True},
+                {},
+                (None, None, None),
+            ),
+            (
+                {"isLiveContent": False},
+                {},
+                ("", "", ""),
+            ),
+            (
+                {},
+                {},
+                (None, None, None),
+            ),
+        )
+
+        for details, microformat, expected in cases:
+            with self.subTest(expected=expected):
+                metadata = core.youtube_broadcast_metadata(
+                    details,
+                    microformat,
+                    observed_at=observed_at,
+                )
+                self.assertEqual(
+                    (
+                        metadata["broadcast_status"],
+                        metadata["broadcast_started_at"],
+                        metadata["broadcast_ended_at"],
+                    ),
+                    expected,
+                )
 
     def test_watch_metadata_classifies_and_persists_movie_metadata(self) -> None:
         player = {

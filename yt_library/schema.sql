@@ -82,7 +82,12 @@ CREATE TABLE IF NOT EXISTS videos (
   upload_date TEXT NOT NULL DEFAULT '',
   uploader_category TEXT NOT NULL DEFAULT '',
   video_type TEXT NOT NULL DEFAULT ''
-    CHECK (video_type IN ('', 'video', 'short', 'live', 'movie')),
+    CHECK (video_type IN ('', 'video', 'short', 'livestream', 'movie')),
+  broadcast_status TEXT
+    CHECK (broadcast_status IS NULL OR broadcast_status IN ('', 'upcoming', 'live', 'ended')),
+  broadcast_started_at TEXT,
+  broadcast_ended_at TEXT,
+  broadcast_status_checked_at TEXT,
   movie_rating TEXT NOT NULL DEFAULT '',
   movie_release_date TEXT NOT NULL DEFAULT '',
   movie_offer TEXT NOT NULL DEFAULT '',

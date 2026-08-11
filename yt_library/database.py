@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -1099,6 +1099,47 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (25, utc_now()),
+        )
+    if current_version < 26:
+        video_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+        }
+        videos_sql_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'videos'"
+        ).fetchone()
+        videos_sql = str(videos_sql_row["sql"] or "") if videos_sql_row else ""
+        if "video_type" in video_columns and "'livestream'" not in videos_sql.casefold():
+            conn.executescript(
+                """
+                ALTER TABLE videos RENAME COLUMN video_type TO legacy_video_type;
+                ALTER TABLE videos ADD COLUMN video_type TEXT NOT NULL DEFAULT ''
+                  CHECK (video_type IN ('', 'video', 'short', 'livestream', 'movie'));
+                UPDATE videos
+                SET video_type = CASE legacy_video_type
+                  WHEN 'live' THEN 'livestream'
+                  ELSE legacy_video_type
+                END;
+                ALTER TABLE videos DROP COLUMN legacy_video_type;
+                """
+            )
+        video_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+        }
+        broadcast_columns = {
+            "broadcast_status": (
+                "TEXT CHECK (broadcast_status IS NULL OR "
+                "broadcast_status IN ('', 'upcoming', 'live', 'ended'))"
+            ),
+            "broadcast_started_at": "TEXT",
+            "broadcast_ended_at": "TEXT",
+            "broadcast_status_checked_at": "TEXT",
+        }
+        for column, definition in broadcast_columns.items():
+            if column not in video_columns:
+                conn.execute(f"ALTER TABLE videos ADD COLUMN {column} {definition}")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (26, utc_now()),
         )
 
 

@@ -1852,7 +1852,7 @@ class NormalizedReadModelTests(unittest.TestCase):
         for video_id, title, video_type in (
             ("type-video", "Type facet video", "video"),
             ("type-short", "Type facet short", "short"),
-            ("type-live", "Type facet live", "live"),
+            ("type-live", "Type facet live", "livestream"),
             ("type-movie", "Type facet movie", "movie"),
             ("type-unknown", "Type facet unknown", ""),
         ):
@@ -1876,7 +1876,7 @@ class NormalizedReadModelTests(unittest.TestCase):
                 "total": 5,
                 "video": 1,
                 "short": 1,
-                "live": 1,
+                "livestream": 1,
                 "movie": 1,
                 "unknown": 1,
             },
@@ -2782,7 +2782,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             (
                 ("collection-video", "video"),
                 ("collection-short", "short"),
-                ("collection-live", "live"),
+                ("collection-live", "livestream"),
                 ("collection-movie", "movie"),
                 ("collection-unknown", ""),
             ),
@@ -2806,7 +2806,7 @@ class NormalizedReadModelTests(unittest.TestCase):
                 "total": 5,
                 "video": 1,
                 "short": 1,
-                "live": 1,
+                "livestream": 1,
                 "movie": 1,
                 "unknown": 1,
             },
@@ -2815,13 +2815,65 @@ class NormalizedReadModelTests(unittest.TestCase):
         live = video_collection_data(
             self.conn,
             playlist_id="PLtypes",
-            video_type_filters={"live"},
+            video_type_filters={"livestream"},
         )
         self.assertEqual(
             [row["video_id"] for row in live["results"]],
             ["collection-live"],
         )
         self.assertEqual(live["videoTypeCounts"], unfiltered["videoTypeCounts"])
+
+    def test_video_collection_broadcast_status_facet_excludes_ordinary_videos_from_counts(self) -> None:
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLbroadcast', 'Broadcasts')"
+        )
+        fixtures = (
+            ("broadcast-ordinary", "video", ""),
+            ("broadcast-live", "livestream", "live"),
+            ("broadcast-ended", "livestream", "ended"),
+            ("broadcast-upcoming", "livestream", "upcoming"),
+            ("broadcast-unknown", "livestream", None),
+        )
+        for position, (video_id, video_type, broadcast_status) in enumerate(
+            fixtures,
+            start=1,
+        ):
+            self.add_video(video_id, video_id)
+            self.conn.execute(
+                "UPDATE videos SET video_type = ?, broadcast_status = ? WHERE video_id = ?",
+                (video_type, broadcast_status, video_id),
+            )
+            self.conn.execute(
+                "INSERT INTO playlist_items(playlist_id, position, video_id) VALUES ('PLbroadcast', ?, ?)",
+                (position, video_id),
+            )
+        self.conn.commit()
+
+        unfiltered = video_collection_data(self.conn, playlist_id="PLbroadcast")
+        self.assertEqual(
+            unfiltered["broadcastStatusCounts"],
+            {
+                "total": 4,
+                "live": 1,
+                "ended": 1,
+                "upcoming": 1,
+                "unknown": 1,
+            },
+        )
+
+        active = video_collection_data(
+            self.conn,
+            playlist_id="PLbroadcast",
+            broadcast_status_filters={"live"},
+        )
+        self.assertEqual(
+            [row["video_id"] for row in active["results"]],
+            ["broadcast-live", "broadcast-ordinary"],
+        )
+        self.assertEqual(
+            active["broadcastStatusCounts"],
+            unfiltered["broadcastStatusCounts"],
+        )
 
     def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:
         self.add_video("old123", "Old Router Video")

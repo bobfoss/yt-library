@@ -459,7 +459,7 @@ def _video_candidate_query(
                  '' AS membership_state, '' AS unavailable_kind, '' AS source_quality,
                  '' AS match_type, '' AS match_confidence, '' AS added_at,
                  v.is_playable, v.availability, v.reaction, v.uploader_category,
-                 v.video_type,
+                 v.video_type, v.broadcast_status,
                  COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent,
                  COALESCE(hs.watch_count, 0) AS watch_count,
                  COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
@@ -489,6 +489,7 @@ def _video_candidate_query(
                  v.is_playable, COALESCE(v.reaction, '') AS reaction,
                  COALESCE(v.uploader_category, '') AS uploader_category,
                  COALESCE(v.video_type, '') AS video_type,
+                 v.broadcast_status,
                  COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent,
                  CASE WHEN pi.video_id IS NULL THEN pi.unavailable_kind ELSE v.availability END AS availability,
                  COALESCE(hs.watch_count, 0) AS watch_count,
@@ -525,7 +526,8 @@ VIDEO_COMPLETION_CATEGORIES = (
     "never_watched",
 )
 VIDEO_REACTION_CATEGORIES = ("none", "liked", "disliked")
-VIDEO_TYPE_CATEGORIES = ("video", "short", "live", "movie", "unknown")
+VIDEO_TYPE_CATEGORIES = ("video", "short", "livestream", "movie", "unknown")
+BROADCAST_STATUS_CATEGORIES = ("live", "ended", "upcoming", "unknown")
 NO_UPLOADER_CATEGORY_FILTER = "__no_category__"
 
 
@@ -548,6 +550,16 @@ def _video_collection_category(item: dict[str, Any]) -> str:
 def _video_type_category(item: Mapping[str, Any]) -> str:
     video_type = str(item.get("video_type") or "").strip().lower()
     return video_type if video_type in VIDEO_TYPE_CATEGORIES[:-1] else "unknown"
+
+
+def _video_broadcast_status_category(item: Mapping[str, Any]) -> str:
+    if _video_type_category(item) != "livestream":
+        return "not_applicable"
+    status = item.get("broadcast_status")
+    if status is None:
+        return "unknown"
+    normalized = str(status).strip().lower()
+    return normalized if normalized in BROADCAST_STATUS_CATEGORIES[:-1] else "unknown"
 
 
 def _video_completion_category(item: dict[str, Any]) -> str:
@@ -606,6 +618,7 @@ def video_collection_data(
     completion_filters: set[str] | None = None,
     reaction_filters: set[str] | None = None,
     video_type_filters: set[str] | None = None,
+    broadcast_status_filters: set[str] | None = None,
     uploader_category_filters: set[str] | None = None,
     included_video_ids: Collection[str] | None = None,
     excluded_video_ids: Collection[str] = (),
@@ -705,6 +718,11 @@ def video_collection_data(
         if video_type_filters is None
         else set(video_type_filters) & set(VIDEO_TYPE_CATEGORIES)
     )
+    selected_broadcast_status_filters = (
+        set(BROADCAST_STATUS_CATEGORIES)
+        if broadcast_status_filters is None
+        else set(broadcast_status_filters) & set(BROADCAST_STATUS_CATEGORIES)
+    )
     selected_uploader_category_filters = (
         None
         if uploader_category_filters is None
@@ -747,9 +765,21 @@ def video_collection_data(
         CASE lower(trim(COALESCE(video_type, '')))
           WHEN 'video' THEN 'video'
           WHEN 'short' THEN 'short'
-          WHEN 'live' THEN 'live'
+          WHEN 'livestream' THEN 'livestream'
           WHEN 'movie' THEN 'movie'
           ELSE 'unknown'
+        END
+    """
+    broadcast_status_sql = """
+        CASE
+          WHEN lower(trim(COALESCE(video_type, ''))) <> 'livestream'
+            THEN 'not_applicable'
+          ELSE CASE lower(trim(COALESCE(broadcast_status, '')))
+            WHEN 'live' THEN 'live'
+            WHEN 'ended' THEN 'ended'
+            WHEN 'upcoming' THEN 'upcoming'
+            ELSE 'unknown'
+          END
         END
     """
     categorized_cte = f"""
@@ -771,6 +801,7 @@ def video_collection_data(
                  {completion_category_sql} AS completion_category,
                  {reaction_category_sql} AS reaction_category,
                  {video_type_sql} AS video_type_category,
+                 {broadcast_status_sql} AS broadcast_status_category,
                  {uploader_category_sql} AS uploader_category_category,
                  CASE
                    WHEN COALESCE(video_id, '') <> '' THEN 'video:' || video_id
@@ -834,6 +865,11 @@ def video_collection_data(
           WHERE {plugin_filter_clause}
           GROUP BY video_type_category
           UNION ALL
+          SELECT 'broadcast_status', broadcast_status_category, COUNT(DISTINCT count_key)
+          FROM categorized
+          WHERE {plugin_filter_clause} AND broadcast_status_category <> 'not_applicable'
+          GROUP BY broadcast_status_category
+          UNION ALL
           SELECT 'uploader_category', uploader_category_category,
                  COUNT(DISTINCT count_key)
           FROM categorized
@@ -852,6 +888,10 @@ def video_collection_data(
         "total": 0,
         **{category: 0 for category in VIDEO_TYPE_CATEGORIES},
     }
+    broadcast_status_counts = {
+        "total": 0,
+        **{category: 0 for category in BROADCAST_STATUS_CATEGORIES},
+    }
     uploader_category_counts = {
         "total": 0,
         NO_UPLOADER_CATEGORY_FILTER: 0,
@@ -865,6 +905,8 @@ def video_collection_data(
             target = reaction_counts
         elif row["count_type"] == "video_type":
             target = video_type_counts
+        elif row["count_type"] == "broadcast_status":
+            target = broadcast_status_counts
         else:
             target = uploader_category_counts
         target[row["category"]] = row["count"]
@@ -873,6 +915,10 @@ def video_collection_data(
     )
     video_type_counts["total"] = sum(
         video_type_counts[category] for category in VIDEO_TYPE_CATEGORIES
+    )
+    broadcast_status_counts["total"] = sum(
+        broadcast_status_counts[category]
+        for category in BROADCAST_STATUS_CATEGORIES
     )
     uploader_category_counts["total"] = sum(
         count
@@ -938,6 +984,22 @@ def video_collection_data(
         if selected_video_type_filters
         else "0"
     )
+    broadcast_status_placeholders = ", ".join(
+        f":broadcast_status_{index}"
+        for index in range(len(selected_broadcast_status_filters))
+    )
+    filter_params.update(
+        {
+            f"broadcast_status_{index}": value
+            for index, value in enumerate(sorted(selected_broadcast_status_filters))
+        }
+    )
+    broadcast_status_clause = (
+        f"(broadcast_status_category = 'not_applicable' "
+        f"OR broadcast_status_category IN ({broadcast_status_placeholders}))"
+        if selected_broadcast_status_filters
+        else "broadcast_status_category = 'not_applicable'"
+    )
     if selected_uploader_category_filters is None:
         uploader_category_clause = "1"
     else:
@@ -962,7 +1024,7 @@ def video_collection_data(
         else "1"
     )
     native_filter_clause = (
-        f"{video_type_clause} AND {selected_clause} AND {completion_clause} "
+        f"{video_type_clause} AND {broadcast_status_clause} AND {selected_clause} AND {completion_clause} "
         f"AND {reaction_clause} "
         f"AND {uploader_category_clause} AND {duplicate_clause}"
     )
@@ -1094,6 +1156,7 @@ def video_collection_data(
         item.pop("completion_category", None)
         item.pop("reaction_category", None)
         item.pop("video_type_category", None)
+        item.pop("broadcast_status_category", None)
         item.pop("uploader_category_category", None)
         item.pop("count_key", None)
         item.pop("playlist_occurrence_count", None)
@@ -1112,6 +1175,7 @@ def video_collection_data(
         "completionCounts": completion_counts,
         "reactionCounts": reaction_counts,
         "videoTypeCounts": video_type_counts,
+        "broadcastStatusCounts": broadcast_status_counts,
         "uploaderCategoryCounts": uploader_category_counts,
         "metaCounts": {"videoPlugins": video_facet_counts},
         "duplicateCount": duplicate_count,
@@ -1323,6 +1387,10 @@ def projected_video_data(projection: Mapping[str, Any]) -> dict[str, Any]:
         "duration_text": "",
         "uploader_category": "",
         "video_type": "",
+        "broadcast_status": None,
+        "broadcast_started_at": None,
+        "broadcast_ended_at": None,
+        "broadcast_status_checked_at": None,
         "movie_rating": "",
         "movie_release_date": "",
         "movie_offer": "",
@@ -1395,6 +1463,7 @@ OMNI_SEARCH_META_FILTERS = {
 }
 OMNI_SEARCH_REACTION_FILTERS = VIDEO_REACTION_CATEGORIES
 OMNI_SEARCH_VIDEO_TYPE_FILTERS = VIDEO_TYPE_CATEGORIES
+OMNI_SEARCH_BROADCAST_STATUS_FILTERS = BROADCAST_STATUS_CATEGORIES
 OMNI_SEARCH_COMPLETION_FILTERS = VIDEO_COMPLETION_CATEGORIES
 OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS = ("member", "non_member")
 OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS = ("mine", "others", "ownership_unknown")
@@ -1738,6 +1807,28 @@ def _omni_video_type_counts(results: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _omni_video_broadcast_status_category(result: dict[str, Any]) -> str:
+    return _video_broadcast_status_category(result["item"])
+
+
+def _omni_video_broadcast_status_counts(
+    results: list[dict[str, Any]],
+) -> dict[str, int]:
+    counts = {
+        "total": 0,
+        **{category: 0 for category in OMNI_SEARCH_BROADCAST_STATUS_FILTERS},
+    }
+    for result in results:
+        if result["kind"] != "video":
+            continue
+        category = _omni_video_broadcast_status_category(result)
+        if category == "not_applicable":
+            continue
+        counts["total"] += 1
+        counts[category] += 1
+    return counts
+
+
 def _known_uploader_categories(conn: sqlite3.Connection) -> tuple[str, ...]:
     categories = {
         str(row[0]).strip()
@@ -1897,6 +1988,10 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
                v.upload_date AS metadata_upload_date,
                v.uploader_category,
                v.video_type,
+               v.broadcast_status,
+               v.broadcast_started_at,
+               v.broadcast_ended_at,
+               v.broadcast_status_checked_at,
                v.movie_rating,
                v.movie_release_date,
                v.movie_offer,
@@ -1967,6 +2062,7 @@ def omni_search_data(
     video_partial_min_percent: int = 1,
     video_playlist_membership_filters: set[str] | None = None,
     video_type_filters: set[str] | None = None,
+    video_broadcast_status_filters: set[str] | None = None,
     video_uploader_category_filters: set[str] | None = None,
     video_id_filters: Sequence[Collection[str]] = (),
     video_id_exclusion_filters: Sequence[Collection[str]] = (),
@@ -2406,6 +2502,7 @@ def omni_search_data(
                      v.availability,
                      v.uploader_category,
                      v.video_type,
+                     v.broadcast_status,
                      COALESCE(vr.archivarix_status, '') AS recovered_status
               FROM videos v
               LEFT JOIN channels ch ON ch.channel_id = v.channel_id
@@ -2471,6 +2568,7 @@ def omni_search_data(
                    candidate.availability,
                    candidate.uploader_category,
                    candidate.video_type,
+                   candidate.broadcast_status,
                    candidate.recovered_status
             FROM candidate_videos candidate
             JOIN videos v ON v.video_id = candidate.video_id
@@ -2639,6 +2737,12 @@ def omni_search_data(
         if video_type_filters is None
         else set(video_type_filters) & set(OMNI_SEARCH_VIDEO_TYPE_FILTERS)
     )
+    selected_broadcast_status_filters = (
+        set(OMNI_SEARCH_BROADCAST_STATUS_FILTERS)
+        if video_broadcast_status_filters is None
+        else set(video_broadcast_status_filters)
+        & set(OMNI_SEARCH_BROADCAST_STATUS_FILTERS)
+    )
     known_uploader_categories = _known_uploader_categories(conn)
     allowed_uploader_category_filters = {
         NO_UPLOADER_CATEGORY_FILTER,
@@ -2685,8 +2789,13 @@ def omni_search_data(
         if result["kind"] == "clip":
             return result["clipOwnership"] in selected_clip_ownership_filters
         if result["kind"] == "video":
+            broadcast_status_category = _omni_video_broadcast_status_category(result)
             return (
                 _omni_video_type_category(result) in selected_video_type_filters
+                and (
+                    broadcast_status_category == "not_applicable"
+                    or broadcast_status_category in selected_broadcast_status_filters
+                )
                 and result["metaCategory"] in selected_meta_filters[result["kind"]]
                 and _omni_video_reaction_category(result) in selected_reaction_filters
                 and _video_matches_completion_filter(
@@ -2781,6 +2890,9 @@ def omni_search_data(
         meta_counts["clipPlugins"] = clip_facet_counts
     reaction_counts = _omni_reaction_counts(plugin_filtered_results)
     video_type_counts = _omni_video_type_counts(plugin_filtered_results)
+    broadcast_status_counts = _omni_video_broadcast_status_counts(
+        plugin_filtered_results
+    )
     completion_counts = _omni_completion_counts(
         plugin_filtered_results,
         video_partial_min_percent,
@@ -2847,6 +2959,7 @@ def omni_search_data(
         "metaCounts": meta_counts,
         "reactionCounts": reaction_counts,
         "videoTypeCounts": video_type_counts,
+        "broadcastStatusCounts": broadcast_status_counts,
         "completionCounts": completion_counts,
         "playlistMembershipCounts": playlist_membership_counts,
         "uploaderCategoryCounts": uploader_category_counts,
@@ -2959,6 +3072,10 @@ def history_search_data(
                    v.duration_text AS metadata_duration,
                    v.uploader_category,
                    v.video_type,
+                   v.broadcast_status,
+                   v.broadcast_started_at,
+                   v.broadcast_ended_at,
+                   v.broadcast_status_checked_at,
                    v.movie_rating,
                    v.movie_release_date,
                    v.movie_offer,
