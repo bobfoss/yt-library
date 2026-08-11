@@ -821,7 +821,7 @@ test('filter tree recursively renders broadcast status under livestreams', () =>
   assert.match(indexSource, /searchFilterTreeToggleHtml\(nodeId, label\)/);
   assert.match(indexSource, /nestedExpanded \? '' : 'hidden'/);
   assert.match(indexHtml, /\.meta-filter-nested-option > \.search-tree-toggle \{[^}]*left: -18px;/);
-  assert.match(indexHtml, /\.meta-filter-nested-content \{ display: grid; gap: 5px; margin-left: 18px; \}/);
+  assert.match(indexHtml, /\.meta-filter-nested-content \{ display: grid; gap: 0; margin-left: 18px; \}/);
 });
 
 test('desktop sidebar grows with filter content within responsive bounds', () => {
