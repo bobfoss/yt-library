@@ -81,6 +81,8 @@ CREATE TABLE IF NOT EXISTS videos (
   view_count TEXT NOT NULL DEFAULT '',
   upload_date TEXT NOT NULL DEFAULT '',
   uploader_category TEXT NOT NULL DEFAULT '',
+  video_type TEXT NOT NULL DEFAULT ''
+    CHECK (video_type IN ('', 'video', 'short', 'live')),
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
   reaction TEXT NOT NULL DEFAULT ''

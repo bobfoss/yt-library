@@ -2592,7 +2592,9 @@ class CoreHelperTests(unittest.TestCase):
           "videoDetails": {"title": "Unlisted video", "author": "Creator"},
           "microformat": {"playerMicroformatRenderer": {
             "isUnlisted": true,
-            "category": "Music"
+            "category": "Music",
+            "isShortsEligible": false,
+            "canonicalUrl": "https://www.youtube.com/watch?v=unlisted123"
           }}
         };
         var ytInitialData = {};
@@ -2604,6 +2606,7 @@ class CoreHelperTests(unittest.TestCase):
 
         self.assertEqual(metadata["availability"], "unlisted")
         self.assertEqual(metadata["uploader_category"], "Music")
+        self.assertEqual(metadata["video_type"], "video")
         self.assertEqual(core.storable_watch_playability_value(metadata), 1)
         with tempfile.TemporaryDirectory() as tmp:
             conn = migrated_connection(Path(tmp) / "library.sqlite3")
@@ -2612,7 +2615,7 @@ class CoreHelperTests(unittest.TestCase):
                     core.store_video_metadata(conn, metadata, "ok")
                 stored = conn.execute(
                     """
-                    SELECT is_playable, availability, uploader_category
+                    SELECT is_playable, availability, uploader_category, video_type
                     FROM videos
                     WHERE video_id = 'unlisted123'
                     """
@@ -2623,10 +2626,52 @@ class CoreHelperTests(unittest.TestCase):
                         "is_playable": 1,
                         "availability": "unlisted",
                         "uploader_category": "Music",
+                        "video_type": "video",
                     },
                 )
             finally:
                 conn.close()
+
+    def test_watch_metadata_classifies_shorts_and_live_video_types(self) -> None:
+        fixtures = (
+            (
+                "short123456",
+                {
+                    "videoDetails": {"title": "A Short", "isLiveContent": False},
+                    "microformat": {
+                        "playerMicroformatRenderer": {
+                            "isShortsEligible": True,
+                            "canonicalUrl": "https://www.youtube.com/shorts/short123456",
+                        }
+                    },
+                },
+                "short",
+            ),
+            (
+                "live1234567",
+                {
+                    "videoDetails": {"title": "A Stream", "isLiveContent": True},
+                    "microformat": {
+                        "playerMicroformatRenderer": {
+                            "isShortsEligible": False,
+                            "canonicalUrl": "https://www.youtube.com/watch?v=live1234567",
+                            "liveBroadcastDetails": {"isLiveNow": False},
+                        }
+                    },
+                },
+                "live",
+            ),
+        )
+        for video_id, player, expected_type in fixtures:
+            with self.subTest(video_type=expected_type):
+                player["playabilityStatus"] = {"status": "OK"}
+                html = (
+                    "<script>var ytInitialPlayerResponse = "
+                    + json.dumps(player)
+                    + "; var ytInitialData = {};</script>"
+                )
+                metadata = core.extract_watch_metadata(html, video_id)
+                self.assertEqual(metadata["video_type"], expected_type)
 
     def test_watch_metadata_classifies_accessible_private_visibility(self) -> None:
         html = """

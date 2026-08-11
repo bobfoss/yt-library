@@ -1778,6 +1778,46 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["uncategorized1"],
         )
 
+    def test_omni_search_video_type_facet(self) -> None:
+        for video_id, title, video_type in (
+            ("type-video", "Type facet video", "video"),
+            ("type-short", "Type facet short", "short"),
+            ("type-live", "Type facet live", "live"),
+            ("type-unknown", "Type facet unknown", ""),
+        ):
+            self.add_video(video_id, title)
+            self.conn.execute(
+                "UPDATE videos SET video_type = ? WHERE video_id = ?",
+                (video_type, video_id),
+            )
+        self.conn.commit()
+
+        unfiltered = omni_search_data(
+            self.conn,
+            "type facet",
+            result_kinds={"video"},
+            sort="title",
+            limit=100,
+        )
+        self.assertEqual(
+            unfiltered["videoTypeCounts"],
+            {"total": 4, "video": 1, "short": 1, "live": 1, "unknown": 1},
+        )
+
+        shorts = omni_search_data(
+            self.conn,
+            "type facet",
+            result_kinds={"video"},
+            video_type_filters={"short"},
+            sort="title",
+            limit=100,
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in shorts["results"]],
+            ["type-short"],
+        )
+        self.assertEqual(shorts["videoTypeCounts"], unfiltered["videoTypeCounts"])
+
     def test_omni_search_filters_partial_completion_by_minimum_percentage(self) -> None:
         for video_id, title in (
             ("partial-low", "Partial low"),
@@ -2655,6 +2695,47 @@ class NormalizedReadModelTests(unittest.TestCase):
             {"present": 1, "absent": 0},
         )
         self.assertTrue(filtered["results"][0]["pluginFacets"]["subtitles"])
+
+    def test_video_collection_video_type_facet(self) -> None:
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLtypes', 'Types')"
+        )
+        for position, (video_id, video_type) in enumerate(
+            (
+                ("collection-video", "video"),
+                ("collection-short", "short"),
+                ("collection-live", "live"),
+                ("collection-unknown", ""),
+            ),
+            start=1,
+        ):
+            self.add_video(video_id, f"Collection {video_type or 'unknown'}")
+            self.conn.execute(
+                "UPDATE videos SET video_type = ? WHERE video_id = ?",
+                (video_type, video_id),
+            )
+            self.conn.execute(
+                "INSERT INTO playlist_items(playlist_id, position, video_id) VALUES ('PLtypes', ?, ?)",
+                (position, video_id),
+            )
+        self.conn.commit()
+
+        unfiltered = video_collection_data(self.conn, playlist_id="PLtypes")
+        self.assertEqual(
+            unfiltered["videoTypeCounts"],
+            {"total": 4, "video": 1, "short": 1, "live": 1, "unknown": 1},
+        )
+
+        live = video_collection_data(
+            self.conn,
+            playlist_id="PLtypes",
+            video_type_filters={"live"},
+        )
+        self.assertEqual(
+            [row["video_id"] for row in live["results"]],
+            ["collection-live"],
+        )
+        self.assertEqual(live["videoTypeCounts"], unfiltered["videoTypeCounts"])
 
     def test_history_search_uses_canonical_video_metadata_and_sorts_newest_first(self) -> None:
         self.add_video("old123", "Old Router Video")

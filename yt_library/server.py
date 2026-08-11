@@ -224,6 +224,7 @@ def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, Any]
         "duplicates_only": query_bool_param(params, "duplicates", default=False),
         "completion_filters": query_set_param(params, "completion"),
         "reaction_filters": query_set_param(params, "reaction"),
+        "video_type_filters": query_set_param(params, "video_type"),
         "uploader_category_filters": query_set_param(params, "uploader_category"),
         "partial_min_percent": query_partial_min_percent(
             params,
@@ -1451,6 +1452,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                         params,
                         "video_playlist_membership",
                     ),
+                    video_type_filters=query_set_param(params, "video_type"),
                     video_uploader_category_filters=query_set_param(
                         params,
                         "video_uploader_category",

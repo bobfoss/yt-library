@@ -783,6 +783,18 @@ test('uploader category facet requires detected categories', () => {
   assert.match(indexSource, /\.\.\.\(uploaderCategoryDefinitions\.length \? \[[\s\S]*?allLabel: 'Uploader category'/);
 });
 
+test('video type facet precedes availability in search and playlist requests', () => {
+  const indexSource = source('index.js');
+  const typeFacet = indexSource.indexOf("key: 'videoType'");
+  const availabilityFacet = indexSource.indexOf("key: 'videos'", typeFacet);
+
+  assert.ok(typeFacet >= 0);
+  assert.ok(availabilityFacet > typeFacet);
+  assert.match(indexSource, /videoType: \{ video: true, short: true, live: true, unknown: true \}/);
+  assert.match(indexSource, /video_type: metaFilterParamValue\(searchMetaVisibility\.videoType\)/);
+  assert.match(indexSource, /params\.set\('video_type', metaFilterParamValue\(videoTypes\)\)/);
+});
+
 test('sidebar keeps facet trees separate from category navigation', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');

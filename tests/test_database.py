@@ -302,6 +302,33 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertIn("youtube_feed_ordinal", clip_columns)
         self.assertIsNotNone(index)
 
+    def test_database_module_migrates_video_type_from_version_22(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.execute("ALTER TABLE videos DROP COLUMN video_type")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 23")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                video_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+                }
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertIn("video_type", video_columns)
+
 
 if __name__ == "__main__":
     unittest.main()

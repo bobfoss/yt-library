@@ -663,10 +663,15 @@ class AdminServerTests(unittest.TestCase):
         ):
             handler._handle_library_get(
                 urllib.parse.urlparse(
-                    "/api/search?video_uploader_category=Science+%26+Technology,__no_category__&limit=1"
+                    "/api/search?video_type=short,live"
+                    "&video_uploader_category=Science+%26+Technology,__no_category__&limit=1"
                 )
             )
 
+        self.assertEqual(
+            search_data.call_args.kwargs["video_type_filters"],
+            {"short", "live"},
+        )
         self.assertEqual(
             search_data.call_args.kwargs["video_uploader_category_filters"],
             {"Science & Technology", "__no_category__"},
@@ -805,7 +810,8 @@ class AdminServerTests(unittest.TestCase):
                 urllib.parse.urlparse(
                     "/api/playlists/PLshared/videos?q=phrase"
                     "&search_fields=titles,subtitles&reaction=liked"
-                    "&uploader_category=Music&video_facet_plugin=subtitles"
+                    "&video_type=video,short&uploader_category=Music"
+                    "&video_facet_plugin=subtitles"
                     "&video_filter_plugin=subtitles&video_exclude_filter_plugin=blocked"
                     "&video_search_plugin=subtitles&limit=10"
                 )
@@ -819,6 +825,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(kwargs["query"], "phrase")
         self.assertEqual(kwargs["search_fields"], {"titles", "subtitles"})
         self.assertEqual(kwargs["reaction_filters"], {"liked"})
+        self.assertEqual(kwargs["video_type_filters"], {"video", "short"})
         self.assertEqual(kwargs["uploader_category_filters"], {"Music"})
         self.assertEqual(kwargs["included_video_ids"], {"alpha", "beta"})
         self.assertEqual(kwargs["excluded_video_ids"], {"beta"})
