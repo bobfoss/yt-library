@@ -825,7 +825,7 @@ test('video cards decorate Videos, Shorts, and Live after plugin metadata', () =
   );
   assert.match(indexHtml, /\.video-type-decorator \{[\s\S]{0,220}font-size: 13px;[\s\S]{0,100}font-weight: 400;/);
   assert.match(indexHtml, /\.video-type-icon \{[\s\S]{0,180}width: 16px;[\s\S]{0,100}fill: currentColor;/);
-  assert.match(indexHtml, /\.youtube-video-icon \{[\s\S]{0,100}width: 23px;[\s\S]{0,80}flex-basis: 23px;/);
+  assert.match(indexHtml, /\.youtube-video-icon \{[\s\S]{0,100}width: 26px;[\s\S]{0,80}height: 18px;[\s\S]{0,80}flex-basis: 26px;/);
 });
 
 test('video type filters reuse the card decorators', () => {
