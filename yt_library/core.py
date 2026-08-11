@@ -368,6 +368,10 @@ def watch_playability_availability(
         if video_details.get("isPrivate") is True:
             return "private"
         return "unlisted" if microformat.get("isUnlisted") is True else "public"
+    if status == "LIVE_STREAM_OFFLINE" and video_details.get("isUpcoming") is True:
+        if video_details.get("isPrivate") is True:
+            return "private"
+        return "unlisted" if microformat.get("isUnlisted") is True else "public"
     if any(
         marker in text
         for marker in (
@@ -3469,7 +3473,15 @@ def youtube_video_type(
     details: Mapping[str, Any],
     microformat: Mapping[str, Any],
 ) -> str:
-    if details.get("isLiveContent") is True:
+    live_details = microformat.get("liveBroadcastDetails")
+    if not isinstance(live_details, Mapping):
+        live_details = {}
+    if (
+        details.get("isLiveContent") is True
+        or details.get("isLive") is True
+        or details.get("isUpcoming") is True
+        or live_details.get("isLiveNow") is True
+    ):
         return "livestream"
     canonical_url = str(microformat.get("canonicalUrl") or "").strip()
     canonical_path = urllib.parse.urlparse(canonical_url).path.rstrip("/")
@@ -3490,22 +3502,26 @@ def youtube_broadcast_metadata(
     *,
     observed_at: str | None = None,
 ) -> dict[str, str | None]:
-    if "isLiveContent" not in details:
+    live_details = microformat.get("liveBroadcastDetails")
+    if not isinstance(live_details, Mapping):
+        live_details = {}
+    is_live = (
+        live_details.get("isLiveNow") is True or details.get("isLive") is True
+    )
+    is_upcoming = details.get("isUpcoming") is True
+
+    if "isLiveContent" not in details and not is_live and not is_upcoming:
         return {
             "broadcast_status": None,
             "broadcast_started_at": None,
             "broadcast_ended_at": None,
         }
-    if details.get("isLiveContent") is not True:
+    if details.get("isLiveContent") is not True and not is_live and not is_upcoming:
         return {
             "broadcast_status": "",
             "broadcast_started_at": "",
             "broadcast_ended_at": "",
         }
-
-    live_details = microformat.get("liveBroadcastDetails")
-    if not isinstance(live_details, Mapping):
-        live_details = {}
 
     def normalized_timestamp(name: str) -> str:
         value = str(live_details.get(name) or "").strip()
@@ -3518,9 +3534,9 @@ def youtube_broadcast_metadata(
 
     started_at = normalized_timestamp("startTimestamp")
     ended_at = normalized_timestamp("endTimestamp")
-    if live_details.get("isLiveNow") is True or details.get("isLive") is True:
+    if is_live:
         status = "live"
-    elif details.get("isUpcoming") is True:
+    elif is_upcoming:
         status = "upcoming"
     elif ended_at:
         status = "ended"

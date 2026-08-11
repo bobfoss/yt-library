@@ -2662,6 +2662,29 @@ class CoreHelperTests(unittest.TestCase):
                 "livestream",
             ),
             (
+                "upcoming123",
+                {
+                    "videoDetails": {
+                        "title": "An upcoming Premiere",
+                        "isLiveContent": False,
+                        "isUpcoming": True,
+                    },
+                    "microformat": {
+                        "playerMicroformatRenderer": {
+                            "isShortsEligible": False,
+                            "canonicalUrl": (
+                                "https://www.youtube.com/watch?v=upcoming123"
+                            ),
+                            "liveBroadcastDetails": {
+                                "isLiveNow": False,
+                                "startTimestamp": "2026-08-13T16:00:00+00:00",
+                            },
+                        }
+                    },
+                },
+                "livestream",
+            ),
+            (
                 "premiere123",
                 {
                     "videoDetails": {
@@ -2739,6 +2762,16 @@ class CoreHelperTests(unittest.TestCase):
                 ("", "", ""),
             ),
             (
+                {"isLiveContent": False},
+                {
+                    "liveBroadcastDetails": {
+                        "startTimestamp": "2026-05-08T22:00:06+00:00",
+                        "endTimestamp": "2026-05-08T22:20:42+00:00",
+                    }
+                },
+                ("", "", ""),
+            ),
+            (
                 {},
                 {},
                 (None, None, None),
@@ -2760,6 +2793,71 @@ class CoreHelperTests(unittest.TestCase):
                     ),
                     expected,
                 )
+
+    def test_watch_metadata_classifies_upcoming_premiere(self) -> None:
+        player = {
+            "playabilityStatus": {
+                "status": "LIVE_STREAM_OFFLINE",
+                "reason": "Premieres in 44 hours",
+            },
+            "videoDetails": {
+                "videoId": "upcoming123",
+                "title": "An upcoming Premiere",
+                "author": "Creator",
+                "isLiveContent": False,
+                "isUpcoming": True,
+                "isPrivate": False,
+            },
+            "microformat": {
+                "playerMicroformatRenderer": {
+                    "isUnlisted": False,
+                    "isShortsEligible": False,
+                    "canonicalUrl": "https://www.youtube.com/watch?v=upcoming123",
+                    "liveBroadcastDetails": {
+                        "isLiveNow": False,
+                        "startTimestamp": "2026-08-13T16:00:00+00:00",
+                    },
+                }
+            },
+        }
+        html = (
+            "<script>var ytInitialPlayerResponse = "
+            + json.dumps(player)
+            + "; var ytInitialData = {};</script>"
+        )
+
+        metadata = core.extract_watch_metadata(html, "upcoming123")
+
+        self.assertEqual(metadata["availability"], "public")
+        self.assertEqual(metadata["video_type"], "livestream")
+        self.assertEqual(metadata["broadcast_status"], "upcoming")
+        self.assertEqual(metadata["broadcast_started_at"], "2026-08-13T16:00:00Z")
+        self.assertEqual(core.storable_watch_playability_value(metadata), 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.store_video_metadata(conn, metadata, "ok")
+                stored = conn.execute(
+                    """
+                    SELECT is_playable, availability, video_type,
+                           broadcast_status, broadcast_started_at
+                    FROM videos
+                    WHERE video_id = 'upcoming123'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    dict(stored),
+                    {
+                        "is_playable": 0,
+                        "availability": "public",
+                        "video_type": "livestream",
+                        "broadcast_status": "upcoming",
+                        "broadcast_started_at": "2026-08-13T16:00:00Z",
+                    },
+                )
+            finally:
+                conn.close()
 
     def test_watch_metadata_classifies_and_persists_movie_metadata(self) -> None:
         player = {
