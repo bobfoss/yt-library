@@ -764,6 +764,12 @@ test('search filter tree folds facets and persists disclosure state', () => {
   const indexSource = source('index.js');
 
   assert.match(indexHtml, /grid-template-columns: fit-content\(var\(--sidebar-max-width\)\) minmax\(0, 1fr\)/);
+  assert.match(indexHtml, /\.search-for-filters \{ --search-tree-row-gap: 0;/);
+  assert.match(indexHtml, /\.search-filter-slot \{ display: grid; gap: var\(--search-tree-row-gap\);/);
+  assert.match(indexHtml, /\.search-meta-kind, \.search-meta-facet \{[\s\S]*?row-gap: var\(--search-tree-row-gap\);/);
+  assert.match(indexHtml, /\.search-meta-kind-children, \.search-meta-facet-children \{[\s\S]*?gap: var\(--search-tree-row-gap\);/);
+  assert.match(indexHtml, /\.search-meta-controls \{ display: grid; gap: var\(--search-tree-row-gap\); \}/);
+  assert.match(indexHtml, /\.meta-filter-nested-option \{[^}]*gap: var\(--search-tree-row-gap\);/);
   assert.match(indexHtml, /\.search-tree-toggle[\s\S]*transition: transform 160ms ease/);
   assert.match(indexHtml, /\.search-tree-toggle\[aria-expanded="true"\][\s\S]*rotate\(90deg\)/);
   assert.match(indexHtml, /\.meta-filter input \{ accent-color: var\(--accent\); margin: 0; \}/);
@@ -821,7 +827,7 @@ test('filter tree recursively renders broadcast status under livestreams', () =>
   assert.match(indexSource, /searchFilterTreeToggleHtml\(nodeId, label\)/);
   assert.match(indexSource, /nestedExpanded \? '' : 'hidden'/);
   assert.match(indexHtml, /\.meta-filter-nested-option > \.search-tree-toggle \{[^}]*left: -18px;/);
-  assert.match(indexHtml, /\.meta-filter-nested-content \{ display: grid; gap: 0; margin-left: 18px; \}/);
+  assert.match(indexHtml, /\.meta-filter-nested-content \{ display: grid; gap: var\(--search-tree-row-gap\); margin-left: 18px; \}/);
 });
 
 test('desktop sidebar grows with filter content within responsive bounds', () => {
