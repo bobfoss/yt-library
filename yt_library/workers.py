@@ -1487,9 +1487,19 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 f"across {duplicate_video_count} "
                                 f"video{'s' if duplicate_video_count != 1 else ''}"
                             )
-                        if not removed_from_library and bool(row["manual"]) and video_count:
-                            metadata_result = enqueue_playlist_metadata_targets(conn, playlist_id)
-                            metadata_queued = int(metadata_result["queued_count"])
+                        if not removed_from_library and video_count:
+                            manual_scan = bool(row["manual"])
+                            metadata_result = enqueue_playlist_metadata_targets(
+                                conn,
+                                playlist_id,
+                                never_fetched_only=not manual_scan,
+                                manual=manual_scan,
+                            )
+                            metadata_queued = int(
+                                metadata_result[
+                                    "queued_count" if manual_scan else "inserted_count"
+                                ]
+                            )
                         if not removed_from_library and playlist_id != LIKED_VIDEOS_PLAYLIST_ID:
                             placeholder_result = enqueue_placeholder_recovery_targets(
                                 conn,

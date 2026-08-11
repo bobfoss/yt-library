@@ -1558,6 +1558,132 @@ class WorkerQueueTests(unittest.TestCase):
         self.assertEqual(log["level"], "info")
         self.assertIn("count changed 1 -> 2 (+1)", log["message"])
 
+    def test_automatic_playlist_scan_queues_only_never_fetched_members(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLchanged', 'Changed')"
+                    )
+                    core.upsert_video(
+                        conn,
+                        "existing001",
+                        title="Existing metadata",
+                        source="metadata",
+                        fetch_status="ok",
+                        fetched_at="2026-08-01T00:00:00Z",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_items(playlist_id, position, video_id)
+                        VALUES ('PLchanged', 1, 'existing001')
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scans(
+                          playlist_id, scanned_at, video_count, unavailable_count, scan_status
+                        ) VALUES ('PLchanged', '2026-08-01T00:00:00Z', 1, 0, 'ok')
+                        """
+                    )
+                    core.enqueue_playlist_scan_item(conn, "PLchanged", manual=False)
+            finally:
+                conn.close()
+
+            videos = [
+                {
+                    "playlist_id": "PLchanged",
+                    "position": 1,
+                    "video_id": "existing001",
+                    "title": "Existing metadata",
+                    "channel_id": "",
+                    "channel": "",
+                    "duration_text": "1:00",
+                    "is_playable": 1,
+                    "availability": "public",
+                    "url": "https://www.youtube.com/watch?v=existing001",
+                },
+                {
+                    "playlist_id": "PLchanged",
+                    "position": 2,
+                    "video_id": "newvideo001",
+                    "title": "New playlist video",
+                    "channel_id": "",
+                    "channel": "",
+                    "duration_text": "2:00",
+                    "is_playable": 1,
+                    "availability": "public",
+                    "url": "https://www.youtube.com/watch?v=newvideo001",
+                },
+            ]
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.request_text", return_value="header page"),
+                patch(
+                    "yt_library.workers.extract_playlist_metadata",
+                    return_value={"video_count": 2, "has_video_count": True},
+                ),
+                patch(
+                    "yt_library.workers.fetch_playlist_collaboration_metadata",
+                    return_value={},
+                ),
+                patch(
+                    "yt_library.workers.scan_playlist_ytdlp",
+                    return_value=(videos, {}),
+                ),
+                patch("yt_library.workers.scan_playlist_videos") as scan_web,
+                patch(
+                    "yt_library.workers.enqueue_placeholder_recovery_targets",
+                    return_value={"inserted": 0},
+                ),
+            ):
+                worker._run(
+                    "test-playlist-new-member-metadata",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    record_summary=False,
+                )
+
+            scan_web.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                queued = conn.execute(
+                    """
+                    SELECT video_id, current_title, source_key, manual
+                    FROM worker_queue
+                    WHERE worker_type = 'metadata'
+                    ORDER BY priority, queue_id
+                    """
+                ).fetchall()
+                log = conn.execute(
+                    """
+                    SELECT message
+                    FROM playlist_scan_worker_log
+                    WHERE run_id = 'test-playlist-new-member-metadata'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            [dict(row) for row in queued],
+            [
+                {
+                    "video_id": "newvideo001",
+                    "current_title": "New playlist video",
+                    "source_key": "PLchanged",
+                    "manual": 0,
+                }
+            ],
+        )
+        self.assertIn("queued 1 metadata items", log["message"])
+
     def test_liked_video_worker_merges_short_scan_without_failing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

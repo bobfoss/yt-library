@@ -8756,25 +8756,46 @@ def rebuild_library_queue(conn: sqlite3.Connection) -> dict[str, Any]:
     return enqueue_library_queue_plan(conn, REBUILD_QUEUE_PLAN)
 
 
-def enqueue_playlist_metadata_targets(conn: sqlite3.Connection, playlist_id: str) -> dict[str, str]:
+def enqueue_playlist_metadata_targets(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    *,
+    never_fetched_only: bool = False,
+    manual: bool = True,
+) -> dict[str, str]:
     playlist_id = (playlist_id or "").strip()
     if not playlist_id:
         raise ValueError("Enter a YouTube playlist URL or playlist ID.")
+    metadata_condition = ""
+    if never_fetched_only:
+        metadata_condition = "AND pi.membership_state = 'current' AND v.fetched_at IS NULL"
     rows = conn.execute(
-        """
+        f"""
         SELECT pi.video_id,
                MAX(v.title) AS title,
                MIN(pi.position) AS position
         FROM playlist_items pi
         JOIN videos v ON v.video_id = pi.video_id
         WHERE pi.playlist_id = ?
+          {metadata_condition}
         GROUP BY pi.video_id
         ORDER BY position
         """,
         (playlist_id,),
     ).fetchall()
     if not rows:
+        if never_fetched_only:
+            return {
+                "subject_key": f"playlist:{playlist_id}",
+                "video_id": "",
+                "channel_id": "",
+                "metadata_source": "playlist",
+                "playlist_id": playlist_id,
+                "queued_count": "0",
+                "inserted_count": "0",
+            }
         raise ValueError(f"No known videos found for playlist {playlist_id}. Scan the playlist first.")
+    queued_before = worker_queue_count(conn)
     for index, row in enumerate(rows):
         enqueue_metadata_item(
             conn,
@@ -8783,8 +8804,9 @@ def enqueue_playlist_metadata_targets(conn: sqlite3.Connection, playlist_id: str
             metadata_source="playlist",
             source_key=playlist_id,
             priority=index,
-            manual=True,
+            manual=manual,
         )
+    inserted = max(0, worker_queue_count(conn) - queued_before)
     return {
         "subject_key": f"playlist:{playlist_id}",
         "video_id": "",
@@ -8792,6 +8814,7 @@ def enqueue_playlist_metadata_targets(conn: sqlite3.Connection, playlist_id: str
         "metadata_source": "playlist",
         "playlist_id": playlist_id,
         "queued_count": str(len(rows)),
+        "inserted_count": str(inserted),
     }
 
 
