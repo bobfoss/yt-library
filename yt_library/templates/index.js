@@ -1776,7 +1776,46 @@ function syncFilterGroup(parent, childFilters, dimChildrenWhenUnchecked = true) 
   setFilterDimmed(childFilters, dimChildrenWhenUnchecked && !parent.checked);
 }
 
+const renderedMetaFilterTreeGroups = new Map();
+
+function registerMetaFilterTreeGroup({
+  groupName,
+  visibility,
+  definitions,
+  childFacets = {},
+}, ancestors = new Set(), parentBranch = null) {
+  if (!groupName || !visibility || !Array.isArray(definitions)) return;
+  const childGroups = new Map();
+  const parents = renderedMetaFilterTreeGroups.get(groupName)?.parents || [];
+  if (
+    parentBranch
+    && !parents.some(parent => (
+      parent.groupName === parentBranch.groupName
+      && parent.filterName === parentBranch.filterName
+    ))
+  ) {
+    parents.push(parentBranch);
+  }
+  renderedMetaFilterTreeGroups.set(groupName, { visibility, childGroups, parents });
+  if (ancestors.has(groupName)) return;
+  const nextAncestors = new Set(ancestors).add(groupName);
+  for (const definition of definitions) {
+    const childFacet = childFacets[definition.childFacetKey];
+    if (!childFacet?.groupName) continue;
+    childGroups.set(definition.key, childFacet.groupName);
+    registerMetaFilterTreeGroup(childFacet, nextAncestors, {
+      groupName,
+      filterName: definition.key,
+    });
+    if (!visibility[definition.key]) {
+      setMetaFilterGroupState(childFacet.groupName, false);
+    }
+  }
+}
+
 function metaFilterGroupVisibility(groupName) {
+  const registeredGroup = renderedMetaFilterTreeGroups.get(groupName);
+  if (registeredGroup?.visibility) return registeredGroup.visibility;
   if (groupName.startsWith('search-clip-plugin-')) {
     const pluginId = groupName.slice('search-clip-plugin-'.length);
     const plugin = browserClipFilterPlugins().find(item => item.id === pluginId);
@@ -1808,17 +1847,72 @@ function metaFilterGroupExcludedKeys(groupName) {
   return new Set();
 }
 
-function setMetaFilterGroup(groupName, checked) {
+function setMetaFilterGroupState(groupName, checked, visited = new Set()) {
+  if (visited.has(groupName)) return true;
   const group = metaFilterGroupVisibility(groupName);
   if (!group) return false;
-  const root = groupName.startsWith('search-') ? searchFilterRegion : meta;
+  visited.add(groupName);
   const excludedKeys = metaFilterGroupExcludedKeys(groupName);
   for (const key of Object.keys(group)) {
     if (!excludedKeys.has(key)) group[key] = checked;
   }
+  const childGroups = renderedMetaFilterTreeGroups.get(groupName)?.childGroups;
+  for (const childGroupName of new Set(childGroups?.values() || [])) {
+    setMetaFilterGroupState(childGroupName, checked, visited);
+  }
+  return true;
+}
+
+function setRenderedMetaFilterGroup(groupName, checked) {
+  const root = groupName.startsWith('search-') ? searchFilterRegion : meta;
   for (const input of root.querySelectorAll(`[data-meta-child-filter="${groupName}"]`)) {
     input.checked = checked;
   }
+}
+
+function setMetaFilterGroup(groupName, checked, visited = new Set()) {
+  if (!setMetaFilterGroupState(groupName, checked, visited)) return false;
+  for (const visitedGroupName of visited) {
+    setRenderedMetaFilterGroup(visitedGroupName, checked);
+  }
+  return true;
+}
+
+function setRenderedMetaFilterBranch(groupName, filterName, checked) {
+  const root = groupName.startsWith('search-') ? searchFilterRegion : meta;
+  for (const input of root.querySelectorAll('[data-meta-tree-group]')) {
+    if (
+      input.dataset.metaTreeGroup === groupName
+      && input.dataset.metaTreeKey === filterName
+    ) input.checked = checked;
+  }
+}
+
+function enableMetaFilterAncestors(groupName, visited = new Set()) {
+  if (visited.has(groupName)) return;
+  visited.add(groupName);
+  const parents = renderedMetaFilterTreeGroups.get(groupName)?.parents || [];
+  for (const parent of parents) {
+    const parentGroup = metaFilterGroupVisibility(parent.groupName);
+    if (!parentGroup || !Object.prototype.hasOwnProperty.call(parentGroup, parent.filterName)) {
+      continue;
+    }
+    parentGroup[parent.filterName] = true;
+    setRenderedMetaFilterBranch(parent.groupName, parent.filterName, true);
+    enableMetaFilterAncestors(parent.groupName, visited);
+  }
+}
+
+function setMetaFilterBranch(groupName, filterName, checked) {
+  const group = metaFilterGroupVisibility(groupName);
+  if (!group || !Object.prototype.hasOwnProperty.call(group, filterName)) return false;
+  group[filterName] = checked;
+  setRenderedMetaFilterBranch(groupName, filterName, checked);
+  const childGroupName = renderedMetaFilterTreeGroups
+    .get(groupName)
+    ?.childGroups.get(filterName);
+  if (childGroupName) setMetaFilterGroup(childGroupName, checked);
+  if (checked) enableMetaFilterAncestors(groupName);
   return true;
 }
 
@@ -3304,6 +3398,7 @@ function metaFilterChildrenHtml({
   childFacets = {},
   treePath = [],
   disabled = false,
+  dimmed = false,
 }) {
   const applicableDefinitions = visibleMetaFilterDefinitions(
     visibility,
@@ -3314,17 +3409,19 @@ function metaFilterChildrenHtml({
     ? treePath
     : [String(groupName || 'filters').replace(/^search-/, '')];
   return applicableDefinitions.map(({ key, label, className = '', visibilityIcon = false, decoratorHtml = '', minimumPercent = null, minimumAttribute = '', childFacetKey = '' }) => {
+    const rowClass = `meta-filter meta-filter-child${dimmed || disabled ? ' dimmed' : ''}`;
+    const treeAttributes = `data-meta-tree-group="${escapeHtml(groupName)}" data-meta-tree-key="${escapeHtml(key)}"`;
     const filterHtml = minimumPercent === null ? `
-        <label class="meta-filter meta-filter-child">
-          <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+        <label class="${rowClass}">
+          <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" ${treeAttributes} data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
           ${visibilityIcon
             ? visibilityFilterLabelHtml(key, metaFilterCount(counts, key))
             : `<span${className || decoratorHtml ? ` class="${[className, decoratorHtml ? 'meta-filter-decorated' : ''].filter(Boolean).join(' ')}"` : ''}>${decoratorHtml}<span>${escapeHtml(label)} <span class="meta-filter-count">${filterCountText(metaFilterCount(counts, key))}</span></span></span>`}
         </label>
       ` : `
-        <div class="meta-filter meta-filter-child">
+        <div class="${rowClass}">
           <label class="completion-partial-toggle">
-            <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+            <input type="checkbox" data-meta-child-filter="${escapeHtml(groupName)}" ${treeAttributes} data-${escapeHtml(filterAttribute)}="${escapeHtml(`${filterValuePrefix}${key}`)}" ${visibility[key] ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
             <span>${escapeHtml(label)}</span>
           </label>
           <span class="completion-minimum-control">
@@ -3340,12 +3437,13 @@ function metaFilterChildrenHtml({
       || childFacet.counts === null
       || childFacet.counts === undefined
     ) return filterHtml;
-    const childDisabled = disabled || !visibility[key];
+    const childDimmed = dimmed || !visibility[key];
     const childHtml = metaFilterChildrenHtml({
       ...childFacet,
       childFacets,
       treePath: [...branchPath, key],
-      disabled: childDisabled,
+      disabled,
+      dimmed: childDimmed,
     });
     if (!childHtml) return filterHtml;
     const nodeId = searchFilterTreeNodeId('facet', ...branchPath, key);
@@ -3356,7 +3454,7 @@ function metaFilterChildrenHtml({
         ${filterHtml}
         <div
           id="${escapeHtml(searchFilterTreeChildrenId(nodeId))}"
-          class="meta-filter-nested-content${childDisabled ? ' dimmed' : ''}"
+          class="meta-filter-nested-content"
           data-search-tree-children
           ${nestedExpanded ? '' : 'hidden'}
         >${childHtml}</div>
@@ -3468,6 +3566,7 @@ function searchMetaFiltersHtml(
   uploaderCategoryCounts,
   resultCounts,
 ) {
+  renderedMetaFilterTreeGroups.clear();
   const facetHtml = ({
     key,
     visibility,
@@ -3480,6 +3579,12 @@ function searchMetaFiltersHtml(
     filterValuePrefix = `${key}:`,
     childFacets = {},
   }) => {
+    registerMetaFilterTreeGroup({
+      groupName,
+      visibility,
+      definitions,
+      childFacets,
+    });
     const countsReady = counts !== null && counts !== undefined;
     const visibleDefinitions = visibleMetaFilterDefinitions(
       visibility,
@@ -6265,7 +6370,10 @@ function handleMetaChange(event) {
     if (!plugin) return;
     const state = clips ? browserClipFacetState(plugin) : browserVideoFacetState(plugin);
     if (!Object.prototype.hasOwnProperty.call(state, filterName)) return;
-    state[filterName] = target.checked;
+    const treeGroupName = `${clips ? 'search-clip-plugin' : 'search-plugin'}-${plugin.id}`;
+    if (!setMetaFilterBranch(treeGroupName, filterName, target.checked)) {
+      state[filterName] = target.checked;
+    }
     if (clips) saveBrowserClipFacetPreferences(plugin);
     else saveBrowserVideoFacetPreferences(plugin);
     const kind = clips ? 'clips' : 'videos';
@@ -6273,7 +6381,7 @@ function handleMetaChange(event) {
       enableDefaultSearchKind(kind);
       renderSearchMetaFilters();
     }
-    syncMetaFilterGroup(`${clips ? 'search-clip-plugin' : 'search-plugin'}-${plugin.id}`);
+    syncMetaFilterGroup(treeGroupName);
     refreshSearchAfterFilterChange(kind, activatedFromSelection);
     return;
   }
@@ -6328,7 +6436,8 @@ function handleMetaChange(event) {
     const [groupName, filterName] = searchMetaFilter.split(':');
     const visibility = searchMetaVisibility[groupName];
     if (!visibility || !Object.prototype.hasOwnProperty.call(visibility, filterName)) return;
-    visibility[filterName] = target.checked;
+    const treeGroupName = `search-${groupName}`;
+    if (!setMetaFilterBranch(treeGroupName, filterName, target.checked)) return;
     const optInFilter = searchOptInFilter(groupName, filterName);
     if (selected.startsWith('__playlist__:') && groupName === 'videos') {
       playlistVisibility[filterName] = target.checked;
@@ -6336,7 +6445,7 @@ function handleMetaChange(event) {
     } else if (optInFilter) {
       saveFilterPreference(optInFilter.preferenceKey, target.checked);
     }
-    syncMetaFilterGroup(`search-${groupName}`);
+    syncMetaFilterGroup(treeGroupName);
     if (target.checked) restoreEmptySearchKindFacets(groupName);
     refreshSearchAfterFilterChange(groupName, activatedFromSelection);
     return;

@@ -665,7 +665,7 @@ test('search filters share deferred category dimming until refreshed results ren
   assert.match(indexSource, /function refreshSearchAfterFilterChange\(groupName, activatedFromSelection\)/);
   assert.match(indexSource, /refreshSearchAfterFilterChange[\s\S]{0,200}syncSearchKindFilter\(searchKindForFacet\(groupName\), false\)/);
   assert.match(indexSource, /setSearchKindFilter\(searchKindFilter, target\.checked\)[\s\S]{0,800}refreshSearchAfterFilterChange\(searchKindFilter, activatedFromSelection\)/);
-  assert.match(indexSource, /syncMetaFilterGroup\(`search-\$\{groupName\}`\);[\s\S]{0,180}refreshSearchAfterFilterChange\(groupName, activatedFromSelection\)/);
+  assert.match(indexSource, /setMetaFilterBranch\(treeGroupName, filterName, target\.checked\)[\s\S]{0,400}syncMetaFilterGroup\(treeGroupName\);[\s\S]{0,180}refreshSearchAfterFilterChange\(groupName, activatedFromSelection\)/);
   assert.match(indexSource, /function renderSearchMetaFilters[\s\S]*?for \(const kind of \[[\s\S]*?syncSearchKindFilter\(kind, true, countsPending\)/);
 });
 
@@ -815,8 +815,9 @@ test('filter tree recursively renders broadcast status under livestreams', () =>
   assert.match(indexSource, /const childFacet = childFacets\[childFacetKey\]/);
   assert.match(indexSource, /const childHtml = metaFilterChildrenHtml\(\{[\s\S]{0,180}childFacets,[\s\S]{0,120}treePath: \[\.\.\.branchPath, key\]/);
   assert.match(indexSource, /const nodeId = searchFilterTreeNodeId\('facet', \.\.\.branchPath, key\)/);
-  assert.match(indexSource, /const childDisabled = disabled \|\| !visibility\[key\]/);
-  assert.match(indexSource, /disabled: childDisabled/);
+  assert.match(indexSource, /const childDimmed = dimmed \|\| !visibility\[key\]/);
+  assert.match(indexSource, /disabled,[\s\S]{0,60}dimmed: childDimmed/);
+  assert.match(indexSource, /data-meta-tree-group="\$\{escapeHtml\(groupName\)\}" data-meta-tree-key="\$\{escapeHtml\(key\)\}"/);
   assert.match(indexSource, /const videoTypeChildFacets = \{[\s\S]*?broadcastStatus: \{[\s\S]*?groupName: 'search-broadcastStatus'[\s\S]*?counts: broadcastStatusCounts/);
   assert.doesNotMatch(indexSource, /enabled: Boolean\(searchMetaVisibility\.videoType\.livestream\)/);
   assert.match(indexSource, /facetHtml\(\{ key: 'videoType',[\s\S]{0,300}childFacets: videoTypeChildFacets/);
@@ -826,6 +827,11 @@ test('filter tree recursively renders broadcast status under livestreams', () =>
   assert.doesNotMatch(indexSource, /syncNestedBroadcastStatusFacet/);
   assert.match(indexSource, /searchFilterTreeToggleHtml\(nodeId, label\)/);
   assert.match(indexSource, /nestedExpanded \? '' : 'hidden'/);
+  assert.match(indexSource, /function registerMetaFilterTreeGroup\(\{[\s\S]*?childGroups\.set\(definition\.key, childFacet\.groupName\)[\s\S]*?registerMetaFilterTreeGroup\(childFacet, nextAncestors, \{/);
+  assert.match(indexSource, /function setMetaFilterGroupState\(groupName, checked, visited = new Set\(\)\)[\s\S]*?setMetaFilterGroupState\(childGroupName, checked, visited\)/);
+  assert.match(indexSource, /function enableMetaFilterAncestors\(groupName, visited = new Set\(\)\)[\s\S]*?parentGroup\[parent\.filterName\] = true[\s\S]*?enableMetaFilterAncestors\(parent\.groupName, visited\)/);
+  assert.match(indexSource, /function setMetaFilterBranch\(groupName, filterName, checked\)[\s\S]*?setMetaFilterGroup\(childGroupName, checked\)/);
+  assert.match(indexSource, /setMetaFilterBranch\(treeGroupName, filterName, target\.checked\)/);
   assert.match(indexHtml, /\.meta-filter-nested-option > \.search-tree-toggle \{[^}]*left: -18px;/);
   assert.match(indexHtml, /\.meta-filter-nested-content \{ display: grid; gap: var\(--search-tree-row-gap\); margin-left: 18px; \}/);
 });
