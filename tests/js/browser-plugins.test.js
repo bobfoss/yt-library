@@ -334,13 +334,14 @@ test('entity-card plugins prepare once per batch and decorate every native view'
     { kind: 'video', view: 'playlist' },
     { kind: 'video', view: 'history' },
     { kind: 'video', view: 'channel-history' },
-    { kind: 'video', view: 'channel-playlists' },
+    { kind: 'video', view: 'channel-playlisted-videos' },
+    { kind: 'playlist', view: 'channel-playlists' },
     { kind: 'video', view: 'video-detail' },
     { kind: 'clip', view: 'clip-detail' },
   ];
   const preparedContexts = [];
   const genericPlugin = plugin('generic', {
-    kinds: ['video', 'clip'],
+    kinds: ['video', 'clip', 'playlist'],
     prepare: async (entities, _host, context) => {
       preparedContexts.push({ ids: entities.map(entity => entity.id), view: context.view });
       return new Set(entities.map(entity => entity.id));
@@ -354,7 +355,9 @@ test('entity-card plugins prepare once per batch and decorate every native view'
   for (const { kind, view } of cases) {
     const first = fakeCard();
     const second = fakeCard();
-    const item = kind === 'clip' ? { clip_id: 'clip-1' } : { video_id: 'video-1' };
+    const item = kind === 'clip'
+      ? { clip_id: 'clip-1' }
+      : (kind === 'playlist' ? { playlist_id: 'playlist-1' } : { video_id: 'video-1' });
     const entries = [first, second].map(({ card }) => ({
       card,
       entity: extensions.descriptor(kind, item),
@@ -372,6 +375,7 @@ test('entity-card plugins prepare once per batch and decorate every native view'
   assert.equal(preparedContexts.length, cases.length);
   assert.equal(preparedContexts.filter(item => item.view === 'search').length, 2);
   assert.ok(preparedContexts.some(item => item.ids[0] === 'clip-1'));
+  assert.ok(preparedContexts.some(item => item.ids[0] === 'playlist-1'));
   assert.ok(preparedContexts.some(item => item.ids[0] === 'video-1'));
 });
 
@@ -500,6 +504,10 @@ test('all native render entry points call the shared entity-card batch', () => {
   assert.match(
     indexSource,
     /const layoutContext = 'channel-playlists'[\s\S]{0,900}decorateEntityCardBatch\(/,
+  );
+  assert.match(
+    indexSource,
+    /const layoutContext = 'channel-playlisted-videos'[\s\S]{0,900}decorateEntityCardBatch\(/,
   );
   assert.match(indexSource, /entityCardEntry\('channel', channel, channelCard\)/);
   assert.match(indexSource, /data-entity-card-slot="actions"/);

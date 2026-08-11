@@ -40,6 +40,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "search_card_layout": "grid",
     "playlist_card_layout": "grid",
     "history_card_layout": "compact",
+    "channel_playlisted_video_card_layout": "grid",
     "channel_playlist_card_layout": "grid",
     "channel_history_card_layout": "detailed",
     "sort_preferences": {},
@@ -208,6 +209,14 @@ def configured_history_card_layout(config: dict[str, Any]) -> str:
 
 def configured_channel_playlist_card_layout(config: dict[str, Any]) -> str:
     return configured_card_layout(config, "channel_playlist_card_layout", "grid")
+
+
+def configured_channel_playlisted_video_card_layout(config: dict[str, Any]) -> str:
+    return configured_card_layout(
+        config,
+        "channel_playlisted_video_card_layout",
+        "grid",
+    )
 
 
 def configured_channel_history_card_layout(config: dict[str, Any]) -> str:
@@ -527,6 +536,9 @@ CONFIG_NORMALIZERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "search_card_layout": configured_search_card_layout,
     "playlist_card_layout": configured_playlist_card_layout,
     "history_card_layout": configured_history_card_layout,
+    "channel_playlisted_video_card_layout": (
+        configured_channel_playlisted_video_card_layout
+    ),
     "channel_playlist_card_layout": configured_channel_playlist_card_layout,
     "channel_history_card_layout": configured_channel_history_card_layout,
     "sort_preferences": configured_sort_preferences,
@@ -578,6 +590,10 @@ def load_config(config_path: Path | str | None = None) -> dict[str, Any]:
                 if key in DEFAULT_CONFIG and value is not None
             }
         )
+        if "channel_playlisted_video_card_layout" not in loaded:
+            config["channel_playlisted_video_card_layout"] = (
+                configured_channel_playlist_card_layout(loaded)
+            )
         if "update_frequency" not in loaded:
             legacy_enabled = loaded.get(
                 "update_daily",

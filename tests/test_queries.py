@@ -3045,6 +3045,28 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertTrue(all(row["ownership"] == "mine" for row in playlists))
         self.assertTrue(all(row["url"].startswith("https://www.youtube.com/playlist?list=") for row in playlists))
 
+    def test_playlist_list_filters_by_owner_channel(self) -> None:
+        core.upsert_channel(self.conn, "UC_owner", title="Library Owner")
+        core.upsert_channel(self.conn, "UC_other", title="Other Owner")
+        self.conn.executemany(
+            "INSERT INTO playlists(playlist_id, title, owner_channel_id) VALUES (?, ?, ?)",
+            [
+                ("PLowned-a", "Owned A", "UC_owner"),
+                ("PLowned-b", "Owned B", "UC_owner"),
+                ("PLother", "Other", "UC_other"),
+                ("PLunknown", "Unknown", None),
+            ],
+        )
+        self.conn.commit()
+
+        data = playlist_list_data(self.conn, owner_channel_id="UC_owner")
+
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(
+            [row["playlist_id"] for row in data["results"]],
+            ["PLowned-a", "PLowned-b"],
+        )
+
     def test_playlist_list_keeps_explicit_ownership_for_visible_owners(self) -> None:
         core.upsert_channel(self.conn, "UC_owner", title="Library Owner")
         core.upsert_channel(self.conn, "UC_other", title="Other Owner")

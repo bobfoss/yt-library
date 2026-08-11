@@ -245,6 +245,7 @@ def playlist_list_data(
     conn: sqlite3.Connection,
     *,
     query: str = "",
+    owner_channel_id: str = "",
     visibilities: set[str] | None = None,
     include_unavailable: bool = False,
     sort: str = "title",
@@ -257,6 +258,7 @@ def playlist_list_data(
     offset = max(0, int(offset))
     params: dict[str, Any] = {
         "pattern": _omni_like_pattern(query.strip()),
+        "owner_channel_id": owner_channel_id.strip(),
         "group_key": group_key.strip(),
         "unavailable_only": int(unavailable_only),
     }
@@ -288,6 +290,10 @@ def playlist_list_data(
                    COALESCE(p.owner_channel_id, '') || ' ' || p.visibility || ' ' ||
                    p.description || ' ' || p.playlist_id
                  ) LIKE :pattern ESCAPE '\\'
+            )
+            AND (
+              :owner_channel_id = ''
+              OR p.owner_channel_id = :owner_channel_id
             )
             AND (
               :group_key = ''

@@ -30,6 +30,7 @@ from .config import (
     configured_archivarix_auto_retry,
     configured_admin_advanced,
     configured_channel_history_card_layout,
+    configured_channel_playlisted_video_card_layout,
     configured_channel_playlist_card_layout,
     configured_dispatch_mode,
     configured_display_timezone,
@@ -1317,30 +1318,39 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path.startswith("/api/channels/"):
             suffix = parsed.path[len("/api/channels/") :]
             is_videos = suffix.endswith("/videos")
+            is_playlists = suffix.endswith("/playlists")
+            resource_suffix = "/videos" if is_videos else "/playlists" if is_playlists else ""
             channel_reference = urllib.parse.unquote(
-                suffix[: -len("/videos")] if is_videos else suffix
+                suffix[: -len(resource_suffix)] if resource_suffix else suffix
             )
             conn = connect(self.db_path)
             try:
                 channel = channel_detail_data(conn, channel_reference)
-                if is_videos:
+                if is_videos or is_playlists:
                     params = urllib.parse.parse_qs(parsed.query)
                     try:
                         limit = max(1, min(500, int((params.get("limit") or ["100"])[0] or 100)))
                         offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
                     except ValueError:
                         limit, offset = 100, 0
-                    data = (
-                        video_collection_data(
+                    if channel is None:
+                        data = None
+                    elif is_videos:
+                        data = video_collection_data(
                             conn,
                             channel_id=channel["channel_id"],
                             sort=(params.get("sort") or ["title"])[0],
                             limit=limit,
                             offset=offset,
                         )
-                        if channel is not None
-                        else None
-                    )
+                    else:
+                        data = playlist_list_data(
+                            conn,
+                            owner_channel_id=channel["channel_id"],
+                            sort=(params.get("sort") or ["title"])[0],
+                            limit=limit,
+                            offset=offset,
+                        )
                 else:
                     data = channel
             finally:
@@ -1598,6 +1608,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 "search": "search_card_layout",
                 "playlist": "playlist_card_layout",
                 "history": "history_card_layout",
+                "channel-playlisted-videos": "channel_playlisted_video_card_layout",
                 "channel-playlists": "channel_playlist_card_layout",
                 "channel-history": "channel_history_card_layout",
             }.get(context)
@@ -2465,6 +2476,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "searchCardLayout": configured_search_card_layout(self.config_data),
             "playlistCardLayout": configured_playlist_card_layout(self.config_data),
             "historyCardLayout": configured_history_card_layout(self.config_data),
+            "channelPlaylistedVideoCardLayout": (
+                configured_channel_playlisted_video_card_layout(self.config_data)
+            ),
             "channelPlaylistCardLayout": configured_channel_playlist_card_layout(
                 self.config_data
             ),

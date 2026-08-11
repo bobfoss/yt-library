@@ -508,6 +508,9 @@ const cardLayoutPreferences = {
   search: cardLayouts.has(pageConfig.searchCardLayout) ? pageConfig.searchCardLayout : 'grid',
   playlist: cardLayouts.has(pageConfig.playlistCardLayout) ? pageConfig.playlistCardLayout : 'grid',
   history: cardLayouts.has(pageConfig.historyCardLayout) ? pageConfig.historyCardLayout : 'compact',
+  'channel-playlisted-videos': cardLayouts.has(pageConfig.channelPlaylistedVideoCardLayout)
+    ? pageConfig.channelPlaylistedVideoCardLayout
+    : 'grid',
   'channel-playlists': cardLayouts.has(pageConfig.channelPlaylistCardLayout)
     ? pageConfig.channelPlaylistCardLayout
     : 'grid',
@@ -620,7 +623,7 @@ let omniUploaderCategoryCountsCache = new Map();
 let pendingHistoryDate = '';
 let historyNavigationDate = '';
 let channelHistoryCounts = new Map();
-let channelDetailTab = 'playlists';
+let channelDetailTab = 'playlisted-videos';
 let historyHeatmapDayFrame = null;
 let renderGeneration = 0;
 let renderedOmniSearchQuery = '';
@@ -923,7 +926,11 @@ function localChannelHref(channelId, includePagination = false) {
 }
 
 function channelDetailParams() {
-  if (channelDetailTab !== 'history') return paginationParams();
+  if (channelDetailTab !== 'history') {
+    const params = paginationParams();
+    if (channelDetailTab === 'playlists') params.set('tab', 'playlists');
+    return params;
+  }
   const params = new URLSearchParams();
   params.set('tab', 'history');
   if (historyNavigationDate && historyDateNavigationIsActive()) {
@@ -935,9 +942,10 @@ function channelDetailParams() {
 }
 
 function channelDetailTabFromParams(params) {
-  return params.get('tab') === 'history' || historyDateParam(params.get('date'))
-    ? 'history'
-    : 'playlists';
+  if (params.get('tab') === 'history' || historyDateParam(params.get('date'))) {
+    return 'history';
+  }
+  return params.get('tab') === 'playlists' ? 'playlists' : 'playlisted-videos';
 }
 
 function localViewHref(value, includePagination = false) {
@@ -4352,6 +4360,15 @@ async function fetchVideoCollection({
   };
 }
 
+async function fetchChannelPlaylists(channelReference, page = currentPage) {
+  const path = remoteListPath(
+    `/api/channels/${encodeChannelReference(channelReference)}/playlists`,
+    { sort: 'title' },
+    page,
+  );
+  return fetchViewData(path);
+}
+
 function groupLinkFor(group, preset, membershipMap, childMap) {
   const link = document.createElement('a');
   link.className = 'group group-tree-action';
@@ -4931,11 +4948,17 @@ function playlistCreatedHtml(playlist) {
   return date ? `<span>Created ${escapeHtml(date)}</span>` : '';
 }
 
-function channelTabsFor(activeTab, playlistCount, historyCount) {
+function channelTabsFor(
+  activeTab,
+  playlistedVideoCount,
+  playlistCount,
+  historyCount,
+) {
   const tabs = document.createElement('div');
   tabs.className = 'channel-tabs';
   tabs.setAttribute('role', 'tablist');
   for (const [key, label, count] of [
+    ['playlisted-videos', 'Playlisted videos', playlistedVideoCount],
     ['playlists', 'Playlists', playlistCount],
     ['history', 'History', historyCount],
   ]) {
@@ -5082,11 +5105,13 @@ async function render() {
     const channelReference = selected.slice('__channel__:'.length);
     title.textContent = 'Channel';
     let channel;
+    let playlistedVideoSummary;
     let playlistSummary;
     try {
-      [channel, playlistSummary] = await Promise.all([
+      [channel, playlistedVideoSummary, playlistSummary] = await Promise.all([
         fetchViewData(`/api/channels/${encodeChannelReference(channelReference)}`),
         fetchViewData(`/api/channels/${encodeChannelReference(channelReference)}/videos?limit=1&offset=0&sort=title`),
+        fetchViewData(`/api/channels/${encodeChannelReference(channelReference)}/playlists?limit=1&offset=0&sort=title`),
       ]);
     } catch (error) {
       if (generation !== renderGeneration) return;
@@ -5101,6 +5126,7 @@ async function render() {
     const channelId = channel.channel_id || channelReference;
     hydrateEntitySearchFilters('channels', channelId, generation);
     setDocumentTitle(channel.title || channelReference);
+    const playlistedVideoCount = Number(playlistedVideoSummary.total || 0);
     const playlistCount = Number(playlistSummary.total || 0);
     const historyCount = cachedChannelHistoryCount(channelId);
     const currentHeatmap = channelDetailTab === 'history'
@@ -5111,7 +5137,12 @@ async function render() {
     viewContext.hidden = false;
     viewContext.replaceChildren(
       channelCard,
-      channelTabsFor(channelDetailTab, playlistCount, historyCount),
+      channelTabsFor(
+        channelDetailTab,
+        playlistedVideoCount,
+        playlistCount,
+        historyCount,
+      ),
       ...(currentHeatmap ? [currentHeatmap] : []),
     );
     if (channelDetailTab === 'history') {
@@ -5124,7 +5155,7 @@ async function render() {
         commitChrome: ({ activity, total }) => {
           viewContext.replaceChildren(
             channelCard,
-            channelTabsFor('history', playlistCount, total),
+            channelTabsFor('history', playlistedVideoCount, playlistCount, total),
             historyHeatmapFor(activity),
           );
           meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
@@ -5134,8 +5165,55 @@ async function render() {
         layoutContext,
         leadingEntries: [channelEntry],
       });
-    } else {
+    } else if (channelDetailTab === 'playlists') {
       const layoutContext = 'channel-playlists';
+      const payload = await fetchChannelPlaylists(channelReference);
+      if (generation !== renderGeneration) return;
+      const rows = payload.results || [];
+      const pageInfo = remotePayloadPageInfo(payload, rows.length);
+      meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
+      renderPager(pageInfo);
+      applyCardLayout(layoutContext);
+      const cards = rows.map(playlist => cardFor(playlist, { resultKind: 'Playlist' }));
+      const decoration = decorateEntityCardBatch(
+        [
+          channelEntry,
+          ...rows.map((playlist, index) => (
+            entityCardEntry('playlist', playlist, cards[index])
+          )),
+        ],
+        layoutContext,
+        cardLayoutFor(layoutContext),
+        generation,
+      );
+      viewContext.replaceChildren(
+        channelCard,
+        channelTabsFor(
+          'playlists',
+          playlistedVideoCount,
+          playlistCount,
+          historyCount,
+        ),
+      );
+      grid.replaceChildren(...cards);
+      await decoration;
+      if (generation !== renderGeneration) return;
+      empty.hidden = rows.length !== 0;
+      empty.textContent = 'No playlists match this channel.';
+      scheduleAdjacentPagePrefetch(
+        pageInfo,
+        page => fetchChannelPlaylists(channelReference, page),
+      );
+      if (historyCount === null) {
+        void fetchChannelHistoryCount(channelId).then(() => {
+          if (
+            selected === channelSelection(channelReference)
+            && channelDetailTab === 'playlists'
+          ) render();
+        }).catch(() => {});
+      }
+    } else {
+      const layoutContext = 'channel-playlisted-videos';
       const payload = await fetchVideoCollection({ channelId, sort: 'title' });
       if (generation !== renderGeneration) return;
       const rows = payload.results || [];
@@ -5155,7 +5233,12 @@ async function render() {
       );
       viewContext.replaceChildren(
         channelCard,
-        channelTabsFor('playlists', playlistCount, historyCount),
+        channelTabsFor(
+          'playlisted-videos',
+          playlistedVideoCount,
+          playlistCount,
+          historyCount,
+        ),
       );
       grid.replaceChildren(...cards);
       await decoration;
@@ -5167,7 +5250,10 @@ async function render() {
       ));
       if (historyCount === null) {
         void fetchChannelHistoryCount(channelId).then(() => {
-          if (selected === channelSelection(channelReference) && channelDetailTab === 'playlists') render();
+          if (
+            selected === channelSelection(channelReference)
+            && channelDetailTab === 'playlisted-videos'
+          ) render();
         }).catch(() => {});
       }
     }
@@ -5880,7 +5966,7 @@ viewContext.addEventListener('click', event => {
   }
   const target = event.target.closest('[data-channel-tab]');
   if (!(target instanceof HTMLButtonElement)) return;
-  channelDetailTab = target.dataset.channelTab || 'playlists';
+  channelDetailTab = target.dataset.channelTab || 'playlisted-videos';
   historyNavigationDate = '';
   pendingHistoryDate = '';
   currentPage = 1;
@@ -6411,7 +6497,7 @@ function handleBrowserLocationChange() {
   const progressToken = pendingSidebarProgressToken;
   pendingSidebarProgressToken = null;
   selected = selectionFromLocation();
-  if (!selected.startsWith('__channel__:')) channelDetailTab = 'playlists';
+  if (!selected.startsWith('__channel__:')) channelDetailTab = 'playlisted-videos';
   if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
   if (selected === '__history__') search.value = '';
   renderGroups();

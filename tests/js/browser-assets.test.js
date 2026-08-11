@@ -904,17 +904,22 @@ test('history document title includes the active page or date', () => {
   assert.match(indexSource, /setDocumentTitle\(`History \$\{historyTitleLocation\}`\)/);
 });
 
-test('channel history tabs persist in the URL from page one', () => {
+test('channel non-default tabs persist in the URL from page one', () => {
   const indexSource = source('index.js');
 
+  assert.match(indexSource, /function channelDetailParams\(\)[\s\S]*?channelDetailTab === 'playlists'[\s\S]*?params\.set\('tab', 'playlists'\)/);
   assert.match(indexSource, /function channelDetailParams\(\)[\s\S]*?params\.set\('tab', 'history'\)[\s\S]*?params\.set\('page', String\(currentPage\)\)/);
-  assert.match(indexSource, /function channelDetailTabFromParams\(params\)[\s\S]*?params\.get\('tab'\) === 'history'/);
+  assert.match(indexSource, /function channelDetailTabFromParams\(params\)[\s\S]*?params\.get\('tab'\) === 'playlists'[\s\S]*?'playlisted-videos'/);
   assert.match(indexSource, /channelDetailTab = channelDetailTabFromParams\(params\)/);
 });
 
 test('channel tabs use independent persisted card layouts', () => {
   const indexSource = source('index.js');
 
+  assert.match(
+    indexSource,
+    /'channel-playlisted-videos': cardLayouts\.has\(pageConfig\.channelPlaylistedVideoCardLayout\)[\s\S]{0,120}: 'grid'/,
+  );
   assert.match(
     indexSource,
     /'channel-playlists': cardLayouts\.has\(pageConfig\.channelPlaylistCardLayout\)[\s\S]{0,120}: 'grid'/,
@@ -929,12 +934,25 @@ test('channel tabs use independent persisted card layouts', () => {
   );
   assert.match(
     indexSource,
-    /const layoutContext = 'channel-playlists'[\s\S]{0,500}cardLayoutHtml\(cardLayoutFor\(layoutContext\), layoutContext\)[\s\S]{0,500}rows\.map\(playlistVideoCardFor\)/,
+    /const layoutContext = 'channel-playlists'[\s\S]{0,500}cardLayoutHtml\(cardLayoutFor\(layoutContext\), layoutContext\)[\s\S]{0,500}rows\.map\(playlist => cardFor\(playlist/,
+  );
+  assert.match(
+    indexSource,
+    /const layoutContext = 'channel-playlisted-videos'[\s\S]{0,500}cardLayoutHtml\(cardLayoutFor\(layoutContext\), layoutContext\)[\s\S]{0,500}rows\.map\(playlistVideoCardFor\)/,
   );
   assert.doesNotMatch(
     indexSource,
     /grid\.className = channelDetailTab === 'history'/,
   );
+});
+
+test('channel tabs distinguish playlisted videos from owned playlists', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /\['playlisted-videos', 'Playlisted videos', playlistedVideoCount\]/);
+  assert.match(indexSource, /\['playlists', 'Playlists', playlistCount\]/);
+  assert.match(indexSource, /fetchChannelPlaylists\(channelReference\)/);
+  assert.match(indexSource, /No playlists match this channel\./);
 });
 
 test('card layout controls place compact beside grid', () => {

@@ -215,6 +215,42 @@ class AdminServerTests(unittest.TestCase):
         connection.close.assert_called_once_with()
         handler.send_json.assert_called_once_with(videos)
 
+    def test_channel_alias_route_filters_playlists_by_canonical_owner(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.send_json = Mock()
+        connection = Mock()
+        channel = {"channel_id": "UCcanonical", "preferred_reference": "@alias"}
+        playlists = {"results": [], "total": 0}
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch(
+                "yt_library.server.channel_detail_data",
+                return_value=channel,
+            ) as detail_data,
+            patch(
+                "yt_library.server.playlist_list_data",
+                return_value=playlists,
+            ) as list_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/channels/@alias/playlists?limit=25&offset=50&sort=title_desc"
+                )
+            )
+
+        detail_data.assert_called_once_with(connection, "@alias")
+        list_data.assert_called_once_with(
+            connection,
+            owner_channel_id="UCcanonical",
+            sort="title_desc",
+            limit=25,
+            offset=50,
+        )
+        connection.close.assert_called_once_with()
+        handler.send_json.assert_called_once_with(playlists)
+
     def test_clip_detail_route_uses_generic_clip_plugin_facets(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.db_path = Path("library.sqlite3")
@@ -1427,6 +1463,29 @@ class AdminServerTests(unittest.TestCase):
             self.assertEqual(payload["playlist_card_layout"], "compact")
             handler.send_json.assert_called_once_with(
                 {"ok": True, "context": "playlist", "layout": "compact"}
+            )
+
+            handler.path = (
+                "/api/settings/layout?context=channel-playlisted-videos&value=compact"
+            )
+            handler.send_json.reset_mock()
+            handler.do_POST()
+
+            self.assertEqual(
+                config["channel_playlisted_video_card_layout"],
+                "compact",
+            )
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["channel_playlisted_video_card_layout"],
+                "compact",
+            )
+            handler.send_json.assert_called_once_with(
+                {
+                    "ok": True,
+                    "context": "channel-playlisted-videos",
+                    "layout": "compact",
+                }
             )
 
             handler.path = (

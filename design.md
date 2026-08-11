@@ -549,8 +549,11 @@ YT Library identity (`video_id`, `clip_id`, `playlist_id`, or `channel_id`), and
 `item` is the bounded read model already used to render that card. Cards without
 a canonical ID are not offered to extensions. `context` is a frozen
 `{view, layout}` object. Current views include `search`, `playlist`, `history`,
-`channel-history`, `channel-playlists`, `video-detail`, and `clip-detail`; layout
-is `grid`, `compact`, or `detailed` where the view supports it.
+`channel-history`, `channel-playlisted-videos`, `channel-playlists`,
+`video-detail`, and `clip-detail`; layout is `grid`, `compact`, or `detailed`
+where the view supports it. Channel details separate playlist-member videos
+from playlists owned by that channel, with independent tab URLs and layout
+preferences for both collections.
 
 The host deduplicates descriptors by kind and ID, then calls `prepare` at most
 once per plugin for the rendered batch. A repeated history occurrence is still

@@ -22,6 +22,7 @@ from yt_library.config import (
     configured_archivarix_retry_backoff,
     configured_archivarix_stream_timeout,
     configured_channel_history_card_layout,
+    configured_channel_playlisted_video_card_layout,
     configured_channel_playlist_card_layout,
     configured_dispatch_mode,
     configured_display_timezone,
@@ -299,6 +300,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(configured_search_card_layout({}), "grid")
         self.assertEqual(configured_playlist_card_layout({}), "grid")
         self.assertEqual(configured_history_card_layout({}), "compact")
+        self.assertEqual(configured_channel_playlisted_video_card_layout({}), "grid")
         self.assertEqual(configured_channel_playlist_card_layout({}), "grid")
         self.assertEqual(configured_channel_history_card_layout({}), "detailed")
         self.assertEqual(configured_page_size({}), 100)
@@ -425,6 +427,12 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             configured_history_card_layout({"history_card_layout": "invalid"}),
+            "compact",
+        )
+        self.assertEqual(
+            configured_channel_playlisted_video_card_layout(
+                {"channel_playlisted_video_card_layout": "compact"}
+            ),
             "compact",
         )
         self.assertEqual(
@@ -642,6 +650,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(payload["search_card_layout"], "grid")
             self.assertEqual(payload["playlist_card_layout"], "grid")
             self.assertEqual(payload["history_card_layout"], "compact")
+            self.assertEqual(payload["channel_playlisted_video_card_layout"], "grid")
             self.assertEqual(payload["channel_playlist_card_layout"], "grid")
             self.assertEqual(payload["channel_history_card_layout"], "detailed")
             self.assertEqual(payload["sort_preferences"], {})
