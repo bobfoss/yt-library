@@ -2696,6 +2696,112 @@ class CoreHelperTests(unittest.TestCase):
                 metadata = core.extract_watch_metadata(html, video_id)
                 self.assertEqual(metadata["video_type"], expected_type)
 
+    def test_watch_metadata_classifies_and_persists_movie_metadata(self) -> None:
+        player = {
+            "playabilityStatus": {"status": "OK"},
+            "videoDetails": {
+                "videoId": "movie123456",
+                "title": "Example Movie",
+                "author": "YouTube Movies",
+                "isLiveContent": False,
+                "isTvfilmVideo": True,
+            },
+            "microformat": {
+                "playerMicroformatRenderer": {
+                    "category": "Movies",
+                    "isShortsEligible": False,
+                    "canonicalUrl": "https://www.youtube.com/watch?v=movie123456",
+                }
+            },
+        }
+        initial = {
+            "contents": [
+                {
+                    "videoPrimaryInfoRenderer": {
+                        "badges": [
+                            {
+                                "metadataBadgeRenderer": {
+                                    "style": "BADGE_STYLE_TYPE_YPC",
+                                    "label": "Free",
+                                }
+                            },
+                            {
+                                "metadataBadgeRenderer": {
+                                    "style": "BADGE_STYLE_TYPE_MEDIA",
+                                    "label": "R",
+                                }
+                            },
+                        ]
+                    }
+                },
+                {
+                    "videoSecondaryInfoRenderer": {
+                        "metadataRowContainer": {
+                            "metadataRowContainerRenderer": {
+                                "rows": [
+                                    {
+                                        "metadataRowRenderer": {
+                                            "title": {"simpleText": "Rating"},
+                                            "contents": [{"simpleText": "R"}],
+                                        }
+                                    },
+                                    {
+                                        "metadataRowRenderer": {
+                                            "title": {"simpleText": "Release date"},
+                                            "contents": [{"simpleText": "2015"}],
+                                        }
+                                    },
+                                    {
+                                        "metadataRowRenderer": {
+                                            "title": {"simpleText": "Actors"},
+                                            "contents": [{"simpleText": "Not stored"}],
+                                        }
+                                    },
+                                ]
+                            }
+                        }
+                    }
+                },
+            ]
+        }
+        html = (
+            "<script>var ytInitialPlayerResponse = "
+            + json.dumps(player)
+            + "; var ytInitialData = "
+            + json.dumps(initial)
+            + ";</script>"
+        )
+
+        metadata = core.extract_watch_metadata(html, "movie123456")
+
+        self.assertEqual(metadata["video_type"], "movie")
+        self.assertEqual(metadata["movie_rating"], "R")
+        self.assertEqual(metadata["movie_release_date"], "2015")
+        self.assertEqual(metadata["movie_offer"], "Free")
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.store_video_metadata(conn, metadata, "ok")
+                stored = conn.execute(
+                    """
+                    SELECT video_type, movie_rating, movie_release_date, movie_offer
+                    FROM videos
+                    WHERE video_id = 'movie123456'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    dict(stored),
+                    {
+                        "video_type": "movie",
+                        "movie_rating": "R",
+                        "movie_release_date": "2015",
+                        "movie_offer": "Free",
+                    },
+                )
+            finally:
+                conn.close()
+
     def test_watch_metadata_classifies_accessible_private_visibility(self) -> None:
         html = """
         <html><body>

@@ -88,6 +88,39 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(search_item["uploader_category"], "Music")
         self.assertEqual(history_item["uploader_category"], "Music")
 
+    def test_video_read_models_expose_movie_metadata(self) -> None:
+        core.upsert_video(
+            self.conn,
+            "movie123456",
+            title="Example Movie",
+            video_type="movie",
+            movie_rating="PG-13",
+            movie_release_date="2019",
+            movie_offer="Buy or rent",
+            source="metadata",
+        )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES ('movie-history', 'movie123456', '2026-08-03', 'date_only')
+            """
+        )
+        self.conn.commit()
+
+        detail = video_detail_data(self.conn, "movie123456")
+        search_item = next(
+            result["item"]
+            for result in omni_search_data(self.conn, "Example Movie")["results"]
+            if result["kind"] == "video"
+        )
+        history_item = history_search_data(self.conn, "Example Movie")["watch"][0]
+
+        for item in (detail, search_item, history_item):
+            self.assertEqual(item["video_type"], "movie")
+            self.assertEqual(item["movie_rating"], "PG-13")
+            self.assertEqual(item["movie_release_date"], "2019")
+            self.assertEqual(item["movie_offer"], "Buy or rent")
+
     def test_channel_status_transition_is_consistent_across_read_models(self) -> None:
         channel_id = "UC_status_transition"
         core.upsert_channel(
@@ -1783,6 +1816,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             ("type-video", "Type facet video", "video"),
             ("type-short", "Type facet short", "short"),
             ("type-live", "Type facet live", "live"),
+            ("type-movie", "Type facet movie", "movie"),
             ("type-unknown", "Type facet unknown", ""),
         ):
             self.add_video(video_id, title)
@@ -1801,7 +1835,14 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.assertEqual(
             unfiltered["videoTypeCounts"],
-            {"total": 4, "video": 1, "short": 1, "live": 1, "unknown": 1},
+            {
+                "total": 5,
+                "video": 1,
+                "short": 1,
+                "live": 1,
+                "movie": 1,
+                "unknown": 1,
+            },
         )
 
         shorts = omni_search_data(
@@ -2705,6 +2746,7 @@ class NormalizedReadModelTests(unittest.TestCase):
                 ("collection-video", "video"),
                 ("collection-short", "short"),
                 ("collection-live", "live"),
+                ("collection-movie", "movie"),
                 ("collection-unknown", ""),
             ),
             start=1,
@@ -2723,7 +2765,14 @@ class NormalizedReadModelTests(unittest.TestCase):
         unfiltered = video_collection_data(self.conn, playlist_id="PLtypes")
         self.assertEqual(
             unfiltered["videoTypeCounts"],
-            {"total": 4, "video": 1, "short": 1, "live": 1, "unknown": 1},
+            {
+                "total": 5,
+                "video": 1,
+                "short": 1,
+                "live": 1,
+                "movie": 1,
+                "unknown": 1,
+            },
         )
 
         live = video_collection_data(

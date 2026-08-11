@@ -82,7 +82,10 @@ CREATE TABLE IF NOT EXISTS videos (
   upload_date TEXT NOT NULL DEFAULT '',
   uploader_category TEXT NOT NULL DEFAULT '',
   video_type TEXT NOT NULL DEFAULT ''
-    CHECK (video_type IN ('', 'video', 'short', 'live')),
+    CHECK (video_type IN ('', 'video', 'short', 'live', 'movie')),
+  movie_rating TEXT NOT NULL DEFAULT '',
+  movie_release_date TEXT NOT NULL DEFAULT '',
+  movie_offer TEXT NOT NULL DEFAULT '',
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
   reaction TEXT NOT NULL DEFAULT ''

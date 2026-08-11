@@ -790,12 +790,12 @@ test('video type facet precedes availability in search and playlist requests', (
 
   assert.ok(typeFacet >= 0);
   assert.ok(availabilityFacet > typeFacet);
-  assert.match(indexSource, /videoType: \{ video: true, short: true, live: true, unknown: true \}/);
+  assert.match(indexSource, /videoType: \{ video: true, short: true, live: true, movie: true, unknown: true \}/);
   assert.match(indexSource, /video_type: metaFilterParamValue\(searchMetaVisibility\.videoType\)/);
   assert.match(indexSource, /params\.set\('video_type', metaFilterParamValue\(videoTypes\)\)/);
 });
 
-test('video cards decorate Shorts and Live while filters also decorate Videos', () => {
+test('video cards decorate Shorts, Live, and Movies while filters also decorate Videos', () => {
   const indexSource = source('index.js');
   const videoCardSource = source('video-card.js');
   const indexHtml = source('index.html');
@@ -811,6 +811,9 @@ test('video cards decorate Shorts and Live while filters also decorate Videos', 
   assert.match(typeDecoratorSource, /videoType === 'live'/);
   assert.match(typeDecoratorSource, /class="video-type-icon live-icon"/);
   assert.match(typeDecoratorSource, /isVideoRecord \? '<span class="video-type-label">Live<\/span>' : ''/);
+  assert.match(typeDecoratorSource, /videoType === 'movie'/);
+  assert.match(typeDecoratorSource, /class="video-type-icon movie-icon"/);
+  assert.match(typeDecoratorSource, /isVideoRecord \? '<span class="video-type-label">Movie<\/span>' : ''/);
   assert.match(typeDecoratorSource, /return '';/);
   assert.match(
     videoCardSource,
@@ -824,6 +827,11 @@ test('video cards decorate Shorts and Live while filters also decorate Videos', 
     namedFunctionSource(indexSource, 'playlistVideoCardFor'),
     /typeDecoratorHtml: videoTypeDecoratorHtml\(video\)/,
   );
+  assert.match(
+    namedFunctionSource(indexSource, 'playlistVideoCardFor'),
+    /movieMetadataHtml: movieMetadataHtml\(video\)/,
+  );
+  assert.match(videoCardSource, /\$\{options\.movieMetadataHtml \|\| ''\}/);
   assert.match(indexHtml, /\.video-type-decorator \{[\s\S]{0,220}font-size: 13px;[\s\S]{0,100}font-weight: 400;/);
   assert.match(indexHtml, /\.video-type-icon \{[\s\S]{0,180}width: 16px;[\s\S]{0,100}fill: currentColor;/);
   assert.match(indexHtml, /\.youtube-video-icon \{[\s\S]{0,100}width: 26px;[\s\S]{0,80}height: 18px;[\s\S]{0,80}flex-basis: 26px;/);
@@ -841,6 +849,7 @@ test('video type filters reuse the card decorators', () => {
   assert.match(definitions, /key: 'video'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('video'\)/);
   assert.match(definitions, /key: 'short'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('short'\)/);
   assert.match(definitions, /key: 'live'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('live'\)/);
+  assert.match(definitions, /key: 'movie'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('movie'\)/);
   assert.match(typeDecoratorSource, /const isVideoRecord = typeof video !== 'string'/);
 });
 

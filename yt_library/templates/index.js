@@ -407,7 +407,7 @@ let playlistDuplicatesOnly = false;
 let completionMinimumInputTimer = null;
 const noUploaderCategoryFilter = '__no_category__';
 const defaultSearchMetaVisibility = {
-  videoType: { video: true, short: true, live: true, unknown: true },
+  videoType: { video: true, short: true, live: true, movie: true, unknown: true },
   videos: {
     public: true,
     unlisted: true,
@@ -3167,6 +3167,7 @@ const videoTypeMetaFilterDefinitions = [
   { key: 'video', label: 'Videos', decoratorHtml: videoTypeDecoratorHtml('video') },
   { key: 'short', label: 'Shorts', decoratorHtml: videoTypeDecoratorHtml('short') },
   { key: 'live', label: 'Live', decoratorHtml: videoTypeDecoratorHtml('live') },
+  { key: 'movie', label: 'Movies', decoratorHtml: videoTypeDecoratorHtml('movie') },
   { key: 'unknown', label: 'Unknown' },
 ];
 function visibleVideoMetaFilterDefinitions(counts, { includeRemoved = true } = {}) {
@@ -3805,7 +3806,32 @@ function videoTypeDecoratorHtml(video) {
       </span>
     `;
   }
+  if (videoType === 'movie') {
+    return `
+      <span class="video-type-decorator" title="Movie" role="img" aria-label="Movie">
+        <svg class="video-type-icon movie-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+          <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+          <path d="M7 3v18M17 3v18M3 7.5h4M17 7.5h4M3 12h18M3 16.5h4M17 16.5h4"></path>
+        </svg>
+        ${isVideoRecord ? '<span class="video-type-label">Movie</span>' : ''}
+      </span>
+    `;
+  }
   return '';
+}
+
+function movieMetadataHtml(video) {
+  if (String(video?.video_type || '').trim().toLowerCase() !== 'movie') return '';
+  const offer = String(video?.movie_offer || '').trim();
+  const rating = String(video?.movie_rating || '').trim();
+  const releaseDate = String(video?.movie_release_date || '').trim();
+  return detailRowHtml([
+    offer
+      ? `<span class="badge movie-offer${offer.toLowerCase() === 'free' ? ' free' : ''}">${escapeHtml(offer)}</span>`
+      : '',
+    rating ? `<span class="badge movie-rating" title="Movie rating">${escapeHtml(rating)}</span>` : '',
+    releaseDate ? `<span>Release date ${escapeHtml(releaseDate)}</span>` : '',
+  ], 'details movie-metadata');
 }
 
 function archivarixStatusLabel(video) {
@@ -4853,6 +4879,7 @@ function videoDetailCardFor(video) {
           <span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>
           ${videoTypeDecoratorHtml(video)}
         </div>
+        ${movieMetadataHtml(video)}
         ${badgeRowsHtml([
           { label: video.virtual_video ? 'Not in library' : '' },
           { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
@@ -5655,6 +5682,7 @@ function playlistVideoCardFor(video, options = {}) {
     latestWatchDateHtml: options.latestWatchDateHtml || '',
     availabilityHtml: videoAvailabilityHtml(video),
     typeDecoratorHtml: videoTypeDecoratorHtml(video),
+    movieMetadataHtml: movieMetadataHtml(video),
     compactAvailabilityHtml: duration
       ? `<span class="compact-video-duration">${escapeHtml(duration)}</span>`
       : '',

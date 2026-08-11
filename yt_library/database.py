@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -1040,6 +1040,36 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (23, utc_now()),
+        )
+    if current_version < 24:
+        video_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+        }
+        videos_sql_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'videos'"
+        ).fetchone()
+        videos_sql = str(videos_sql_row["sql"] or "") if videos_sql_row else ""
+        if "video_type" in video_columns and "'movie'" not in videos_sql.casefold():
+            conn.executescript(
+                """
+                ALTER TABLE videos RENAME COLUMN video_type TO legacy_video_type;
+                ALTER TABLE videos ADD COLUMN video_type TEXT NOT NULL DEFAULT ''
+                  CHECK (video_type IN ('', 'video', 'short', 'live', 'movie'));
+                UPDATE videos SET video_type = legacy_video_type;
+                ALTER TABLE videos DROP COLUMN legacy_video_type;
+                """
+            )
+        video_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+        }
+        for column in ("movie_rating", "movie_release_date", "movie_offer"):
+            if column not in video_columns:
+                conn.execute(
+                    f"ALTER TABLE videos ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+                )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (24, utc_now()),
         )
 
 

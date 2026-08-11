@@ -48,6 +48,11 @@ class DatabaseModuleTests(unittest.TestCase):
 
         self.assertEqual(schema_version, database.SCHEMA_VERSION)
         self.assertIn("uploader_category", video_columns)
+        self.assertTrue(
+            {"movie_rating", "movie_release_date", "movie_offer"}.issubset(
+                video_columns
+            )
+        )
         self.assertIn("payload_json", queue_columns)
         self.assertIn("plugin_subject_id", queue_columns)
         self.assertIn("clip_id", queue_columns)
@@ -328,6 +333,61 @@ class DatabaseModuleTests(unittest.TestCase):
 
         self.assertEqual(version, database.SCHEMA_VERSION)
         self.assertIn("video_type", video_columns)
+
+    def test_database_module_migrates_movie_metadata_from_version_23(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO videos(video_id, video_type) VALUES ('short123456', 'short')"
+                    )
+                    conn.executescript(
+                        """
+                        ALTER TABLE videos RENAME COLUMN video_type TO current_video_type;
+                        ALTER TABLE videos ADD COLUMN video_type TEXT NOT NULL DEFAULT ''
+                          CHECK (video_type IN ('', 'video', 'short', 'live'));
+                        UPDATE videos SET video_type = current_video_type;
+                        ALTER TABLE videos DROP COLUMN current_video_type;
+                        ALTER TABLE videos DROP COLUMN movie_rating;
+                        ALTER TABLE videos DROP COLUMN movie_release_date;
+                        ALTER TABLE videos DROP COLUMN movie_offer;
+                        DELETE FROM schema_migrations WHERE version >= 24;
+                        """
+                    )
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                video_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+                }
+                retained_type = conn.execute(
+                    "SELECT video_type FROM videos WHERE video_id = 'short123456'"
+                ).fetchone()[0]
+                with conn:
+                    conn.execute(
+                        "UPDATE videos SET video_type = 'movie', movie_rating = 'R', "
+                        "movie_release_date = '2015', movie_offer = 'Free' "
+                        "WHERE video_id = 'short123456'"
+                    )
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertEqual(retained_type, "short")
+        self.assertTrue(
+            {"movie_rating", "movie_release_date", "movie_offer"}.issubset(
+                video_columns
+            )
+        )
 
 
 if __name__ == "__main__":

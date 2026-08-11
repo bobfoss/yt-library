@@ -696,6 +696,9 @@ def upsert_video(
     upload_date: str = "",
     uploader_category: str = "",
     video_type: str = "",
+    movie_rating: str = "",
+    movie_release_date: str = "",
+    movie_offer: str = "",
     thumbnail_url: str = "",
     thumbnail_path: str = "",
     reaction: str = "",
@@ -734,6 +737,11 @@ def upsert_video(
             return incoming
         return (existing[name] if existing else "") or incoming
 
+    def current_movie_field(name: str, incoming: str) -> str:
+        if authoritative and video_type and video_type != "movie":
+            return ""
+        return current(name, incoming)
+
     incoming_title = video_title_or_blank(title, video_id)
     existing_title = str(existing["title"] or "").strip() if existing else ""
     if incoming_title and (authoritative or not useful_video_title(existing_title, video_id)):
@@ -769,6 +777,9 @@ def upsert_video(
         current("upload_date", upload_date),
         current("uploader_category", uploader_category),
         current("video_type", video_type),
+        current_movie_field("movie_rating", movie_rating),
+        current_movie_field("movie_release_date", movie_release_date),
+        current_movie_field("movie_offer", movie_offer),
         current("thumbnail_url", thumbnail_url),
         current("thumbnail_path", thumbnail_path),
         current("reaction", reaction),
@@ -787,7 +798,8 @@ def upsert_video(
             """
             UPDATE videos SET
               title=?, description=?, channel_id=?, duration_text=?, view_count=?, upload_date=?,
-              uploader_category=?, video_type=?, thumbnail_url=?, thumbnail_path=?, reaction=?, is_playable=?,
+              uploader_category=?, video_type=?, movie_rating=?, movie_release_date=?, movie_offer=?,
+              thumbnail_url=?, thumbnail_path=?, reaction=?, is_playable=?,
               availability=?, metadata_source=?,
               fetch_status=?, fetch_error=?, fetched_at=?, last_seen_available_at=?,
               last_checked_at=?, updated_at=?
@@ -800,10 +812,11 @@ def upsert_video(
             """
             INSERT INTO videos(
               video_id, title, description, channel_id, duration_text, view_count, upload_date,
-              uploader_category, video_type, thumbnail_url, thumbnail_path, reaction, is_playable, availability, metadata_source,
+              uploader_category, video_type, movie_rating, movie_release_date, movie_offer,
+              thumbnail_url, thumbnail_path, reaction, is_playable, availability, metadata_source,
               fetch_status, fetch_error, fetched_at, last_seen_available_at,
               last_checked_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (video_id, *values),
         )
@@ -3414,9 +3427,76 @@ def youtube_video_type(
         "/shorts/"
     ):
         return "short"
+    if details.get("isTvfilmVideo") is True:
+        return "movie"
     if microformat.get("isShortsEligible") is False or canonical_path == "/watch":
         return "video"
     return ""
+
+
+def youtube_movie_metadata(
+    details: Mapping[str, Any],
+    initial_data: Mapping[str, Any],
+) -> dict[str, str]:
+    if details.get("isTvfilmVideo") is not True:
+        return {
+            "movie_rating": "",
+            "movie_release_date": "",
+            "movie_offer": "",
+        }
+
+    metadata_rows: dict[str, str] = {}
+    row_container = _first_youtube_renderer(
+        initial_data,
+        "metadataRowContainerRenderer",
+    )
+    for row in row_container.get("rows", []):
+        renderer = row.get("metadataRowRenderer", {}) if isinstance(row, dict) else {}
+        label = text_from_runs(renderer.get("title") or {}).strip().casefold()
+        values = [
+            text_from_runs(value).strip()
+            for value in renderer.get("contents", [])
+            if isinstance(value, dict) and text_from_runs(value).strip()
+        ]
+        if label and values:
+            metadata_rows[label] = ", ".join(values)
+
+    offer = ""
+    fallback_rating = ""
+    primary_info = _first_youtube_renderer(initial_data, "videoPrimaryInfoRenderer")
+    for badge_node in primary_info.get("badges", []):
+        badge = (
+            badge_node.get("metadataBadgeRenderer", {})
+            if isinstance(badge_node, dict)
+            else {}
+        )
+        style = str(badge.get("style") or "").strip().upper()
+        label = str(badge.get("label") or "").strip()
+        if style == "BADGE_STYLE_TYPE_YPC" and label:
+            offer = label
+        elif style == "BADGE_STYLE_TYPE_MEDIA" and label:
+            fallback_rating = label
+
+    factoids: dict[str, str] = {}
+    for node in walk(initial_data):
+        renderer = node.get("factoidRenderer") if isinstance(node, dict) else None
+        if not isinstance(renderer, dict):
+            continue
+        label = text_from_runs(renderer.get("label") or {}).strip().casefold()
+        value = text_from_runs(renderer.get("value") or {}).strip()
+        if label and value:
+            factoids[label] = value
+
+    return {
+        "movie_rating": metadata_rows.get("rating") or factoids.get("rating") or fallback_rating,
+        "movie_release_date": (
+            metadata_rows.get("release date")
+            or factoids.get("release date")
+            or factoids.get("release year")
+            or ""
+        ),
+        "movie_offer": offer,
+    }
 
 
 def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
@@ -3461,6 +3541,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         channel = ""
         channel_url = ""
         channel_thumbnail_url = ""
+    movie_metadata = youtube_movie_metadata(details, initial_data)
     return {
         "video_id": video_id,
         "title": title,
@@ -3473,6 +3554,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, str]:
         "upload_date": str(microformat.get("uploadDate") or microformat.get("publishDate") or ""),
         "uploader_category": str(microformat.get("category") or "").strip(),
         "video_type": youtube_video_type(details, microformat),
+        **movie_metadata,
         "thumbnail_url": thumbnail_url,
         "channel_thumbnail_url": channel_thumbnail_url,
         "reaction": reaction,
@@ -3599,6 +3681,9 @@ def store_video_metadata(
         upload_date=metadata.get("upload_date", ""),
         uploader_category=metadata.get("uploader_category", ""),
         video_type=metadata.get("video_type", ""),
+        movie_rating=metadata.get("movie_rating", ""),
+        movie_release_date=metadata.get("movie_release_date", ""),
+        movie_offer=metadata.get("movie_offer", ""),
         thumbnail_url=metadata.get("thumbnail_url", ""),
         thumbnail_path=metadata.get("thumbnail_path", ""),
         reaction=metadata.get("reaction", ""),

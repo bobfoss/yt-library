@@ -525,7 +525,7 @@ VIDEO_COMPLETION_CATEGORIES = (
     "never_watched",
 )
 VIDEO_REACTION_CATEGORIES = ("none", "liked", "disliked")
-VIDEO_TYPE_CATEGORIES = ("video", "short", "live", "unknown")
+VIDEO_TYPE_CATEGORIES = ("video", "short", "live", "movie", "unknown")
 NO_UPLOADER_CATEGORY_FILTER = "__no_category__"
 
 
@@ -748,6 +748,7 @@ def video_collection_data(
           WHEN 'video' THEN 'video'
           WHEN 'short' THEN 'short'
           WHEN 'live' THEN 'live'
+          WHEN 'movie' THEN 'movie'
           ELSE 'unknown'
         END
     """
@@ -1321,6 +1322,10 @@ def projected_video_data(projection: Mapping[str, Any]) -> dict[str, Any]:
         "metadata_fetch_status": "",
         "duration_text": "",
         "uploader_category": "",
+        "video_type": "",
+        "movie_rating": "",
+        "movie_release_date": "",
+        "movie_offer": "",
         "reaction": "",
         "is_playable": None,
         "availability": "",
@@ -1886,6 +1891,9 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
                v.upload_date AS metadata_upload_date,
                v.uploader_category,
                v.video_type,
+               v.movie_rating,
+               v.movie_release_date,
+               v.movie_offer,
                v.thumbnail_path AS metadata_thumbnail_path,
                COALESCE(ch.thumbnail_path, '') AS metadata_channel_thumbnail_path,
                v.fetch_status AS metadata_fetch_status,
@@ -2938,6 +2946,10 @@ def history_search_data(
                    COALESCE(ch.aliases, '') AS metadata_channel_aliases,
                    v.duration_text AS metadata_duration,
                    v.uploader_category,
+                   v.video_type,
+                   v.movie_rating,
+                   v.movie_release_date,
+                   v.movie_offer,
                    v.thumbnail_path AS metadata_thumbnail_path,
                    COALESCE(ch.thumbnail_path, '') AS metadata_channel_thumbnail_path,
                    v.reaction,
