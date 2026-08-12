@@ -340,6 +340,8 @@ test('content warnings render only on detailed video cards', () => {
     indexHtml,
     /\.search-grid:not\(\.layout-detailed\) \.content-warning \{ display: none; \}/,
   );
+  assert.match(indexHtml, /\.details\.content-warning \{ color: var\(--warn\); \}/);
+  assert.match(indexHtml, /\.content-warning strong \{ font-weight: 650; \}/);
 });
 
 test('compact channel cards retain only a right-aligned YouTube link', () => {
