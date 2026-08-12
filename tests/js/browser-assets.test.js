@@ -326,6 +326,22 @@ test('native card ids are visible only in the detailed layout', () => {
   );
 });
 
+test('content warnings render only on detailed video cards', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+
+  assert.match(
+    indexSource,
+    /function contentWarningHtml\(video\)[\s\S]*?<strong>Content warning<\/strong>/,
+  );
+  assert.match(indexSource, /contentWarningHtml: contentWarningHtml\(video\)/);
+  assert.match(indexSource, /\$\{contentWarningHtml\(video\)\}/);
+  assert.match(
+    indexHtml,
+    /\.search-grid:not\(\.layout-detailed\) \.content-warning \{ display: none; \}/,
+  );
+});
+
 test('compact channel cards retain only a right-aligned YouTube link', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');

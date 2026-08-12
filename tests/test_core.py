@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.cookiejar
 import json
 import tempfile
 import threading
@@ -2582,6 +2583,117 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(metadata["playability_status"], "OK")
         self.assertEqual(metadata["availability"], "public")
         self.assertEqual(core.watch_playability_value(metadata), 1)
+
+    def test_content_check_gate_is_preserved_while_authenticated_player_resolves(self) -> None:
+        html = """
+        <html><body>
+        <script>
+        var ytInitialPlayerResponse = {
+          "playabilityStatus": {
+            "status": "CONTENT_CHECK_REQUIRED",
+            "reason": {"simpleText": "This content may contain sensitive topics."}
+          }
+        };
+        var ytInitialData = {};
+        </script>
+        <script>
+        ytcfg.set({
+          "INNERTUBE_API_KEY": "api-key",
+          "INNERTUBE_CLIENT_NAME": "WEB",
+          "INNERTUBE_CLIENT_VERSION": "2.20260811.00.00"
+        });
+        </script>
+        </body></html>
+        """
+        resolved_player = {
+            "playabilityStatus": {"status": "OK"},
+            "videoDetails": {
+                "title": "Resolved sensitive video",
+                "author": "Careful Creator",
+                "lengthSeconds": "90",
+            },
+            "microformat": {
+                "playerMicroformatRenderer": {
+                    "isUnlisted": False,
+                    "canonicalUrl": "https://www.youtube.com/watch?v=content1234",
+                }
+            },
+        }
+        jar = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        with (
+            patch.object(core, "request_text", return_value=html),
+            patch.object(
+                core,
+                "request_youtubei_json",
+                return_value=resolved_player,
+            ) as request_player,
+            patch.object(core, "cache_video_thumbnail", return_value=""),
+            patch.object(core, "cache_channel_thumbnail", return_value=""),
+        ):
+            metadata = core.fetch_watch_metadata(
+                opener,
+                "content1234",
+                Path("thumbs"),
+            )
+
+        self.assertEqual(metadata["title"], "Resolved sensitive video")
+        self.assertEqual(metadata["playability_status"], "OK")
+        self.assertEqual(metadata["availability"], "public")
+        self.assertTrue(metadata["content_check_required"])
+        self.assertEqual(
+            metadata["content_check_reason"],
+            "This content may contain sensitive topics.",
+        )
+        args = request_player.call_args.args
+        self.assertEqual(args[2], "api-key")
+        self.assertEqual(args[3]["videoId"], "content1234")
+        self.assertTrue(args[3]["racyCheckOk"])
+        self.assertTrue(args[3]["contentCheckOk"])
+        self.assertEqual(request_player.call_args.kwargs["api_path"], "player")
+
+    def test_content_check_metadata_is_stored_and_cleared_by_later_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "content1234",
+                        title="Sensitive video",
+                        content_check_required=True,
+                        content_check_reason="Sensitive subject matter",
+                        source="metadata",
+                    )
+                    core.upsert_video(
+                        conn,
+                        "content1234",
+                        title="Sensitive video",
+                        content_check_required=None,
+                        source="metadata",
+                    )
+                preserved = conn.execute(
+                    "SELECT content_check_required, content_check_reason "
+                    "FROM videos WHERE video_id = 'content1234'"
+                ).fetchone()
+                self.assertEqual(tuple(preserved), (1, "Sensitive subject matter"))
+
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "content1234",
+                        title="Sensitive video",
+                        content_check_required=False,
+                        content_check_reason="",
+                        source="metadata",
+                    )
+                cleared = conn.execute(
+                    "SELECT content_check_required, content_check_reason "
+                    "FROM videos WHERE video_id = 'content1234'"
+                ).fetchone()
+                self.assertEqual(tuple(cleared), (0, ""))
+            finally:
+                conn.close()
 
     def test_watch_metadata_classifies_unlisted_visibility(self) -> None:
         html = """

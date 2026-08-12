@@ -501,6 +501,45 @@ class DatabaseModuleTests(unittest.TestCase):
             ("Legacy live stream", "livestream", None),
         )
 
+    def test_database_module_migrates_content_warning_metadata_from_version_26(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO videos(video_id, title) "
+                        "VALUES ('warningkeep1', 'Keep warning candidate')"
+                    )
+                    conn.execute("ALTER TABLE videos DROP COLUMN content_check_required")
+                    conn.execute("ALTER TABLE videos DROP COLUMN content_check_reason")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 27")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                video_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+                }
+                retained = conn.execute(
+                    "SELECT title, content_check_required, content_check_reason "
+                    "FROM videos WHERE video_id = 'warningkeep1'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertTrue(
+            {"content_check_required", "content_check_reason"}.issubset(video_columns)
+        )
+        self.assertEqual(tuple(retained), ("Keep warning candidate", None, None))
+
 
 if __name__ == "__main__":
     unittest.main()

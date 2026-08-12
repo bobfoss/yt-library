@@ -713,6 +713,8 @@ def upsert_video(
     dynamic_range: str | None = None,
     license: str | None = None,
     location_name: str | None = None,
+    content_check_required: bool | int | None = None,
+    content_check_reason: str | None = None,
     thumbnail_url: str = "",
     thumbnail_path: str = "",
     reaction: str = "",
@@ -777,6 +779,17 @@ def upsert_video(
         existing_value = existing[name] if existing else None
         return existing_value if existing_value not in {None, ""} else incoming
 
+    def current_content_check_reason() -> str | None:
+        if content_check_required is None:
+            return existing["content_check_reason"] if existing else None
+        if not content_check_required:
+            return ""
+        incoming = str(content_check_reason or "").strip()
+        if authoritative:
+            return incoming
+        existing_value = existing["content_check_reason"] if existing else None
+        return existing_value if existing_value is not None else incoming
+
     incoming_title = video_title_or_blank(title, video_id)
     existing_title = str(existing["title"] or "").strip() if existing else ""
     if incoming_title and (authoritative or not useful_video_title(existing_title, video_id)):
@@ -828,6 +841,11 @@ def upsert_video(
         current_observation("dynamic_range", dynamic_range),
         current_observation("license", license),
         current_observation("location_name", location_name),
+        current_observation(
+            "content_check_required",
+            int(bool(content_check_required)) if content_check_required is not None else None,
+        ),
+        current_content_check_reason(),
         current("thumbnail_url", thumbnail_url),
         current("thumbnail_path", thumbnail_path),
         current("reaction", reaction),
@@ -850,6 +868,7 @@ def upsert_video(
               broadcast_ended_at=?, broadcast_status_checked_at=?,
               movie_rating=?, movie_release_date=?, movie_offer=?,
               max_video_height=?, spatial_format=?, stereo_layout=?, dynamic_range=?, license=?, location_name=?,
+              content_check_required=?, content_check_reason=?,
               thumbnail_url=?, thumbnail_path=?, reaction=?, is_playable=?,
               availability=?, metadata_source=?,
               fetch_status=?, fetch_error=?, fetched_at=?, last_seen_available_at=?,
@@ -867,10 +886,11 @@ def upsert_video(
               broadcast_ended_at, broadcast_status_checked_at,
               movie_rating, movie_release_date, movie_offer,
               max_video_height, spatial_format, stereo_layout, dynamic_range, license, location_name,
+              content_check_required, content_check_reason,
               thumbnail_url, thumbnail_path, reaction, is_playable, availability, metadata_source,
               fetch_status, fetch_error, fetched_at, last_seen_available_at,
               last_checked_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (video_id, *values),
         )
@@ -1515,7 +1535,7 @@ def request_youtubei_json(
     *,
     api_path: str = "browse",
 ) -> dict[str, Any]:
-    if api_path not in {"browse", "get_panel"}:
+    if api_path not in {"browse", "get_panel", "player"}:
         raise ValueError(f"Unsupported YouTubei API path: {api_path}")
     origin = "https://www.youtube.com"
     headers = {
@@ -3756,8 +3776,80 @@ def youtube_video_feature_metadata(
     }
 
 
-def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, Any]:
-    player = extract_json_assignment(html_text, "ytInitialPlayerResponse")
+def youtube_content_check_metadata(
+    playability: Mapping[str, Any],
+) -> dict[str, bool | str | None]:
+    status = str(playability.get("status") or "").strip().upper()
+    if not status:
+        return {
+            "content_check_required": None,
+            "content_check_reason": None,
+        }
+    required = status == "CONTENT_CHECK_REQUIRED"
+    reason = text_from_runs(playability.get("reason")).strip() if required else ""
+    if required and not reason:
+        error_renderer = _first_youtube_renderer(
+            playability,
+            "playerErrorMessageRenderer",
+        )
+        reason = text_from_runs(error_renderer.get("reason") or {}).strip()
+    return {
+        "content_check_required": required,
+        "content_check_reason": reason,
+    }
+
+
+def opener_cookie_jar(
+    opener: urllib.request.OpenerDirector,
+) -> http.cookiejar.CookieJar | None:
+    for handler in getattr(opener, "handlers", ()):
+        jar = getattr(handler, "cookiejar", None)
+        if isinstance(jar, http.cookiejar.CookieJar):
+            return jar
+    return None
+
+
+def resolve_content_checked_player_response(
+    opener: urllib.request.OpenerDirector,
+    html_text: str,
+    video_id: str,
+) -> dict[str, Any] | None:
+    initial_player = extract_json_assignment(html_text, "ytInitialPlayerResponse")
+    playability = initial_player.get("playabilityStatus", {})
+    if str(playability.get("status") or "").strip().upper() != "CONTENT_CHECK_REQUIRED":
+        return None
+    config = extract_ytcfg(html_text)
+    api_key = str(config.get("INNERTUBE_API_KEY") or "").strip()
+    client_version = str(config.get("INNERTUBE_CLIENT_VERSION") or "").strip()
+    jar = opener_cookie_jar(opener)
+    if not api_key or not client_version or jar is None:
+        return None
+    watch_url = f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}"
+    return request_youtubei_json(
+        opener,
+        jar,
+        api_key,
+        {
+            "context": youtube_web_context(config),
+            "videoId": video_id,
+            "racyCheckOk": True,
+            "contentCheckOk": True,
+        },
+        watch_url,
+        client_version,
+        api_path="player",
+    )
+
+
+def extract_watch_metadata(
+    html_text: str,
+    video_id: str,
+    *,
+    player_response: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    initial_player = extract_json_assignment(html_text, "ytInitialPlayerResponse")
+    initial_playability = initial_player.get("playabilityStatus", {})
+    player = dict(player_response) if player_response is not None else initial_player
     initial_data = extract_json_assignment(html_text, "ytInitialData")
     details = player.get("videoDetails", {}) if isinstance(player, dict) else {}
     playability = player.get("playabilityStatus", {}) if isinstance(player, dict) else {}
@@ -3801,6 +3893,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, Any]:
     movie_metadata = youtube_movie_metadata(details, initial_data)
     feature_metadata = youtube_video_feature_metadata(player, initial_data)
     broadcast_metadata = youtube_broadcast_metadata(details, microformat)
+    content_check_metadata = youtube_content_check_metadata(initial_playability)
     return {
         "video_id": video_id,
         "title": title,
@@ -3816,6 +3909,7 @@ def extract_watch_metadata(html_text: str, video_id: str) -> dict[str, Any]:
         **broadcast_metadata,
         **movie_metadata,
         **feature_metadata,
+        **content_check_metadata,
         "thumbnail_url": thumbnail_url,
         "channel_thumbnail_url": channel_thumbnail_url,
         "reaction": reaction,
@@ -3835,7 +3929,12 @@ def fetch_watch_metadata(
     page = request_text(opener, watch_url)
     if require_authenticated and not youtube_page_is_authenticated(page):
         raise youtube_authentication_error(page, "watch page")
-    metadata = extract_watch_metadata(page, video_id)
+    resolved_player = resolve_content_checked_player_response(opener, page, video_id)
+    metadata = extract_watch_metadata(
+        page,
+        video_id,
+        player_response=resolved_player,
+    )
     metadata["thumbnail_path"] = cache_video_thumbnail(
         opener,
         video_id,
@@ -3957,6 +4056,8 @@ def store_video_metadata(
         dynamic_range=metadata.get("dynamic_range"),
         license=metadata.get("license"),
         location_name=metadata.get("location_name"),
+        content_check_required=metadata.get("content_check_required"),
+        content_check_reason=metadata.get("content_check_reason"),
         thumbnail_url=metadata.get("thumbnail_url", ""),
         thumbnail_path=metadata.get("thumbnail_path", ""),
         reaction=metadata.get("reaction", ""),

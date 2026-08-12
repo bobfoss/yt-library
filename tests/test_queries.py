@@ -132,6 +132,8 @@ class NormalizedReadModelTests(unittest.TestCase):
             dynamic_range="hdr",
             license="Creative Commons Attribution license",
             location_name="Maui",
+            content_check_required=True,
+            content_check_reason="Sensitive subject matter",
             source="metadata",
         )
         self.conn.execute(
@@ -157,6 +159,8 @@ class NormalizedReadModelTests(unittest.TestCase):
             self.assertEqual(item["dynamic_range"], "hdr")
             self.assertEqual(item["license"], "Creative Commons Attribution license")
             self.assertEqual(item["location_name"], "Maui")
+            self.assertEqual(item["content_check_required"], 1)
+            self.assertEqual(item["content_check_reason"], "Sensitive subject matter")
 
     def test_channel_status_transition_is_consistent_across_read_models(self) -> None:
         channel_id = "UC_status_transition"

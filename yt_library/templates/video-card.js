@@ -273,6 +273,7 @@
         : ''}
       ${options.movieMetadataHtml || ''}
       ${options.featureMetadataHtml || ''}
+      ${options.contentWarningHtml || ''}
       ${badgeRowsHtml(options.badges)}
       ${detailRowHtml(options.details)}
       ${detailRowHtml(options.durationDetails, 'details video-duration-details')}

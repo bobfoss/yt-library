@@ -97,6 +97,8 @@ CREATE TABLE IF NOT EXISTS videos (
   dynamic_range TEXT CHECK (dynamic_range IS NULL OR dynamic_range IN ('sdr', 'hdr')),
   license TEXT,
   location_name TEXT,
+  content_check_required INTEGER CHECK (content_check_required IN (0, 1)),
+  content_check_reason TEXT,
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
   reaction TEXT NOT NULL DEFAULT ''

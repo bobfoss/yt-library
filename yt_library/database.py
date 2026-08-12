@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -1140,6 +1140,21 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (26, utc_now()),
+        )
+    if current_version < 27:
+        video_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+        }
+        if "content_check_required" not in video_columns:
+            conn.execute(
+                "ALTER TABLE videos ADD COLUMN content_check_required INTEGER "
+                "CHECK (content_check_required IN (0, 1))"
+            )
+        if "content_check_reason" not in video_columns:
+            conn.execute("ALTER TABLE videos ADD COLUMN content_check_reason TEXT")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (27, utc_now()),
         )
 
 

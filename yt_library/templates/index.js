@@ -4079,6 +4079,12 @@ function videoFeatureMetadataHtml(video) {
   return detailRowHtml(features, 'details video-feature-metadata');
 }
 
+function contentWarningHtml(video) {
+  if (!video?.content_check_required) return '';
+  const reason = String(video.content_check_reason || '').trim();
+  return `<div class="details content-warning"><strong>Content warning</strong>${reason ? `: ${escapeHtml(reason)}` : ''}</div>`;
+}
+
 function archivarixStatusLabel(video) {
   const status = String(video.recovered_status || '');
   if (status === 'NOT_FOUND') return 'Archivarix: No results found';
@@ -5148,6 +5154,7 @@ function videoDetailCardFor(video) {
         </div>
         ${movieMetadataHtml(video)}
         ${videoFeatureMetadataHtml(video)}
+        ${contentWarningHtml(video)}
         ${badgeRowsHtml([
           { label: video.virtual_video ? 'Not in library' : '' },
           { label: wasRemovedByMeFromPlaylist(video) ? 'Removed' : '' },
@@ -5956,6 +5963,7 @@ function playlistVideoCardFor(video, options = {}) {
     typeDecoratorHtml: videoTypeDecoratorHtml(video),
     movieMetadataHtml: movieMetadataHtml(video),
     featureMetadataHtml: videoFeatureMetadataHtml(video),
+    contentWarningHtml: contentWarningHtml(video),
     compactAvailabilityHtml: duration
       ? `<span class="compact-video-duration">${escapeHtml(duration)}</span>`
       : '',
