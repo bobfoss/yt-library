@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable as IterableCollection, Mapping
+from contextlib import nullcontext
 import importlib.metadata as importlib_metadata
 import json
 import re
@@ -14,11 +15,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .database import connect
+from .network import ytdlp_proxy_options
+from .request_pacing import request_paced_youtube_dl
 from .time_utils import utc_now
 from .worker_runs import WorkerRunRecorder
 
 
 PLUGIN_API_VERSION = 2
+PLUGIN_HOST_FEATURES = frozenset({"youtube_ytdlp_v1"})
 PLUGIN_ENTRY_POINT_GROUP = "yt_library.plugins"
 PLUGIN_ID = re.compile(r"^[a-z][a-z0-9_-]*$")
 PLUGIN_PROCESS_ID = re.compile(r"^[a-z][a-z0-9_-]{0,79}$")
@@ -35,6 +39,27 @@ PLUGIN_NAVIGATION_GROUP_LIMIT = 10_000
 PLUGIN_NAVIGATION_MEMBERSHIP_LIMIT = 250_000
 PLUGIN_PLAYLIST_GROUP_KEY_PREFIX = "plugin:"
 PLUGIN_CHANNEL_GROUP_KEY_PREFIX = "plugin-channel:"
+YOUTUBE_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+PLUGIN_YTDLP_HOST_OPTIONS = frozenset(
+    {
+        "cookiefile",
+        "cookiesfrombrowser",
+        "extractor_args",
+        "extractor_retries",
+        "fragment_retries",
+        "geo_verification_proxy",
+        "http_headers",
+        "logger",
+        "noprogress",
+        "postprocessor_hooks",
+        "progress_hooks",
+        "proxy",
+        "quiet",
+        "retries",
+        "socket_timeout",
+        "source_address",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +70,7 @@ class PluginContext:
     config_path: Path
     plugin_id: str
     plugin_config: dict[str, Any]
+    host_features: frozenset[str]
 
     def resolve_path(self, value: str | Path) -> Path:
         path = Path(value)
@@ -129,6 +155,9 @@ class PluginWorkerRuntime:
         worker_id: str,
         subject_id: str,
         stop_event: threading.Event,
+        service: str = "local",
+        cookie_file: Path | None = None,
+        proxy_url: str = "",
     ) -> None:
         self.run_id = run_id
         self.queue_id = queue_id
@@ -137,6 +166,9 @@ class PluginWorkerRuntime:
         self.subject_id = subject_id
         self._db_path = db_path
         self._stop_event = stop_event
+        self._service = service
+        self._cookie_file = Path(cookie_file) if cookie_file is not None else None
+        self._proxy_url = str(proxy_url or "")
 
     def stop_requested(self) -> bool:
         return self._stop_event.is_set()
@@ -168,6 +200,102 @@ class PluginWorkerRuntime:
                 )
         finally:
             conn.close()
+
+    def run_youtube_ytdlp(
+        self,
+        video_id: str,
+        options: Mapping[str, Any],
+        *,
+        download: bool,
+    ) -> dict[str, Any]:
+        """Run a bounded yt-dlp request with host-owned YouTube policy."""
+        if self._service != "youtube":
+            raise RuntimeError(
+                "youtube_ytdlp_v1 is available only to YouTube plugin workers"
+            )
+        normalized_video_id = str(video_id or "").strip()
+        if not YOUTUBE_VIDEO_ID.fullmatch(normalized_video_id):
+            raise ValueError(
+                f"Expected an 11-character YouTube video ID: {normalized_video_id}"
+            )
+        if not isinstance(options, Mapping):
+            raise TypeError("yt-dlp options must be a mapping")
+        protected = sorted(PLUGIN_YTDLP_HOST_OPTIONS.intersection(options))
+        if protected:
+            raise ValueError(
+                "Plugin yt-dlp options may not override host policy: "
+                + ", ".join(protected)
+            )
+        if self.stop_requested():
+            raise PluginWorkerStopped("Stopped before yt-dlp retrieval started")
+        try:
+            import yt_dlp  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("yt-dlp is not installed") from exc
+
+        from .core import temporary_ytdlp_cookie_file
+
+        runtime = self
+
+        class PluginYtdlpLogger:
+            def debug(self, message: str) -> None:
+                text = str(message or "")
+                if text.startswith("[download]") and "Destination:" in text:
+                    runtime.log("debug", text)
+
+            def info(self, message: str) -> None:
+                self.debug(message)
+
+            def warning(self, message: str) -> None:
+                runtime.log("warn", str(message or ""))
+
+            def error(self, message: str) -> None:
+                runtime.log("error", str(message or ""))
+
+        def stop_hook(_status: dict[str, Any]) -> None:
+            if runtime.stop_requested():
+                raise PluginWorkerStopped("Stopped during yt-dlp retrieval")
+
+        try:
+            cookie_context = (
+                temporary_ytdlp_cookie_file(self._cookie_file)
+                if self._cookie_file is not None
+                else nullcontext(None)
+            )
+            with cookie_context as working_cookie_file:
+                host_options = dict(options)
+                host_options.update(
+                    {
+                        "cookiefile": (
+                            str(working_cookie_file) if working_cookie_file else None
+                        ),
+                        "extractor_retries": 2,
+                        "fragment_retries": 3,
+                        "logger": PluginYtdlpLogger(),
+                        "noprogress": True,
+                        "progress_hooks": [stop_hook],
+                        "quiet": True,
+                        "retries": 2,
+                        "socket_timeout": 30,
+                        **ytdlp_proxy_options(self._proxy_url),
+                    }
+                )
+                url = f"https://www.youtube.com/watch?v={normalized_video_id}"
+                with request_paced_youtube_dl(yt_dlp, host_options) as ydl:
+                    info = ydl.extract_info(url, download=download)
+            if self.stop_requested():
+                raise PluginWorkerStopped("Stopped after yt-dlp retrieval")
+        except Exception as exc:
+            if self.stop_requested() and not isinstance(exc, PluginWorkerStopped):
+                raise PluginWorkerStopped("Stopped during yt-dlp retrieval") from exc
+            raise
+        if not isinstance(info, Mapping):
+            raise RuntimeError("yt-dlp returned no video information")
+        return dict(info)
+
+
+class PluginWorkerStopped(RuntimeError):
+    """Host-owned cooperative cancellation for a plugin worker."""
 
 
 @dataclass
@@ -744,6 +872,21 @@ def _worker_processes(instance: Any) -> list[dict[str, Any]]:
     return processes
 
 
+def _required_host_features(instance: Any) -> frozenset[str]:
+    values = getattr(instance, "required_host_features", ())
+    if isinstance(values, (str, bytes)) or not isinstance(
+        values, IterableCollection
+    ):
+        raise TypeError("Plugin required_host_features must be an iterable")
+    features: set[str] = set()
+    for value in values:
+        feature = str(value or "").strip()
+        if not PLUGIN_PROCESS_ID.fullmatch(feature):
+            raise ValueError(f"Invalid required host feature: {feature or '<missing>'}")
+        features.add(feature)
+    return frozenset(features)
+
+
 def _normalize_plugin_task(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise TypeError("Plugin worker tasks must be objects")
@@ -869,6 +1012,17 @@ class PluginManager:
                     f"Plugin API {api_version} is incompatible with host API {PLUGIN_API_VERSION}"
                 )
                 return
+            required_host_features = _required_host_features(instance)
+            missing_host_features = sorted(
+                required_host_features.difference(PLUGIN_HOST_FEATURES)
+            )
+            if missing_host_features:
+                record.state = "incompatible"
+                record.message = (
+                    "Plugin requires unavailable host features: "
+                    + ", ".join(missing_host_features)
+                )
+                return
             capabilities = {
                 str(value) for value in getattr(instance, "capabilities", ())
             }
@@ -895,6 +1049,7 @@ class PluginManager:
                 ),
                 plugin_id=record.plugin_id,
                 plugin_config=dict(record.configured),
+                host_features=PLUGIN_HOST_FEATURES,
             )
             instance.start(context)
             record.instance = instance
@@ -921,6 +1076,7 @@ class PluginManager:
                 "version": str(getattr(instance, "plugin_version", "")),
                 "apiVersion": int(getattr(instance, "plugin_api_version", 0)),
                 "capabilities": sorted(str(value) for value in getattr(instance, "capabilities", ())),
+                "requiredHostFeatures": sorted(_required_host_features(instance)),
             }
         )
         browser_assets = _browser_assets(instance)
@@ -1240,6 +1396,8 @@ class PluginManager:
             return _normalize_worker_result(
                 record.instance.run_worker(worker_id, dict(task), runtime)
             )
+        except PluginWorkerStopped:
+            raise
         except Exception as exc:
             raise RuntimeError(
                 f"Plugin worker failed: {plugin_id}/{worker_id}: "
@@ -1629,6 +1787,9 @@ class PluginTaskWorker:
         db_path: Path,
         manager: PluginManager,
         row: Mapping[str, Any],
+        *,
+        cookie_file: Path | None = None,
+        proxy_url: str = "",
     ) -> dict[str, Any]:
         with self._lock:
             if self._thread and self._thread.is_alive():
@@ -1641,7 +1802,13 @@ class PluginTaskWorker:
             self._run_id = uuid.uuid4().hex
             self._thread = threading.Thread(
                 target=self._run,
-                args=(Path(db_path), manager, dict(row)),
+                args=(
+                    Path(db_path),
+                    manager,
+                    dict(row),
+                    Path(cookie_file) if cookie_file is not None else None,
+                    str(proxy_url or ""),
+                ),
                 name=f"plugin-worker-{row.get('source_key', '')}-{row.get('task_type', '')}",
                 daemon=True,
             )
@@ -1657,6 +1824,8 @@ class PluginTaskWorker:
         db_path: Path,
         manager: PluginManager,
         row: dict[str, Any],
+        cookie_file: Path | None,
+        proxy_url: str,
     ) -> None:
         run_id = self._run_id
         queue_id = int(row.get("queue_id") or 0)
@@ -1691,6 +1860,13 @@ class PluginTaskWorker:
             worker_id=worker_id,
             subject_id=subject_id,
             stop_event=self._stop,
+            service=str(
+                (manager.process_definition(plugin_id, worker_id) or {}).get(
+                    "service", "local"
+                )
+            ),
+            cookie_file=cookie_file,
+            proxy_url=proxy_url,
         )
         status = "complete"
         result = {
@@ -1724,6 +1900,16 @@ class PluginTaskWorker:
                         conn.execute("DELETE FROM worker_queue WHERE queue_id = ?", (queue_id,))
                 finally:
                     conn.close()
+        except PluginWorkerStopped as exc:
+            status = "interrupted"
+            result = {
+                "outcome": "cancelled",
+                "processed": 0,
+                "found": 0,
+                "failed": 0,
+                "skipped": 1,
+                "message": str(exc) or "Interrupted by stop request",
+            }
         except Exception as exc:
             status = "error"
             result = {

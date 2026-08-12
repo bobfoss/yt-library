@@ -132,6 +132,11 @@ browser registration or host-object change must independently bump
 `window.YTLibraryBrowserPlugins.apiVersion`. Update host contract tests and
 reference plugins in the same development slice as either change.
 
+Additive Python services are feature-negotiated. A plugin may declare
+`required_host_features`; the host refuses to activate it when any named
+feature is unavailable. The current feature set includes `youtube_ytdlp_v1`.
+Activated plugins receive the immutable set as `context.host_features`.
+
 This section is the handoff for designing and implementing another plugin. The
 authoritative implementation is `yt_library/plugins.py`; HTTP integration lives
 in `yt_library/server.py`, queue dispatch lives in `yt_library/workers.py`, and
@@ -873,10 +878,11 @@ Process and action rules:
 - Process, action, input, hook, and worker outcome IDs must start with a
   lowercase letter, contain only lowercase letters, digits, `_`, or `-`, and be
   at most 80 characters.
-- `service` is `local`, `youtube`, or `archivarix`. It classifies capacity; it
-  does not provide an HTTP client, cookies, proxy, or retry policy. `youtube`
-  and `archivarix` tasks share their respective YTL global in-flight limit.
-  Every process also honors its own `max_in_flight`, clamped to 1-100.
+- `service` is `local`, `youtube`, or `archivarix`. It classifies capacity;
+  `youtube` and `archivarix` tasks share their respective YTL global in-flight
+  limit. Every process also honors its own `max_in_flight`, clamped to 1-100.
+  The classification alone does not provide a client. A plugin that requires
+  `youtube_ytdlp_v1` may use the host service below from a `youtube` process.
 - `admin_surface` is `none`, `basic`, or `advanced`. A non-`none` value creates
   a default bulk action in the **Plugins** panel using the process description,
   button label, and confirmation.
@@ -963,13 +969,31 @@ subject_id="")` writes to YTL's plugin log; customary levels are `debug`,
 `info`, `warn`, and `error`. Messages are capped at 10,000 characters and
 subject IDs at 500.
 
+With the negotiated `youtube_ytdlp_v1` feature, a YouTube process may call:
+
+```python
+info = runtime.run_youtube_ytdlp(video_id, options, download=True)
+```
+
+The plugin supplies an 11-character video ID and artifact/output options. YTL
+constructs the watch URL and injects a disposable copy of its configured
+YouTube cookies, the configured proxy, request pacing, bounded retries,
+timeouts, logging, and progress-hook cancellation. Plugins cannot override
+those host-owned options. The configured cookie export is never passed to
+yt-dlp directly and may not be modified by it. This is an architectural
+ownership boundary rather than a security sandbox; plugins remain trusted
+local Python packages.
+
 Return a result object with an ID-shaped `outcome` and optional nonnegative
 `processed`, `found`, `failed`, `skipped`, and `message` values. Defaults are
 `outcome: complete` and `processed: 1`. A normal completion removes the queue
 row and records the result. A stop request marks the run interrupted and keeps
 the task queued. An exception is contained as `worker_error`, logged, and
 removes the task; implement explicit retry planning if the domain requires it.
-On service startup, stale `running` plugin runs are marked `interrupted`.
+On service startup, stale `running` plugin runs are marked `interrupted`. A stop
+during `youtube_ytdlp_v1` raises the host cancellation signal, records the run
+as interrupted, and retains the queue row for resumption rather than treating
+the cancellation as a worker error.
 
 YTL persists plugin operational data in `worker_queue`, `plugin_worker_runs`,
 and `plugin_worker_log`. Admin status adds `queuedCount`, `runningCount`, and

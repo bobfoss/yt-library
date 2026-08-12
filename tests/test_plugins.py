@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from yt_library import core
 from yt_library.config import load_config
 from yt_library.plugins import (
     PLUGIN_API_VERSION,
+    PLUGIN_HOST_FEATURES,
     PluginManager,
     PluginPlanningContext,
     PluginTaskWorker,
+    PluginWorkerRuntime,
+    PluginWorkerStopped,
 )
 from yt_library.workers import WorkerQueueDispatcher
 
@@ -380,7 +387,8 @@ class PluginManagerTests(unittest.TestCase):
     def test_enabled_plugin_loads_with_versioned_context_and_routes_requests(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            entry_point = FakeEntryPoint(FakePlugin)
+            plugin = FakePlugin()
+            entry_point = FakeEntryPoint(lambda: plugin)
             manager = PluginManager(
                 {
                     "_config_path": str(root / "yt_library.config.json"),
@@ -402,6 +410,8 @@ class PluginManagerTests(unittest.TestCase):
             self.assertEqual(entry_point.load_count, 1)
             self.assertEqual(status["state"], "ready")
             self.assertEqual(status["apiVersion"], PLUGIN_API_VERSION)
+            self.assertEqual(status["requiredHostFeatures"], [])
+            self.assertEqual(plugin.context.host_features, PLUGIN_HOST_FEATURES)
             self.assertEqual(status["browserAssets"], list(FakePlugin.browser_assets))
             self.assertEqual(
                 status["adminMetrics"],
@@ -702,6 +712,157 @@ class PluginManagerTests(unittest.TestCase):
         request_status, _ = manager.handle_api("subtitles", "GET", "status", {})
         self.assertEqual(request_status, 503)
 
+    def test_plugin_required_host_features_are_negotiated(self) -> None:
+        class SupportedPlugin(FakePlugin):
+            required_host_features = {"youtube_ytdlp_v1"}
+
+        class UnsupportedPlugin(FakePlugin):
+            plugin_id = "unsupported"
+            required_host_features = {"future_youtube_service"}
+
+        manager = PluginManager(
+            {
+                "plugins": {
+                    "subtitles": {"enabled": True},
+                    "unsupported": {"enabled": True},
+                }
+            },
+            entry_points=[
+                FakeEntryPoint(SupportedPlugin),
+                type(
+                    "UnsupportedEntryPoint",
+                    (),
+                    {"name": "unsupported", "load": lambda self: UnsupportedPlugin},
+                )(),
+            ],
+        )
+
+        statuses = {status["id"]: status for status in manager.statuses()}
+        self.assertEqual(statuses["subtitles"]["state"], "ready")
+        self.assertEqual(
+            statuses["subtitles"]["requiredHostFeatures"],
+            ["youtube_ytdlp_v1"],
+        )
+        self.assertEqual(statuses["unsupported"]["state"], "incompatible")
+        self.assertIn("future_youtube_service", statuses["unsupported"]["message"])
+
+    def test_youtube_plugin_runtime_owns_ytdlp_network_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            cookie_file = root / "youtube-cookies.txt"
+            cookie_file.write_text("configured cookies", encoding="utf-8")
+            observed: dict[str, object] = {}
+
+            class FakeYoutubeDL:
+                def __init__(self, options):
+                    observed["options"] = options
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, traceback):
+                    return False
+
+                def extract_info(self, url, *, download):
+                    options = observed["options"]
+                    working_cookie = Path(options["cookiefile"])
+                    observed["cookiePath"] = working_cookie
+                    observed["cookieText"] = working_cookie.read_text(encoding="utf-8")
+                    working_cookie.write_text("yt-dlp mutation", encoding="utf-8")
+                    observed["url"] = url
+                    observed["download"] = download
+                    return {"id": "abcdefghijk", "title": "Example"}
+
+            runtime = PluginWorkerRuntime(
+                db_path,
+                run_id="run",
+                queue_id=1,
+                plugin_id="subtitles",
+                worker_id="fetch",
+                subject_id="abcdefghijk",
+                stop_event=threading.Event(),
+                service="youtube",
+                cookie_file=cookie_file,
+                proxy_url="socks5h://127.0.0.1:1080",
+            )
+            with patch.dict(
+                sys.modules,
+                {"yt_dlp": SimpleNamespace(YoutubeDL=FakeYoutubeDL)},
+            ):
+                info = runtime.run_youtube_ytdlp(
+                    "abcdefghijk",
+                    {"skip_download": True, "outtmpl": str(root / "%(id)s.%(ext)s")},
+                    download=True,
+                )
+
+            options = observed["options"]
+            self.assertEqual(info["id"], "abcdefghijk")
+            self.assertEqual(observed["cookieText"], "configured cookies")
+            self.assertFalse(Path(observed["cookiePath"]).exists())
+            self.assertEqual(cookie_file.read_text(encoding="utf-8"), "configured cookies")
+            self.assertEqual(options["proxy"], "socks5h://127.0.0.1:1080")
+            self.assertEqual(options["retries"], 2)
+            self.assertEqual(options["fragment_retries"], 3)
+            self.assertEqual(observed["download"], True)
+            self.assertEqual(
+                observed["url"],
+                "https://www.youtube.com/watch?v=abcdefghijk",
+            )
+            with self.assertRaisesRegex(ValueError, "host policy"):
+                runtime.run_youtube_ytdlp(
+                    "abcdefghijk",
+                    {"proxy": "socks5h://127.0.0.1:9999"},
+                    download=False,
+                )
+
+    def test_youtube_plugin_runtime_converts_stop_hook_to_host_cancellation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            conn.close()
+            stop_event = threading.Event()
+            observed: dict[str, object] = {}
+
+            class FakeYoutubeDL:
+                def __init__(self, options):
+                    observed["options"] = options
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, traceback):
+                    return False
+
+                def extract_info(self, url, *, download):
+                    stop_event.set()
+                    observed["options"]["progress_hooks"][0]({})
+                    raise AssertionError("stop hook did not cancel")
+
+            runtime = PluginWorkerRuntime(
+                db_path,
+                run_id="run",
+                queue_id=1,
+                plugin_id="subtitles",
+                worker_id="fetch",
+                subject_id="abcdefghijk",
+                stop_event=stop_event,
+                service="youtube",
+            )
+            with patch.dict(
+                sys.modules,
+                {"yt_dlp": SimpleNamespace(YoutubeDL=FakeYoutubeDL)},
+            ):
+                with self.assertRaises(PluginWorkerStopped):
+                    runtime.run_youtube_ytdlp(
+                        "abcdefghijk",
+                        {"skip_download": True},
+                        download=True,
+                    )
+
     def test_invalid_plugin_admin_action_is_nonfatal(self) -> None:
         class InvalidAdminPlugin(FakePlugin):
             worker_processes = (
@@ -840,6 +1001,55 @@ class PluginManagerTests(unittest.TestCase):
             self.assertEqual(targeted_action["id"], "fetch-video")
             self.assertEqual(targeted_action["inputs"][0]["name"], "video_id")
             self.assertTrue(targeted_action["inputs"][0]["required"])
+
+    def test_host_cancellation_interrupts_plugin_run_and_retains_queue_row(self) -> None:
+        class CancelledPlugin(FakePlugin):
+            def run_worker(self, worker_id, task, runtime):
+                raise PluginWorkerStopped("Stopped during host retrieval")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_video(conn, "abcdefghijk", title="Example video")
+            finally:
+                conn.close()
+            manager = PluginManager(
+                {"plugins": {"subtitles": {"enabled": True}}},
+                db_path=db_path,
+                entry_points=[FakeEntryPoint(CancelledPlugin)],
+            )
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    manager.enqueue_process(
+                        conn,
+                        "subtitles",
+                        "fetch",
+                        {},
+                        manual=True,
+                    )
+                row = dict(core.worker_queue_rows(conn, limit=1)[0])
+            finally:
+                conn.close()
+
+            worker = PluginTaskWorker()
+            self.assertTrue(worker.start(db_path, manager, row)["started"])
+            deadline = time.monotonic() + 5
+            while worker.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+            conn = core.connect(db_path)
+            try:
+                queue_count = core.worker_queue_count(conn)
+                run = conn.execute(
+                    "SELECT status, outcome FROM plugin_worker_runs"
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertEqual(queue_count, 1)
+            self.assertEqual(tuple(run), ("interrupted", "cancelled"))
 
     def test_plugin_bulk_queue_log_has_no_misleading_single_subject(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

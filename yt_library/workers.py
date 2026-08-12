@@ -3264,7 +3264,13 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         self._mark_completed()
                     else:
                         worker = PluginTaskWorker()
-                        result = worker.start(db_path, plugin_manager, row)
+                        result = worker.start(
+                            db_path,
+                            plugin_manager,
+                            row,
+                            cookie_file=cookie_file,
+                            proxy_url=proxy_url,
+                        )
                         if result.get("started"):
                             with self._lock:
                                 self._plugin_workers[queue_id] = (
