@@ -265,6 +265,27 @@ The left-navigation library lists are named omni-search presets. Search returns 
 
 ## Deferred Decisions
 
+- Detect views that the user removed from YouTube watch history, but defer the
+  implementation until a review-first workflow is designed and validated. The
+  current full-history reconciliation can already remove missing YouTube-only
+  events and detach YouTube ordering from Takeout/My Activity-backed events;
+  replace that implicit destructive behavior with an explicit audit trail.
+  Begin with non-destructive, video-scoped candidates recording the affected
+  occurrence count, first/last observation, confirming run IDs, and current
+  video playability. Only create candidates after a successful complete scan or
+  a fully validated overlap range; partial, interrupted, unauthenticated, or
+  structurally suspicious feeds must never produce deletion evidence.
+  Playable videos whose every previously observed occurrence disappears are the
+  strongest signal of a user deletion. Unavailable/private/access-gated videos,
+  partially missing occurrences, and unusually large disappearance sets remain
+  review-only. Require repeated successful confirmation before any automatic
+  action. Approved candidates should soft-delete all prior occurrences for that
+  video from normal History, counts, and heatmaps while retaining reversible
+  evidence and preventing old Takeout/My Activity imports from resurrecting
+  them; a genuinely new watch should remain visible. Surface candidate review
+  and Keep/Remove actions in Advanced Admin, then consider a default-off
+  `Automatically remove confirmed deleted views` option only after real-world
+  candidate results establish that the signal is reliable.
 - The PocketTube plugin projects only playlist and channel IDs already present in YT Library. Consider a generic discovery/import workflow for unmatched plugin references only if the proven read-only integration leaves a real need; do not fabricate canonical rows from group membership alone.
 - Previous-database queue backfill remains a one-off recovery operation. Promote it to a supported command only if the workflow repeats and can define source-version and conflict rules.
 - `watch_resume_seconds` remains less trustworthy than the observed progress percentage. Do not expand resume-time behavior until additional examples explain the mismatch.
