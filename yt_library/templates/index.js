@@ -5434,6 +5434,13 @@ async function render() {
     selected === '__history__'
     || (selected.startsWith('__channel__:') && channelDetailTab === 'history')
   );
+  const selectedChannelReference = selected.startsWith('__channel__:')
+    ? selected.slice('__channel__:'.length)
+    : '';
+  const renderedChannelCard = viewContext.querySelector('.channel-detail[data-channel-reference]');
+  const preserveChannelChrome = Boolean(selectedChannelReference) && (
+    renderedChannelCard?.dataset.channelReference === selectedChannelReference
+  );
   const preserveRemotePager = !bottomPager.hidden && (
     (selected === '__search__' && omniSearchCache.size > 0)
     || (selected !== '__search__' && viewDataCache.size > 0)
@@ -5441,7 +5448,7 @@ async function render() {
   if (!preserveHistoryChrome && !preserveRemotePager) {
     hidePager();
   }
-  if (!preserveHistoryChrome) {
+  if (!preserveHistoryChrome && !preserveChannelChrome) {
     viewContext.replaceChildren();
     viewContext.hidden = true;
   }
@@ -5576,6 +5583,7 @@ async function render() {
       ? viewContext.querySelector(`.history-heatmap[data-history-channel-id="${CSS.escape(channelId)}"]`)
       : null;
     const channelCard = channelDetailCardFor(channel);
+    channelCard.dataset.channelReference = channelReference;
     const channelEntry = entityCardEntry('channel', channel, channelCard);
     viewContext.hidden = false;
     viewContext.replaceChildren(

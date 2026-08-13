@@ -1092,6 +1092,23 @@ test('channel tabs distinguish playlisted videos from owned playlists', () => {
   assert.match(indexSource, /No playlists match this channel\./);
 });
 
+test('channel tab transitions preserve only the current channel chrome', () => {
+  const indexSource = source('index.js');
+
+  assert.match(
+    indexSource,
+    /const selectedChannelReference = selected\.startsWith\('__channel__:'\)[\s\S]{0,320}renderedChannelCard\?\.dataset\.channelReference === selectedChannelReference/,
+  );
+  assert.match(
+    indexSource,
+    /if \(!preserveHistoryChrome && !preserveChannelChrome\) \{[\s\S]{0,120}viewContext\.replaceChildren\(\)/,
+  );
+  assert.match(
+    indexSource,
+    /const channelCard = channelDetailCardFor\(channel\);\s+channelCard\.dataset\.channelReference = channelReference/,
+  );
+});
+
 test('card layout controls place compact beside grid', () => {
   const indexSource = source('index.js');
   const grid = indexSource.indexOf("['grid', 'Grid']");
