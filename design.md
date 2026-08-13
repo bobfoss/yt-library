@@ -134,8 +134,9 @@ reference plugins in the same development slice as either change.
 
 Additive Python services are feature-negotiated. A plugin may declare
 `required_host_features`; the host refuses to activate it when any named
-feature is unavailable. The current feature set includes `youtube_ytdlp_v1`.
-Activated plugins receive the immutable set as `context.host_features`.
+feature is unavailable. The current feature set includes
+`library_video_lookup_v1` and `youtube_ytdlp_v1`. Activated plugins receive the
+immutable set as `context.host_features`.
 
 This section is the handoff for designing and implementing another plugin. The
 authoritative implementation is `yt_library/plugins.py`; HTTP integration lives
@@ -265,6 +266,13 @@ on the directory containing `yt_library.config.json`, not the process working
 directory. `context.root` is the YTL repository root, `context.config_path` is
 the active YTL config path, `context.plugin_id` is the configured ID, and
 `context.plugin_config` is a copy of that plugin's settings.
+
+With the negotiated `library_video_lookup_v1` feature, a plugin may call
+`context.library_videos(video_ids)` during startup to retrieve bounded,
+read-only canonical metadata for up to 250,000 explicit video IDs. Results
+include `video_id`, `title`, `channel_id`, availability/playability, video type,
+and broadcast lifecycle fields. The host performs the lookup; plugins must not
+open the YTL database directly.
 
 On service startup, YTL follows this lifecycle:
 
@@ -953,7 +961,7 @@ task.
 
 - `context.plugin_id` identifies the current plugin.
 - `context.library_videos()` streams dictionaries with `video_id`, `title`,
-  `availability`, `is_playable`, `video_type`, `broadcast_status`,
+  `channel_id`, `availability`, `is_playable`, `video_type`, `broadcast_status`,
   `broadcast_started_at`, `broadcast_ended_at`, and
   `broadcast_status_checked_at`, ordered by video ID. A `video_type` of
   `livestream` is durable identity; `broadcast_status` is the current observed

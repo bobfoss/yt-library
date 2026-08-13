@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable as IterableCollection, Mapping
+from collections.abc import (
+    Callable,
+    Collection,
+    Iterable as IterableCollection,
+    Mapping,
+)
 from contextlib import nullcontext
+from functools import partial
 import importlib.metadata as importlib_metadata
 import json
 import re
@@ -22,7 +28,9 @@ from .worker_runs import WorkerRunRecorder
 
 
 PLUGIN_API_VERSION = 2
-PLUGIN_HOST_FEATURES = frozenset({"youtube_ytdlp_v1"})
+PLUGIN_HOST_FEATURES = frozenset(
+    {"library_video_lookup_v1", "youtube_ytdlp_v1"}
+)
 PLUGIN_ENTRY_POINT_GROUP = "yt_library.plugins"
 PLUGIN_ID = re.compile(r"^[a-z][a-z0-9_-]*$")
 PLUGIN_PROCESS_ID = re.compile(r"^[a-z][a-z0-9_-]{0,79}$")
@@ -71,10 +79,70 @@ class PluginContext:
     plugin_id: str
     plugin_config: dict[str, Any]
     host_features: frozenset[str]
+    _library_video_lookup: (
+        Callable[[tuple[str, ...]], Iterable[dict[str, Any]]] | None
+    ) = None
 
     def resolve_path(self, value: str | Path) -> Path:
         path = Path(value)
         return path if path.is_absolute() else self.config_path.resolve().parent / path
+
+    def library_videos(
+        self,
+        video_ids: Iterable[str],
+    ) -> tuple[dict[str, Any], ...]:
+        """Return bounded canonical video metadata for explicit IDs."""
+
+        if isinstance(video_ids, (str, bytes)):
+            raise TypeError("Plugin library video lookup requires an iterable of IDs")
+        normalized = tuple(
+            dict.fromkeys(str(value or "").strip() for value in video_ids)
+        )
+        normalized = tuple(value for value in normalized if value)
+        if len(normalized) > PLUGIN_TASK_LIMIT:
+            raise ValueError(
+                f"Plugin library video lookup accepts at most {PLUGIN_TASK_LIMIT} IDs"
+            )
+        invalid = next(
+            (value for value in normalized if not YOUTUBE_VIDEO_ID.fullmatch(value)),
+            None,
+        )
+        if invalid is not None:
+            raise ValueError(f"Invalid YouTube video ID: {invalid}")
+        if not normalized or not callable(self._library_video_lookup):
+            return ()
+        return tuple(self._library_video_lookup(normalized))
+
+
+def _library_videos_by_id(
+    db_path: Path,
+    video_ids: tuple[str, ...],
+) -> tuple[dict[str, Any], ...]:
+    rows: list[dict[str, Any]] = []
+    conn = connect(db_path)
+    try:
+        conn.execute("PRAGMA query_only = ON")
+        for start in range(0, len(video_ids), 500):
+            batch = video_ids[start : start + 500]
+            placeholders = ",".join("?" for _value in batch)
+            rows.extend(
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT video_id, title, COALESCE(channel_id, '') AS channel_id,
+                           availability, is_playable, video_type,
+                           broadcast_status, broadcast_started_at,
+                           broadcast_ended_at, broadcast_status_checked_at
+                    FROM videos
+                    WHERE video_id IN ({placeholders})
+                    ORDER BY video_id
+                    """,
+                    batch,
+                )
+            )
+    finally:
+        conn.close()
+    return tuple(sorted(rows, key=lambda row: str(row["video_id"])))
 
 
 class PluginPlanningContext:
@@ -87,7 +155,8 @@ class PluginPlanningContext:
     def library_videos(self) -> Iterable[dict[str, Any]]:
         rows = self._conn.execute(
             """
-            SELECT video_id, title, availability, is_playable,
+            SELECT video_id, title, COALESCE(channel_id, '') AS channel_id,
+                   availability, is_playable,
                    video_type, broadcast_status, broadcast_started_at,
                    broadcast_ended_at, broadcast_status_checked_at
             FROM videos
@@ -1050,6 +1119,11 @@ class PluginManager:
                 plugin_id=record.plugin_id,
                 plugin_config=dict(record.configured),
                 host_features=PLUGIN_HOST_FEATURES,
+                _library_video_lookup=(
+                    partial(_library_videos_by_id, self._db_path)
+                    if self._db_path is not None
+                    else None
+                ),
             )
             instance.start(context)
             record.instance = instance

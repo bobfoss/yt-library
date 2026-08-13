@@ -278,6 +278,8 @@ class PluginManagerTests(unittest.TestCase):
                         conn,
                         "live1234567",
                         title="Active stream",
+                        channel_id="UCstreamowner",
+                        channel_title="Stream owner",
                         video_type="livestream",
                         broadcast_status="live",
                         broadcast_started_at="2026-08-11T10:00:00Z",
@@ -297,6 +299,7 @@ class PluginManagerTests(unittest.TestCase):
                 {
                     "video_id": "live1234567",
                     "title": "Active stream",
+                    "channel_id": "UCstreamowner",
                     "availability": "unknown",
                     "is_playable": None,
                     "video_type": "livestream",
@@ -307,6 +310,46 @@ class PluginManagerTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_start_context_looks_up_explicit_library_videos(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "abcdefghijk",
+                        title="Captured stream",
+                        channel_id="UCstreamowner",
+                        channel_title="Stream owner",
+                        video_type="livestream",
+                        broadcast_status="ended",
+                        source="youtube",
+                    )
+            finally:
+                conn.close()
+            plugin = FakePlugin()
+            PluginManager(
+                {
+                    "_config_path": str(root / "yt_library.config.json"),
+                    "plugins": {"subtitles": {"enabled": True}},
+                },
+                db_path=db_path,
+                entry_points=[FakeEntryPoint(lambda: plugin)],
+            )
+
+            videos = plugin.context.library_videos(
+                ["missing0000", "abcdefghijk", "abcdefghijk"]
+            )
+
+            self.assertEqual(len(videos), 1)
+            self.assertEqual(videos[0]["video_id"], "abcdefghijk")
+            self.assertEqual(videos[0]["channel_id"], "UCstreamowner")
+            self.assertEqual(videos[0]["broadcast_status"], "ended")
+            with self.assertRaisesRegex(ValueError, "Invalid YouTube video ID"):
+                plugin.context.library_videos(["invalid"])
 
     def test_planning_context_exposes_canonical_clip_sources_and_bounds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
