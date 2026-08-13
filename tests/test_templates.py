@@ -211,7 +211,8 @@ class TemplateDomTests(unittest.TestCase):
             ".view-top.history-top .toolbar-heading {\n"
             "      display: flex;\n"
             "      grid-column: 1;\n"
-            "      grid-row: 1;",
+            "      grid-row: 1;\n"
+            "      align-items: flex-start;",
             server.INDEX_HTML,
         )
         self.assertNotIn(
