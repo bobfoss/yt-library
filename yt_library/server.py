@@ -1536,6 +1536,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             params = urllib.parse.parse_qs(parsed.query)
             query = (params.get("q") or [""])[0]
             channel_id = (params.get("channel_id") or [""])[0]
+            search_fields = query_set_param(params, "search_fields")
             try:
                 limit = max(1, int((params.get("limit") or ["200"])[0] or 200))
             except ValueError:
@@ -1546,7 +1547,14 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 offset = 0
             conn = connect(self.db_path)
             try:
-                data = history_search_data(conn, query, limit=limit, offset=offset, channel_id=channel_id)
+                data = history_search_data(
+                    conn,
+                    query,
+                    limit=limit,
+                    offset=offset,
+                    channel_id=channel_id,
+                    search_fields=search_fields,
+                )
             finally:
                 conn.close()
             self.send_json(data)
@@ -1557,6 +1565,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             end_date = (params.get("end") or [""])[0]
             channel_id = (params.get("channel_id") or [""])[0]
             query = (params.get("q") or [""])[0]
+            search_fields = query_set_param(params, "search_fields")
             conn = connect(self.db_path)
             try:
                 data = history_activity_data(
@@ -1565,6 +1574,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     end_date=end_date,
                     channel_id=channel_id,
                     query=query,
+                    search_fields=search_fields,
                 )
             finally:
                 conn.close()

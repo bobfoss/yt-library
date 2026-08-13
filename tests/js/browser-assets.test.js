@@ -163,14 +163,14 @@ test('detail navigation retains the active search state', () => {
   );
 });
 
-test('history keeps search focused on occurrence results without showing facets', () => {
+test('history keeps search fields focused on occurrence results without showing facets', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');
 
   assert.match(indexHtml, /\.filters\[hidden\] \{ display: none; \}/);
   assert.match(
     indexSource,
-    /function syncSearchFiltersForSelection\(\)[\s\S]{0,180}searchFilters\.hidden = historySelected/,
+    /function syncSearchFiltersForSelection\(\)[\s\S]{0,180}searchFilters\.hidden = false[\s\S]{0,80}searchFilterTree\.hidden = historySelected/,
   );
   assert.match(
     indexSource,
@@ -182,15 +182,19 @@ test('history keeps search focused on occurrence results without showing facets'
   );
   assert.match(
     indexSource,
-    /if \(pathname === '\/history'\) search\.value = params\.get\('q'\) \|\| ''/,
+    /if \(pathname === '\/history'\)[\s\S]{0,120}search\.value = params\.get\('q'\) \|\| ''[\s\S]{0,80}applyHistorySearchFieldLocation\(params\)/,
   );
   assert.match(
     indexSource,
-    /async function fetchHistoryPage[\s\S]{0,700}if \(query\) params\.set\('q', query\)/,
+    /async function fetchHistoryPage[\s\S]{0,900}params\.set\('search_fields', searchFieldsValue\)/,
   );
   assert.match(
     indexSource,
-    /async function fetchHistoryActivity[\s\S]{0,600}if \(query\) params\.set\('q', query\)/,
+    /async function fetchHistoryActivity[\s\S]{0,800}params\.set\('search_fields', searchFieldsValue\)/,
+  );
+  assert.match(
+    indexSource,
+    /function bindSearchField\(input\)[\s\S]{0,180}selected === '__history__'[\s\S]{0,260}updateCurrentUrl\(true\)[\s\S]{0,80}void render\(\)/,
   );
 });
 

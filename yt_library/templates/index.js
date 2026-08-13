@@ -335,7 +335,7 @@ function syncBrowserPluginSearchFieldVisibility() {
     );
     if (!(label instanceof HTMLLabelElement)) continue;
     const input = label.querySelector('input.search-field');
-    const applies = browserSearchFieldAppliesToCurrentContext(plugin);
+    const applies = selected !== '__history__' && browserSearchFieldAppliesToCurrentContext(plugin);
     label.hidden = !applies;
     label.style.display = applies ? '' : 'none';
     if (input instanceof HTMLInputElement) input.disabled = !applies;
@@ -1033,11 +1033,43 @@ function localViewHref(value, includePagination = false) {
   const params = includePagination ? paginationParams() : new URLSearchParams();
   const query = selected === '__history__' ? search.value.trim() : '';
   if (query) params.set('q', query);
+  const fields = selected === '__history__'
+    ? historySearchFieldParamValue()
+    : 'descriptions,titles';
+  if (fields.split(',').filter(Boolean).length !== 2) {
+    params.set('in', fields || '__none__');
+  }
   return appendUrlParams('/history', params);
 }
 
 function searchFieldParamValue() {
   return [...activeSearchFields()].sort().join(',');
+}
+
+function historySearchFields() {
+  return new Set(
+    searchFields
+      .filter(input => ['titles', 'descriptions'].includes(input.dataset.searchField))
+      .filter(input => input.checked)
+      .map(input => input.dataset.searchField)
+  );
+}
+
+function historySearchFieldParamValue() {
+  return [...historySearchFields()].sort().join(',');
+}
+
+function applyHistorySearchFieldLocation(params) {
+  const value = params.get('in');
+  const active = new Set(
+    value === null
+      ? ['titles', 'descriptions']
+      : (value === '__none__' ? [] : value.split(',').filter(Boolean))
+  );
+  for (const input of searchFields) {
+    if (!['titles', 'descriptions'].includes(input.dataset.searchField)) continue;
+    input.checked = active.has(input.dataset.searchField);
+  }
 }
 
 function metaFilterParamValue(visibility, excludedKeys = []) {
@@ -1684,7 +1716,10 @@ function selectionFromLocation() {
   const parts = pathname.split('/').filter(Boolean);
   const historyLocation = pathname === '/history' || parts[0] === 'channels';
   applyPaginationParams(params, historyLocation);
-  if (pathname === '/history') search.value = params.get('q') || '';
+  if (pathname === '/history') {
+    search.value = params.get('q') || '';
+    applyHistorySearchFieldLocation(params);
+  }
   if (parts.length === 2 && parts[0] === 'playlists') {
     const playlistId = decodeURIComponent(parts[1]);
     if (playlistId) {
@@ -1782,7 +1817,12 @@ function activateSearchNavigation() {
 function setSelected(value) {
   const progressToken = beginSidebarNavigationProgress();
   selected = value;
-  if (value === '__history__') search.value = '';
+  if (value === '__history__') {
+    search.value = '';
+    for (const input of searchFields) {
+      if (['titles', 'descriptions'].includes(input.dataset.searchField)) input.checked = true;
+    }
+  }
   currentPage = 1;
   if (value.startsWith('__playlist__:')) {
     const playlistId = value.slice('__playlist__:'.length);
@@ -2759,11 +2799,13 @@ async function fetchHistoryPage(channelId = '', page = currentPage) {
   const requestedPage = Math.max(1, Number(page) || 1);
   const offset = (requestedPage - 1) * limit;
   const query = channelId ? '' : search.value.trim();
-  const key = `${channelId}:${query.toLowerCase()}:${limit}:${offset}`;
+  const searchFieldsValue = channelId ? '' : (historySearchFieldParamValue() || '__none__');
+  const key = `${channelId}:${query.toLowerCase()}:${searchFieldsValue}:${limit}:${offset}`;
   return cachedRequest(historyPageCache, key, async () => {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (channelId) params.set('channel_id', channelId);
     if (query) params.set('q', query);
+    if (!channelId) params.set('search_fields', searchFieldsValue);
     const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`History fetch failed: ${response.status}`);
     const payload = await response.json();
@@ -2892,11 +2934,13 @@ function historyActivityDayNear(payload, dateKey) {
 async function fetchHistoryActivity(channelId = '', yearOffset = historyActivityYearOffset) {
   const range = historyActivityRange(yearOffset);
   const query = channelId ? '' : search.value.trim();
-  const key = `${channelId}:${query.toLowerCase()}:${range.startKey}:${range.endKey}`;
+  const searchFieldsValue = channelId ? '' : (historySearchFieldParamValue() || '__none__');
+  const key = `${channelId}:${query.toLowerCase()}:${searchFieldsValue}:${range.startKey}:${range.endKey}`;
   return cachedRequest(historyActivityCache, key, async () => {
     const params = new URLSearchParams({ start: range.startKey, end: range.endKey });
     if (channelId) params.set('channel_id', channelId);
     if (query) params.set('q', query);
+    if (!channelId) params.set('search_fields', searchFieldsValue);
     const response = await fetch(`/api/history/activity?${params}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`History activity fetch failed: ${response.status}`);
     return response.json();
@@ -3899,8 +3943,8 @@ function toggleSearchFilterTreeNode(nodeId) {
 function syncSearchFiltersForSelection() {
   const historySelected = selected === '__history__';
   const contextKind = searchContextKind();
-  const alreadyHidden = searchFilters.hidden;
-  searchFilters.hidden = historySelected;
+  const alreadyHidden = searchFilterTree.hidden;
+  searchFilters.hidden = false;
   searchFilterTree.hidden = historySelected;
   syncBrowserPluginSearchFieldVisibility();
   const placeholders = {
@@ -7068,6 +7112,15 @@ window.addEventListener('scroll', scheduleHistoryHeatmapCurrentDay, { passive: t
 window.addEventListener('resize', scheduleHistoryHeatmapCurrentDay, { passive: true });
 function bindSearchField(input) {
   input.addEventListener('change', () => {
+    if (selected === '__history__') {
+      currentPage = 1;
+      historyNavigationDate = '';
+      pendingHistoryDate = '';
+      historyActivityYearOffset = 0;
+      updateCurrentUrl(true);
+      void render();
+      return;
+    }
     if (selected.startsWith('__playlist__:')) {
       currentPage = 1;
       updateCurrentUrl(true);

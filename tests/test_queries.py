@@ -3051,6 +3051,20 @@ class NormalizedReadModelTests(unittest.TestCase):
         filtered = history_search_data(self.conn, "fiber")
         self.assertEqual([row["video_id"] for row in filtered["watch"]], ["new123"])
 
+        self.conn.execute(
+            "UPDATE videos SET description = 'Legacy bridge details' WHERE video_id = 'old123'"
+        )
+        title_only = history_search_data(self.conn, "fiber", search_fields={"titles"})
+        description_only = history_search_data(
+            self.conn,
+            "legacy bridge",
+            search_fields={"descriptions"},
+        )
+        no_fields = history_search_data(self.conn, "fiber", search_fields=set())
+        self.assertEqual([row["video_id"] for row in title_only["watch"]], ["new123"])
+        self.assertEqual([row["video_id"] for row in description_only["watch"]], ["old123"])
+        self.assertEqual(no_fields["watch"], [])
+
     def test_history_search_uses_live_ordinal_for_mixed_same_day_precision(self) -> None:
         self.add_video("latest-date-only", "Latest date-only watch")
         self.add_video("older-exact", "Older exact watch")
@@ -3282,6 +3296,18 @@ class NormalizedReadModelTests(unittest.TestCase):
                 {"watch_date": "2026-07-05", "watch_count": 2, "offset": 0},
                 {"watch_date": "2026-07-04", "watch_count": 1, "offset": 2},
             ],
+        )
+
+        description_data = history_activity_data(
+            self.conn,
+            start_date="2026-07-01",
+            end_date="2026-07-05",
+            query="Description for Other Activity",
+            search_fields={"descriptions"},
+        )
+        self.assertEqual(
+            description_data["activity"],
+            [{"watch_date": "2026-07-05", "watch_count": 1, "offset": 0}],
         )
 
     def test_playlist_items_share_one_video_and_include_all_playlist_links(self) -> None:

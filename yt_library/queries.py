@@ -3092,15 +3092,34 @@ def clip_detail_data(conn: sqlite3.Connection, clip_id: str) -> dict[str, Any] |
     return None
 
 
-def _history_filter_conditions(query: str, channel_id: str) -> tuple[list[str], list[Any]]:
+HISTORY_SEARCH_FIELDS = {"titles", "descriptions"}
+
+
+def _active_history_search_fields(search_fields: set[str] | None) -> set[str]:
+    return HISTORY_SEARCH_FIELDS.copy() if search_fields is None else search_fields & HISTORY_SEARCH_FIELDS
+
+
+def _history_filter_conditions(
+    query: str,
+    channel_id: str,
+    search_fields: set[str] | None = None,
+) -> tuple[list[str], list[Any]]:
     conditions: list[str] = []
     params: list[Any] = []
     normalized_query = query.strip().lower()
     if normalized_query:
-        conditions.append(
-            "lower(v.title || ' ' || COALESCE(ch.title, '') || ' ' || v.video_id || ' ' || v.description || ' ' || v.upload_date) LIKE ?"
-        )
-        params.append(f"%{normalized_query}%")
+        active_search_fields = _active_history_search_fields(search_fields)
+        search_conditions: list[str] = []
+        if "titles" in active_search_fields:
+            search_conditions.append(
+                "lower(COALESCE(v.title, '') || ' ' || COALESCE(ch.title, '') || "
+                "' ' || v.video_id || ' ' || COALESCE(v.upload_date, '')) LIKE ?"
+            )
+            params.append(f"%{normalized_query}%")
+        if "descriptions" in active_search_fields:
+            search_conditions.append("lower(COALESCE(v.description, '')) LIKE ?")
+            params.append(f"%{normalized_query}%")
+        conditions.append(f"({' OR '.join(search_conditions)})" if search_conditions else "0")
     normalized_channel_id = channel_id.strip()
     if normalized_channel_id:
         conditions.append("v.channel_id = ?")
@@ -3114,10 +3133,11 @@ def history_search_data(
     limit: int = 200,
     offset: int = 0,
     channel_id: str = "",
+    search_fields: set[str] | None = None,
 ) -> dict[str, Any]:
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
-    conditions, params = _history_filter_conditions(query, channel_id)
+    conditions, params = _history_filter_conditions(query, channel_id, search_fields)
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     ordering = _history_event_order_sql()
     availability_category_sql = _video_availability_category_sql(
@@ -3258,6 +3278,7 @@ def history_search_data(
     return {
         "query": query,
         "channel_id": channel_id,
+        "search_fields": sorted(_active_history_search_fields(search_fields)),
         "limit": limit,
         "offset": offset,
         "watch": rows,
@@ -3271,9 +3292,10 @@ def history_activity_data(
     end_date: str = "",
     channel_id: str = "",
     query: str = "",
+    search_fields: set[str] | None = None,
 ) -> dict[str, Any]:
     conditions = ["COALESCE(he.watch_date, substr(he.watched_at, 1, 10)) IS NOT NULL"]
-    history_conditions, params = _history_filter_conditions(query, channel_id)
+    history_conditions, params = _history_filter_conditions(query, channel_id, search_fields)
     conditions.extend(history_conditions)
     where = " AND ".join(conditions)
     daily_rows = [
@@ -3311,5 +3333,6 @@ def history_activity_data(
         "end_date": end_date,
         "channel_id": channel_id.strip(),
         "query": query.strip(),
+        "search_fields": sorted(_active_history_search_fields(search_fields)),
         "activity": activity,
     }
