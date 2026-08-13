@@ -137,6 +137,36 @@ function validateBrowserPluginSearchField(plugin) {
   return { definition, key, labelText };
 }
 
+function browserChannelVideoTabDefinitions(plugin) {
+  if (plugin?.channelVideoTabs === undefined) return [];
+  if (!Array.isArray(plugin.channelVideoTabs)) {
+    throw new TypeError(`Plugin channelVideoTabs must be an array: ${plugin.id}`);
+  }
+  return plugin.channelVideoTabs;
+}
+
+function validateBrowserChannelVideoTabs(plugin) {
+  const tabIds = new Set();
+  for (const definition of browserChannelVideoTabDefinitions(plugin)) {
+    const tabId = String(definition?.id || '');
+    const label = String(definition?.label || '').trim();
+    const capability = String(definition?.capability || '').trim();
+    if (!/^[a-z][a-z0-9-]*$/.test(tabId)) {
+      throw new TypeError(`Plugin channel video tab id is invalid: ${plugin.id}`);
+    }
+    if (tabIds.has(tabId)) {
+      throw new TypeError(`Plugin channel video tab ids must be unique: ${plugin.id}`);
+    }
+    if (!label || !capability) {
+      throw new TypeError(`Plugin channel video tab label and capability are required: ${plugin.id}`);
+    }
+    if (typeof definition.count !== 'function' || typeof definition.load !== 'function') {
+      throw new TypeError(`Plugin channel video tab count and load are required: ${plugin.id}`);
+    }
+    tabIds.add(tabId);
+  }
+}
+
 function browserVideoFacetDefinition(plugin) {
   const definition = plugin?.search?.videoFacet;
   return definition && typeof definition === 'object' ? definition : null;
@@ -169,6 +199,7 @@ function registerBrowserPlugin(plugin) {
   if (!/^[a-z][a-z0-9_-]*$/.test(pluginId)) throw new TypeError('Plugin id is invalid');
   if (browserPlugins.has(pluginId)) throw new Error(`Plugin is already registered: ${pluginId}`);
   const searchFieldRegistration = validateBrowserPluginSearchField(plugin);
+  validateBrowserChannelVideoTabs(plugin);
   if (plugin.entityCards) EntityCardExtensions.validateDefinition(plugin.entityCards);
   if (plugin.search?.resultPresentation) {
     SearchResultPresentations.validateDefinition(plugin.search.resultPresentation);
@@ -201,7 +232,11 @@ function registerBrowserPlugin(plugin) {
 
 window.YTLibraryBrowserPlugins = Object.freeze({
   apiVersion: 2,
-  features: Object.freeze({ entityCards: 1, searchResultPresentations: 1 }),
+  features: Object.freeze({
+    channelVideoTabs: 1,
+    entityCards: 1,
+    searchResultPresentations: 1,
+  }),
   register: registerBrowserPlugin,
 });
 
@@ -217,6 +252,40 @@ function browserPluginSupports(pluginId, capability) {
     && status.state === 'ready'
     && (!capability || (status.capabilities || []).includes(capability))
   );
+}
+
+function browserChannelVideoTabKey(pluginId, tabId) {
+  return `plugin-${pluginId}-${tabId}`;
+}
+
+function browserChannelVideoTabs() {
+  return [...browserPlugins.values()].flatMap(plugin => (
+    browserChannelVideoTabDefinitions(plugin)
+      .filter(definition => browserPluginSupports(plugin.id, definition.capability))
+      .map(definition => ({
+        definition,
+        key: browserChannelVideoTabKey(plugin.id, definition.id),
+        plugin,
+      }))
+  ));
+}
+
+function browserChannelVideoTab(key) {
+  return browserChannelVideoTabs().find(tab => tab.key === key) || null;
+}
+
+async function browserChannelVideoTabCounts(channel, tabs) {
+  return new Map(await Promise.all(tabs.map(async tab => {
+    try {
+      const count = Number(await tab.definition.count(
+        channel,
+        browserPluginHost(tab.plugin.id),
+      ));
+      return [tab.key, Number.isFinite(count) ? Math.max(0, count) : null];
+    } catch (_error) {
+      return [tab.key, null];
+    }
+  })));
 }
 
 function browserSearchPlugins() {
@@ -932,18 +1001,18 @@ function localChannelHref(channelId, includePagination = false) {
 }
 
 function channelDetailParams() {
-  if (channelDetailTab !== 'history') {
-    const params = paginationParams();
-    if (channelDetailTab === 'playlists') params.set('tab', 'playlists');
+  if (channelDetailTab === 'history') {
+    const params = new URLSearchParams();
+    params.set('tab', 'history');
+    if (historyNavigationDate && historyDateNavigationIsActive()) {
+      params.set('date', historyNavigationDate);
+    } else {
+      params.set('page', String(currentPage));
+    }
     return params;
   }
-  const params = new URLSearchParams();
-  params.set('tab', 'history');
-  if (historyNavigationDate && historyDateNavigationIsActive()) {
-    params.set('date', historyNavigationDate);
-  } else {
-    params.set('page', String(currentPage));
-  }
+  const params = paginationParams();
+  if (channelDetailTab !== 'playlisted-videos') params.set('tab', channelDetailTab);
   return params;
 }
 
@@ -951,7 +1020,9 @@ function channelDetailTabFromParams(params) {
   if (params.get('tab') === 'history' || historyDateParam(params.get('date'))) {
     return 'history';
   }
-  return params.get('tab') === 'playlists' ? 'playlists' : 'playlisted-videos';
+  const requested = params.get('tab') || '';
+  if (requested === 'playlists') return 'playlists';
+  return browserChannelVideoTab(requested) ? requested : 'playlisted-videos';
 }
 
 function localViewHref(value, includePagination = false) {
@@ -3912,7 +3983,11 @@ function activeCardLayoutContext() {
   if (selected === '__search__') return 'search';
   if (selected === '__history__') return 'history';
   if (selected.startsWith('__playlist__:')) return 'playlist';
-  if (selected.startsWith('__channel__:')) return `channel-${channelDetailTab}`;
+  if (selected.startsWith('__channel__:')) {
+    return browserChannelVideoTab(channelDetailTab)
+      ? 'channel-playlisted-videos'
+      : `channel-${channelDetailTab}`;
+  }
   return '';
 }
 
@@ -5276,6 +5351,8 @@ function channelTabsFor(
   playlistedVideoCount,
   playlistCount,
   historyCount,
+  pluginTabs = [],
+  pluginTabCounts = new Map(),
 ) {
   const tabs = document.createElement('div');
   tabs.className = 'channel-tabs';
@@ -5284,6 +5361,11 @@ function channelTabsFor(
     ['playlisted-videos', 'Playlisted videos', playlistedVideoCount],
     ['playlists', 'Playlists', playlistCount],
     ['history', 'History', historyCount],
+    ...pluginTabs.map(tab => [
+      tab.key,
+      tab.definition.label,
+      pluginTabCounts.get(tab.key) ?? null,
+    ]),
   ]) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -5447,6 +5529,15 @@ async function render() {
     }
     if (generation !== renderGeneration) return;
     const channelId = channel.channel_id || channelReference;
+    const pluginVideoTabs = browserChannelVideoTabs();
+    const pluginVideoTabCounts = await browserChannelVideoTabCounts(
+      channel,
+      pluginVideoTabs,
+    );
+    if (generation !== renderGeneration) return;
+    const activePluginVideoTab = pluginVideoTabs.find(
+      tab => tab.key === channelDetailTab,
+    ) || null;
     hydrateEntitySearchFilters('channels', channelId, generation);
     setDocumentTitle(channel.title || channelReference);
     const playlistedVideoCount = Number(playlistedVideoSummary.total || 0);
@@ -5465,6 +5556,8 @@ async function render() {
         playlistedVideoCount,
         playlistCount,
         historyCount,
+        pluginVideoTabs,
+        pluginVideoTabCounts,
       ),
       ...(currentHeatmap ? [currentHeatmap] : []),
     );
@@ -5478,7 +5571,14 @@ async function render() {
         commitChrome: ({ activity, total }) => {
           viewContext.replaceChildren(
             channelCard,
-            channelTabsFor('history', playlistedVideoCount, playlistCount, total),
+            channelTabsFor(
+              'history',
+              playlistedVideoCount,
+              playlistCount,
+              total,
+              pluginVideoTabs,
+              pluginVideoTabCounts,
+            ),
             historyHeatmapFor(activity),
           );
           meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
@@ -5488,6 +5588,92 @@ async function render() {
         layoutContext,
         leadingEntries: [channelEntry],
       });
+    } else if (activePluginVideoTab) {
+      const layoutContext = 'channel-playlisted-videos';
+      const configuredSize = pageSizeNumber();
+      const limit = Number.isFinite(configuredSize)
+        ? Math.min(500, Math.max(1, configuredSize))
+        : 500;
+      const offset = (currentPage - 1) * limit;
+      meta.textContent = `Loading ${activePluginVideoTab.definition.label.toLowerCase()}...`;
+      grid.replaceChildren();
+      empty.hidden = true;
+      let payload;
+      try {
+        payload = await activePluginVideoTab.definition.load(
+          channel,
+          browserPluginHost(activePluginVideoTab.plugin.id),
+          { limit, offset },
+        );
+      } catch (error) {
+        if (generation !== renderGeneration) return;
+        hidePager();
+        meta.textContent = '';
+        empty.hidden = false;
+        empty.textContent = `${activePluginVideoTab.definition.label} unavailable: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+        return;
+      }
+      if (generation !== renderGeneration) return;
+      const videoIds = [...new Set(
+        (payload?.videoIds || []).map(String).filter(Boolean),
+      )];
+      const hydratedVideos = await libraryVideos(videoIds);
+      if (generation !== renderGeneration) return;
+      const rows = videoIds.map(videoId => hydratedVideos.get(videoId)).filter(Boolean);
+      const payloadTotal = Number(payload?.total || 0);
+      const payloadLimit = Number(payload?.limit || limit);
+      const total = Number.isFinite(payloadTotal) ? Math.max(0, payloadTotal) : 0;
+      const remoteLimit = Number.isFinite(payloadLimit)
+        ? Math.max(1, payloadLimit)
+        : limit;
+      currentPage = Math.floor(Number(payload?.offset || 0) / remoteLimit) + 1;
+      const pageInfo = remotePageInfo(total, rows.length, remoteLimit);
+      pluginVideoTabCounts.set(activePluginVideoTab.key, total);
+      meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
+      renderPager(pageInfo);
+      applyCardLayout(layoutContext);
+      const cards = rows.map(video => searchVideoCardFor(video));
+      const decoration = decorateEntityCardBatch(
+        [
+          channelEntry,
+          ...rows.map((video, index) => entityCardEntry('video', video, cards[index])),
+        ],
+        'channel-plugin-video-tab',
+        cardLayoutFor(layoutContext),
+        generation,
+      );
+      viewContext.replaceChildren(
+        channelCard,
+        channelTabsFor(
+          activePluginVideoTab.key,
+          playlistedVideoCount,
+          playlistCount,
+          historyCount,
+          pluginVideoTabs,
+          pluginVideoTabCounts,
+        ),
+      );
+      grid.replaceChildren(...cards);
+      await decoration;
+      if (generation !== renderGeneration) return;
+      empty.hidden = rows.length !== 0;
+      empty.textContent = activePluginVideoTab.definition.emptyMessage
+        || `No videos match ${activePluginVideoTab.definition.label.toLowerCase()}.`;
+      if (historyCount === null) {
+        void fetchChannelHistoryCount(channelId).then(total => {
+          if (
+            selected === channelSelection(channelReference)
+            && channelDetailTab === activePluginVideoTab.key
+          ) {
+            const historyTab = viewContext.querySelector('[data-channel-tab="history"]');
+            if (historyTab instanceof HTMLButtonElement) {
+              historyTab.textContent = `History (${Number(total || 0).toLocaleString()})`;
+            }
+          }
+        }).catch(() => {});
+      }
     } else if (channelDetailTab === 'playlists') {
       const layoutContext = 'channel-playlists';
       const payload = await fetchChannelPlaylists(channelReference);
@@ -5516,6 +5702,8 @@ async function render() {
           playlistedVideoCount,
           playlistCount,
           historyCount,
+          pluginVideoTabs,
+          pluginVideoTabCounts,
         ),
       );
       grid.replaceChildren(...cards);
@@ -5561,6 +5749,8 @@ async function render() {
           playlistedVideoCount,
           playlistCount,
           historyCount,
+          pluginVideoTabs,
+          pluginVideoTabCounts,
         ),
       );
       grid.replaceChildren(...cards);

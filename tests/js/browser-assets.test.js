@@ -1024,9 +1024,9 @@ test('history document title includes the active page or date', () => {
 test('channel non-default tabs persist in the URL from page one', () => {
   const indexSource = source('index.js');
 
-  assert.match(indexSource, /function channelDetailParams\(\)[\s\S]*?channelDetailTab === 'playlists'[\s\S]*?params\.set\('tab', 'playlists'\)/);
+  assert.match(indexSource, /function channelDetailParams\(\)[\s\S]*?channelDetailTab !== 'playlisted-videos'[\s\S]*?params\.set\('tab', channelDetailTab\)/);
   assert.match(indexSource, /function channelDetailParams\(\)[\s\S]*?params\.set\('tab', 'history'\)[\s\S]*?params\.set\('page', String\(currentPage\)\)/);
-  assert.match(indexSource, /function channelDetailTabFromParams\(params\)[\s\S]*?params\.get\('tab'\) === 'playlists'[\s\S]*?'playlisted-videos'/);
+  assert.match(indexSource, /function channelDetailTabFromParams\(params\)[\s\S]*?requested === 'playlists'[\s\S]*?browserChannelVideoTab\(requested\)[\s\S]*?'playlisted-videos'/);
   assert.match(indexSource, /channelDetailTab = channelDetailTabFromParams\(params\)/);
 });
 

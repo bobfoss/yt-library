@@ -770,6 +770,41 @@ contained so the core detail card remains usable.
 bounds in YTL, then use this descriptor to request only the bounded plugin data;
 it should not duplicate or hydrate the source video into the host database.
 
+Browser API version 2 also advertises `features.channelVideoTabs === 1`.
+`channelVideoTabs` lets a plugin contribute a paginated native-video tab to
+channel detail without giving the plugin access to YTL's database:
+
+```javascript
+channelVideoTabs: [{
+  id: 'example-videos',
+  label: 'Example videos',
+  capability: 'example_channel_videos',
+  emptyMessage: 'No example videos match this channel.',
+  count: async (channel, host) => {
+    const payload = await host.requestJson(`channels/${channel.channel_id}`, { limit: 1 });
+    return payload.total;
+  },
+  load: async (channel, host, { limit, offset }) => {
+    const payload = await host.requestJson(
+      `channels/${channel.channel_id}`,
+      { limit, offset },
+    );
+    return {
+      videoIds: payload.videoIds,
+      total: payload.total,
+      limit: payload.limit,
+      offset: payload.offset,
+    };
+  },
+}]
+```
+
+Tab IDs are plugin-local lowercase slugs. The host namespaces them in the URL,
+isolates count and load failures, hydrates returned IDs through bounded canonical
+video lookups, renders normal YTL cards, applies entity-card decorators, and
+owns pagination and layout. Missing canonical videos are omitted rather than
+being inserted or inferred by the plugin.
+
 For both detail surfaces, return a lightweight panel shell during initial
 render. Fetch large data only when the user expands or requests it, paginate
 it, and avoid loading full transcripts or other large payloads before that.

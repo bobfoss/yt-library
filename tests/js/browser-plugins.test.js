@@ -151,7 +151,11 @@ test('browser plugins are loaded through a generic registration contract', () =>
   assert.match(indexSource, /window\.YTLibraryBrowserPlugins = Object\.freeze/);
   assert.match(indexSource, /register: registerBrowserPlugin/);
   assert.match(indexSource, /apiVersion: 2/);
-  assert.match(indexSource, /features: Object\.freeze\(\{ entityCards: 1, searchResultPresentations: 1 \}\)/);
+  assert.match(indexSource, /channelVideoTabs: 1/);
+  assert.match(
+    indexSource,
+    /features: Object\.freeze\(\{[\s\S]{0,160}entityCards: 1,[\s\S]{0,80}searchResultPresentations: 1/,
+  );
   assert.match(indexSource, /status\.browserAssets \|\| \[\]/);
   assert.match(indexSource, /\/plugins\/\$\{encodeURIComponent\(pluginId\)\}\/assets\//);
   assert.match(indexSource, /\?v=\$\{encodeURIComponent\(version\)\}/);
@@ -163,6 +167,8 @@ test('browser plugins are loaded through a generic registration contract', () =>
   assert.match(indexSource, /libraryVideos,/);
   assert.match(indexSource, /libraryChannels,/);
   assert.match(indexSource, /localChannelHref,/);
+  assert.match(indexSource, /validateBrowserChannelVideoTabs\(plugin\)/);
+  assert.match(indexSource, /async function browserChannelVideoTabCounts\(/);
   assert.match(indexSource, /createSearchVideoCard: searchVideoCardFor/);
   assert.match(indexSource, /searchHighlight,/);
   assert.doesNotMatch(indexSource, /browserSearchPresets/);
@@ -216,6 +222,19 @@ test('structured search presentation and entity-detail panels are first-class', 
   assert.match(indexSource, /const extension = plugin\.clipDetail/);
   assert.match(indexSource, /renderBrowserPluginClipPanels\(clip\)/);
   assert.match(indexSource, /grid\.replaceChildren\(card, \.\.\.pluginPanels\)/);
+});
+
+test('plugin channel video tabs are capability gated and use native cards', () => {
+  assert.match(indexSource, /function browserChannelVideoTabs\(\)/);
+  assert.match(
+    indexSource,
+    /browserPluginSupports\(plugin\.id, definition\.capability\)/,
+  );
+  assert.match(indexSource, /activePluginVideoTab\.definition\.load\(/);
+  assert.match(indexSource, /const hydratedVideos = await libraryVideos\(videoIds\)/);
+  assert.match(indexSource, /const cards = rows\.map\(video => searchVideoCardFor\(video\)\)/);
+  assert.match(indexSource, /'channel-plugin-video-tab'/);
+  assert.match(indexSource, /channelDetailTab === activePluginVideoTab\.key/);
 });
 
 test('entity-card definitions and canonical native descriptors are validated', () => {
@@ -337,6 +356,7 @@ test('entity-card plugins prepare once per batch and decorate every native view'
     { kind: 'video', view: 'history' },
     { kind: 'video', view: 'channel-history' },
     { kind: 'video', view: 'channel-playlisted-videos' },
+    { kind: 'video', view: 'channel-plugin-video-tab' },
     { kind: 'playlist', view: 'channel-playlists' },
     { kind: 'video', view: 'video-detail' },
     { kind: 'clip', view: 'clip-detail' },
@@ -501,7 +521,7 @@ test('all native render entry points call the shared entity-card batch', () => {
   );
   assert.match(
     indexSource,
-    /const layoutContext = 'channel-history'[\s\S]{0,700}renderHistoryResults\([\s\S]{0,500}leadingEntries: \[channelEntry\]/,
+    /const layoutContext = 'channel-history'[\s\S]{0,900}renderHistoryResults\([\s\S]{0,900}leadingEntries: \[channelEntry\]/,
   );
   assert.match(
     indexSource,
