@@ -730,11 +730,13 @@ test('search filters share deferred category dimming until refreshed results ren
   const indexSource = source('index.js');
 
   assert.match(indexSource, /function setSearchKindFilter\(kind, checked\)/);
+  assert.match(indexSource, /function renderedSearchKindSelectionState\(kind\)/);
   assert.match(indexSource, /function syncSearchKindFilter\(kind, applyDisabledStyles = true, assumeAllChecked = false\)/);
   assert.match(indexSource, /if \(applyDisabledStyles\) \{[\s\S]{0,300}row\.classList\.toggle\('dimmed'/);
   assert.match(indexSource, /function refreshSearchAfterFilterChange\(groupName, activatedFromSelection\)/);
   assert.match(indexSource, /refreshSearchAfterFilterChange[\s\S]{0,200}syncSearchKindFilter\(searchKindForFacet\(groupName\), false\)/);
-  assert.match(indexSource, /setSearchKindFilter\(searchKindFilter, target\.checked\)[\s\S]{0,800}refreshSearchAfterFilterChange\(searchKindFilter, activatedFromSelection\)/);
+  assert.match(indexSource, /const selectSearchKind = searchKindSelectionState[\s\S]{0,100}!searchKindSelectionState\.allSelected[\s\S]{0,100}setSearchKindFilter\(searchKindFilter, selectSearchKind\)/);
+  assert.match(indexSource, /setSearchKindFilter\(searchKindFilter, selectSearchKind\)[\s\S]{0,800}refreshSearchAfterFilterChange\(searchKindFilter, activatedFromSelection\)/);
   assert.match(indexSource, /setMetaFilterBranch\(treeGroupName, filterName, target\.checked\)[\s\S]{0,400}syncMetaFilterGroup\(treeGroupName\);[\s\S]{0,180}refreshSearchAfterFilterChange\(groupName, activatedFromSelection\)/);
   assert.match(indexSource, /function renderSearchMetaFilters[\s\S]*?for \(const kind of \[[\s\S]*?syncSearchKindFilter\(kind, true, countsPending\)/);
 });
@@ -745,10 +747,10 @@ test('single-facet result kinds use the same parent state calculation', () => {
   const end = indexSource.indexOf('\nfunction searchKindForFacet(', start);
   const functionSource = indexSource.slice(start, end);
 
-  assert.match(functionSource, /const facetSelections = facetKeys\.map/);
-  assert.match(functionSource, /inputs\.every\(input => input\.closest\('\.meta-filter-nested-content'\)\)/);
-  assert.match(functionSource, /parent\.checked = everyFacetHasSelection/);
-  assert.match(functionSource, /parent\.indeterminate = everyFacetHasSelection && !allChildrenSelected/);
+  assert.match(indexSource, /function renderedSearchKindSelectionState\(kind\)[\s\S]*?const facetSelections = facetKeys\.map/);
+  assert.match(indexSource, /function renderedSearchKindSelectionState\(kind\)[\s\S]*?inputs\.every\(input => input\.closest\('\.meta-filter-nested-content'\)\)/);
+  assert.match(functionSource, /parent\.checked = selectionState\.enabled/);
+  assert.match(functionSource, /parent\.indeterminate = selectionState\.enabled && !selectionState\.allSelected/);
   assert.doesNotMatch(functionSource, /facetKeys\.length > 1/);
   assert.doesNotMatch(functionSource, /key !== 'broadcastStatus'/);
   assert.doesNotMatch(functionSource, /data-meta-child-filter="search-\$\{kind\}"/);

@@ -2140,30 +2140,9 @@ function setSearchKindFilter(kind, checked) {
   return true;
 }
 
-function syncSearchKindFilter(kind, applyDisabledStyles = true, assumeAllChecked = false) {
-  const parent = searchFilterRegion.querySelector(`[data-search-kind-filter="${kind}"]`);
-  if (!(parent instanceof HTMLInputElement)) return;
-  if (assumeAllChecked) {
-    parent.checked = true;
-    parent.indeterminate = false;
-    if (applyDisabledStyles) {
-      for (const row of searchFilterRegion.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
-        row.classList.remove('dimmed');
-      }
-      parent.closest('.search-meta-kind')?.classList.remove('kind-disabled');
-    }
-    return;
-  }
-  if (browserSearchPlugin(kind)) {
-    parent.checked = searchKindEnabled(kind);
-    parent.indeterminate = false;
-    if (applyDisabledStyles) {
-      parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !parent.checked);
-    }
-    return;
-  }
+function renderedSearchKindSelectionState(kind) {
   const facetKeys = searchKindFacetKeys(kind);
-  if (!facetKeys.length) return;
+  if (!facetKeys.length) return null;
   const facetSelections = facetKeys.map(key => {
     const inputs = [
       ...searchFilterRegion.querySelectorAll(`[data-meta-child-filter="search-${key}"]`),
@@ -2192,16 +2171,44 @@ function syncSearchKindFilter(kind, applyDisabledStyles = true, assumeAllChecked
       )).filter(values => values.length),
     );
   }
-  if (!facetSelections.length) return;
-  const everyFacetHasSelection = facetSelections.every(values => values.some(Boolean));
-  const allChildrenSelected = facetSelections.every(values => values.every(Boolean));
-  parent.checked = everyFacetHasSelection;
-  parent.indeterminate = everyFacetHasSelection && !allChildrenSelected;
+  if (!facetSelections.length) return null;
+  return {
+    enabled: facetSelections.every(values => values.some(Boolean)),
+    allSelected: facetSelections.every(values => values.every(Boolean)),
+  };
+}
+
+function syncSearchKindFilter(kind, applyDisabledStyles = true, assumeAllChecked = false) {
+  const parent = searchFilterRegion.querySelector(`[data-search-kind-filter="${kind}"]`);
+  if (!(parent instanceof HTMLInputElement)) return;
+  if (assumeAllChecked) {
+    parent.checked = true;
+    parent.indeterminate = false;
+    if (applyDisabledStyles) {
+      for (const row of searchFilterRegion.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
+        row.classList.remove('dimmed');
+      }
+      parent.closest('.search-meta-kind')?.classList.remove('kind-disabled');
+    }
+    return;
+  }
+  if (browserSearchPlugin(kind)) {
+    parent.checked = searchKindEnabled(kind);
+    parent.indeterminate = false;
+    if (applyDisabledStyles) {
+      parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !parent.checked);
+    }
+    return;
+  }
+  const selectionState = renderedSearchKindSelectionState(kind);
+  if (!selectionState) return;
+  parent.checked = selectionState.enabled;
+  parent.indeterminate = selectionState.enabled && !selectionState.allSelected;
   if (applyDisabledStyles) {
     for (const row of searchFilterRegion.querySelectorAll(`[data-search-kind-facet="${kind}"]`)) {
-      row.classList.toggle('dimmed', !everyFacetHasSelection);
+      row.classList.toggle('dimmed', !selectionState.enabled);
     }
-    parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !everyFacetHasSelection);
+    parent.closest('.search-meta-kind')?.classList.toggle('kind-disabled', !selectionState.enabled);
   }
 }
 
@@ -6698,11 +6705,17 @@ function handleMetaChange(event) {
     return;
   }
   const searchKindFilter = target.dataset.searchKindFilter;
-  if (searchKindFilter && setSearchKindFilter(searchKindFilter, target.checked)) {
+  const searchKindSelectionState = searchKindFilter
+    ? renderedSearchKindSelectionState(searchKindFilter)
+    : null;
+  const selectSearchKind = searchKindSelectionState
+    ? !searchKindSelectionState.allSelected
+    : target.checked;
+  if (searchKindFilter && setSearchKindFilter(searchKindFilter, selectSearchKind)) {
     const plugin = browserSearchPlugin(searchKindFilter);
     if (plugin) {
       if (plugin.search.preferenceKey) {
-        saveFilterPreference(plugin.search.preferenceKey, target.checked);
+        saveFilterPreference(plugin.search.preferenceKey, selectSearchKind);
       }
     } else {
       saveSearchOptInPreferences(searchKindFacetKeys(searchKindFilter));
