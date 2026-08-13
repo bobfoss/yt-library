@@ -563,6 +563,7 @@ def upsert_channel(
     archivarix_channel_id: str = "",
     status: str = "",
     status_reason: str = "",
+    replace_aliases: bool = False,
     replace_status: bool = False,
     fetch_status: str = "",
     fetch_error: str = "",
@@ -579,6 +580,7 @@ def upsert_channel(
     now = updated_at or utc_now()
     existing = conn.execute("SELECT * FROM channels WHERE channel_id = ?", (channel_id,)).fetchone()
     if existing:
+        merged_aliases = aliases if replace_aliases else merge_channel_value(existing["aliases"], aliases)
         merged_status = status if replace_status else existing["status"]
         merged_status_reason = status_reason if replace_status else existing["status_reason"]
         conn.execute(
@@ -603,7 +605,7 @@ def upsert_channel(
             (
                 merge_channel_value(existing["title"], title),
                 merge_channel_value(existing["description"], description),
-                merge_channel_value(existing["aliases"], aliases),
+                merged_aliases,
                 merge_channel_value(existing["thumbnail_url"], thumbnail_url),
                 merge_channel_value(existing["thumbnail_path"], thumbnail_path),
                 merge_channel_value(existing["archivarix_channel_id"], archivarix_channel_id),
@@ -3160,28 +3162,62 @@ def endpoint_channel_url(endpoint: dict[str, Any]) -> str:
     return ""
 
 
-def extract_channel_handle_aliases(initial_data: dict[str, Any]) -> str:
+def extract_channel_handle_aliases(
+    initial_data: dict[str, Any],
+    channel_id: str = "",
+) -> str:
     aliases: list[str] = []
     seen: set[str] = set()
+
+    def add_alias(value: str) -> None:
+        found = re.search(r"(?:^|/)@([A-Za-z0-9._-]+)(?:$|[/?#])", value)
+        if not found:
+            return
+        alias = f"@{found.group(1)}"
+        key = alias.casefold()
+        if key not in seen:
+            seen.add(key)
+            aliases.append(alias)
+
+    resolved_channel_id = (channel_id or "").strip()
     for node in walk(initial_data):
         if not isinstance(node, dict):
             continue
-        candidates: list[str] = []
-        metadata = node.get("webCommandMetadata")
-        if isinstance(metadata, dict):
-            candidates.append(str(metadata.get("url") or ""))
+        renderer = node.get("channelMetadataRenderer")
+        if not isinstance(renderer, dict):
+            continue
+        renderer_channel_id = str(renderer.get("externalId") or "").strip()
+        if resolved_channel_id and renderer_channel_id and renderer_channel_id != resolved_channel_id:
+            continue
+        if renderer_channel_id:
+            resolved_channel_id = renderer_channel_id
+        for value in renderer.get("ownerUrls") or []:
+            add_alias(str(value or ""))
+
+    owner_endpoints: list[dict[str, Any]] = []
+    channel_ids: set[str] = set()
+    for node in walk(initial_data):
+        if not isinstance(node, dict):
+            continue
         browse = node.get("browseEndpoint")
-        if isinstance(browse, dict):
-            candidates.append(str(browse.get("canonicalBaseUrl") or ""))
-        for value in candidates:
-            found = re.search(r"(?:^|/)@([A-Za-z0-9._-]+)(?:$|[/?#])", value)
-            if not found:
+        if not isinstance(browse, dict):
+            continue
+        browse_id = str(browse.get("browseId") or "").strip()
+        if browse_id.startswith("UC"):
+            channel_ids.add(browse_id)
+        owner_endpoints.append(node)
+
+    if not resolved_channel_id and len(channel_ids) == 1:
+        resolved_channel_id = next(iter(channel_ids))
+    if resolved_channel_id:
+        for endpoint in owner_endpoints:
+            browse = endpoint.get("browseEndpoint") or {}
+            if str(browse.get("browseId") or "").strip() != resolved_channel_id:
                 continue
-            alias = f"@{found.group(1)}"
-            key = alias.casefold()
-            if key not in seen:
-                seen.add(key)
-                aliases.append(alias)
+            add_alias(str(browse.get("canonicalBaseUrl") or ""))
+            metadata = endpoint.get("commandMetadata", {}).get("webCommandMetadata", {})
+            if isinstance(metadata, dict):
+                add_alias(str(metadata.get("url") or ""))
     return ", ".join(aliases)
 
 
@@ -3321,6 +3357,7 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
     description = ""
     status = ""
     status_reason = ""
+    channel_identity_observed = False
     channel_status_observed = False
     for node in walk(initial_data):
         if not isinstance(node, dict):
@@ -3342,6 +3379,7 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
         avatar = renderer.get("avatar")
         if isinstance(avatar, dict):
             thumbnail_url = pick_thumbnail(avatar.get("thumbnails", [])) or thumbnail_url
+        channel_identity_observed = True
         channel_status_observed = True
         break
     lower_text = html.unescape(re.sub(r"\s+", " ", html_text)).lower()
@@ -3375,7 +3413,8 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
         "channel": title,
         "channel_url": channel_url,
         "channel_description": description,
-        "channel_aliases": extract_channel_handle_aliases(initial_data),
+        "channel_aliases": extract_channel_handle_aliases(initial_data, found_channel_id),
+        "channel_aliases_observed": channel_identity_observed,
         "channel_thumbnail_url": absolute_url(thumbnail_url),
         "channel_status": status,
         "channel_status_reason": status_reason,
@@ -3420,7 +3459,12 @@ def merge_channel_metadata(
         "channel": primary.get("channel", "") or fallback.get("channel", ""),
         "channel_url": primary.get("channel_url", "") or fallback.get("channel_url", ""),
         "channel_description": primary.get("channel_description", "") or fallback.get("channel_description", ""),
-        "channel_aliases": primary.get("channel_aliases", "") or fallback.get("channel_aliases", ""),
+        "channel_aliases": (
+            primary.get("channel_aliases", "")
+            if primary.get("channel_aliases_observed")
+            else primary.get("channel_aliases", "") or fallback.get("channel_aliases", "")
+        ),
+        "channel_aliases_observed": bool(primary.get("channel_aliases_observed")),
         "channel_thumbnail_url": primary.get("channel_thumbnail_url", "") or fallback.get("channel_thumbnail_url", ""),
         "channel_status": channel_status,
         "channel_status_reason": channel_status_reason,
@@ -4179,6 +4223,7 @@ def store_channel_metadata(
         archivarix_channel_id=metadata.get("archivarix_channel_id", ""),
         status=metadata.get("channel_status", ""),
         status_reason=metadata.get("channel_status_reason", ""),
+        replace_aliases=status == "ok" and bool(metadata.get("channel_aliases_observed")),
         replace_status=status == "ok" and bool(metadata.get("channel_status_observed")),
         fetch_status=status,
         fetch_error=error,

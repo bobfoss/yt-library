@@ -2474,8 +2474,15 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(core.extract_reaction_from_initial_data(disliked), "DISLIKE")
         self.assertEqual(core.extract_reaction_from_initial_data(indifferent), "INDIFFERENT")
 
-    def test_extract_channel_handle_aliases_from_browse_endpoints(self) -> None:
+    def test_extract_channel_handle_aliases_only_uses_owner_scoped_endpoints(self) -> None:
+        channel_id = "UCYrXHY9MvPNpoa3uSGatOrA"
         initial_data = {
+            "metadata": {
+                "channelMetadataRenderer": {
+                    "externalId": channel_id,
+                    "ownerUrls": ["https://www.youtube.com/@DJICONmusic"],
+                },
+            },
             "tabs": [
                 {
                     "tabRenderer": {
@@ -2486,16 +2493,72 @@ class CoreHelperTests(unittest.TestCase):
                                 },
                             },
                             "browseEndpoint": {
-                                "browseId": "UCYrXHY9MvPNpoa3uSGatOrA",
+                                "browseId": channel_id,
                                 "canonicalBaseUrl": "/@DJICONmusic",
                             },
                         },
                     },
                 },
             ],
+            "featured": {
+                "gridChannelRenderer": {
+                    "navigationEndpoint": {
+                        "commandMetadata": {
+                            "webCommandMetadata": {"url": "/@featured-channel"},
+                        },
+                        "browseEndpoint": {
+                            "browseId": "UCfeatured12345678901234",
+                            "canonicalBaseUrl": "/@featured-channel",
+                        },
+                    },
+                },
+            },
+            "subscriptions": {
+                "gridChannelRenderer": {
+                    "navigationEndpoint": {
+                        "commandMetadata": {
+                            "webCommandMetadata": {"url": "/@subscribed-channel"},
+                        },
+                        "browseEndpoint": {
+                            "browseId": "UCsubscribed12345678901",
+                            "canonicalBaseUrl": "/@subscribed-channel",
+                        },
+                    },
+                },
+            },
         }
 
-        self.assertEqual(core.extract_channel_handle_aliases(initial_data), "@DJICONmusic")
+        self.assertEqual(
+            core.extract_channel_handle_aliases(initial_data, channel_id),
+            "@DJICONmusic",
+        )
+
+    def test_successful_channel_metadata_replaces_polluted_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_channel(
+                        conn,
+                        "UCchannel",
+                        aliases="@owner, @featured, @subscribed",
+                    )
+                    core.store_channel_metadata(
+                        conn,
+                        {
+                            "channel_id": "UCchannel",
+                            "channel_aliases": "@owner",
+                            "channel_aliases_observed": True,
+                        },
+                        "ok",
+                    )
+                aliases = conn.execute(
+                    "SELECT aliases FROM channels WHERE channel_id = 'UCchannel'"
+                ).fetchone()["aliases"]
+            finally:
+                conn.close()
+
+        self.assertEqual(aliases, "@owner")
 
     def test_resolve_metadata_target_for_direct_ids(self) -> None:
         self.assertEqual(core.resolve_metadata_target(None, "abc-123_DEF"), ("video", "abc-123_DEF"))
