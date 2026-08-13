@@ -3221,6 +3221,56 @@ def extract_channel_handle_aliases(
     return ", ".join(aliases)
 
 
+def extract_channel_featured_channels(
+    initial_data: dict[str, Any],
+    owner_channel_id: str = "",
+) -> list[dict[str, Any]]:
+    featured_channels: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    owner_channel_id = (owner_channel_id or "").strip()
+    for node in walk(initial_data):
+        if not isinstance(node, dict):
+            continue
+        shelf = node.get("shelfRenderer")
+        if not isinstance(shelf, dict):
+            continue
+        if text_from_runs(shelf.get("title")).strip().casefold() != "featured channels":
+            continue
+        for item in walk(shelf.get("content")):
+            if not isinstance(item, dict):
+                continue
+            renderer = item.get("gridChannelRenderer")
+            if not isinstance(renderer, dict):
+                continue
+            endpoint = renderer.get("navigationEndpoint")
+            if not isinstance(endpoint, dict):
+                continue
+            browse = endpoint.get("browseEndpoint")
+            if not isinstance(browse, dict):
+                continue
+            featured_channel_id = str(browse.get("browseId") or "").strip()
+            if (
+                not featured_channel_id.startswith("UC")
+                or featured_channel_id == owner_channel_id
+                or featured_channel_id in seen
+            ):
+                continue
+            seen.add(featured_channel_id)
+            channel_url = endpoint_channel_url(endpoint)
+            channel_reference = (
+                youtube_channel_ref_from_url(channel_url) or featured_channel_id
+            )
+            featured_channels.append(
+                {
+                    "channel_id": featured_channel_id,
+                    "title": text_from_runs(renderer.get("title")).strip(),
+                    "channel_reference": channel_reference,
+                    "position": len(featured_channels),
+                }
+            )
+    return featured_channels
+
+
 def extract_channel_url(initial_data: dict[str, Any]) -> str:
     for node in walk(initial_data):
         if not isinstance(node, dict):
@@ -3415,6 +3465,11 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
         "channel_description": description,
         "channel_aliases": extract_channel_handle_aliases(initial_data, found_channel_id),
         "channel_aliases_observed": channel_identity_observed,
+        "channel_featured_channels": extract_channel_featured_channels(
+            initial_data,
+            found_channel_id,
+        ),
+        "channel_featured_channels_observed": channel_identity_observed,
         "channel_thumbnail_url": absolute_url(thumbnail_url),
         "channel_status": status,
         "channel_status_reason": status_reason,
@@ -3465,6 +3520,15 @@ def merge_channel_metadata(
             else primary.get("channel_aliases", "") or fallback.get("channel_aliases", "")
         ),
         "channel_aliases_observed": bool(primary.get("channel_aliases_observed")),
+        "channel_featured_channels": (
+            primary.get("channel_featured_channels", [])
+            if primary.get("channel_featured_channels_observed")
+            else primary.get("channel_featured_channels", [])
+            or fallback.get("channel_featured_channels", [])
+        ),
+        "channel_featured_channels_observed": bool(
+            primary.get("channel_featured_channels_observed")
+        ),
         "channel_thumbnail_url": primary.get("channel_thumbnail_url", "") or fallback.get("channel_thumbnail_url", ""),
         "channel_status": channel_status,
         "channel_status_reason": channel_status_reason,
@@ -3475,7 +3539,7 @@ def merge_channel_metadata(
     }
 
 
-def archivarix_channel_metadata(fields: dict[str, Any], channel_id: str) -> dict[str, str]:
+def archivarix_channel_metadata(fields: dict[str, Any], channel_id: str) -> dict[str, Any]:
     status = str(fields.get("channelStatus") or "").strip()
     status_reason = "Deleted/terminated channel reported by Archivarix." if status == "deleted" else ""
     return {
@@ -3484,6 +3548,8 @@ def archivarix_channel_metadata(fields: dict[str, Any], channel_id: str) -> dict
         "channel_url": str(fields.get("channelUrl") or youtube_channel_url(channel_id) or "").strip(),
         "channel_description": str(fields.get("channelDescription") or "").strip(),
         "channel_aliases": str(fields.get("channelAliases") or "").strip(),
+        "channel_featured_channels": [],
+        "channel_featured_channels_observed": False,
         "channel_thumbnail_url": absolute_url(str(fields.get("channelThumbnailUrl") or "")),
         "channel_status": status,
         "channel_status_reason": status_reason,
@@ -4272,6 +4338,45 @@ def store_channel_metadata(
                 channel_id,
             ),
         )
+    if (
+        channel_id
+        and status == "ok"
+        and bool(metadata.get("channel_featured_channels_observed"))
+    ):
+        conn.execute(
+            "DELETE FROM channel_featured_channels WHERE owner_channel_id = ?",
+            (channel_id,),
+        )
+        seen_featured_ids: set[str] = set()
+        for position, featured in enumerate(
+            metadata.get("channel_featured_channels") or []
+        ):
+            if not isinstance(featured, dict):
+                continue
+            featured_channel_id = str(featured.get("channel_id") or "").strip()
+            if (
+                not featured_channel_id.startswith("UC")
+                or featured_channel_id == channel_id
+                or featured_channel_id in seen_featured_ids
+            ):
+                continue
+            seen_featured_ids.add(featured_channel_id)
+            conn.execute(
+                """
+                INSERT INTO channel_featured_channels(
+                  owner_channel_id, featured_channel_id, title,
+                  channel_reference, position
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    channel_id,
+                    featured_channel_id,
+                    str(featured.get("title") or "").strip(),
+                    str(featured.get("channel_reference") or "").strip(),
+                    position,
+                ),
+            )
     return channel_id
 
 

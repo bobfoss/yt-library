@@ -5314,6 +5314,7 @@ function channelDetailCardFor(channel) {
         ${channelDatesHtml(channel)}
         ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
         ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
+        ${featuredChannelsHtml(channel)}
         <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
         ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : '<div class="empty">No channel description captured.</div>'}
       </div>
@@ -5321,6 +5322,34 @@ function channelDetailCardFor(channel) {
   `;
   article.append(body);
   return article;
+}
+
+function featuredChannelsHtml(channel) {
+  const featuredChannels = Array.isArray(channel?.featured_channels)
+    ? channel.featured_channels
+    : [];
+  if (!featuredChannels.length) return '';
+  const entries = featuredChannels.map((featured) => {
+    const titleText = String(
+      featured.title || featured.featured_channel_id || 'Unknown channel'
+    );
+    const internalHref = featured.cataloged && featured.preferred_reference
+      ? localChannelHref(featured.preferred_reference)
+      : '';
+    const nameHtml = internalHref
+      ? `<a class="featured-channel-name" href="${escapeHtml(internalHref)}">${escapeHtml(titleText)}</a>`
+      : `<span class="featured-channel-name">${escapeHtml(titleText)}</span>`;
+    const externalHtml = featured.url
+      ? `<a class="external-link featured-channel-external" href="${escapeHtml(featured.url)}" target="_blank" rel="noreferrer" title="Open ${escapeHtml(titleText)} on YouTube" aria-label="Open ${escapeHtml(titleText)} on YouTube">${externalLinkSvg()}</a>`
+      : '';
+    return `<span class="featured-channel-entry">${nameHtml}${externalHtml}</span>`;
+  });
+  return `
+    <div class="details channel-featured-channels">
+      <span class="featured-channels-label">Featured:</span>
+      <span class="featured-channels-list">${entries.join('<span class="featured-channel-separator">,</span>')}</span>
+    </div>
+  `;
 }
 
 function channelDatesHtml(channel) {
@@ -6409,6 +6438,7 @@ function channelCardFor(channel, options = {}) {
     ${channelDatesHtml(channel)}
     ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
     ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
+    ${featuredChannelsHtml(channel)}
     `,
     tailHtml: `
     ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : ''}

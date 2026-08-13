@@ -81,6 +81,62 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(data["channels"][0]["preferred_reference"], "@first")
         self.assertEqual(data["channels"][0]["url"], "https://www.youtube.com/@first")
 
+    def test_channel_read_models_attach_cataloged_and_external_featured_channels(self) -> None:
+        core.upsert_channel(self.conn, "UC_owner", title="Owner", aliases="@owner")
+        core.upsert_channel(
+            self.conn,
+            "UC_cataloged",
+            title="Cataloged title",
+            aliases="@cataloged-alias",
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO channel_featured_channels(
+              owner_channel_id, featured_channel_id, title,
+              channel_reference, position
+            )
+            VALUES ('UC_owner', ?, ?, ?, ?)
+            """,
+            [
+                ("UC_cataloged", "Observed old title", "@observed", 0),
+                ("UC_external", "External only", "@external-only", 1),
+            ],
+        )
+        self.conn.commit()
+
+        detail = channel_detail_data(self.conn, "@owner")
+        listed = next(
+            channel
+            for channel in channel_list_data(self.conn)["results"]
+            if channel["channel_id"] == "UC_owner"
+        )
+        summary = channel_summaries_data(self.conn, ["UC_owner"])["channels"][0]
+        omni = next(
+            result["item"]
+            for result in omni_search_data(
+                self.conn,
+                "Owner",
+                result_kinds={"channel"},
+            )["results"]
+        )
+
+        for channel in (detail, listed, summary, omni):
+            cataloged, external = channel["featured_channels"]
+            self.assertEqual(cataloged["title"], "Cataloged title")
+            self.assertTrue(cataloged["cataloged"])
+            self.assertEqual(cataloged["preferred_reference"], "@cataloged-alias")
+            self.assertEqual(
+                cataloged["url"],
+                "https://www.youtube.com/@cataloged-alias",
+            )
+            self.assertEqual(external["title"], "External only")
+            self.assertFalse(external["cataloged"])
+            self.assertEqual(external["preferred_reference"], "")
+            self.assertEqual(
+                external["url"],
+                "https://www.youtube.com/@external-only",
+            )
+
     def test_video_read_models_expose_uploader_category(self) -> None:
         self.add_video("category123", "Category Video")
         self.conn.execute(

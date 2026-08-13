@@ -30,6 +30,15 @@ CREATE TABLE IF NOT EXISTS channels (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS channel_featured_channels (
+  owner_channel_id TEXT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
+  featured_channel_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  channel_reference TEXT NOT NULL DEFAULT '',
+  position INTEGER NOT NULL,
+  PRIMARY KEY (owner_channel_id, featured_channel_id)
+);
+
 CREATE TABLE IF NOT EXISTS playlists (
   playlist_id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT '',
@@ -430,6 +439,8 @@ CREATE INDEX IF NOT EXISTS idx_groups_parent_position ON groups(parent_key, posi
 CREATE INDEX IF NOT EXISTS idx_group_playlists_position ON group_playlists(group_key, position);
 CREATE INDEX IF NOT EXISTS idx_channels_title ON channels(title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_channels_fetch ON channels(fetch_status, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_channel_featured_channels_order
+  ON channel_featured_channels(owner_channel_id, position);
 CREATE INDEX IF NOT EXISTS idx_videos_title ON videos(title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel_id);
 CREATE INDEX IF NOT EXISTS idx_videos_fetch ON videos(fetch_status, fetched_at);

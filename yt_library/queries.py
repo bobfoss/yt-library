@@ -177,6 +177,72 @@ def _attach_playlist_collaborators(
         )
 
 
+def _attach_channel_featured_channels(
+    conn: sqlite3.Connection,
+    channels: list[dict[str, Any]],
+) -> None:
+    channel_ids = list(
+        dict.fromkeys(
+            str(channel.get("channel_id") or "").strip()
+            for channel in channels
+            if str(channel.get("channel_id") or "").strip()
+        )
+    )
+    featured_by_owner: dict[str, list[dict[str, Any]]] = {
+        channel_id: [] for channel_id in channel_ids
+    }
+    if channel_ids:
+        placeholders = ", ".join("?" for _ in channel_ids)
+        for row in conn.execute(
+            f"""
+            SELECT cfc.owner_channel_id, cfc.featured_channel_id,
+                   cfc.title AS observed_title,
+                   cfc.channel_reference AS observed_reference,
+                   cfc.position,
+                   ch.channel_id AS cataloged_channel_id,
+                   COALESCE(ch.title, '') AS cataloged_title,
+                   COALESCE(ch.aliases, '') AS cataloged_aliases
+            FROM channel_featured_channels cfc
+            LEFT JOIN channels ch ON ch.channel_id = cfc.featured_channel_id
+            WHERE cfc.owner_channel_id IN ({placeholders})
+            ORDER BY cfc.owner_channel_id, cfc.position, cfc.featured_channel_id
+            """,
+            channel_ids,
+        ):
+            item = dict(row)
+            cataloged = bool(item.pop("cataloged_channel_id"))
+            cataloged_title = str(item.pop("cataloged_title") or "").strip()
+            cataloged_aliases = str(item.pop("cataloged_aliases") or "").strip()
+            observed_title = str(item.pop("observed_title") or "").strip()
+            observed_reference = str(item.pop("observed_reference") or "").strip()
+            featured_channel_id = str(item.get("featured_channel_id") or "").strip()
+            preferred_reference = (
+                preferred_youtube_channel_reference(
+                    featured_channel_id,
+                    cataloged_aliases,
+                )
+                if cataloged
+                else ""
+            )
+            external_reference = (
+                preferred_reference or observed_reference or featured_channel_id
+            )
+            item["title"] = (
+                cataloged_title
+                or observed_title
+                or featured_channel_id
+            )
+            item["cataloged"] = cataloged
+            item["preferred_reference"] = preferred_reference
+            item["url"] = preferred_youtube_channel_url(external_reference)
+            featured_by_owner[row["owner_channel_id"]].append(item)
+    for channel in channels:
+        channel["featured_channels"] = featured_by_owner.get(
+            str(channel.get("channel_id") or ""),
+            [],
+        )
+
+
 def _playlist_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = [
         dict(row)
@@ -1305,6 +1371,7 @@ def channel_list_data(
             row.get("channel_id") or "",
             row.get("aliases") or "",
         )
+    _attach_channel_featured_channels(conn, rows)
     return {
         "results": rows,
         "total": total,
@@ -1346,6 +1413,7 @@ def channel_detail_data(conn: sqlite3.Connection, channel_reference: str) -> dic
         item.get("aliases") or "",
     )
     item["url"] = preferred_youtube_channel_url(channel_id, item.get("aliases") or "")
+    _attach_channel_featured_channels(conn, [item])
     return item
 
 
@@ -1378,6 +1446,7 @@ def channel_summaries_data(
             item.get("aliases") or "",
         )
         channels.append(item)
+    _attach_channel_featured_channels(conn, channels)
     return {"channels": channels}
 
 
@@ -2951,6 +3020,10 @@ def omni_search_data(
     _attach_playlist_collaborators(
         conn,
         [result["item"] for result in page if result["kind"] == "playlist"],
+    )
+    _attach_channel_featured_channels(
+        conn,
+        [result["item"] for result in page if result["kind"] == "channel"],
     )
     for result in page:
         if result["kind"] == "video":

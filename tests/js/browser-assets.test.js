@@ -376,6 +376,26 @@ test('channel cards render only exceptional persisted statuses', () => {
   }
 });
 
+test('featured channels render only on detailed cards with internal and external links', () => {
+  const indexSource = source('index.js');
+  const indexHtml = source('index.html');
+  const featuredSource = namedFunctionSource(indexSource, 'featuredChannelsHtml');
+  const channelCardSource = namedFunctionSource(indexSource, 'channelCardFor');
+  const channelDetailSource = namedFunctionSource(indexSource, 'channelDetailCardFor');
+
+  assert.match(featuredSource, /Featured:/);
+  assert.match(featuredSource, /featured\.cataloged && featured\.preferred_reference/);
+  assert.match(featuredSource, /localChannelHref\(featured\.preferred_reference\)/);
+  assert.match(featuredSource, /featured-channel-external/);
+  assert.match(featuredSource, /externalLinkSvg\(\)/);
+  assert.match(channelCardSource, /featuredChannelsHtml\(channel\)/);
+  assert.match(channelDetailSource, /featuredChannelsHtml\(channel\)/);
+  assert.match(
+    indexHtml,
+    /\.search-grid:not\(\.layout-detailed\) \.channel-featured-channels \{ display: none; \}/,
+  );
+});
+
 test('playlist cards render one owner separately from collaborators', () => {
   const indexSource = source('index.js');
   const videoCardSource = source('video-card.js');

@@ -39,6 +39,10 @@ class DatabaseModuleTests(unittest.TestCase):
                 collaborator_table = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='playlist_collaborators'"
                 ).fetchone()
+                featured_channels_table = conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='channel_featured_channels'"
+                ).fetchone()
                 clips_table = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='clips'"
                 ).fetchone()
@@ -68,6 +72,7 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertIn("clip_id", queue_columns)
         self.assertIsNotNone(plugin_run_table)
         self.assertIsNotNone(collaborator_table)
+        self.assertIsNotNone(featured_channels_table)
         self.assertIsNotNone(clips_table)
         self.assertEqual(foreign_keys, 1)
 
@@ -539,6 +544,42 @@ class DatabaseModuleTests(unittest.TestCase):
             {"content_check_required", "content_check_reason"}.issubset(video_columns)
         )
         self.assertEqual(tuple(retained), ("Keep warning candidate", None, None))
+
+    def test_database_module_migrates_featured_channels_from_version_27(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO channels(channel_id, title) "
+                        "VALUES ('UCfeaturedowner', 'Featured owner')"
+                    )
+                    conn.execute("DROP TABLE channel_featured_channels")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 28")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                table = conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='channel_featured_channels'"
+                ).fetchone()
+                retained = conn.execute(
+                    "SELECT title FROM channels WHERE channel_id = 'UCfeaturedowner'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertIsNotNone(table)
+        self.assertEqual(retained, "Featured owner")
 
 
 if __name__ == "__main__":

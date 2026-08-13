@@ -2533,6 +2533,137 @@ class CoreHelperTests(unittest.TestCase):
             "@DJICONmusic",
         )
 
+    def test_extract_channel_featured_channels_requires_named_shelf(self) -> None:
+        owner_channel_id = "UCowner1234567890123456"
+
+        def channel_renderer(channel_id: str, title: str, handle: str) -> dict:
+            return {
+                "gridChannelRenderer": {
+                    "channelId": channel_id,
+                    "title": {"simpleText": title},
+                    "navigationEndpoint": {
+                        "commandMetadata": {
+                            "webCommandMetadata": {"url": f"/{handle}"},
+                        },
+                        "browseEndpoint": {
+                            "browseId": channel_id,
+                            "canonicalBaseUrl": f"/{handle}",
+                        },
+                    },
+                }
+            }
+
+        initial_data = {
+            "featured": {
+                "shelfRenderer": {
+                    "title": {"simpleText": "Featured Channels"},
+                    "content": {
+                        "horizontalListRenderer": {
+                            "items": [
+                                channel_renderer(
+                                    "UCfeatured12345678901234",
+                                    "Featured Friend",
+                                    "@featured-friend",
+                                ),
+                                channel_renderer(
+                                    owner_channel_id,
+                                    "Owner duplicate",
+                                    "@owner",
+                                ),
+                            ]
+                        }
+                    },
+                }
+            },
+            "subscriptions": {
+                "shelfRenderer": {
+                    "title": {"simpleText": "Subscriptions"},
+                    "content": {
+                        "horizontalListRenderer": {
+                            "items": [
+                                channel_renderer(
+                                    "UCsubscribed12345678901",
+                                    "Subscribed channel",
+                                    "@subscribed-channel",
+                                )
+                            ]
+                        }
+                    },
+                }
+            },
+        }
+
+        self.assertEqual(
+            core.extract_channel_featured_channels(initial_data, owner_channel_id),
+            [
+                {
+                    "channel_id": "UCfeatured12345678901234",
+                    "title": "Featured Friend",
+                    "channel_reference": "@featured-friend",
+                    "position": 0,
+                }
+            ],
+        )
+
+    def test_successful_channel_metadata_authoritatively_replaces_featured_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_channel(conn, "UCowner", title="Owner")
+                    conn.execute(
+                        """
+                        INSERT INTO channel_featured_channels(
+                          owner_channel_id, featured_channel_id, title,
+                          channel_reference, position
+                        )
+                        VALUES ('UCowner', 'UCold', 'Old feature', '@old', 0)
+                        """
+                    )
+                    core.store_channel_metadata(
+                        conn,
+                        {
+                            "channel_id": "UCowner",
+                            "channel": "Owner",
+                            "channel_featured_channels_observed": False,
+                            "channel_featured_channels": [],
+                        },
+                        "error",
+                    )
+                preserved = conn.execute(
+                    "SELECT featured_channel_id FROM channel_featured_channels "
+                    "WHERE owner_channel_id = 'UCowner'"
+                ).fetchone()[0]
+                with conn:
+                    core.store_channel_metadata(
+                        conn,
+                        {
+                            "channel_id": "UCowner",
+                            "channel": "Owner",
+                            "channel_featured_channels_observed": True,
+                            "channel_featured_channels": [
+                                {
+                                    "channel_id": "UCnew",
+                                    "title": "New feature",
+                                    "channel_reference": "@new",
+                                }
+                            ],
+                        },
+                        "ok",
+                    )
+                replaced = conn.execute(
+                    "SELECT featured_channel_id, title, channel_reference, position "
+                    "FROM channel_featured_channels WHERE owner_channel_id = 'UCowner'"
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(preserved, "UCold")
+        self.assertEqual(
+            [tuple(row) for row in replaced],
+            [("UCnew", "New feature", "@new", 0)],
+        )
+
     def test_successful_channel_metadata_replaces_polluted_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")

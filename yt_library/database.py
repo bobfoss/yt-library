@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -1155,6 +1155,25 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (27, utc_now()),
+        )
+    if current_version < 28:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS channel_featured_channels (
+              owner_channel_id TEXT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
+              featured_channel_id TEXT NOT NULL,
+              title TEXT NOT NULL DEFAULT '',
+              channel_reference TEXT NOT NULL DEFAULT '',
+              position INTEGER NOT NULL,
+              PRIMARY KEY (owner_channel_id, featured_channel_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_channel_featured_channels_order
+              ON channel_featured_channels(owner_channel_id, position);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (28, utc_now()),
         )
 
 
