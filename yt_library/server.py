@@ -119,6 +119,7 @@ from .plugins import PluginManager
 from .queries import (
     channel_detail_data,
     channel_list_data,
+    channel_summaries_data,
     clip_detail_data,
     history_activity_data,
     history_search_data,
@@ -1291,6 +1292,22 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"error": "Video not found"}, status=404)
             else:
                 self.send_json(data)
+            return
+        if parsed.path == "/api/channels/batch":
+            params = urllib.parse.parse_qs(parsed.query)
+            channel_ids = list(dict.fromkeys(params.get("id") or []))
+            if not channel_ids:
+                self.send_json({"error": "At least one channel id is required"}, status=400)
+                return
+            if len(channel_ids) > 100:
+                self.send_json({"error": "At most 100 channel ids are allowed"}, status=400)
+                return
+            conn = connect(self.db_path)
+            try:
+                data = channel_summaries_data(conn, channel_ids)
+            finally:
+                conn.close()
+            self.send_json(data)
             return
         if parsed.path == "/api/channels":
             params = urllib.parse.parse_qs(parsed.query)

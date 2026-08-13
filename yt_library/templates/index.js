@@ -4140,11 +4140,30 @@ async function libraryVideos(videoIds) {
   return videos;
 }
 
+async function libraryChannels(channelIds) {
+  const ids = [...new Set((channelIds || []).map(String).filter(Boolean))];
+  const channels = new Map();
+  for (let start = 0; start < ids.length; start += 100) {
+    const query = new URLSearchParams();
+    for (const channelId of ids.slice(start, start + 100)) query.append('id', channelId);
+    const response = await fetch(`/api/channels/batch?${query}`, { cache: 'no-store' });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `Library channel request failed (${response.status})`);
+    }
+    for (const channel of payload.channels || []) {
+      if (channel?.channel_id) channels.set(channel.channel_id, channel);
+    }
+  }
+  return channels;
+}
+
 function browserPluginHost(pluginId) {
   return {
     pluginId,
     status: browserPluginStatus(pluginId),
     supports: capability => browserPluginSupports(pluginId, capability),
+    libraryChannels,
     libraryVideos,
     requestJson: async (path, params = {}) => {
       const response = await fetch(
@@ -4161,6 +4180,7 @@ function browserPluginHost(pluginId) {
       createSearchVideoCard: searchVideoCardFor,
       createVideoCard: videoCardFor,
       escapeHtml,
+      localChannelHref,
       localVideoHref,
       searchHighlight,
     },

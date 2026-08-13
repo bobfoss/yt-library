@@ -1349,6 +1349,38 @@ def channel_detail_data(conn: sqlite3.Connection, channel_reference: str) -> dic
     return item
 
 
+def channel_summaries_data(
+    conn: sqlite3.Connection,
+    channel_ids: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    normalized_ids = list(dict.fromkeys(channel_id for channel_id in channel_ids if channel_id))
+    if not normalized_ids:
+        return {"channels": []}
+    placeholders = ", ".join("?" for _channel_id in normalized_ids)
+    rows_by_id = {
+        str(row["channel_id"]): dict(row)
+        for row in conn.execute(
+            f"SELECT * FROM channels WHERE channel_id IN ({placeholders})",
+            normalized_ids,
+        )
+    }
+    channels = []
+    for channel_id in normalized_ids:
+        item = rows_by_id.get(channel_id)
+        if item is None:
+            continue
+        item["preferred_reference"] = preferred_youtube_channel_reference(
+            channel_id,
+            item.get("aliases") or "",
+        )
+        item["url"] = preferred_youtube_channel_url(
+            channel_id,
+            item.get("aliases") or "",
+        )
+        channels.append(item)
+    return {"channels": channels}
+
+
 def video_detail_data(conn: sqlite3.Connection, video_id: str) -> dict[str, Any] | None:
     exists = conn.execute("SELECT 1 FROM videos WHERE video_id = ?", (video_id,)).fetchone()
     if exists is None:

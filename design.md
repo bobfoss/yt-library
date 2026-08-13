@@ -489,9 +489,12 @@ The browser `host` object passed to extension functions contains:
   array values become query parameters; non-2xx responses throw.
 - `libraryVideos(videoIds)`: bounded lookup of canonical YTL video summaries;
   the host batches requests in groups of 100 and returns a `Map` keyed by ID.
+- `libraryChannels(channelIds)`: bounded lookup of canonical YTL channel rows;
+  the host batches requests in groups of 100 and returns a `Map` keyed by ID.
 - `ui.createSearchVideoCard(video, options)` and
   `ui.createVideoCard(video, options)`: shared card construction.
-- `ui.escapeHtml(value)` and `ui.localVideoHref(videoId)`.
+- `ui.escapeHtml(value)`, `ui.localVideoHref(videoId)`, and
+  `ui.localChannelHref(channelId)`.
 - `ui.searchHighlight.textHtml(text, query)`: escaped full text with matches.
 - `ui.searchHighlight.excerptHtml(text, query, options)`: escaped excerpt
   centered on the first match; `before` and `after` are optional lengths.

@@ -161,6 +161,8 @@ test('browser plugins are loaded through a generic registration contract', () =>
     /try \{\s*await loadBrowserPluginAsset[\s\S]{0,180}console\.error\(`Plugin asset failed:/,
   );
   assert.match(indexSource, /libraryVideos,/);
+  assert.match(indexSource, /libraryChannels,/);
+  assert.match(indexSource, /localChannelHref,/);
   assert.match(indexSource, /createSearchVideoCard: searchVideoCardFor/);
   assert.match(indexSource, /searchHighlight,/);
   assert.doesNotMatch(indexSource, /browserSearchPresets/);

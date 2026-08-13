@@ -926,6 +926,27 @@ class AdminServerTests(unittest.TestCase):
         connection.close.assert_called_once_with()
         handler.send_json.assert_called_once_with(payload)
 
+    def test_channel_batch_route_hydrates_requested_library_channels(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.send_json = Mock()
+        connection = Mock()
+        payload = {"channels": [{"channel_id": "UC_first"}]}
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch("yt_library.server.channel_summaries_data", return_value=payload) as summaries,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/channels/batch?id=UC_first&id=UC_second&id=UC_first"
+                )
+            )
+
+        summaries.assert_called_once_with(connection, ["UC_first", "UC_second"])
+        connection.close.assert_called_once_with()
+        handler.send_json.assert_called_once_with(payload)
+
     def test_video_detail_route_falls_back_to_optional_plugin_projection(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.db_path = Path("library.sqlite3")

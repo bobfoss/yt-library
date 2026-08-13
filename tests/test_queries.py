@@ -9,6 +9,7 @@ from yt_library import core
 from yt_library.queries import (
     channel_detail_data,
     channel_list_data,
+    channel_summaries_data,
     clip_detail_data,
     history_activity_data,
     history_search_data,
@@ -62,6 +63,23 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(data["videos"][0]["metadata_title"], "First")
         self.assertEqual(data["videos"][0]["metadata_channel"], "Channel UC_first")
         self.assertIn("playlist_links", data["videos"][0])
+
+    def test_channel_summaries_batch_returns_known_ids_in_request_order(self) -> None:
+        core.upsert_channel(self.conn, "UC_second", title="Second", aliases="@second")
+        core.upsert_channel(self.conn, "UC_first", title="First", aliases="@first")
+        self.conn.commit()
+
+        data = channel_summaries_data(
+            self.conn,
+            ["UC_first", "UC_missing", "UC_second", "UC_first"],
+        )
+
+        self.assertEqual(
+            [channel["channel_id"] for channel in data["channels"]],
+            ["UC_first", "UC_second"],
+        )
+        self.assertEqual(data["channels"][0]["preferred_reference"], "@first")
+        self.assertEqual(data["channels"][0]["url"], "https://www.youtube.com/@first")
 
     def test_video_read_models_expose_uploader_category(self) -> None:
         self.add_video("category123", "Category Video")
