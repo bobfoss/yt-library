@@ -2149,6 +2149,564 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
         result["item"] = item
 
 
+def _populate_omni_video_filter_table(
+    conn: sqlite3.Connection,
+    table_name: str,
+    groups: Sequence[Collection[str]],
+) -> None:
+    conn.execute(f"DROP TABLE IF EXISTS temp.{table_name}")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {table_name}(
+          filter_index INTEGER NOT NULL,
+          video_id TEXT NOT NULL,
+          PRIMARY KEY(filter_index, video_id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.executemany(
+        f"INSERT INTO temp.{table_name}(filter_index, video_id) VALUES (?, ?)",
+        (
+            (filter_index, str(video_id))
+            for filter_index, video_ids in enumerate(groups)
+            for video_id in video_ids
+        ),
+    )
+
+
+def _populate_omni_video_facet_table(
+    conn: sqlite3.Connection,
+    memberships: Mapping[str, Collection[str]],
+) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp.omni_video_facets")
+    conn.execute(
+        """
+        CREATE TEMP TABLE omni_video_facets(
+          plugin_id TEXT NOT NULL,
+          video_id TEXT NOT NULL,
+          PRIMARY KEY(plugin_id, video_id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.executemany(
+        "INSERT INTO temp.omni_video_facets(plugin_id, video_id) VALUES (?, ?)",
+        (
+            (plugin_id, str(video_id))
+            for plugin_id, video_ids in memberships.items()
+            for video_id in video_ids
+        ),
+    )
+
+
+def _omni_sql_set_clause(
+    column: str,
+    values: Collection[str],
+    prefix: str,
+    params: dict[str, Any],
+) -> str:
+    normalized = sorted(set(values))
+    if not normalized:
+        return "0"
+    placeholders = []
+    for index, value in enumerate(normalized):
+        name = f"{prefix}_{index}"
+        params[name] = value
+        placeholders.append(f":{name}")
+    return f"{column} IN ({', '.join(placeholders)})"
+
+
+def _omni_video_sql_data(
+    conn: sqlite3.Connection,
+    *,
+    params: dict[str, Any],
+    query: str,
+    search_titles: bool,
+    search_descriptions: bool,
+    has_video_search_matches: bool,
+    video_search_match_sql: str,
+    video_source: str,
+    selected_meta_filters: Collection[str],
+    selected_reaction_filters: Collection[str],
+    selected_completion_filters: Collection[str],
+    selected_playlist_membership_filters: Collection[str],
+    selected_video_type_filters: Collection[str],
+    selected_broadcast_status_filters: Collection[str],
+    selected_uploader_category_filters: Collection[str],
+    known_uploader_categories: Collection[str],
+    partial_min_percent: int,
+    active_video_id_filters: Sequence[Collection[str]],
+    active_video_id_exclusion_filters: Sequence[Collection[str]],
+    active_video_facet_memberships: Mapping[str, Collection[str]],
+    active_video_search_match_memberships: Mapping[str, Collection[str]],
+    sort: str,
+    candidate_limit: int,
+    display_timezone: str,
+) -> dict[str, Any]:
+    _populate_omni_video_filter_table(
+        conn,
+        "omni_video_included_filters",
+        active_video_id_filters,
+    )
+    _populate_omni_video_filter_table(
+        conn,
+        "omni_video_excluded_filters",
+        active_video_id_exclusion_filters,
+    )
+    _populate_omni_video_facet_table(conn, active_video_facet_memberships)
+
+    video_title_match = """
+        (
+          lower(
+            v.title || ' ' || COALESCE(ch.title, '') || ' ' || v.video_id || ' ' ||
+            v.reaction || ' ' || v.availability
+          ) LIKE :pattern ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1
+            FROM playlist_items search_pi
+            JOIN playlists search_p ON search_p.playlist_id = search_pi.playlist_id
+            WHERE search_pi.video_id = v.video_id
+              AND lower(search_p.title) LIKE :pattern ESCAPE '\\'
+          )
+        )
+    """
+    video_description_match = "lower(v.description) LIKE :pattern ESCAPE '\\'"
+    video_matches = []
+    if query:
+        if search_titles:
+            video_matches.append(video_title_match)
+        if search_descriptions:
+            video_matches.append(video_description_match)
+        if has_video_search_matches:
+            video_matches.append(video_search_match_sql)
+    else:
+        video_matches.append("1 = 1")
+    video_title_hit = (
+        "1" if not query else (video_title_match if search_titles else "0")
+    )
+    availability_sql = _video_availability_category_sql(
+        video_id="video_id",
+        availability="availability",
+        is_playable="is_playable",
+    )
+    partial_min_percent = _bounded_partial_min_percent(partial_min_percent)
+    sql_params = dict(params)
+    sql_params.update(
+        {
+            "partial_min_percent": partial_min_percent,
+            "included_filter_count": len(active_video_id_filters),
+            "candidate_limit": max(1, int(candidate_limit)),
+            "display_timezone": display_timezone or "UTC",
+        }
+    )
+    conn.create_function(
+        "omni_date_sort_at",
+        2,
+        _date_only_sort_at,
+        deterministic=True,
+    )
+    conn.create_function(
+        "omni_casefold",
+        1,
+        lambda value: str(value or "").casefold(),
+        deterministic=True,
+    )
+    candidate_channel_join = (
+        "LEFT JOIN channels ch ON ch.channel_id = v.channel_id" if query else ""
+    )
+    video_source_clause = "1"
+    if video_source == "liked":
+        video_source_clause = "upper(COALESCE(v.reaction, '')) = 'LIKE'"
+    elif video_source == "playlist_member":
+        video_source_clause = """
+            EXISTS (
+              SELECT 1
+              FROM playlist_items source_pi
+              WHERE source_pi.video_id = v.video_id
+            )
+        """
+    conn.execute("DROP TABLE IF EXISTS temp.omni_playlist_stats")
+    conn.execute(
+        """
+        CREATE TEMP TABLE omni_playlist_stats AS
+        SELECT video_id,
+               MIN(COALESCE(added_at, '')) AS added_at,
+               COUNT(*) AS playlist_count
+        FROM playlist_items
+        WHERE video_id IS NOT NULL
+        GROUP BY video_id
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX temp.idx_omni_playlist_stats_id "
+        "ON omni_playlist_stats(video_id)"
+    )
+    conn.execute("DROP TABLE IF EXISTS temp.omni_history_stats")
+    conn.execute(
+        """
+        CREATE TEMP TABLE omni_history_stats AS
+        SELECT video_id,
+               COUNT(*) AS watch_count,
+               MAX(COALESCE(watched_at, watch_date, '')) AS latest_watch_at,
+               MAX(watch_progress_percent) AS watch_progress_percent,
+               COALESCE(
+                 9223372036854775807 - CAST(
+                   substr(
+                     MAX(
+                       CASE WHEN youtube_ordinal IS NOT NULL THEN
+                         COALESCE(watched_at, watch_date, '') || char(31) ||
+                         printf('%019d', 9223372036854775807 - youtube_ordinal)
+                       END
+                     ),
+                     -19
+                   ) AS INTEGER
+                 ),
+                 0
+               ) AS latest_youtube_ordinal
+        FROM history_events
+        GROUP BY video_id
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX temp.idx_omni_history_stats_id "
+        "ON omni_history_stats(video_id)"
+    )
+    conn.execute("DROP TABLE IF EXISTS temp.omni_video_candidates")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE omni_video_candidates AS
+        WITH candidate_videos AS (
+          SELECT v.video_id,
+                 v.rowid AS source_order,
+                 COALESCE(v.title, '') AS title,
+                 COALESCE(v.upload_date, '') AS metadata_upload_date,
+                 COALESCE(v.updated_at, '') AS updated_at,
+                 COALESCE(v.reaction, '') AS reaction,
+                 v.is_playable,
+                 COALESCE(v.availability, '') AS availability,
+                 COALESCE(v.uploader_category, '') AS uploader_category,
+                 COALESCE(v.video_type, '') AS video_type,
+                 v.broadcast_status,
+                 CASE WHEN {video_title_hit} THEN 1 ELSE 0 END AS title_hit,
+                 CASE WHEN {video_search_match_sql} THEN 1 ELSE 0 END AS plugin_search_hit
+          FROM videos v
+          {candidate_channel_join}
+          WHERE ({' OR '.join(f'({match})' for match in video_matches)})
+            AND ({video_source_clause})
+        ),
+        enriched AS (
+          SELECT candidate.*,
+                 COALESCE(ps.added_at, '') AS added_at,
+                 COALESCE(ps.playlist_count, 0) AS playlist_count,
+                 COALESCE(hs.watch_count, 0) AS watch_count,
+                 COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
+                 COALESCE(hs.latest_youtube_ordinal, 0) AS latest_youtube_ordinal,
+                 COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent
+          FROM candidate_videos candidate
+          LEFT JOIN temp.omni_playlist_stats ps ON ps.video_id = candidate.video_id
+          LEFT JOIN temp.omni_history_stats hs ON hs.video_id = candidate.video_id
+        ),
+        categorized AS (
+          SELECT video_id,
+                 source_order,
+                 title_hit,
+                 plugin_search_hit,
+                 {availability_sql} AS availability_category,
+                 CASE upper(COALESCE(reaction, ''))
+                   WHEN 'LIKE' THEN 'liked'
+                   WHEN 'DISLIKE' THEN 'disliked'
+                   ELSE 'none'
+                 END AS reaction_category,
+                 CASE
+                   WHEN COALESCE(watch_progress_percent, 0) >= 100 THEN 'complete'
+                   WHEN COALESCE(watch_progress_percent, 0) > 0
+                    AND COALESCE(watch_progress_percent, 0) < :partial_min_percent
+                     THEN 'partial_below_minimum'
+                   WHEN COALESCE(watch_progress_percent, 0) > 0 THEN 'partial'
+                   WHEN COALESCE(watch_count, 0) > 0 THEN 'unknown'
+                   ELSE 'never_watched'
+                 END AS completion_category,
+                 CASE WHEN COALESCE(playlist_count, 0) > 0
+                   THEN 'member' ELSE 'non_member' END AS membership_category,
+                 CASE lower(trim(COALESCE(video_type, '')))
+                   WHEN 'video' THEN 'video'
+                   WHEN 'short' THEN 'short'
+                   WHEN 'livestream' THEN 'livestream'
+                   WHEN 'movie' THEN 'movie'
+                   ELSE 'unknown'
+                 END AS video_type_category,
+                 CASE
+                   WHEN lower(trim(COALESCE(video_type, ''))) <> 'livestream'
+                     THEN 'not_applicable'
+                   ELSE CASE lower(trim(COALESCE(broadcast_status, '')))
+                     WHEN 'live' THEN 'live'
+                     WHEN 'ended' THEN 'ended'
+                     WHEN 'upcoming' THEN 'upcoming'
+                     ELSE 'unknown'
+                   END
+                 END AS broadcast_status_category,
+                 CASE WHEN trim(COALESCE(uploader_category, '')) = ''
+                   THEN '{NO_UPLOADER_CATEGORY_FILTER}'
+                   ELSE trim(uploader_category)
+                 END AS uploader_category_category,
+                 CASE WHEN title_hit = 1 THEN 0 ELSE 3 END AS score,
+                 watch_count,
+                 latest_youtube_ordinal,
+                 CASE WHEN latest_watch_at = '' THEN 1 ELSE 0 END AS sort_date_fallback,
+                 COALESCE(
+                   NULLIF(omni_date_sort_at(latest_watch_at, :display_timezone), ''),
+                   NULLIF(added_at, ''),
+                   NULLIF(metadata_upload_date, ''),
+                   updated_at,
+                   ''
+                 ) AS sort_date,
+                 omni_casefold(title) AS sort_title
+          FROM enriched
+        )
+        SELECT * FROM categorized
+        """,
+        sql_params,
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX temp.idx_omni_video_candidates_id "
+        "ON omni_video_candidates(video_id)"
+    )
+
+    plugin_match_clauses = []
+    if active_video_id_filters:
+        plugin_match_clauses.append(
+            """
+            (SELECT COUNT(DISTINCT included.filter_index)
+             FROM temp.omni_video_included_filters included
+             WHERE included.video_id = candidate.video_id) = :included_filter_count
+            """
+        )
+    if active_video_id_exclusion_filters:
+        plugin_match_clauses.append(
+            """
+            NOT EXISTS (
+              SELECT 1 FROM temp.omni_video_excluded_filters excluded
+              WHERE excluded.video_id = candidate.video_id
+            )
+            """
+        )
+    plugin_match_clause = " AND ".join(plugin_match_clauses) or "1"
+    native_clauses = [
+        _omni_sql_set_clause(
+            "candidate.video_type_category",
+            selected_video_type_filters,
+            "selected_video_type",
+            sql_params,
+        ),
+        _omni_sql_set_clause(
+            "candidate.availability_category",
+            selected_meta_filters,
+            "selected_video_meta",
+            sql_params,
+        ),
+        _omni_sql_set_clause(
+            "candidate.reaction_category",
+            selected_reaction_filters,
+            "selected_video_reaction",
+            sql_params,
+        ),
+        _omni_sql_set_clause(
+            "candidate.completion_category",
+            selected_completion_filters,
+            "selected_video_completion",
+            sql_params,
+        ),
+        _omni_sql_set_clause(
+            "candidate.membership_category",
+            selected_playlist_membership_filters,
+            "selected_video_membership",
+            sql_params,
+        ),
+        _omni_sql_set_clause(
+            "candidate.uploader_category_category",
+            selected_uploader_category_filters,
+            "selected_uploader_category",
+            sql_params,
+        ),
+    ]
+    broadcast_clause = _omni_sql_set_clause(
+        "candidate.broadcast_status_category",
+        selected_broadcast_status_filters,
+        "selected_broadcast_status",
+        sql_params,
+    )
+    native_clauses.append(
+        f"(candidate.broadcast_status_category = 'not_applicable' OR {broadcast_clause})"
+    )
+    native_filter_clause = " AND ".join(f"({clause})" for clause in native_clauses)
+
+    count_rows = conn.execute(
+        f"""
+        SELECT 'meta' AS count_type, availability_category AS category, COUNT(*) AS count
+        FROM temp.omni_video_candidates candidate
+        WHERE {plugin_match_clause}
+        GROUP BY availability_category
+        UNION ALL
+        SELECT 'reaction', reaction_category, COUNT(*)
+        FROM temp.omni_video_candidates candidate
+        WHERE {plugin_match_clause}
+        GROUP BY reaction_category
+        UNION ALL
+        SELECT 'completion', completion_category, COUNT(*)
+        FROM temp.omni_video_candidates candidate
+        WHERE {plugin_match_clause}
+        GROUP BY completion_category
+        UNION ALL
+        SELECT 'membership', membership_category, COUNT(*)
+        FROM temp.omni_video_candidates candidate
+        WHERE {plugin_match_clause}
+        GROUP BY membership_category
+        UNION ALL
+        SELECT 'video_type', video_type_category, COUNT(*)
+        FROM temp.omni_video_candidates candidate
+        WHERE {plugin_match_clause}
+        GROUP BY video_type_category
+        UNION ALL
+        SELECT 'broadcast_status', broadcast_status_category, COUNT(*)
+        FROM temp.omni_video_candidates candidate
+        WHERE {plugin_match_clause} AND broadcast_status_category <> 'not_applicable'
+        GROUP BY broadcast_status_category
+        UNION ALL
+        SELECT 'uploader_category', uploader_category_category, COUNT(*)
+        FROM temp.omni_video_candidates candidate
+        WHERE {plugin_match_clause}
+        GROUP BY uploader_category_category
+        """,
+        sql_params,
+    ).fetchall()
+    counts = {
+        "meta": {category: 0 for category in OMNI_SEARCH_META_FILTERS["video"]},
+        "reaction": {category: 0 for category in OMNI_SEARCH_REACTION_FILTERS},
+        "completion": {category: 0 for category in OMNI_SEARCH_COMPLETION_FILTERS},
+        "membership": {
+            category: 0 for category in OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS
+        },
+        "video_type": {category: 0 for category in OMNI_SEARCH_VIDEO_TYPE_FILTERS},
+        "broadcast_status": {
+            category: 0 for category in OMNI_SEARCH_BROADCAST_STATUS_FILTERS
+        },
+        "uploader_category": {
+            NO_UPLOADER_CATEGORY_FILTER: 0,
+            **{category: 0 for category in known_uploader_categories},
+        },
+    }
+    for row in count_rows:
+        counts[row["count_type"]][row["category"]] = int(row["count"] or 0)
+
+    native_total = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM temp.omni_video_candidates candidate "
+            f"WHERE {native_filter_clause}",
+            sql_params,
+        ).fetchone()[0]
+        or 0
+    )
+    facet_counts = {}
+    for plugin_id in active_video_facet_memberships:
+        facet_params = dict(sql_params)
+        facet_params["facet_plugin_id"] = plugin_id
+        present = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM temp.omni_video_candidates candidate
+                WHERE {native_filter_clause}
+                  AND EXISTS (
+                    SELECT 1 FROM temp.omni_video_facets facet
+                    WHERE facet.plugin_id = :facet_plugin_id
+                      AND facet.video_id = candidate.video_id
+                  )
+                """,
+                facet_params,
+            ).fetchone()[0]
+            or 0
+        )
+        facet_counts[plugin_id] = {
+            "present": present,
+            "absent": native_total - present,
+        }
+
+    filtered_total = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM temp.omni_video_candidates candidate "
+            f"WHERE {native_filter_clause} AND {plugin_match_clause}",
+            sql_params,
+        ).fetchone()[0]
+        or 0
+    )
+    order_by = {
+        "relevance": "candidate.score, candidate.sort_title, candidate.source_order",
+        "title": "candidate.sort_title, candidate.source_order",
+        "title_desc": "candidate.sort_title DESC, candidate.source_order",
+        "oldest": "candidate.sort_date, candidate.sort_title, candidate.source_order",
+        "most_watched": (
+            "candidate.watch_count DESC, candidate.sort_title, candidate.source_order"
+        ),
+        "type": "candidate.sort_title, candidate.source_order",
+    }.get(
+        sort,
+        "candidate.sort_date_fallback, candidate.sort_date DESC, "
+        "CASE WHEN candidate.latest_youtube_ordinal = 0 THEN 1 ELSE 0 END, "
+        "candidate.latest_youtube_ordinal, candidate.sort_title, candidate.source_order",
+    )
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM temp.omni_video_candidates candidate
+        WHERE {native_filter_clause} AND {plugin_match_clause}
+        ORDER BY {order_by}
+        LIMIT :candidate_limit
+        """,
+        sql_params,
+    ).fetchall()
+    results = []
+    for row in rows:
+        item = {
+            "video_id": row["video_id"],
+            "availability_category": row["availability_category"],
+            "collection_category": row["availability_category"],
+        }
+        title_hit = bool(row["title_hit"])
+        plugin_search_hit = bool(row["plugin_search_hit"])
+        result = {
+            "kind": "video",
+            "score": int(row["score"]),
+            "matchedDescription": not title_hit and not plugin_search_hit,
+            "item": item,
+            "_title": row["sort_title"],
+            "_sort_date": row["sort_date"],
+            "_sort_date_fallback": bool(row["sort_date_fallback"]),
+            "_watch_count": int(row["watch_count"] or 0),
+            "_history_ordinal": int(row["latest_youtube_ordinal"] or 0),
+            "_clip_feed_ordinal": 0,
+        }
+        result["pluginSearchMatch"] = plugin_search_hit
+        result["pluginSearchMatches"] = sorted(
+            plugin_id
+            for plugin_id, video_ids in active_video_search_match_memberships.items()
+            if item["video_id"] in video_ids
+        )
+        result["_native_pre_filtered"] = True
+        result["_sql_video_candidate"] = True
+        results.append(result)
+    return {
+        "results": results,
+        "video_ids": {
+            row[0]
+            for row in conn.execute(
+                "SELECT video_id FROM temp.omni_video_candidates"
+            )
+        },
+        "filtered_total": filtered_total,
+        "counts": counts,
+        "facet_counts": facet_counts,
+    }
+
+
 def omni_search_data(
     conn: sqlite3.Connection,
     query: str,
@@ -2377,7 +2935,77 @@ def omni_search_data(
         if has_clip_search_matches
         else "0"
     )
+    video_partial_min_percent = _bounded_partial_min_percent(
+        video_partial_min_percent
+    )
+    selected_meta_filters = {
+        "video": _selected_omni_meta_filters(video_meta_filters, "video"),
+        "playlist": _selected_omni_meta_filters(playlist_meta_filters, "playlist"),
+    }
+    selected_reaction_filters = (
+        set(OMNI_SEARCH_REACTION_FILTERS)
+        if video_reaction_filters is None
+        else set(video_reaction_filters) & set(OMNI_SEARCH_REACTION_FILTERS)
+    )
+    selected_completion_filters = (
+        set(OMNI_SEARCH_COMPLETION_FILTERS)
+        if video_completion_filters is None
+        else set(video_completion_filters) & set(OMNI_SEARCH_COMPLETION_FILTERS)
+    )
+    selected_playlist_membership_filters = (
+        set(OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS)
+        if video_playlist_membership_filters is None
+        else set(video_playlist_membership_filters)
+        & set(OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS)
+    )
+    selected_video_type_filters = (
+        set(OMNI_SEARCH_VIDEO_TYPE_FILTERS)
+        if video_type_filters is None
+        else set(video_type_filters) & set(OMNI_SEARCH_VIDEO_TYPE_FILTERS)
+    )
+    selected_broadcast_status_filters = (
+        set(OMNI_SEARCH_BROADCAST_STATUS_FILTERS)
+        if video_broadcast_status_filters is None
+        else set(video_broadcast_status_filters)
+        & set(OMNI_SEARCH_BROADCAST_STATUS_FILTERS)
+    )
+    known_uploader_categories = _known_uploader_categories(conn)
+    allowed_uploader_category_filters = {
+        NO_UPLOADER_CATEGORY_FILTER,
+        *known_uploader_categories,
+    }
+    selected_uploader_category_filters = (
+        allowed_uploader_category_filters
+        if video_uploader_category_filters is None
+        else set(video_uploader_category_filters) & allowed_uploader_category_filters
+    )
+    selected_playlist_ownership_filters = (
+        set(OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS)
+        if playlist_ownership_filters is None
+        else set(playlist_ownership_filters) & set(OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS)
+    )
+    selected_channel_subscription_filters = (
+        set(OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS)
+        if channel_subscription_filters is None
+        else set(channel_subscription_filters)
+        & set(OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS)
+    )
+    selected_channel_status_filters = (
+        set(OMNI_SEARCH_CHANNEL_STATUS_FILTERS)
+        if channel_status_filters is None
+        else set(channel_status_filters) & set(OMNI_SEARCH_CHANNEL_STATUS_FILTERS)
+    )
+    selected_clip_ownership_filters = (
+        set(OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS)
+        if clip_ownership_filters is None
+        else set(clip_ownership_filters) & set(OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS)
+    )
     results: list[dict[str, Any]] = []
+    video_sql_data: dict[str, Any] = {
+        "filtered_total": 0,
+        "counts": {},
+        "facet_counts": {},
+    }
 
     if "clip" in active_result_kinds and (not query or search_titles or has_clip_search_matches):
         clip_title_match = """
@@ -2395,7 +3023,7 @@ def omni_search_data(
                 clip_matches.append(clip_search_match_sql)
         else:
             clip_matches.append("1 = 1")
-        clip_title_hit = clip_title_match if not query or search_titles else "0"
+        clip_title_hit = "1" if not query else (clip_title_match if search_titles else "0")
         for row in conn.execute(
             f"""
             SELECT c.*,
@@ -2474,7 +3102,9 @@ def omni_search_data(
                 playlist_matches.append(playlist_description_match)
         else:
             playlist_matches.append("1 = 1")
-        playlist_title_hit = playlist_title_match if not query or search_titles else "0"
+        playlist_title_hit = (
+            "1" if not query else (playlist_title_match if search_titles else "0")
+        )
         for row in conn.execute(
             f"""
             WITH {_playlist_unavailable_counts_ctes()}
@@ -2535,7 +3165,9 @@ def omni_search_data(
                 channel_matches.append(channel_description_match)
         else:
             channel_matches.append("1 = 1")
-        channel_title_hit = channel_title_match if not query or search_titles else "0"
+        channel_title_hit = (
+            "1" if not query else (channel_title_match if search_titles else "0")
+        )
         for row in conn.execute(
             f"""
             SELECT ch.*,
@@ -2570,146 +3202,36 @@ def omni_search_data(
         "video" in active_result_kinds
         and (not query or search_titles or search_descriptions or has_video_search_matches)
     ):
-        video_title_match = """
-            (
-              lower(
-                v.title || ' ' || COALESCE(ch.title, '') || ' ' || v.video_id || ' ' ||
-                v.reaction || ' ' || v.availability
-              ) LIKE :pattern ESCAPE '\\'
-              OR EXISTS (
-                SELECT 1
-                FROM playlist_items search_pi
-                JOIN playlists search_p ON search_p.playlist_id = search_pi.playlist_id
-                WHERE search_pi.video_id = v.video_id
-                  AND lower(search_p.title) LIKE :pattern ESCAPE '\\'
-              )
-            )
-        """
-        video_description_match = "lower(v.description) LIKE :pattern ESCAPE '\\'"
-        video_matches = []
-        if query:
-            if search_titles:
-                video_matches.append(video_title_match)
-            if search_descriptions:
-                video_matches.append(video_description_match)
-            if has_video_search_matches:
-                video_matches.append(video_search_match_sql)
-        else:
-            video_matches.append("1 = 1")
-        video_title_hit = video_title_match if not query or search_titles else "0"
-        for row in conn.execute(
-            f"""
-            WITH candidate_videos AS MATERIALIZED (
-              SELECT v.video_id,
-                     CASE WHEN {video_title_hit} THEN 1 ELSE 0 END AS title_hit,
-                     CASE WHEN {video_search_match_sql} THEN 1 ELSE 0 END AS plugin_search_hit,
-                     v.is_playable,
-                     v.availability,
-                     v.uploader_category,
-                     v.video_type,
-                     v.broadcast_status,
-                     COALESCE(vr.archivarix_status, '') AS recovered_status
-              FROM videos v
-              LEFT JOIN channels ch ON ch.channel_id = v.channel_id
-              LEFT JOIN video_recovery vr ON vr.video_id = v.video_id
-              WHERE ({' OR '.join(f'({match})' for match in video_matches)})
-                AND (
-                  :video_source = ''
-                  OR (:video_source = 'liked' AND upper(COALESCE(v.reaction, '')) = 'LIKE')
-                  OR (
-                    :video_source = 'playlist_member'
-                    AND EXISTS (
-                      SELECT 1
-                      FROM playlist_items source_pi
-                      WHERE source_pi.video_id = v.video_id
-                    )
-                  )
-                )
-            ),
-            playlist_stats AS (
-              SELECT pi.video_id,
-                     MIN(COALESCE(pi.added_at, '')) AS added_at,
-                     COUNT(*) AS playlist_count
-              FROM playlist_items pi
-              JOIN candidate_videos candidate ON candidate.video_id = pi.video_id
-              GROUP BY pi.video_id
-            ),
-            history_stats AS (
-              SELECT he.video_id,
-                     COUNT(*) AS watch_count,
-                     MAX(COALESCE(he.watched_at, he.watch_date)) AS latest_watch_at,
-                     MAX(he.watch_progress_percent) AS watch_progress_percent
-              FROM history_events he
-              JOIN candidate_videos candidate ON candidate.video_id = he.video_id
-              GROUP BY he.video_id
-            ),
-            latest_history_position AS (
-              SELECT he.video_id,
-                     he.youtube_ordinal,
-                     ROW_NUMBER() OVER (
-                       PARTITION BY he.video_id
-                       ORDER BY COALESCE(he.watched_at, he.watch_date) DESC,
-                                he.youtube_ordinal ASC
-                     ) AS position_rank
-              FROM history_events he
-              JOIN candidate_videos candidate ON candidate.video_id = he.video_id
-              WHERE he.youtube_ordinal IS NOT NULL
-            )
-            SELECT v.video_id,
-                   v.title,
-                   v.title AS metadata_title,
-                   v.upload_date AS metadata_upload_date,
-                   v.updated_at,
-                   v.reaction,
-                   COALESCE(ps.added_at, '') AS added_at,
-                   COALESCE(ps.playlist_count, 0) AS playlist_count,
-                   COALESCE(hs.watch_count, 0) AS watch_count,
-                   COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
-                   COALESCE(lhp.youtube_ordinal, 0) AS latest_youtube_ordinal,
-                   COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent,
-                   candidate.title_hit,
-                   candidate.plugin_search_hit,
-                   candidate.is_playable,
-                   candidate.availability,
-                   candidate.uploader_category,
-                   candidate.video_type,
-                   candidate.broadcast_status,
-                   candidate.recovered_status
-            FROM candidate_videos candidate
-            JOIN videos v ON v.video_id = candidate.video_id
-            LEFT JOIN playlist_stats ps ON ps.video_id = v.video_id
-            LEFT JOIN history_stats hs ON hs.video_id = v.video_id
-            LEFT JOIN latest_history_position lhp
-              ON lhp.video_id = v.video_id AND lhp.position_rank = 1
-            """,
-            params,
-        ):
-            item = dict(row)
-            title_hit = bool(item.pop("title_hit"))
-            plugin_search_hit = bool(item.pop("plugin_search_hit"))
-            item["availability_category"] = _video_availability_category(item)
-            item["collection_category"] = item["availability_category"]
-            result = _omni_result(
-                "video",
-                0 if title_hit else 3,
-                item,
-                matched_description=not title_hit and not plugin_search_hit,
-                display_timezone=display_timezone,
-            )
-            result["pluginSearchMatch"] = plugin_search_hit
-            result["pluginSearchMatches"] = sorted(
-                plugin_id
-                for plugin_id, video_ids in active_video_search_match_memberships.items()
-                if str(item.get("video_id") or "") in video_ids
-            )
-            results.append(result)
+        video_sql_data = _omni_video_sql_data(
+            conn,
+            params=params,
+            query=query,
+            search_titles=search_titles,
+            search_descriptions=search_descriptions,
+            has_video_search_matches=has_video_search_matches,
+            video_search_match_sql=video_search_match_sql,
+            video_source=video_source,
+            selected_meta_filters=selected_meta_filters["video"],
+            selected_reaction_filters=selected_reaction_filters,
+            selected_completion_filters=selected_completion_filters,
+            selected_playlist_membership_filters=selected_playlist_membership_filters,
+            selected_video_type_filters=selected_video_type_filters,
+            selected_broadcast_status_filters=selected_broadcast_status_filters,
+            selected_uploader_category_filters=selected_uploader_category_filters,
+            known_uploader_categories=known_uploader_categories,
+            partial_min_percent=video_partial_min_percent,
+            active_video_id_filters=active_video_id_filters,
+            active_video_id_exclusion_filters=active_video_id_exclusion_filters,
+            active_video_facet_memberships=active_video_facet_memberships,
+            active_video_search_match_memberships=active_video_search_match_memberships,
+            sort=sort,
+            candidate_limit=offset + limit,
+            display_timezone=display_timezone,
+        )
+        results.extend(video_sql_data["results"])
 
     if "video" in active_result_kinds and video_source == "":
-        library_video_ids = {
-            str(result["item"].get("video_id") or "")
-            for result in results
-            if result["kind"] == "video"
-        }
+        library_video_ids = set(video_sql_data.get("video_ids") or ())
         projected_items: dict[str, dict[str, Any]] = {}
         for plugin_id, projections in active_video_projections.items():
             search_matches = active_video_search_match_memberships.get(
@@ -2814,206 +3336,174 @@ def omni_search_data(
             results.append(_omni_result("video", 0, item, matched_description=False))
 
     _assign_omni_meta_categories(conn, results)
-    video_partial_min_percent = _bounded_partial_min_percent(
-        video_partial_min_percent
+    meta_counts = _omni_meta_counts([])
+    reaction_counts = _omni_reaction_counts([])
+    video_type_counts = _omni_video_type_counts([])
+    broadcast_status_counts = _omni_video_broadcast_status_counts([])
+    completion_counts = _omni_completion_counts([], video_partial_min_percent)
+    playlist_membership_counts = _omni_playlist_membership_counts([])
+    uploader_category_counts = _omni_uploader_category_counts(
+        [],
+        known_uploader_categories,
     )
-    selected_meta_filters = {
-        "video": _selected_omni_meta_filters(video_meta_filters, "video"),
-        "playlist": _selected_omni_meta_filters(playlist_meta_filters, "playlist"),
+    video_facet_counts = {
+        plugin_id: {"present": 0, "absent": 0}
+        for plugin_id in active_video_facet_memberships
     }
-    selected_reaction_filters = (
-        set(OMNI_SEARCH_REACTION_FILTERS)
-        if video_reaction_filters is None
-        else set(video_reaction_filters) & set(OMNI_SEARCH_REACTION_FILTERS)
-    )
-    selected_completion_filters = (
-        set(OMNI_SEARCH_COMPLETION_FILTERS)
-        if video_completion_filters is None
-        else set(video_completion_filters) & set(OMNI_SEARCH_COMPLETION_FILTERS)
-    )
-    selected_playlist_membership_filters = (
-        set(OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS)
-        if video_playlist_membership_filters is None
-        else set(video_playlist_membership_filters)
-        & set(OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS)
-    )
-    selected_video_type_filters = (
-        set(OMNI_SEARCH_VIDEO_TYPE_FILTERS)
-        if video_type_filters is None
-        else set(video_type_filters) & set(OMNI_SEARCH_VIDEO_TYPE_FILTERS)
-    )
-    selected_broadcast_status_filters = (
-        set(OMNI_SEARCH_BROADCAST_STATUS_FILTERS)
-        if video_broadcast_status_filters is None
-        else set(video_broadcast_status_filters)
-        & set(OMNI_SEARCH_BROADCAST_STATUS_FILTERS)
-    )
-    known_uploader_categories = _known_uploader_categories(conn)
-    allowed_uploader_category_filters = {
-        NO_UPLOADER_CATEGORY_FILTER,
-        *known_uploader_categories,
+    clip_facet_counts = {
+        plugin_id: {"present": 0, "absent": 0}
+        for plugin_id in active_clip_facet_memberships
     }
-    selected_uploader_category_filters = (
-        allowed_uploader_category_filters
-        if video_uploader_category_filters is None
-        else set(video_uploader_category_filters) & allowed_uploader_category_filters
-    )
-    selected_playlist_ownership_filters = (
-        set(OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS)
-        if playlist_ownership_filters is None
-        else set(playlist_ownership_filters) & set(OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS)
-    )
-    selected_channel_subscription_filters = (
-        set(OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS)
-        if channel_subscription_filters is None
-        else set(channel_subscription_filters)
-        & set(OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS)
-    )
-    selected_channel_status_filters = (
-        set(OMNI_SEARCH_CHANNEL_STATUS_FILTERS)
-        if channel_status_filters is None
-        else set(channel_status_filters) & set(OMNI_SEARCH_CHANNEL_STATUS_FILTERS)
-    )
-    selected_clip_ownership_filters = (
-        set(OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS)
-        if clip_ownership_filters is None
-        else set(clip_ownership_filters) & set(OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS)
-    )
+    filtered_results: list[dict[str, Any]] = []
 
-    def matches_native_filters(result: dict[str, Any]) -> bool:
-        if result["kind"] == "channel":
-            return (
+    for result in results:
+        kind = result["kind"]
+        item = result["item"]
+        native_match = False
+        plugin_match = True
+
+        if kind == "channel":
+            native_match = (
                 result["channelSubscription"] in selected_channel_subscription_filters
                 and result["channelStatus"] in selected_channel_status_filters
             )
-        if result["kind"] == "playlist":
-            return (
-                result["metaCategory"] in selected_meta_filters[result["kind"]]
+        elif kind == "playlist":
+            native_match = (
+                result["metaCategory"] in selected_meta_filters[kind]
                 and result["playlistOwnership"] in selected_playlist_ownership_filters
             )
-        if result["kind"] == "clip":
-            return result["clipOwnership"] in selected_clip_ownership_filters
-        if result["kind"] == "video":
+        elif kind == "clip":
+            clip_id = str(item.get("clip_id") or "")
+            native_match = result["clipOwnership"] in selected_clip_ownership_filters
+            for plugin_id, clip_ids in active_clip_facet_memberships.items():
+                if native_match:
+                    facet = "present" if clip_id in clip_ids else "absent"
+                    clip_facet_counts[plugin_id][facet] += 1
+            plugin_match = all(
+                clip_id in clip_ids for clip_ids in active_clip_id_filters
+            ) and all(
+                clip_id not in clip_ids
+                for clip_ids in active_clip_id_exclusion_filters
+            )
+        elif kind == "video":
+            if result.pop("_native_pre_filtered", False):
+                filtered_results.append(result)
+                continue
+            video_id = str(item.get("video_id") or "")
+            video_type_category = _omni_video_type_category(result)
             broadcast_status_category = _omni_video_broadcast_status_category(result)
-            return (
-                _omni_video_type_category(result) in selected_video_type_filters
+            reaction_category = _omni_video_reaction_category(result)
+            completion_category = _omni_video_completion_category(
+                result,
+                video_partial_min_percent,
+            )
+            membership_category = _omni_video_playlist_membership_category(result)
+            uploader_category = _omni_video_uploader_category(result)
+            native_match = (
+                video_type_category in selected_video_type_filters
                 and (
                     broadcast_status_category == "not_applicable"
                     or broadcast_status_category in selected_broadcast_status_filters
                 )
-                and result["metaCategory"] in selected_meta_filters[result["kind"]]
-                and _omni_video_reaction_category(result) in selected_reaction_filters
-                and _video_matches_completion_filter(
-                    result["item"],
-                    selected_completion_filters,
-                    video_partial_min_percent,
-                )
-                and _omni_video_playlist_membership_category(result)
-                in selected_playlist_membership_filters
-                and _omni_video_uploader_category(result)
-                in selected_uploader_category_filters
+                and result["metaCategory"] in selected_meta_filters[kind]
+                and reaction_category in selected_reaction_filters
+                and completion_category in selected_completion_filters
+                and membership_category in selected_playlist_membership_filters
+                and uploader_category in selected_uploader_category_filters
             )
-        return False
+            for plugin_id, video_ids in active_video_facet_memberships.items():
+                if native_match:
+                    facet = "present" if video_id in video_ids else "absent"
+                    video_facet_counts[plugin_id][facet] += 1
+            plugin_match = all(
+                video_id in video_ids for video_ids in active_video_id_filters
+            ) and all(
+                video_id not in video_ids
+                for video_ids in active_video_id_exclusion_filters
+            )
 
-    native_video_results = [
-        result
-        for result in results
-        if result["kind"] == "video" and matches_native_filters(result)
-    ]
-    video_facet_counts = {
-        plugin_id: {
-            "present": sum(
-                1
-                for result in native_video_results
-                if str(result["item"].get("video_id") or "") in video_ids
-            ),
-            "absent": sum(
-                1
-                for result in native_video_results
-                if str(result["item"].get("video_id") or "") not in video_ids
-            ),
-        }
-        for plugin_id, video_ids in active_video_facet_memberships.items()
-    }
-    native_clip_results = [
-        result
-        for result in results
-        if result["kind"] == "clip" and matches_native_filters(result)
-    ]
-    clip_facet_counts = {
-        plugin_id: {
-            "present": sum(
-                1
-                for result in native_clip_results
-                if str(result["item"].get("clip_id") or "") in clip_ids
-            ),
-            "absent": sum(
-                1
-                for result in native_clip_results
-                if str(result["item"].get("clip_id") or "") not in clip_ids
-            ),
-        }
-        for plugin_id, clip_ids in active_clip_facet_memberships.items()
-    }
+        if not plugin_match:
+            continue
 
-    plugin_filtered_results = [
-        result
-        for result in results
-        if (
-            (
-                result["kind"] != "video"
-                or (
-                    all(
-                        str(result["item"].get("video_id") or "") in video_ids
-                        for video_ids in active_video_id_filters
-                    )
-                    and all(
-                        str(result["item"].get("video_id") or "") not in video_ids
-                        for video_ids in active_video_id_exclusion_filters
-                    )
-                )
-            )
-            and (
-                result["kind"] != "clip"
-                or (
-                    all(
-                        str(result["item"].get("clip_id") or "") in clip_ids
-                        for clip_ids in active_clip_id_filters
-                    )
-                    and all(
-                        str(result["item"].get("clip_id") or "") not in clip_ids
-                        for clip_ids in active_clip_id_exclusion_filters
-                    )
-                )
-            )
-        )
-    ]
-    meta_counts = _omni_meta_counts(plugin_filtered_results)
+        group = meta_counts[f"{kind}s"]
+        group["total"] += 1
+        if kind == "channel":
+            group[result["channelSubscription"]] += 1
+            group[result["channelStatus"]] += 1
+        elif kind == "playlist":
+            group[result["metaCategory"]] += 1
+            group[result["playlistOwnership"]] += 1
+        elif kind == "clip":
+            group[result["clipOwnership"]] += 1
+        elif kind == "video":
+            group[result["metaCategory"]] += 1
+            reaction_counts["total"] += 1
+            reaction_counts[reaction_category] += 1
+            video_type_counts["total"] += 1
+            video_type_counts[video_type_category] += 1
+            if broadcast_status_category != "not_applicable":
+                broadcast_status_counts["total"] += 1
+                broadcast_status_counts[broadcast_status_category] += 1
+            completion_counts["total"] += 1
+            completion_counts[completion_category] += 1
+            playlist_membership_counts["total"] += 1
+            playlist_membership_counts[membership_category] += 1
+            uploader_category_counts["total"] += 1
+            uploader_category_counts.setdefault(uploader_category, 0)
+            uploader_category_counts[uploader_category] += 1
+
+        if native_match:
+            filtered_results.append(result)
+
+    sql_counts = video_sql_data.get("counts") or {}
+    for category, count in sql_counts.get("meta", {}).items():
+        meta_counts["videos"][category] += count
+        meta_counts["videos"]["total"] += count
+    for category, count in sql_counts.get("reaction", {}).items():
+        reaction_counts[category] += count
+        reaction_counts["total"] += count
+    for category, count in sql_counts.get("video_type", {}).items():
+        video_type_counts[category] += count
+        video_type_counts["total"] += count
+    for category, count in sql_counts.get("broadcast_status", {}).items():
+        broadcast_status_counts[category] += count
+        broadcast_status_counts["total"] += count
+    for category, count in sql_counts.get("completion", {}).items():
+        completion_counts[category] += count
+        completion_counts["total"] += count
+    for category, count in sql_counts.get("membership", {}).items():
+        playlist_membership_counts[category] += count
+        playlist_membership_counts["total"] += count
+    for category, count in sql_counts.get("uploader_category", {}).items():
+        uploader_category_counts.setdefault(category, 0)
+        uploader_category_counts[category] += count
+        uploader_category_counts["total"] += count
+    for plugin_id, counts in (video_sql_data.get("facet_counts") or {}).items():
+        for category in ("present", "absent"):
+            video_facet_counts[plugin_id][category] += counts[category]
+
     if video_facet_counts:
         meta_counts["videoPlugins"] = video_facet_counts
     if clip_facet_counts:
         meta_counts["clipPlugins"] = clip_facet_counts
-    reaction_counts = _omni_reaction_counts(plugin_filtered_results)
-    video_type_counts = _omni_video_type_counts(plugin_filtered_results)
-    broadcast_status_counts = _omni_video_broadcast_status_counts(
-        plugin_filtered_results
-    )
-    completion_counts = _omni_completion_counts(
-        plugin_filtered_results,
-        video_partial_min_percent,
-    )
-    playlist_membership_counts = _omni_playlist_membership_counts(
-        plugin_filtered_results
-    )
-    uploader_category_counts = _omni_uploader_category_counts(
-        plugin_filtered_results,
-        known_uploader_categories,
-    )
-    results = [
-        result for result in plugin_filtered_results if matches_native_filters(result)
-    ]
+    sql_video_results = []
+    other_results = []
+    supplemental_video_results = []
+    for result in filtered_results:
+        if result.pop("_sql_video_candidate", False):
+            sql_video_results.append(result)
+        elif result["kind"] == "video":
+            supplemental_video_results.append(result)
+        else:
+            other_results.append(result)
+    results = [*other_results, *sql_video_results, *supplemental_video_results]
     _sort_omni_results(results, sort)
-    total = len(results)
+    materialized_video_count = len(sql_video_results)
+    total = (
+        len(results)
+        - materialized_video_count
+        + int(video_sql_data["filtered_total"] or 0)
+    )
     if total and offset >= total:
         offset = ((total - 1) // limit) * limit
     page = results[offset : offset + limit]
@@ -3041,7 +3531,8 @@ def omni_search_data(
     _hydrate_omni_videos(conn, page)
     _add_omni_video_links(conn, page)
     counts = {
-        "videos": sum(1 for result in results if result["kind"] == "video"),
+        "videos": int(video_sql_data["filtered_total"] or 0)
+        + len(supplemental_video_results),
         "clips": sum(1 for result in results if result["kind"] == "clip"),
         "playlists": sum(1 for result in results if result["kind"] == "playlist"),
         "channels": sum(1 for result in results if result["kind"] == "channel"),

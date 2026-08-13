@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from yt_library import core
+from yt_library import core, queries
 from yt_library.queries import (
     channel_detail_data,
     channel_list_data,
@@ -891,6 +891,33 @@ class NormalizedReadModelTests(unittest.TestCase):
             {"videos": 2, "clips": 0, "playlists": 0, "channels": 2},
         )
         self.assertEqual(all_data["total"], 4)
+
+    def test_omni_search_hydrates_only_the_requested_video_page(self) -> None:
+        for index, title in enumerate(("Alpha", "Bravo", "Charlie", "Delta", "Echo")):
+            self.add_video(f"paged{index}", title)
+        self.conn.execute("UPDATE videos SET is_playable = 1")
+        self.conn.commit()
+
+        with patch(
+            "yt_library.queries._hydrate_omni_videos",
+            wraps=queries._hydrate_omni_videos,
+        ) as hydrate:
+            data = omni_search_data(
+                self.conn,
+                "",
+                result_kinds={"video"},
+                sort="title",
+                limit=2,
+                offset=2,
+            )
+
+        self.assertEqual(data["total"], 5)
+        self.assertEqual(
+            [result["item"]["video_id"] for result in data["results"]],
+            ["paged2", "paged3"],
+        )
+        hydrated_results = hydrate.call_args.args[1]
+        self.assertEqual(len(hydrated_results), 2)
 
     def test_omni_search_newest_sorts_playlists_by_newest_member_upload_date(self) -> None:
         self.add_video("contentnew1", "Newest playlist member")
