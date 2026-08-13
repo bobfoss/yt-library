@@ -2556,7 +2556,7 @@ class CoreHelperTests(unittest.TestCase):
         initial_data = {
             "featured": {
                 "shelfRenderer": {
-                    "title": {"simpleText": "Featured Channels"},
+                    "title": {"simpleText": "Featured"},
                     "content": {
                         "horizontalListRenderer": {
                             "items": [
@@ -2593,17 +2593,26 @@ class CoreHelperTests(unittest.TestCase):
             },
         }
 
-        self.assertEqual(
-            core.extract_channel_featured_channels(initial_data, owner_channel_id),
-            [
-                {
-                    "channel_id": "UCfeatured12345678901234",
-                    "title": "Featured Friend",
-                    "channel_reference": "@featured-friend",
-                    "position": 0,
+        expected = [
+            {
+                "channel_id": "UCfeatured12345678901234",
+                "title": "Featured Friend",
+                "channel_reference": "@featured-friend",
+                "position": 0,
+            }
+        ]
+        for shelf_title in ("Featured", "Featured Channels"):
+            with self.subTest(shelf_title=shelf_title):
+                initial_data["featured"]["shelfRenderer"]["title"] = {
+                    "simpleText": shelf_title,
                 }
-            ],
-        )
+                self.assertEqual(
+                    core.extract_channel_featured_channels(
+                        initial_data,
+                        owner_channel_id,
+                    ),
+                    expected,
+                )
 
     def test_successful_channel_metadata_authoritatively_replaces_featured_channels(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

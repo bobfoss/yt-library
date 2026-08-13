@@ -3234,7 +3234,8 @@ def extract_channel_featured_channels(
         shelf = node.get("shelfRenderer")
         if not isinstance(shelf, dict):
             continue
-        if text_from_runs(shelf.get("title")).strip().casefold() != "featured channels":
+        shelf_title = text_from_runs(shelf.get("title")).strip().casefold()
+        if shelf_title not in {"featured", "featured channels"}:
             continue
         for item in walk(shelf.get("content")):
             if not isinstance(item, dict):
