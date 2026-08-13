@@ -81,6 +81,21 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(data["channels"][0]["preferred_reference"], "@first")
         self.assertEqual(data["channels"][0]["url"], "https://www.youtube.com/@first")
 
+    def test_channel_handle_prefers_canonical_alias_over_malformed_direct_row(self) -> None:
+        core.upsert_channel(
+            self.conn,
+            "UC3JYkcrAkY2wW7mJ9mwhofw",
+            title="FRUHD",
+            aliases="@FRUHD",
+        )
+        core.upsert_channel(self.conn, "@FRUHD", title="FRUHD duplicate")
+        self.conn.commit()
+
+        detail = channel_detail_data(self.conn, "@FRUHD")
+
+        self.assertEqual(detail["channel_id"], "UC3JYkcrAkY2wW7mJ9mwhofw")
+        self.assertEqual(detail["title"], "FRUHD")
+
     def test_channel_read_models_attach_cataloged_and_external_featured_channels(self) -> None:
         core.upsert_channel(self.conn, "UC_owner", title="Owner", aliases="@owner")
         core.upsert_channel(

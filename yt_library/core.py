@@ -454,6 +454,12 @@ def youtube_channel_id_from_url(value: str) -> str:
     return found.group(1) if found else ""
 
 
+def is_canonical_youtube_channel_id(value: str) -> bool:
+    return bool(
+        re.fullmatch(r"(?:UC|HC)[A-Za-z0-9_-]{20,}", (value or "").strip())
+    )
+
+
 def youtube_channel_url(channel_id: str) -> str:
     channel_id = (channel_id or "").strip()
     if not channel_id:
@@ -3405,6 +3411,7 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
     channel_url = youtube_channel_url(channel_id)
     thumbnail_url = ""
     found_channel_id = channel_id
+    expected_channel_id = channel_id if is_canonical_youtube_channel_id(channel_id) else ""
     description = ""
     status = ""
     status_reason = ""
@@ -3421,7 +3428,9 @@ def extract_channel_page_metadata(html_text: str, channel_id: str) -> dict[str, 
             renderer_channel_id = youtube_channel_id_from_url(
                 str(renderer.get("channelUrl") or "")
             )
-        if not renderer_channel_id or (channel_id and renderer_channel_id != channel_id):
+        if not renderer_channel_id or (
+            expected_channel_id and renderer_channel_id != expected_channel_id
+        ):
             continue
         title = str(renderer.get("title") or title or "").strip()
         description = str(renderer.get("description") or description or "").strip()
@@ -3590,6 +3599,7 @@ def fetch_channel_metadata(
                 metadata,
                 archivarix_channel_metadata(archivarix_fields, channel_id),
             )
+    metadata["requested_channel_reference"] = channel_id
     metadata["channel_thumbnail_path"] = cache_channel_thumbnail(
         opener,
         metadata.get("channel_id", "") or channel_id,
@@ -4270,6 +4280,56 @@ def enrich_archivarix_video_channel(
         video["channelStatusReason"] = channel_metadata["channel_status_reason"]
 
 
+def merge_channel_reference_row(
+    conn: sqlite3.Connection,
+    channel_reference: str,
+    canonical_channel_id: str,
+) -> bool:
+    channel_reference = (channel_reference or "").strip()
+    canonical_channel_id = (canonical_channel_id or "").strip()
+    if (
+        not channel_reference
+        or channel_reference == canonical_channel_id
+        or is_canonical_youtube_channel_id(channel_reference)
+        or not is_canonical_youtube_channel_id(canonical_channel_id)
+    ):
+        return False
+    stale = conn.execute(
+        "SELECT 1 FROM channels WHERE channel_id = ?",
+        (channel_reference,),
+    ).fetchone()
+    canonical = conn.execute(
+        "SELECT 1 FROM channels WHERE channel_id = ?",
+        (canonical_channel_id,),
+    ).fetchone()
+    if stale is None or canonical is None:
+        return False
+
+    reference_columns = (
+        ("videos", "channel_id"),
+        ("playlists", "owner_channel_id"),
+        ("clips", "owner_channel_id"),
+        ("playlist_collaborators", "channel_id"),
+        ("my_activity_subscription_events", "channel_id"),
+        ("channel_featured_channels", "owner_channel_id"),
+        ("channel_featured_channels", "featured_channel_id"),
+    )
+    for table, column in reference_columns:
+        conn.execute(
+            f'UPDATE OR IGNORE "{table}" SET "{column}" = ? WHERE "{column}" = ?',
+            (canonical_channel_id, channel_reference),
+        )
+        conn.execute(
+            f'DELETE FROM "{table}" WHERE "{column}" = ?',
+            (channel_reference,),
+        )
+    conn.execute(
+        "DELETE FROM channels WHERE channel_id = ?",
+        (channel_reference,),
+    )
+    return True
+
+
 def store_channel_metadata(
     conn: sqlite3.Connection,
     metadata: dict[str, Any],
@@ -4298,6 +4358,20 @@ def store_channel_metadata(
         source="metadata",
         updated_at=now,
     )
+    requested_channel_reference = str(
+        metadata.get("requested_channel_reference") or ""
+    ).strip()
+    if (
+        channel_id
+        and requested_channel_reference
+        and requested_channel_reference != channel_id
+        and not is_canonical_youtube_channel_id(requested_channel_reference)
+    ):
+        merge_channel_reference_row(
+            conn,
+            requested_channel_reference,
+            channel_id,
+        )
     subscribed = str(metadata.get("channel_subscribed") or "").strip()
     notification_level = normalize_channel_notification_level(
         metadata.get("channel_notification_level", "")

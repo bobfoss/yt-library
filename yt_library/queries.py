@@ -1385,18 +1385,18 @@ def resolve_channel_id(conn: sqlite3.Connection, channel_reference: str) -> str:
     channel_reference = (channel_reference or "").strip()
     if not channel_reference:
         return ""
-    direct = conn.execute(
-        "SELECT channel_id FROM channels WHERE channel_id = ?",
-        (channel_reference,),
-    ).fetchone()
-    if direct is not None:
-        return str(direct["channel_id"])
     wanted = youtube_channel_ref_from_url(channel_reference) or channel_reference
     for row in conn.execute(
         "SELECT channel_id, aliases FROM channels WHERE trim(aliases) <> ''"
     ):
         if preferred_youtube_channel_reference("", row["aliases"]).casefold() == wanted.casefold():
             return str(row["channel_id"])
+    direct = conn.execute(
+        "SELECT channel_id FROM channels WHERE channel_id = ?",
+        (channel_reference,),
+    ).fetchone()
+    if direct is not None:
+        return str(direct["channel_id"])
     return ""
 
 

@@ -1724,6 +1724,70 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(authenticated["channel_subscribed"], "1")
         self.assertEqual(authenticated["channel_notification_level"], "all")
 
+    def test_channel_metadata_fetch_resolves_handle_to_canonical_identity(self) -> None:
+        def entity_key(channel_id: str) -> str:
+            encoded = base64.urlsafe_b64encode(
+                b"\x12\x18" + channel_id.encode() + b" 3(\x01"
+            ).decode()
+            return encoded.rstrip("=")
+
+        channel_id = "UC3JYkcrAkY2wW7mJ9mwhofw"
+        initial_data = {
+            "metadata": {
+                "channelMetadataRenderer": {
+                    "title": "FRUHD",
+                    "externalId": channel_id,
+                    "channelUrl": "/@FRUHD",
+                    "ownerUrls": ["https://www.youtube.com/@FRUHD"],
+                    "avatar": {
+                        "thumbnails": [
+                            {"url": "https://example.test/fruhd.jpg", "width": 176}
+                        ]
+                    },
+                }
+            },
+            "frameworkUpdates": {
+                "entityBatchUpdate": {
+                    "mutations": [
+                        {
+                            "payload": {
+                                "subscriptionStateEntity": {
+                                    "key": entity_key(channel_id),
+                                    "subscribed": True,
+                                }
+                            }
+                        },
+                        {
+                            "payload": {
+                                "subscriptionNotificationStateEntity": {
+                                    "key": entity_key(channel_id),
+                                    "state": "SUBSCRIPTION_NOTIFICATION_STATE_ALL",
+                                }
+                            }
+                        },
+                    ]
+                }
+            },
+        }
+        page = f"<script>var ytInitialData = {json.dumps(initial_data)};</script>"
+
+        with (
+            patch("yt_library.core.request_text", return_value=page),
+            patch("yt_library.core.youtube_page_is_authenticated", return_value=True),
+            patch("yt_library.core.cache_channel_thumbnail", return_value=""),
+        ):
+            metadata = core.fetch_channel_metadata(
+                object(),
+                "@FRUHD",
+                Path("thumbs"),
+            )
+
+        self.assertEqual(metadata["channel_id"], channel_id)
+        self.assertEqual(metadata["requested_channel_reference"], "@FRUHD")
+        self.assertEqual(metadata["channel_aliases"], "@FRUHD")
+        self.assertEqual(metadata["channel_subscribed"], "1")
+        self.assertEqual(metadata["channel_notification_level"], "all")
+
     def test_channel_metadata_fetch_uses_only_the_direct_channel_page(self) -> None:
         opener = Mock()
         channel_id = "UCchannel12345678901234"
@@ -2026,6 +2090,58 @@ class CoreHelperTests(unittest.TestCase):
             unsubscribed["notification_checked_at"],
             "2026-07-30T22:00:00Z",
         )
+
+    def test_store_channel_metadata_repairs_handle_keyed_channel_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_channel(
+                        conn,
+                        "@FRUHD",
+                        title="FRUHD",
+                    )
+                    core.upsert_video(
+                        conn,
+                        "fruhdvideo1",
+                        title="FRUHD video",
+                        channel_id="@FRUHD",
+                    )
+                    core.store_channel_metadata(
+                        conn,
+                        {
+                            "channel_id": "UC3JYkcrAkY2wW7mJ9mwhofw",
+                            "requested_channel_reference": "@FRUHD",
+                            "channel": "FRUHD",
+                            "channel_aliases": "@FRUHD",
+                            "channel_aliases_observed": True,
+                            "channel_subscribed": "1",
+                            "channel_notification_level": "all",
+                        },
+                        "ok",
+                    )
+                stale = conn.execute(
+                    "SELECT 1 FROM channels WHERE channel_id = '@FRUHD'"
+                ).fetchone()
+                canonical = conn.execute(
+                    """
+                    SELECT subscribed, notification_level
+                    FROM channels
+                    WHERE channel_id = 'UC3JYkcrAkY2wW7mJ9mwhofw'
+                    """
+                ).fetchone()
+                video_channel_id = conn.execute(
+                    "SELECT channel_id FROM videos WHERE video_id = 'fruhdvideo1'"
+                ).fetchone()["channel_id"]
+            finally:
+                conn.close()
+
+        self.assertIsNone(stale)
+        self.assertEqual(
+            (canonical["subscribed"], canonical["notification_level"]),
+            (1, "all"),
+        )
+        self.assertEqual(video_channel_id, "UC3JYkcrAkY2wW7mJ9mwhofw")
 
     def test_successful_video_metadata_marks_visibility_checked(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
