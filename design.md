@@ -268,11 +268,13 @@ the active YTL config path, `context.plugin_id` is the configured ID, and
 `context.plugin_config` is a copy of that plugin's settings.
 
 With the negotiated `library_video_lookup_v1` feature, a plugin may call
-`context.library_videos(video_ids)` during startup to retrieve bounded,
+`context.library_videos(video_ids)` while activated to retrieve bounded,
 read-only canonical metadata for up to 250,000 explicit video IDs. Results
 include `video_id`, `title`, `channel_id`, availability/playability, video type,
 and broadcast lifecycle fields. The host performs the lookup; plugins must not
-open the YTL database directly.
+open the YTL database directly. Status metrics based on this lookup should cache
+their result and refresh only when plugin data changes or after a reasonable
+interval rather than querying the full identity set on every status poll.
 
 On service startup, YTL follows this lifecycle:
 
