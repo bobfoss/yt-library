@@ -110,6 +110,10 @@ page and activity loading, occurrence-card rendering, pagination, adjacent-page
 prefetch, and stale-generation rejection. `history-workflow.js` also owns the
 transaction boundary for heatmap year, Today, and Sync changes so a failed or
 superseded transition restores the complete prior date, page, and sync state.
+While global History is selected, the sidebar search box filters History's
+occurrence rows in place and persists the query on `/history`; it does not
+activate canonical omni-search. The heatmap applies the same query so its daily
+counts and page offsets remain aligned with the filtered occurrence list.
 
 Admin actions that send URL-parameter POST requests share one JSON/error
 transport. Callers continue to own their distinct user-interface policy:

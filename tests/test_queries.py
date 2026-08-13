@@ -3269,6 +3269,21 @@ class NormalizedReadModelTests(unittest.TestCase):
             ],
         )
 
+        query_data = history_activity_data(
+            self.conn,
+            start_date="2026-07-01",
+            end_date="2026-07-05",
+            query="Activity Video",
+        )
+        self.assertEqual(query_data["query"], "Activity Video")
+        self.assertEqual(
+            query_data["activity"],
+            [
+                {"watch_date": "2026-07-05", "watch_count": 2, "offset": 0},
+                {"watch_date": "2026-07-04", "watch_count": 1, "offset": 2},
+            ],
+        )
+
     def test_playlist_items_share_one_video_and_include_all_playlist_links(self) -> None:
         self.add_video("same123", "Same Video")
         self.conn.executemany(

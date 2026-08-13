@@ -3092,6 +3092,22 @@ def clip_detail_data(conn: sqlite3.Connection, clip_id: str) -> dict[str, Any] |
     return None
 
 
+def _history_filter_conditions(query: str, channel_id: str) -> tuple[list[str], list[Any]]:
+    conditions: list[str] = []
+    params: list[Any] = []
+    normalized_query = query.strip().lower()
+    if normalized_query:
+        conditions.append(
+            "lower(v.title || ' ' || COALESCE(ch.title, '') || ' ' || v.video_id || ' ' || v.description || ' ' || v.upload_date) LIKE ?"
+        )
+        params.append(f"%{normalized_query}%")
+    normalized_channel_id = channel_id.strip()
+    if normalized_channel_id:
+        conditions.append("v.channel_id = ?")
+        params.append(normalized_channel_id)
+    return conditions, params
+
+
 def history_search_data(
     conn: sqlite3.Connection,
     query: str,
@@ -3099,20 +3115,9 @@ def history_search_data(
     offset: int = 0,
     channel_id: str = "",
 ) -> dict[str, Any]:
-    query = query.strip()
-    channel_id = channel_id.strip()
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
-    conditions: list[str] = []
-    params: list[Any] = []
-    if query:
-        conditions.append(
-            "lower(v.title || ' ' || COALESCE(ch.title, '') || ' ' || v.video_id || ' ' || v.description || ' ' || v.upload_date) LIKE ?"
-        )
-        params.append(f"%{query.lower()}%")
-    if channel_id:
-        conditions.append("v.channel_id = ?")
-        params.append(channel_id)
+    conditions, params = _history_filter_conditions(query, channel_id)
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     ordering = _history_event_order_sql()
     availability_category_sql = _video_availability_category_sql(
@@ -3265,13 +3270,11 @@ def history_activity_data(
     start_date: str = "",
     end_date: str = "",
     channel_id: str = "",
+    query: str = "",
 ) -> dict[str, Any]:
-    channel_id = channel_id.strip()
     conditions = ["COALESCE(he.watch_date, substr(he.watched_at, 1, 10)) IS NOT NULL"]
-    params: list[Any] = []
-    if channel_id:
-        conditions.append("v.channel_id = ?")
-        params.append(channel_id)
+    history_conditions, params = _history_filter_conditions(query, channel_id)
+    conditions.extend(history_conditions)
     where = " AND ".join(conditions)
     daily_rows = [
         dict(row)
@@ -3281,6 +3284,7 @@ def history_activity_data(
                    COUNT(*) AS watch_count
             FROM history_events he
             JOIN videos v ON v.video_id = he.video_id
+            LEFT JOIN channels ch ON ch.channel_id = v.channel_id
             WHERE {where}
             GROUP BY COALESCE(he.watch_date, substr(he.watched_at, 1, 10))
             ORDER BY watch_date DESC
@@ -3302,4 +3306,10 @@ def history_activity_data(
                 }
             )
         offset += watch_count
-    return {"start_date": start_date, "end_date": end_date, "channel_id": channel_id, "activity": activity}
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "channel_id": channel_id.strip(),
+        "query": query.strip(),
+        "activity": activity,
+    }

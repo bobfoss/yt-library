@@ -1027,8 +1027,13 @@ function channelDetailTabFromParams(params) {
 
 function localViewHref(value, includePagination = false) {
   if (value === '__search__') return searchUrl();
-  const base = value === '__history__' ? '/history' : '/search';
-  return includePagination ? appendUrlParams(base, paginationParams()) : base;
+  if (value !== '__history__') {
+    return includePagination ? appendUrlParams('/search', paginationParams()) : '/search';
+  }
+  const params = includePagination ? paginationParams() : new URLSearchParams();
+  const query = selected === '__history__' ? search.value.trim() : '';
+  if (query) params.set('q', query);
+  return appendUrlParams('/history', params);
 }
 
 function searchFieldParamValue() {
@@ -1679,6 +1684,7 @@ function selectionFromLocation() {
   const parts = pathname.split('/').filter(Boolean);
   const historyLocation = pathname === '/history' || parts[0] === 'channels';
   applyPaginationParams(params, historyLocation);
+  if (pathname === '/history') search.value = params.get('q') || '';
   if (parts.length === 2 && parts[0] === 'playlists') {
     const playlistId = decodeURIComponent(parts[1]);
     if (playlistId) {
@@ -2752,10 +2758,12 @@ async function fetchHistoryPage(channelId = '', page = currentPage) {
   const limit = Number.isFinite(size) ? size : 1000;
   const requestedPage = Math.max(1, Number(page) || 1);
   const offset = (requestedPage - 1) * limit;
-  const key = `${channelId}:${limit}:${offset}`;
+  const query = channelId ? '' : search.value.trim();
+  const key = `${channelId}:${query.toLowerCase()}:${limit}:${offset}`;
   return cachedRequest(historyPageCache, key, async () => {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (channelId) params.set('channel_id', channelId);
+    if (query) params.set('q', query);
     const response = await fetch(`/api/history/search?${params}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`History fetch failed: ${response.status}`);
     const payload = await response.json();
@@ -2883,10 +2891,12 @@ function historyActivityDayNear(payload, dateKey) {
 
 async function fetchHistoryActivity(channelId = '', yearOffset = historyActivityYearOffset) {
   const range = historyActivityRange(yearOffset);
-  const key = `${channelId}:${range.startKey}:${range.endKey}`;
+  const query = channelId ? '' : search.value.trim();
+  const key = `${channelId}:${query.toLowerCase()}:${range.startKey}:${range.endKey}`;
   return cachedRequest(historyActivityCache, key, async () => {
     const params = new URLSearchParams({ start: range.startKey, end: range.endKey });
     if (channelId) params.set('channel_id', channelId);
+    if (query) params.set('q', query);
     const response = await fetch(`/api/history/activity?${params}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`History activity fetch failed: ${response.status}`);
     return response.json();
@@ -3899,9 +3909,13 @@ function syncSearchFiltersForSelection() {
     playlists: 'Search playlists',
     channels: 'Search channels',
   };
-  search.placeholder = selected.startsWith('__playlist__:')
-    ? 'Search this playlist'
-    : (placeholders[contextKind] || 'Search everything');
+  search.placeholder = selected === '__history__'
+    ? 'Search history'
+    : (
+      selected.startsWith('__playlist__:')
+        ? 'Search this playlist'
+        : (placeholders[contextKind] || 'Search everything')
+    );
   if (!historySelected && renderedSearchFilterContext !== contextKind) {
     renderSearchMetaFilters();
   }
@@ -6468,6 +6482,17 @@ search.addEventListener('input', () => {
     searchInputTimer = null;
   }
   currentPage = 1;
+  if (selected === '__history__') {
+    historyNavigationDate = '';
+    pendingHistoryDate = '';
+    historyActivityYearOffset = 0;
+    updateCurrentUrl(true);
+    searchInputTimer = setTimeout(() => {
+      searchInputTimer = null;
+      void render();
+    }, 250);
+    return;
+  }
   if (selected.startsWith('__playlist__:')) {
     updateCurrentUrl(true);
     if (searchInputTimer !== null) clearTimeout(searchInputTimer);
@@ -7061,7 +7086,6 @@ function handleBrowserLocationChange() {
   selected = selectionFromLocation();
   if (!selected.startsWith('__channel__:')) channelDetailTab = 'playlisted-videos';
   if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
-  if (selected === '__history__') search.value = '';
   renderGroups();
   void render().finally(() => {
     if (progressToken !== null) {

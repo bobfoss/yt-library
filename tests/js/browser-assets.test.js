@@ -163,7 +163,7 @@ test('detail navigation retains the active search state', () => {
   );
 });
 
-test('history hides search facets until the search box activates search', () => {
+test('history keeps search focused on occurrence results without showing facets', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');
 
@@ -174,7 +174,23 @@ test('history hides search facets until the search box activates search', () => 
   );
   assert.match(
     indexSource,
-    /function activateSearchFromSelection[\s\S]{0,700}searchFilters\.hidden = false/,
+    /search\.placeholder = selected === '__history__'[\s\S]{0,50}'Search history'/,
+  );
+  assert.match(
+    indexSource,
+    /search\.addEventListener\('input'[\s\S]{0,220}selected === '__history__'[\s\S]{0,260}updateCurrentUrl\(true\)[\s\S]{0,180}void render\(\)/,
+  );
+  assert.match(
+    indexSource,
+    /if \(pathname === '\/history'\) search\.value = params\.get\('q'\) \|\| ''/,
+  );
+  assert.match(
+    indexSource,
+    /async function fetchHistoryPage[\s\S]{0,700}if \(query\) params\.set\('q', query\)/,
+  );
+  assert.match(
+    indexSource,
+    /async function fetchHistoryActivity[\s\S]{0,600}if \(query\) params\.set\('q', query\)/,
   );
 });
 
@@ -210,7 +226,7 @@ test('entity details enter their scoped category context', () => {
   assert.match(indexSource, /function searchContextKind\(\)[\s\S]{0,180}selected === '__search__' \? activeSearchScope : selectedEntityCategory\(\)/);
   assert.match(indexSource, /function activeSidebarCategory\(\)[\s\S]{0,160}return selectedEntityCategory\(\)/);
   assert.match(indexSource, /function activateSearchFromSelection[\s\S]{0,240}const scope = searchContextKind\(\)[\s\S]{0,160}activeSearchScope = scope/);
-  assert.match(indexSource, /search\.placeholder = selected\.startsWith\('__playlist__:'\)[\s\S]{0,120}placeholders\[contextKind\]/);
+  assert.match(indexSource, /search\.placeholder = selected === '__history__'[\s\S]{0,220}selected\.startsWith\('__playlist__:'\)[\s\S]{0,120}placeholders\[contextKind\]/);
   assert.match(indexSource, /async function fetchEntitySearchFilters\(category, entityId\)[\s\S]{0,480}q: entityId[\s\S]{0,220}limit: '1'/);
   assert.match(indexSource, /function hydrateEntitySearchFilters\(category, entityId, generation\)[\s\S]{0,300}fetchEntitySearchFilters\(category, entityId\)[\s\S]{0,180}renderSearchMetaFilters\(payload\)/);
   assert.match(indexSource, /hydrateEntitySearchFilters\('videos', video\.video_id \|\| videoId, generation\)/);
@@ -221,7 +237,7 @@ test('entity details enter their scoped category context', () => {
 test('playlist detail reuses the sidebar video search facets', () => {
   const indexSource = source('index.js');
 
-  assert.match(indexSource, /search\.placeholder = selected\.startsWith\('__playlist__:'\)[\s\S]{0,100}'Search this playlist'/);
+  assert.match(indexSource, /search\.placeholder = selected === '__history__'[\s\S]{0,220}selected\.startsWith\('__playlist__:'\)[\s\S]{0,100}'Search this playlist'/);
   assert.match(indexSource, /function searchContextKind\(\)[\s\S]{0,100}selected\.startsWith\('__playlist__:'\)[\s\S]{0,40}'videos'/);
   assert.match(indexSource, /fetchVideoCollection\(\{[\s\S]{0,500}useSearchFacets: true/);
   assert.match(indexSource, /reactionCounts: payload\.reactionCounts/);
