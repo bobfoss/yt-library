@@ -184,7 +184,7 @@ class TemplateDomTests(unittest.TestCase):
             "search-for-filters": ("div", None),
             "groups": ("nav", None),
             "view-title": ("h2", None),
-            "search-progress-status": ("div", None),
+            "loading-status": ("div", None),
             "view-meta": ("div", None),
             "refresh": ("button", "button"),
             "grid": ("section", None),
@@ -206,6 +206,17 @@ class TemplateDomTests(unittest.TestCase):
         self.assertLess(
             self.index.position("view-meta"),
             self.index.position("refresh"),
+        )
+        self.assertIn(
+            ".view-top.history-top .toolbar-heading {\n"
+            "      display: flex;\n"
+            "      grid-column: 1;\n"
+            "      grid-row: 1;",
+            server.INDEX_HTML,
+        )
+        self.assertNotIn(
+            ".view-top.history-top .toolbar-heading { display: contents; }",
+            server.INDEX_HTML,
         )
         script_sources = {
             attributes.get("src")

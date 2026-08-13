@@ -703,11 +703,12 @@ let renderedOmniSearchQuery = '';
 let searchResultsRendered = false;
 let retainedSearchUrl = loadRetainedSearchUrl();
 let searchMetaProgressTimer = null;
-let searchHeaderProgressTimer = null;
-let searchHeaderProgressToken = 0;
-let pendingSidebarProgressToken = null;
 let pendingSearchMetaGroups = new Set();
 let searchMetaProgressDots = '';
+let loadingStatusEpoch = 0;
+let loadingStatusToken = 0;
+let loadingStatusTimer = null;
+let activeLoadingStatusTokens = new Set();
 let searchInputTimer = null;
 let renderedSearchFilterContext = null;
 let renderedSearchFilterPayload = {};
@@ -748,68 +749,73 @@ const bottomPager = document.getElementById('bottom-pager');
 const resultsScroll = document.querySelector('.results-scroll');
 const viewTop = document.getElementById('view-top');
 const viewContext = document.getElementById('view-context');
-const searchProgressStatus = document.getElementById('search-progress-status');
+const loadingStatus = document.getElementById('loading-status');
 
 async function loadData({ preserveSearchContent = false } = {}) {
-  cancelAdjacentPagePrefetch();
-  refresh.disabled = true;
-  refresh.textContent = 'Refreshing';
-  const response = await fetch('/api/bootstrap', { cache: 'no-store' });
-  if (!response.ok) throw new Error(`Data refresh failed: ${response.status}`);
-  data = await response.json();
-  await loadBrowserPlugins(data.plugins || []);
-  historyPageCache = new Map();
-  historyActivityCache = new Map();
-  omniSearchCache = new Map();
-  if (!preserveSearchContent) {
-    renderedOmniSearchQuery = '';
-    searchResultsRendered = false;
+  const loadingToken = beginLoadingStatus();
+  try {
+    cancelAdjacentPagePrefetch();
+    refresh.disabled = true;
+    refresh.textContent = 'Refreshing';
+    const response = await fetch('/api/bootstrap', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Data refresh failed: ${response.status}`);
+    data = await response.json();
+    await loadBrowserPlugins(data.plugins || []);
+    historyPageCache = new Map();
+    historyActivityCache = new Map();
+    omniSearchCache = new Map();
+    if (!preserveSearchContent) {
+      renderedOmniSearchQuery = '';
+      searchResultsRendered = false;
+    }
+    viewDataCache = new Map();
+    videoMetaCountsCache = new Map();
+    videoTypeCountsCache = new Map();
+    videoBroadcastStatusCountsCache = new Map();
+    videoCompletionCountsCache = new Map();
+    videoReactionCountsCache = new Map();
+    videoUploaderCategoryCountsCache = new Map();
+    videoPluginFacetCountsCache = new Map();
+    omniMetaCountsCache = new Map();
+    omniVideoTypeCountsCache = new Map();
+    omniBroadcastStatusCountsCache = new Map();
+    omniVideoPluginFacetCountsCache = new Map();
+    omniClipPluginFacetCountsCache = new Map();
+    omniReactionCountsCache = new Map();
+    omniCompletionCountsCache = new Map();
+    omniPlaylistMembershipCountsCache = new Map();
+    omniUploaderCategoryCountsCache = new Map();
+    channelHistoryCounts = new Map();
+    playlistMemberships = new Map();
+    for (const item of data.memberships || []) {
+      if (!playlistMemberships.has(item.group_key)) playlistMemberships.set(item.group_key, []);
+      playlistMemberships.get(item.group_key).push(item.playlist_id);
+    }
+    playlistChildren = new Map();
+    for (const group of data.groups || []) {
+      const parent = group.parent_key || '';
+      if (!playlistChildren.has(parent)) playlistChildren.set(parent, []);
+      playlistChildren.get(parent).push(group);
+    }
+    channelMemberships = new Map();
+    for (const item of data.channelMemberships || []) {
+      if (!channelMemberships.has(item.group_key)) channelMemberships.set(item.group_key, []);
+      channelMemberships.get(item.group_key).push(item.channel_id);
+    }
+    channelChildren = new Map();
+    for (const group of data.channelGroups || []) {
+      const parent = group.parent_key || '';
+      if (!channelChildren.has(parent)) channelChildren.set(parent, []);
+      channelChildren.get(parent).push(group);
+    }
+    selected = selectionFromLocation();
+    renderGroups();
+    await render();
+    refresh.disabled = false;
+    refresh.textContent = 'Refresh';
+  } finally {
+    finishLoadingStatus(loadingToken);
   }
-  viewDataCache = new Map();
-  videoMetaCountsCache = new Map();
-  videoTypeCountsCache = new Map();
-  videoBroadcastStatusCountsCache = new Map();
-  videoCompletionCountsCache = new Map();
-  videoReactionCountsCache = new Map();
-  videoUploaderCategoryCountsCache = new Map();
-  videoPluginFacetCountsCache = new Map();
-  omniMetaCountsCache = new Map();
-  omniVideoTypeCountsCache = new Map();
-  omniBroadcastStatusCountsCache = new Map();
-  omniVideoPluginFacetCountsCache = new Map();
-  omniClipPluginFacetCountsCache = new Map();
-  omniReactionCountsCache = new Map();
-  omniCompletionCountsCache = new Map();
-  omniPlaylistMembershipCountsCache = new Map();
-  omniUploaderCategoryCountsCache = new Map();
-  channelHistoryCounts = new Map();
-  playlistMemberships = new Map();
-  for (const item of data.memberships || []) {
-    if (!playlistMemberships.has(item.group_key)) playlistMemberships.set(item.group_key, []);
-    playlistMemberships.get(item.group_key).push(item.playlist_id);
-  }
-  playlistChildren = new Map();
-  for (const group of data.groups || []) {
-    const parent = group.parent_key || '';
-    if (!playlistChildren.has(parent)) playlistChildren.set(parent, []);
-    playlistChildren.get(parent).push(group);
-  }
-  channelMemberships = new Map();
-  for (const item of data.channelMemberships || []) {
-    if (!channelMemberships.has(item.group_key)) channelMemberships.set(item.group_key, []);
-    channelMemberships.get(item.group_key).push(item.channel_id);
-  }
-  channelChildren = new Map();
-  for (const group of data.channelGroups || []) {
-    const parent = group.parent_key || '';
-    if (!channelChildren.has(parent)) channelChildren.set(parent, []);
-    channelChildren.get(parent).push(group);
-  }
-  selected = selectionFromLocation();
-  renderGroups();
-  await render();
-  refresh.disabled = false;
-  refresh.textContent = 'Refresh';
 }
 
 function trimRequestCache(cache, maxEntries) {
@@ -1751,7 +1757,6 @@ function selectionFromLocation() {
 function activateSearchPreset(preset, groupKey = '') {
   const definition = searchPresetDefinition(preset);
   if (!definition) return;
-  const progressToken = beginSidebarNavigationProgress();
   selected = '__search__';
   activeSearchScope = ['videos', 'clips', 'playlists', 'channels'].includes(definition.kind)
     ? definition.kind
@@ -1765,7 +1770,7 @@ function activateSearchPreset(preset, groupKey = '') {
   const href = searchUrl();
   if (setBrowserUrl(href)) return;
   renderGroups();
-  void render().finally(() => finishSidebarNavigationProgress(progressToken));
+  void render();
 }
 
 function activateSearchFromSelection({ resetMetaVisibility = false } = {}) {
@@ -1789,7 +1794,6 @@ function activateSearchFromSelection({ resetMetaVisibility = false } = {}) {
 }
 
 function activateUnscopedSearch() {
-  const progressToken = beginSidebarNavigationProgress();
   selected = '__search__';
   activeSearchPreset = '';
   activeSearchScope = '';
@@ -1802,7 +1806,7 @@ function activateUnscopedSearch() {
   const href = searchUrl();
   if (setBrowserUrl(href)) return;
   renderGroups();
-  void render().finally(() => finishSidebarNavigationProgress(progressToken));
+  void render();
 }
 
 function activateSearchNavigation() {
@@ -1810,12 +1814,10 @@ function activateSearchNavigation() {
     activateUnscopedSearch();
     return;
   }
-  beginSidebarNavigationProgress();
   setBrowserUrl(retainedSearchUrl || '/search');
 }
 
 function setSelected(value) {
-  const progressToken = beginSidebarNavigationProgress();
   selected = value;
   if (value === '__history__') {
     search.value = '';
@@ -1842,7 +1844,7 @@ function setSelected(value) {
     if (setBrowserUrl(href)) return;
   }
   renderGroups();
-  void render().finally(() => finishSidebarNavigationProgress(progressToken));
+  void render();
 }
 
 function resetPlaylistVisibilityFor(playlistId) {
@@ -2648,15 +2650,61 @@ function animateProgressDots(update) {
   }, 280);
 }
 
-function progressMessageAnimation(container, labelText) {
+function loadingMessageAnimation(container, labelText) {
   const label = document.createElement('span');
   label.textContent = labelText;
   const dots = document.createElement('span');
-  dots.className = 'searching-dots';
+  dots.className = 'loading-dots';
+  dots.setAttribute('aria-hidden', 'true');
   container.replaceChildren(label, dots);
   return animateProgressDots(value => {
     dots.textContent = value;
   });
+}
+
+function renderLoadingStatus() {
+  if (!activeLoadingStatusTokens.size) {
+    if (loadingStatusTimer !== null) {
+      clearInterval(loadingStatusTimer);
+      loadingStatusTimer = null;
+    }
+    loadingStatus.hidden = true;
+    loadingStatus.removeAttribute('aria-busy');
+    loadingStatus.replaceChildren();
+    return;
+  }
+  if (loadingStatusTimer !== null) return;
+  loadingStatus.hidden = false;
+  loadingStatus.setAttribute('aria-busy', 'true');
+  loadingStatusTimer = loadingMessageAnimation(loadingStatus, 'Loading');
+}
+
+function resetLoadingStatus() {
+  loadingStatusEpoch += 1;
+  activeLoadingStatusTokens = new Set();
+  renderLoadingStatus();
+}
+
+function beginLoadingStatus({ reset = false } = {}) {
+  if (reset) resetLoadingStatus();
+  const token = `${loadingStatusEpoch}:${++loadingStatusToken}`;
+  activeLoadingStatusTokens.add(token);
+  renderLoadingStatus();
+  return token;
+}
+
+function finishLoadingStatus(token) {
+  if (!activeLoadingStatusTokens.delete(token)) return;
+  renderLoadingStatus();
+}
+
+async function withLoadingStatus(load) {
+  const token = beginLoadingStatus();
+  try {
+    return await load();
+  } finally {
+    finishLoadingStatus(token);
+  }
 }
 
 function updateSearchMetaProgress(dotsText = searchMetaProgressDots) {
@@ -2686,48 +2734,16 @@ function stopSearchMetaProgress() {
 
 function stopSearchFilterProgress() {
   stopSearchMetaProgress();
-  stopSearchHeaderProgress();
 }
 
 function showSearchMetaProgress(groupName) {
   const progressGroup = searchKindForFacet(groupName);
   pendingSearchMetaGroups.add(progressGroup);
-  showSearchHeaderProgress();
   if (searchMetaProgressTimer === null) {
     searchMetaProgressTimer = animateProgressDots(updateSearchMetaProgress);
   } else {
     updateSearchMetaProgress();
   }
-}
-
-function stopSearchHeaderProgress(progressToken = null) {
-  if (progressToken !== null && progressToken !== searchHeaderProgressToken) return;
-  if (searchHeaderProgressTimer !== null) {
-    clearInterval(searchHeaderProgressTimer);
-    searchHeaderProgressTimer = null;
-  }
-  searchProgressStatus.hidden = true;
-  searchProgressStatus.removeAttribute('aria-busy');
-  searchProgressStatus.replaceChildren();
-}
-
-function showSearchHeaderProgress() {
-  stopSearchHeaderProgress();
-  const progressToken = ++searchHeaderProgressToken;
-  searchProgressStatus.hidden = false;
-  searchProgressStatus.setAttribute('aria-busy', 'true');
-  searchHeaderProgressTimer = progressMessageAnimation(searchProgressStatus, 'Loading');
-  return progressToken;
-}
-
-function beginSidebarNavigationProgress() {
-  pendingSidebarProgressToken = showSearchHeaderProgress();
-  return pendingSidebarProgressToken;
-}
-
-function finishSidebarNavigationProgress(progressToken) {
-  if (pendingSidebarProgressToken === progressToken) pendingSidebarProgressToken = null;
-  stopSearchHeaderProgress(progressToken);
 }
 
 function showSearchProgress({ preserveContent = false } = {}) {
@@ -2784,10 +2800,10 @@ function scheduleAdjacentPagePrefetch(pageInfo, fetchPage, additionalRequests = 
   };
   const run = async () => {
     adjacentPagePrefetchCancel = null;
-    await Promise.all([
+    await withLoadingStatus(() => Promise.all([
       runRequests(additionalRequests),
       runRequests(pageRequests),
-    ]);
+    ]));
   };
   const handle = window.setTimeout(() => void run(), 150);
   adjacentPagePrefetchCancel = () => window.clearTimeout(handle);
@@ -3143,14 +3159,14 @@ function historyHeatmapIsCurrent(heatmap) {
 }
 
 function runHistoryHeatmapTransition(heatmap, options) {
-  return HistoryWorkflow.runTransition({
+  return withLoadingStatus(() => HistoryWorkflow.runTransition({
     ...options,
     captureState: historyTransitionState,
     heatmap,
     isCurrent: options.isCurrent || (() => historyHeatmapIsCurrent(heatmap)),
     restoreControls: restoreHistoryTransitionControls,
     restoreState: restoreHistoryTransitionState,
-  });
+  }));
 }
 
 async function shiftHistoryActivityYear(delta) {
@@ -3338,7 +3354,7 @@ async function renderHistoryResults(options) {
 
 async function renderHistoryView(generation) {
   title.textContent = 'History';
-  meta.textContent = 'Loading history...';
+  meta.textContent = '';
   applyCardLayout('history');
   empty.hidden = true;
   await renderHistoryResults({
@@ -4660,7 +4676,7 @@ async function fetchEntitySearchFilters(category, entityId) {
 }
 
 function hydrateEntitySearchFilters(category, entityId, generation) {
-  void fetchEntitySearchFilters(category, entityId).then(payload => {
+  void withLoadingStatus(() => fetchEntitySearchFilters(category, entityId)).then(payload => {
     if (!payload) return;
     if (generation !== renderGeneration || selectedEntityCategory() !== category) return;
     renderSearchMetaFilters(payload);
@@ -5466,7 +5482,7 @@ function channelTabsFor(
   return tabs;
 }
 
-async function render() {
+async function renderCurrentView() {
   const generation = ++renderGeneration;
   cancelAdjacentPagePrefetch();
   setDocumentTitle();
@@ -5658,7 +5674,7 @@ async function render() {
     );
     if (channelDetailTab === 'history') {
       const layoutContext = 'channel-history';
-      meta.textContent = 'Loading channel history...';
+      meta.textContent = '';
       grid.replaceChildren();
       empty.hidden = true;
       await renderHistoryResults({
@@ -5690,7 +5706,7 @@ async function render() {
         ? Math.min(500, Math.max(1, configuredSize))
         : 500;
       const offset = (currentPage - 1) * limit;
-      meta.textContent = `Loading ${activePluginVideoTab.definition.label.toLowerCase()}...`;
+      meta.textContent = '';
       grid.replaceChildren();
       empty.hidden = true;
       let payload;
@@ -5757,7 +5773,7 @@ async function render() {
       empty.textContent = activePluginVideoTab.definition.emptyMessage
         || `No videos match ${activePluginVideoTab.definition.label.toLowerCase()}.`;
       if (historyCount === null) {
-        void fetchChannelHistoryCount(channelId).then(total => {
+        void withLoadingStatus(() => fetchChannelHistoryCount(channelId)).then(total => {
           if (
             selected === channelSelection(channelReference)
             && channelDetailTab === activePluginVideoTab.key
@@ -5811,7 +5827,7 @@ async function render() {
         page => fetchChannelPlaylists(channelReference, page),
       );
       if (historyCount === null) {
-        void fetchChannelHistoryCount(channelId).then(() => {
+        void withLoadingStatus(() => fetchChannelHistoryCount(channelId)).then(() => {
           if (
             selected === channelSelection(channelReference)
             && channelDetailTab === 'playlists'
@@ -5857,7 +5873,7 @@ async function render() {
         fetchVideoCollection({ channelId, sort: 'title', page })
       ));
       if (historyCount === null) {
-        void fetchChannelHistoryCount(channelId).then(() => {
+        void withLoadingStatus(() => fetchChannelHistoryCount(channelId)).then(() => {
           if (
             selected === channelSelection(channelReference)
             && channelDetailTab === 'playlisted-videos'
@@ -5878,7 +5894,6 @@ async function render() {
       title.textContent = '';
       meta.textContent = '';
       renderSearchMetaFilters();
-      showSearchHeaderProgress();
       showSearchProgress();
       await new Promise(resolve => requestAnimationFrame(resolve));
       if (generation !== renderGeneration) return;
@@ -6088,6 +6103,15 @@ async function render() {
   if (selected === '__history__') {
     await renderHistoryView(generation);
     return;
+  }
+}
+
+async function render() {
+  const loadingToken = beginLoadingStatus({ reset: true });
+  try {
+    return await renderCurrentView();
+  } finally {
+    finishLoadingStatus(loadingToken);
   }
 }
 
@@ -7134,19 +7158,11 @@ function bindSearchField(input) {
 }
 for (const input of searchFields) bindSearchField(input);
 function handleBrowserLocationChange() {
-  const progressToken = pendingSidebarProgressToken;
-  pendingSidebarProgressToken = null;
   selected = selectionFromLocation();
   if (!selected.startsWith('__channel__:')) channelDetailTab = 'playlisted-videos';
   if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
   renderGroups();
-  void render().finally(() => {
-    if (progressToken !== null) {
-      finishSidebarNavigationProgress(progressToken);
-    } else if (selected !== '__search__') {
-      stopSearchHeaderProgress();
-    }
-  });
+  void render();
 }
 window.addEventListener('popstate', handleBrowserLocationChange);
 refresh.addEventListener('click', () => {
@@ -7155,12 +7171,11 @@ refresh.addEventListener('click', () => {
     && searchResultsRendered
     && renderedOmniSearchQuery === search.value.trim().toLowerCase()
   );
-  if (preserveSearchContent) showSearchHeaderProgress();
   loadData({ preserveSearchContent }).catch(error => {
     meta.textContent = error.message;
     refresh.disabled = false;
     refresh.textContent = 'Refresh';
-  }).finally(stopSearchHeaderProgress);
+  });
 });
 renderSearchMetaFilters();
 loadData().catch(error => {

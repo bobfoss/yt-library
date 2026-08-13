@@ -251,16 +251,22 @@ test('playlist detail reuses the sidebar video search facets', () => {
   assert.doesNotMatch(indexSource, /function playlistVideoFiltersHtml/);
 });
 
-test('playlist filter refreshes share the search progress lifecycle', () => {
+test('foreground loads share the app loading status lifecycle', () => {
   const indexSource = source('index.js');
-  const renderStart = indexSource.indexOf('async function render()');
+  const renderStart = indexSource.indexOf('async function renderCurrentView()');
   const playlistStart = indexSource.indexOf("if (selected.startsWith('__playlist__:')) {", renderStart);
   const historyStart = indexSource.indexOf("if (selected === '__history__')", playlistStart);
   const playlistSource = indexSource.slice(playlistStart, historyStart);
 
-  assert.match(
-    indexSource,
-    /function stopSearchFilterProgress\(\) \{\s*stopSearchMetaProgress\(\);\s*stopSearchHeaderProgress\(\);\s*\}/,
+  assert.match(indexSource, /function beginLoadingStatus\(\{ reset = false \} = \{\}\)/);
+  assert.match(indexSource, /function finishLoadingStatus\(token\)/);
+  assert.match(indexSource, /async function withLoadingStatus\(load\)/);
+  assert.match(indexSource, /async function render\(\) \{\s*const loadingToken = beginLoadingStatus\(\{ reset: true \}\)/);
+  assert.match(indexSource, /function loadingMessageAnimation[\s\S]{0,320}loading-dots/);
+  assert.equal(
+    (indexSource.match(/withLoadingStatus\(\(\) => fetchChannelHistoryCount/g) || []).length,
+    3,
+    'deferred channel counts must keep the shared loading status active',
   );
   assert.match(
     indexSource,
@@ -270,6 +276,12 @@ test('playlist filter refreshes share the search progress lifecycle', () => {
     (playlistSource.match(/stopSearchFilterProgress\(\);/g) || []).length,
     2,
     'the active playlist render must clear progress after success or failure',
+  );
+  assert.doesNotMatch(indexSource, /meta\.textContent = ['`]Loading /);
+  assert.match(
+    indexSource,
+    /function scheduleAdjacentPagePrefetch[\s\S]{0,900}await withLoadingStatus\(\(\) => Promise\.all/,
+    'background page warming must share the visible loading status',
   );
 });
 
