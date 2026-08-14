@@ -261,6 +261,12 @@ The left-navigation library lists are named omni-search presets. Search returns 
   Compose and CI workflow covering first-run initialization, schema upgrades,
   persistent config/database/cookie/thumbnail mounts, health checks, and
   versioned image publishing alongside GitHub releases.
+- Add an optional Download plugin for preserving downloaded videos and clips
+  through the versioned plugin host, with independent video and clip tracking
+  and no automatic media eviction.
+- Add a separate optional Comments plugin for collecting and browsing YouTube
+  comments without introducing comments-specific dependencies into the core
+  application.
 - Beginning with the 1.0 release, preserve or redirect existing browser URLs when route or parameter formatting changes. Pre-1.0 URLs do not require compatibility handling.
 
 ## Deferred Decisions
