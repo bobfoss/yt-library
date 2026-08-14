@@ -24,6 +24,19 @@ versioned migrations as well as creating a fresh current schema.
 - Metadata and playlist queues now share `worker_queue`; the old persisted metadata queue is removed.
 - The superseded `CHANNEL_NORMALIZATION_PLAN.md` is removed; `design.md` now owns the current model.
 
+### Legacy Archivarix Availability Verification
+
+- Archivarix evidence no longer changes canonical YouTube availability as of
+  commit `07c3ee7`. The live-data audit confirmed that 194 public/playable
+  videos with `DELETED_*` or `NOT_FOUND` recovery evidence are correctly
+  modeled and require no repair.
+- Six possible legacy-overwrite candidates were rescanned directly on
+  2026-08-10, but YouTube returned inconclusive `no_metadata` results. This
+  follow-up is complete by product decision: future authoritative scans may
+  update their canonical state naturally, but no targeted repair, inference,
+  or speculative backfill remains planned. Their independent `video_recovery`
+  evidence is preserved.
+
 ### Time And URL Normalization
 
 - Exact timestamps are ISO 8601 UTC values ending in `Z`.
@@ -215,35 +228,11 @@ decisions rather than another general cleanup pass.
 
 ## Ranked Remaining Cleanup
 
-### 1. Verify Canonical Availability After Legacy Archivarix Writes
-
-Archivarix evidence no longer changes canonical YouTube availability as of
-commit `07c3ee7`. The live-data audit found 194 videos that are canonically
-public and playable while retaining `DELETED_*` or `NOT_FOUND` recovery
-evidence; those rows are correct and require no repair.
-
-Six videos have prior positive YouTube evidence but may have had their canonical
-state overwritten by the legacy recovery writer:
-
-- `BslivGNpEr8`
-- `Hzay9vX0h04`
-- `PCfINZpmxcc`
-- `c6Ggs-KZ98s`
-- `pmBjwBHNZkU`
-- `xj27uGjAKwA`
-
-Targeted direct YouTube rescans on 2026-08-10 returned inconclusive
-`no_metadata` for all six, so their existing canonical state was preserved.
-Retry these IDs individually when direct YouTube observation can provide a
-conclusive availability result. Do not infer replacement availability from
-Archivarix status, prior playability, titles, or playlist membership. Preserve
-their `video_recovery` evidence throughout verification.
-
-### 2. Foreign Playlist Continuation Extraction
+### 1. Foreign Playlist Continuation Extraction
 
 Foreign playlists can expose fewer rows than their reported count. Continue preserving the best nonzero scan and logging reported versus exposed counts. Investigate continuation behavior only with a concrete fixture and never synthesize unavailable rows from a count gap.
 
-### 3. Saved Searches and History Layouts
+### 2. Saved Searches and History Layouts
 
 The left-navigation library lists are named omni-search presets. Search returns one card per distinct video, playlist, or channel, while History remains a dedicated occurrence view with its activity heatmap, year navigation, date jumps, and chronological repeated watches. Do not add the History heatmap to Search unless a distinct-video activity design is defined.
 
