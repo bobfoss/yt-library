@@ -8237,6 +8237,47 @@ def worker_queue_type_count(conn: sqlite3.Connection, worker_type: str) -> int:
     return int(row["count"] or 0)
 
 
+def _admin_runtime_status_from_connection(
+    conn: sqlite3.Connection,
+    queue_dispatcher: "WorkerQueueDispatcher | None" = None,
+) -> dict[str, Any]:
+    queue_count = worker_queue_count(conn)
+    queue_running = queue_dispatcher.is_running() if queue_dispatcher else False
+    queue_stopping = queue_dispatcher.is_stopping() if queue_dispatcher else False
+    queue_stats = (
+        queue_dispatcher.stats(queue_count)
+        if queue_dispatcher
+        else {
+            "started_at": "",
+            "elapsed_seconds": 0,
+            "eta_seconds": 0,
+            "eta_available": False,
+            "initial_count": 0,
+            "completed_count": 0,
+            "remaining_count": queue_count,
+        }
+    )
+    return {
+        "workerQueueRunning": queue_running,
+        "workerQueueStopping": queue_stopping,
+        "workerQueueStats": queue_stats,
+        "workerQueueCount": queue_count,
+        "archivarixBlock": external_service_block(conn, "archivarix"),
+        "proxyBlock": external_service_block(conn, "proxy"),
+    }
+
+
+def admin_runtime_status(
+    db_path: Path,
+    queue_dispatcher: "WorkerQueueDispatcher | None" = None,
+) -> dict[str, Any]:
+    conn = connect(db_path)
+    try:
+        return _admin_runtime_status_from_connection(conn, queue_dispatcher)
+    finally:
+        conn.close()
+
+
 def external_service_block(conn: sqlite3.Connection, service: str) -> dict[str, Any]:
     row = conn.execute(
         "SELECT * FROM external_service_blocks WHERE service = ?",
@@ -9821,7 +9862,7 @@ def admin_status(
         )
         backfill_counts = feature_backfill_counts(conn)
         has_library_data = library_has_data(conn)
-        worker_queue_count_value = worker_queue_count(conn)
+        runtime_status = _admin_runtime_status_from_connection(conn, queue_dispatcher)
         worker_queue_limit = max(0, min(10000, int(worker_queue_limit if worker_queue_limit is not None else 500)))
         worker_queue_preview_rows = (
             [dict(row) for row in worker_queue_rows(conn, limit=worker_queue_limit)]
@@ -9884,8 +9925,6 @@ def admin_status(
                 """
             ).fetchone()
         )
-        archivarix_block = external_service_block(conn, "archivarix")
-        proxy_block = external_service_block(conn, "proxy")
         metadata_logs: list[dict[str, Any]] = []
         playlist_logs: list[dict[str, Any]] = []
         live_history_logs: list[dict[str, Any]] = []
@@ -9905,25 +9944,13 @@ def admin_status(
     finally:
         conn.close()
     return {
+        **runtime_status,
         "metadataRunning": metadata_worker.is_running() if metadata_worker else False,
         "metadataStopping": metadata_worker.is_stopping() if metadata_worker else False,
         "playlistScanRunning": playlist_worker.is_running() if playlist_worker else False,
         "playlistScanStopping": playlist_worker.is_stopping() if playlist_worker else False,
         "liveHistoryRunning": live_history_worker.is_running() if live_history_worker else False,
         "liveHistoryStopping": live_history_worker.is_stopping() if live_history_worker else False,
-        "workerQueueRunning": queue_dispatcher.is_running() if queue_dispatcher else False,
-        "workerQueueStopping": queue_dispatcher.is_stopping() if queue_dispatcher else False,
-        "workerQueueStats": queue_dispatcher.stats(worker_queue_count_value)
-        if queue_dispatcher
-        else {
-            "started_at": "",
-            "elapsed_seconds": 0,
-            "eta_seconds": 0,
-            "eta_available": False,
-            "initial_count": 0,
-            "completed_count": 0,
-            "remaining_count": worker_queue_count_value,
-        },
         "counts": counts,
         "liveHistoryCounts": live_history_counts,
         "playlistCounts": playlist_counts,
@@ -9932,7 +9959,6 @@ def admin_status(
         "clipCounts": clip_counts,
         "hasLibraryData": has_library_data,
         "featureBackfillCounts": backfill_counts,
-        "workerQueueCount": worker_queue_count_value,
         "workerQueue": worker_queue_preview_rows,
         "latestRun": dict(latest_metadata_run) if latest_metadata_run else None,
         "latestMetadataRun": dict(latest_metadata_run) if latest_metadata_run else None,
@@ -9942,8 +9968,6 @@ def admin_status(
             dict(latest_placeholder_recovery_run) if latest_placeholder_recovery_run else None
         ),
         "archivarixRequestCounts": archivarix_request_counts,
-        "archivarixBlock": archivarix_block,
-        "proxyBlock": proxy_block,
         "logs": metadata_logs,
         "metadataLogs": metadata_logs,
         "playlistScanLogs": playlist_logs,

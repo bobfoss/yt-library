@@ -905,6 +905,36 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(library_request.path, "/api/videos")
         handler._handle_admin_get.assert_not_called()
 
+    def test_admin_runtime_status_route_returns_current_process_state(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.service_status = Mock(return_value={"status": "running", "pid": 321})
+        handler.send_json = Mock()
+        runtime_payload = {
+            "workerQueueRunning": True,
+            "workerQueueStopping": False,
+            "workerQueueCount": 12,
+        }
+
+        with patch(
+            "yt_library.server.admin_runtime_status",
+            return_value=runtime_payload.copy(),
+        ) as runtime_status:
+            handler._handle_admin_get(
+                urllib.parse.urlparse("/api/admin/runtime/status")
+            )
+
+        runtime_status.assert_called_once_with(
+            Path("library.sqlite3"),
+            server.WORKER_QUEUE_DISPATCHER,
+        )
+        handler.send_json.assert_called_once_with(
+            {
+                **runtime_payload,
+                "service": {"status": "running", "pid": 321},
+            }
+        )
+
     def test_video_batch_route_hydrates_requested_library_videos(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.db_path = Path("library.sqlite3")

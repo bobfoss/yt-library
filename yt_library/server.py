@@ -75,6 +75,7 @@ from .cookie_files import (
 from .core import (
     FEATURE_BACKFILL_KINDS,
     ROOT,
+    admin_runtime_status,
     admin_status,
     clear_external_service_block,
     clear_worker_queue,
@@ -919,6 +920,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def _handle_admin_get(self, parsed: urllib.parse.ParseResult) -> None:
         if parsed.path == "/api/admin/service/status":
             self.send_json({"service": self.service_status()})
+            return
+        if parsed.path == "/api/admin/runtime/status":
+            data = admin_runtime_status(self.db_path, WORKER_QUEUE_DISPATCHER)
+            data["service"] = self.service_status()
+            self.send_json(data)
             return
         if parsed.path == "/api/admin/status":
             params = urllib.parse.parse_qs(parsed.query)

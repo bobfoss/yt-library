@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from yt_library import core
 
@@ -1015,6 +1016,41 @@ class SchemaTests(unittest.TestCase):
                 self.assertEqual(video_row["video_id"], "neededvid01")
             finally:
                 conn.close()
+
+    def test_admin_runtime_status_reports_queue_and_service_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.enqueue_worker_queue_target(conn, "runtime00123")
+                    core.set_external_service_block(
+                        conn,
+                        "proxy",
+                        "proxy_unavailable",
+                        "Proxy connection refused",
+                    )
+            finally:
+                conn.close()
+
+            dispatcher = Mock()
+            dispatcher.is_running.return_value = True
+            dispatcher.is_stopping.return_value = False
+            dispatcher.stats.return_value = {
+                "remaining_count": 1,
+                "completed_count": 2,
+            }
+
+            status = core.admin_runtime_status(db_path, dispatcher)
+
+        self.assertTrue(status["workerQueueRunning"])
+        self.assertFalse(status["workerQueueStopping"])
+        self.assertEqual(status["workerQueueCount"], 1)
+        self.assertEqual(status["workerQueueStats"]["completed_count"], 2)
+        self.assertTrue(status["proxyBlock"]["blocked"])
+        self.assertEqual(status["proxyBlock"]["message"], "Proxy connection refused")
+        self.assertFalse(status["archivarixBlock"]["blocked"])
+        dispatcher.stats.assert_called_once_with(1)
 
     def test_initialize_queues_full_scan_without_clearing_existing_work(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -443,13 +443,22 @@ test('playlist cards render one owner separately from collaborators', () => {
   assert.match(indexSource, /return linkTargetAttributes\(href\);/);
 });
 
-test('admin status polling clears stale running state on request failures', () => {
+test('admin runtime polling owns queue controls and recovers on tab return', () => {
   const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
 
+  assert.match(adminSource, /const runtimeStatusPollMs = 5000;/);
   assert.match(adminSource, /const statusRequestTimeoutMs = 5000;/);
+  assert.match(adminSource, /function renderRuntimeStatus\(data\)/);
+  assert.match(adminSource, /fetchStatusJson\('\/api\/admin\/runtime\/status'\)/);
+  assert.match(adminSource, /fields\.startWorkerQueue\.disabled = queueWorkerActive;/);
+  assert.match(adminSource, /fields\.stopWorkerQueue\.disabled = !queueWorkerRunning \|\| queueWorkerStopping;/);
   assert.match(adminSource, /function renderServiceUnavailable\(error\)/);
   assert.match(adminSource, /fields\.serviceStatus\.textContent = 'Unavailable';/);
-  assert.match(adminSource, /renderServiceUnavailable\(statusError\);/);
+  assert.match(adminSource, /document\.addEventListener\('visibilitychange'/);
+  assert.match(adminSource, /document\.visibilityState !== 'visible'/);
+  assert.match(adminHtml, /id="startWorkerQueue" type="button" disabled/);
+  assert.match(adminHtml, /id="stopWorkerQueue" type="button" disabled/);
 });
 
 test('admin status polling renders the Archivarix UTC reset countdown', () => {
@@ -633,7 +642,7 @@ test('admin parameter posts use the shared transport with caller-owned effects',
   assert.doesNotMatch(adminSource, /async function requestJson\(/);
   assert.match(
     adminSource,
-    /async function post\(path, params = \{\}\)[\s\S]{0,320}AdminTransport\.postJson\(path, params\)[\s\S]{0,180}loadStatus\(\{ force: true \}\)[\s\S]{0,100}scheduleActionPolls\(\)/,
+    /async function post\(path, params = \{\}\)[\s\S]{0,420}AdminTransport\.postJson\(path, params\)[\s\S]{0,100}scheduleActionPolls\(\)[\s\S]{0,160}loadRuntimeStatus\(\{ force: true \}\)/,
   );
   assert.match(
     adminSource,
@@ -641,6 +650,17 @@ test('admin parameter posts use the shared transport with caller-owned effects',
   );
   assert.match(adminSource, /AdminTransport\.postJson\('\/api\/admin\/service\/restart'\)/);
   assert.equal((adminSource.match(/method: 'POST'/g) || []).length, 1);
+});
+
+test('service controller uses the lightweight runtime health endpoint', () => {
+  const serviceSource = fs.readFileSync(
+    path.join(process.cwd(), 'scripts', 'service.ps1'),
+    'utf8',
+  );
+
+  assert.match(serviceSource, /\/api\/admin\/runtime\/status/);
+  assert.match(serviceSource, /if \(\$statusCode -ne 404\)/);
+  assert.match(serviceSource, /one older service that predates the runtime endpoint/);
 });
 
 test('history heatmaps track the first fully visible card', () => {

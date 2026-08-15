@@ -393,8 +393,8 @@
     <section class="panel">
       <div class="queue-title"><h2>Worker queue</h2></div>
       <div class="grid">
-        <div class="panel"><div class="metric">Queue</div><div id="commonQueueCount" class="value">0</div></div>
-        <div class="panel"><div class="metric">Queue worker</div><div id="commonWorkerState" class="value">idle</div></div>
+        <div class="panel"><div class="metric">Queue</div><div id="commonQueueCount" class="value">-</div></div>
+        <div class="panel"><div class="metric">Queue worker</div><div id="commonWorkerState" class="value">checking</div></div>
         <div class="panel"><div class="metric">Run time</div><div id="workerQueueElapsed" class="value">-</div></div>
         <div class="panel"><div class="metric">ETA</div><div id="workerQueueEta" class="value">-</div></div>
         <div class="panel"><div class="metric">Archivarix requests (UTC day) <span id="archivarixRequestsUtcRemaining"></span></div><div id="archivarixRequestsUtcDay" class="value">0</div></div>
@@ -433,8 +433,8 @@
         <button id="queueProvidedTarget" class="primary" type="button">Add to queue</button>
       </div>
       <div class="controls">
-        <button id="startWorkerQueue" class="primary" type="button">Start queue</button>
-        <button id="stopWorkerQueue" type="button">Stop queue</button>
+        <button id="startWorkerQueue" type="button" disabled>Start queue</button>
+        <button id="stopWorkerQueue" type="button" disabled>Stop queue</button>
         <button id="rebuildWorkerQueue" class="advanced-only" type="button">Rebuild automatic queue</button>
         <button id="clearWorkerQueue" type="button">Clear queue</button>
         <button id="retryProxy" type="button" hidden>Retry proxy</button>

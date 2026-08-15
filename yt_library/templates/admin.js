@@ -113,6 +113,7 @@ const queueState = {
 };
 const queueRowHeight = 72;
 const queueOverscan = 10;
+const runtimeStatusPollMs = 5000;
 const statusPollMs = 30000;
 const statusRequestTimeoutMs = 5000;
 let dispatchSettingsSaving = false;
@@ -792,7 +793,7 @@ function renderPluginWorkstreams(plugins) {
   fields.videoPluginProcesses.innerHTML = videoActions.join('');
 }
 
-function render(data) {
+function renderRuntimeStatus(data) {
   const service = data.service || {};
   const serviceState = String(service.status || 'unknown');
   currentServicePid = Number(service.pid || currentServicePid || 0);
@@ -805,6 +806,34 @@ function render(data) {
     service.startedAt ? `Started ${fmtTime(service.startedAt)}` : '',
   ].filter(Boolean).join(' | ');
   fields.restartService.disabled = serviceState === 'restarting';
+
+  const queueWorkerRunning = Boolean(data.workerQueueRunning);
+  const queueWorkerStopping = Boolean(data.workerQueueStopping);
+  const queueWorkerActive = queueWorkerRunning || queueWorkerStopping;
+  const queueStats = data.workerQueueStats || {};
+  fields.commonQueueCount.textContent = Number(data.workerQueueCount ?? 0);
+  fields.commonWorkerState.textContent = queueWorkerStopping ? 'stopping' : (queueWorkerRunning ? 'running' : 'idle');
+  fields.commonWorkerState.className = `value ${queueWorkerActive ? 'running' : ''}`;
+  syncQueueTiming(queueWorkerActive, queueStats);
+  fields.startWorkerQueue.disabled = queueWorkerActive;
+  fields.stopWorkerQueue.disabled = !queueWorkerRunning || queueWorkerStopping;
+  fields.startWorkerQueue.classList.toggle('primary', !queueWorkerActive);
+  fields.stopWorkerQueue.classList.toggle('danger', queueWorkerActive);
+
+  const proxyBlock = data.proxyBlock || {};
+  fields.retryProxy.hidden = !proxyBlock.blocked;
+  fields.proxyBlock.hidden = !proxyBlock.blocked;
+  fields.proxyBlockMessage.textContent = proxyBlock.blocked
+    ? `${proxyBlock.message || 'The configured proxy is unavailable.'}${proxyBlock.blocked_at ? ` Blocked ${window.YTLibraryTime.format(proxyBlock.blocked_at)}.` : ''}`
+    : '';
+  const archivarixBlock = data.archivarixBlock || {};
+  fields.archivarixBlock.hidden = !archivarixBlock.blocked;
+  fields.archivarixBlockMessage.textContent = archivarixBlock.blocked
+    ? `${archivarixBlock.message || 'Recovery is blocked.'}${archivarixBlock.blocked_at ? ` Blocked ${window.YTLibraryTime.format(archivarixBlock.blocked_at)}.` : ''}`
+    : '';
+}
+
+function render(data) {
   renderPluginWorkstreams(data.plugins || []);
 
   const hasLibraryData = Boolean(data.hasLibraryData);
@@ -855,16 +884,6 @@ function render(data) {
   fields.historyRows.textContent = data.counts.history_rows || 0;
   fields.historyVideos.textContent = data.counts.distinct_history_videos || 0;
   fields.liveHistoryRows.textContent = data.liveHistoryCounts?.live_rows || 0;
-  fields.commonQueueCount.textContent = data.workerQueueCount || 0;
-  const queueWorkerRunning = Boolean(data.workerQueueRunning);
-  const queueWorkerStopping = Boolean(data.workerQueueStopping);
-  const queueWorkerActive = queueWorkerRunning || queueWorkerStopping;
-  const queueStats = data.workerQueueStats || {};
-  fields.commonWorkerState.textContent = queueWorkerStopping ? 'stopping' : (queueWorkerRunning ? 'running' : 'idle');
-  fields.commonWorkerState.className = `value ${queueWorkerActive ? 'running' : ''}`;
-  syncQueueTiming(queueWorkerActive, queueStats);
-  fields.startWorkerQueue.classList.toggle('primary', !queueWorkerRunning && !queueWorkerStopping);
-  fields.stopWorkerQueue.classList.toggle('danger', queueWorkerRunning || queueWorkerStopping);
   const archivarixRequestCounts = data.archivarixRequestCounts || {};
   fields.archivarixRequestsUtcDay.textContent = archivarixRequestCounts.current_utc_day || 0;
   const archivarixRemaining = fmtUtcWindowRemaining(archivarixRequestCounts.window_ends_at);
@@ -904,17 +923,6 @@ function render(data) {
     }
     syncDispatchModeInputs();
   }
-  const proxyBlock = data.proxyBlock || {};
-  fields.retryProxy.hidden = !proxyBlock.blocked;
-  fields.proxyBlock.hidden = !proxyBlock.blocked;
-  fields.proxyBlockMessage.textContent = proxyBlock.blocked
-    ? `${proxyBlock.message || 'The configured proxy is unavailable.'}${proxyBlock.blocked_at ? ` Blocked ${window.YTLibraryTime.format(proxyBlock.blocked_at)}.` : ''}`
-    : '';
-  const archivarixBlock = data.archivarixBlock || {};
-  fields.archivarixBlock.hidden = !archivarixBlock.blocked;
-  fields.archivarixBlockMessage.textContent = archivarixBlock.blocked
-    ? `${archivarixBlock.message || 'Recovery is blocked.'}${archivarixBlock.blocked_at ? ` Blocked ${window.YTLibraryTime.format(archivarixBlock.blocked_at)}.` : ''}`
-    : '';
   const placeholderRun = data.latestPlaceholderRecoveryRun;
   if (placeholderRun) {
     const status = placeholderRun.status || 'unknown';
@@ -1006,8 +1014,15 @@ function renderServiceUnavailable(error) {
   fields.serviceStatus.className = 'advanced-only warn';
   fields.serviceStatus.title = message;
   fields.restartService.disabled = true;
+  fields.commonWorkerState.textContent = 'unknown';
+  fields.commonWorkerState.className = 'value warn';
+  fields.startWorkerQueue.disabled = true;
+  fields.stopWorkerQueue.disabled = true;
+  fields.startWorkerQueue.classList.remove('primary');
+  fields.stopWorkerQueue.classList.remove('danger');
 }
 
+let runtimeStatusRequest = null;
 let statusRequest = null;
 
 let operationPollTimer = null;
@@ -1018,8 +1033,10 @@ function scheduleActionPolls() {
   if (operationPollTimer !== null) return;
   const poll = () => {
     operationPollTimer = null;
-    loadStatus({ force: true })
-      .catch(error => { fields.playlistRunStatus.textContent = error.message; })
+    Promise.allSettled([
+      loadRuntimeStatus({ force: true }),
+      loadStatus({ force: true }),
+    ])
       .finally(() => {
         operationPollsRemaining -= 1;
         if (operationPollsRemaining > 0) {
@@ -1028,6 +1045,48 @@ function scheduleActionPolls() {
       });
   };
   operationPollTimer = window.setTimeout(poll, 500);
+}
+
+async function fetchStatusJson(endpoint) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), statusRequestTimeoutMs);
+  try {
+    const response = await fetch(endpoint, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Status failed: ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    throw error?.name === 'AbortError'
+      ? new Error('Status request timed out')
+      : error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function loadRuntimeStatus(options = {}) {
+  const force = Boolean(options.force);
+  if (runtimeStatusRequest && !force) return runtimeStatusRequest;
+  if (runtimeStatusRequest && force) {
+    try {
+      await runtimeStatusRequest;
+    } catch (error) {
+      // A forced action refresh should still get its own current read.
+    }
+  }
+  runtimeStatusRequest = fetchStatusJson('/api/admin/runtime/status')
+    .then(renderRuntimeStatus)
+    .catch(error => {
+      renderServiceUnavailable(error);
+      throw error;
+    });
+  try {
+    await runtimeStatusRequest;
+  } finally {
+    runtimeStatusRequest = null;
+  }
 }
 
 async function loadStatus(options = {}) {
@@ -1040,27 +1099,8 @@ async function loadStatus(options = {}) {
       // A forced action refresh should still get its own current read.
     }
   }
-  statusRequest = (async () => {
-    const endpoint = '/api/admin/status?queue_limit=0&include_logs=0';
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), statusRequestTimeoutMs);
-    try {
-      const response = await fetch(endpoint, {
-        cache: 'no-store',
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`Status failed: ${response.status}`);
-      render(await response.json());
-    } catch (error) {
-      const statusError = error?.name === 'AbortError'
-        ? new Error('Status request timed out')
-        : error;
-      renderServiceUnavailable(statusError);
-      throw statusError;
-    } finally {
-      window.clearTimeout(timeout);
-    }
-  })();
+  statusRequest = fetchStatusJson('/api/admin/status?queue_limit=0&include_logs=0')
+    .then(render);
   try {
     await statusRequest;
   } finally {
@@ -1071,10 +1111,12 @@ async function loadStatus(options = {}) {
 async function post(path, params = {}) {
   if (path === '/api/admin/queue/start') {
     fields.startWorkerQueue.classList.remove('primary');
+    fields.startWorkerQueue.disabled = true;
   }
   const payload = await AdminTransport.postJson(path, params);
-  await loadStatus({ force: true });
   scheduleActionPolls();
+  loadStatus({ force: true }).catch(() => {});
+  await loadRuntimeStatus({ force: true }).catch(() => {});
   return payload;
 }
 
@@ -1097,7 +1139,8 @@ async function waitForServiceRestart(previousPid) {
       const nextPid = Number(service.pid || 0);
       if (service.status === 'running' && nextPid && nextPid !== Number(previousPid || 0)) {
         currentServicePid = nextPid;
-        await loadStatus({ force: true });
+        loadStatus({ force: true }).catch(() => {});
+        await loadRuntimeStatus({ force: true });
         return;
       }
     } catch (error) {
@@ -1251,8 +1294,11 @@ async function stopWorkersNow() {
   fields.commonWorkerState.textContent = 'stopping';
   fields.startWorkerQueue.classList.remove('primary');
   fields.stopWorkerQueue.classList.add('danger');
+  fields.startWorkerQueue.disabled = true;
+  fields.stopWorkerQueue.disabled = true;
   const payload = await AdminTransport.postJson('/api/admin/queue/stop');
   scheduleActionPolls();
+  await loadRuntimeStatus({ force: true }).catch(() => {});
   return payload;
 }
 
@@ -1719,11 +1765,19 @@ connectLogEvents();
 fields.workerQueuePanel.addEventListener('scroll', scheduleQueueRender, { passive: true });
 fields.logPanel.addEventListener('scroll', loadMoreLogsIfNeeded, { passive: true });
 new ResizeObserver(scheduleQueueRender).observe(fields.workerQueuePanel);
-loadStatus({ force: true })
-  .catch(() => {});
+loadRuntimeStatus({ force: true }).catch(() => {});
+loadStatus({ force: true }).catch(() => {});
 loadCookieStatuses()
   .catch(error => { fields.googleCookieStatus.textContent = error.message; });
 setInterval(() => {
+  loadRuntimeStatus().catch(() => {});
+}, runtimeStatusPollMs);
+setInterval(() => {
   loadStatus().catch(() => {});
 }, statusPollMs);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  loadRuntimeStatus({ force: true }).catch(() => {});
+  loadStatus({ force: true }).catch(() => {});
+});
 setInterval(updateQueueTimingDisplay, 1000);

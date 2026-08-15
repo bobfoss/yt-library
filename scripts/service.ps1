@@ -148,12 +148,30 @@ function Get-ServiceConfiguration {
 $serviceConfig = Get-ServiceConfiguration
 
 function Get-ServiceStatus {
+    $timeout = [Math]::Min([Math]::Max($TimeoutSeconds, 5), 15)
     try {
         $request = @{
-            Uri = "$($serviceConfig.BaseUrl)/api/admin/status?queue_limit=0&include_logs=0"
-            TimeoutSec = 3
+            Uri = "$($serviceConfig.BaseUrl)/api/admin/runtime/status"
+            TimeoutSec = $timeout
         }
         return Invoke-RestMethod @request
+    }
+    catch {
+        $responseProperty = $_.Exception.PSObject.Properties["Response"]
+        $statusCode = if ($null -ne $responseProperty -and $null -ne $responseProperty.Value) {
+            [int]$responseProperty.Value.StatusCode
+        }
+        else {
+            0
+        }
+        if ($statusCode -ne 404) {
+            return $null
+        }
+    }
+
+    # Allows this script revision to replace the one older service that predates the runtime endpoint.
+    try {
+        return Invoke-RestMethod -Uri "$($serviceConfig.BaseUrl)/api/admin/status?queue_limit=0&include_logs=0" -TimeoutSec $timeout
     }
     catch {
         return $null
