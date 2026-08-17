@@ -1012,7 +1012,7 @@ function channelDetailParams() {
     params.set('tab', 'history');
     if (historyNavigationDate && historyDateNavigationIsActive()) {
       params.set('date', historyNavigationDate);
-    } else {
+    } else if (currentPage > 1) {
       params.set('page', String(currentPage));
     }
     return params;
@@ -3006,14 +3006,7 @@ function heatmapLevel(count, sortedCounts) {
 
 function restoreHistoryNavigationButtons(container) {
   for (const button of container.querySelectorAll('.history-heatmap-nav button')) {
-    button.disabled = (
-      (button.dataset.historyYearShift === '-1' && historyActivityYearOffset === 0)
-      || (
-        button.dataset.historyCurrent !== undefined
-        && historyActivityYearOffset === 0
-        && currentPage === 1
-      )
-    );
+    button.disabled = button.dataset.historyYearShift === '-1' && historyActivityYearOffset === 0;
   }
 }
 
@@ -3069,7 +3062,6 @@ function historyHeatmapFor(payload) {
   current.title = 'Today';
   current.setAttribute('aria-label', 'Today');
   current.innerHTML = historyHeatmapNavigationIcon('<path d="m8 18 6-6-6-6"></path><path d="M18 6v12"></path>');
-  current.disabled = historyActivityYearOffset === 0 && currentPage === 1;
   nav.append(syncLabel, previous, rangeLabel, next, current);
   header.append(heading, nav);
   const scroll = document.createElement('div');
@@ -3212,34 +3204,38 @@ async function shiftHistoryActivityYear(delta) {
 async function jumpToCurrentHistoryActivity() {
   const heatmap = viewContext.querySelector('.history-heatmap');
   if (!(heatmap instanceof HTMLElement)) return;
-  if (historyActivitySyncEnabled && selected === '__history__') {
+  const alreadyOnFirstPage = currentPage === 1;
+  const resetNavigation = () => {
     historyActivityYearOffset = 0;
     currentPage = 1;
     pendingHistoryDate = '';
     historyNavigationDate = '';
-    if (updateCurrentUrl(false)) return;
-    await render();
+  };
+  const commitFirstPageLocation = () => {
+    updateCurrentUrl(true);
+    if (selected === '__history__') setDocumentTitle('History page 1');
+    scrollResultsToTop();
+  };
+  if (alreadyOnFirstPage && historyActivityYearOffset > 0) {
+    const channelId = heatmap.dataset.historyChannelId || '';
+    await runHistoryHeatmapTransition(heatmap, {
+      applyState: resetNavigation,
+      load: () => fetchHistoryActivity(channelId, 0),
+      commit: activity => {
+        commitFirstPageLocation();
+        heatmap.replaceWith(historyHeatmapFor(activity));
+      },
+    });
     return;
   }
-  const channelId = heatmap.dataset.historyChannelId || '';
-  await runHistoryHeatmapTransition(heatmap, {
-    applyState: () => { historyActivityYearOffset = 0; },
-    load: () => fetchHistoryActivity(channelId, 0),
-    commit: async activity => {
-      if (!historyActivitySyncEnabled) {
-        heatmap.replaceWith(historyHeatmapFor(activity));
-        return;
-      }
-      const targetDay = historyActivityDayNear(activity, localDateKey(new Date()));
-      if (targetDay) {
-        setHistoryPageFromOffset(targetDay.watch_date, Number(targetDay.offset || 0));
-        if (updateCurrentUrl(false)) return;
-        await render();
-      } else {
-        heatmap.replaceWith(historyHeatmapFor(activity));
-      }
-    },
-  });
+  resetNavigation();
+  if (alreadyOnFirstPage) {
+    commitFirstPageLocation();
+    scheduleHistoryHeatmapCurrentDay();
+    return;
+  }
+  if (updateCurrentUrl(false)) return;
+  await render();
 }
 
 async function setHistoryActivitySync(enabled) {

@@ -691,7 +691,7 @@ test('history year navigation keeps the selected month and day', () => {
   );
 });
 
-test('history heatmap changes share one rollback-safe transition path', () => {
+test('history heatmap data changes share one rollback-safe transition path', () => {
   const indexSource = source('index.js');
   const workflowSource = source('history-workflow.js');
 
@@ -1069,7 +1069,7 @@ test('search and playlist video sorts include both title directions', () => {
   assert.doesNotMatch(indexSource, /browserPluginForcesRelevance|forceRelevance \?/);
 });
 
-test('history heatmap can return to the current year and day', () => {
+test('history heatmap always returns to the canonical current-day view', () => {
   const indexSource = source('index.js');
 
   assert.match(indexSource, /current\.dataset\.historyCurrent = ''/);
@@ -1077,13 +1077,18 @@ test('history heatmap can return to the current year and day', () => {
   assert.match(indexSource, /current\.setAttribute\('aria-label', 'Today'\)/);
   assert.match(indexSource, /current\.innerHTML = historyHeatmapNavigationIcon/);
   assert.match(indexSource, /async function jumpToCurrentHistoryActivity\(\)/);
-  assert.match(indexSource, /historyActivityYearOffset = 0/);
   assert.match(
     indexSource,
-    /async function jumpToCurrentHistoryActivity\(\)[\s\S]{0,420}selected === '__history__'[\s\S]{0,220}historyNavigationDate = '';[\s\S]{0,140}updateCurrentUrl\(false\)/,
+    /async function jumpToCurrentHistoryActivity\(\)[\s\S]{0,220}const alreadyOnFirstPage = currentPage === 1;[\s\S]{0,180}historyActivityYearOffset = 0;[\s\S]{0,120}currentPage = 1;[\s\S]{0,120}pendingHistoryDate = '';[\s\S]{0,120}historyNavigationDate = '';/,
   );
-  assert.match(indexSource, /historyActivityDayNear\(activity, localDateKey\(new Date\(\)\)\)/);
-  assert.match(indexSource, /current\.disabled = historyActivityYearOffset === 0 && currentPage === 1/);
+  assert.match(
+    indexSource,
+    /const commitFirstPageLocation = \(\) => \{[\s\S]{0,120}updateCurrentUrl\(true\);[\s\S]{0,120}setDocumentTitle\('History page 1'\);[\s\S]{0,120}scrollResultsToTop\(\);/,
+  );
+  assert.match(indexSource, /if \(alreadyOnFirstPage\)[\s\S]{0,100}commitFirstPageLocation\(\);[\s\S]{0,160}return;[\s\S]{0,120}updateCurrentUrl\(false\)/);
+  assert.match(indexSource, /alreadyOnFirstPage && historyActivityYearOffset > 0[\s\S]{0,520}fetchHistoryActivity\(channelId, 0\)/);
+  assert.doesNotMatch(indexSource, /current\.disabled = historyActivityYearOffset === 0 && currentPage === 1/);
+  assert.doesNotMatch(indexSource, /button\.dataset\.historyCurrent !== undefined/);
   assert.match(indexSource, /function restoreHistoryNavigationButtons\(container\)/);
 });
 
@@ -1099,7 +1104,7 @@ test('channel non-default tabs persist in the URL from page one', () => {
   const indexSource = source('index.js');
 
   assert.match(indexSource, /function channelDetailParams\(\)[\s\S]*?channelDetailTab !== 'playlisted-videos'[\s\S]*?params\.set\('tab', channelDetailTab\)/);
-  assert.match(indexSource, /function channelDetailParams\(\)[\s\S]*?params\.set\('tab', 'history'\)[\s\S]*?params\.set\('page', String\(currentPage\)\)/);
+  assert.match(indexSource, /function channelDetailParams\(\)[\s\S]*?params\.set\('tab', 'history'\)[\s\S]*?else if \(currentPage > 1\)[\s\S]*?params\.set\('page', String\(currentPage\)\)/);
   assert.match(indexSource, /function channelDetailTabFromParams\(params\)[\s\S]*?requested === 'playlists'[\s\S]*?browserChannelVideoTab\(requested\)[\s\S]*?'playlisted-videos'/);
   assert.match(indexSource, /channelDetailTab = channelDetailTabFromParams\(params\)/);
 });
