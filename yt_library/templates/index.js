@@ -274,20 +274,6 @@ function browserChannelVideoTab(key) {
   return browserChannelVideoTabs().find(tab => tab.key === key) || null;
 }
 
-async function browserChannelVideoTabCounts(channel, tabs) {
-  return new Map(await Promise.all(tabs.map(async tab => {
-    try {
-      const count = Number(await tab.definition.count(
-        channel,
-        browserPluginHost(tab.plugin.id),
-      ));
-      return [tab.key, Number.isFinite(count) ? Math.max(0, count) : null];
-    } catch (_error) {
-      return [tab.key, null];
-    }
-  })));
-}
-
 function browserSearchPlugins() {
   return [...browserPlugins.values()].filter(plugin => (
     plugin.search
@@ -669,6 +655,7 @@ let pageSize = String(pageConfig.pageSize || 100);
 const adjacentPageCacheLimit = 6;
 const historyActivityCacheLimit = 4;
 const viewDataCacheLimit = 24;
+const channelTabCountCacheLimit = 128;
 let historyPageCache = new Map();
 let historyActivityCache = new Map();
 let historyActivityYearOffset = 0;
@@ -696,6 +683,7 @@ let omniUploaderCategoryCountsCache = new Map();
 let pendingHistoryDate = '';
 let historyNavigationDate = '';
 let channelHistoryCounts = new Map();
+let channelTabCountCache = new Map();
 let channelDetailTab = 'playlisted-videos';
 let historyHeatmapDayFrame = null;
 let renderGeneration = 0;
@@ -786,6 +774,7 @@ async function loadData({ preserveSearchContent = false } = {}) {
     omniPlaylistMembershipCountsCache = new Map();
     omniUploaderCategoryCountsCache = new Map();
     channelHistoryCounts = new Map();
+    channelTabCountCache = new Map();
     playlistMemberships = new Map();
     for (const item of data.memberships || []) {
       if (!playlistMemberships.has(item.group_key)) playlistMemberships.set(item.group_key, []);
@@ -2867,6 +2856,91 @@ async function fetchChannelHistoryCount(channelId) {
     });
   channelHistoryCounts.set(channelId, request);
   return request;
+}
+
+function channelTabCountKey(channelId, tabKey) {
+  return `${channelId}:${tabKey}`;
+}
+
+function cachedChannelTabCount(channelId, tabKey) {
+  const entry = channelTabCountCache.get(channelTabCountKey(channelId, tabKey));
+  return entry && entry.promise === null ? Number(entry.data || 0) : null;
+}
+
+function storeChannelTabCount(channelId, tabKey, count) {
+  const normalized = Math.max(0, Number(count || 0));
+  const key = channelTabCountKey(channelId, tabKey);
+  channelTabCountCache.delete(key);
+  channelTabCountCache.set(key, { data: normalized, promise: null });
+  trimRequestCache(channelTabCountCache, channelTabCountCacheLimit);
+  return normalized;
+}
+
+async function fetchChannelTabCount(channel, channelReference, tabKey, pluginTabs) {
+  const channelId = channel.channel_id || channelReference;
+  const key = channelTabCountKey(channelId, tabKey);
+  return cachedRequest(channelTabCountCache, key, async () => {
+    if (tabKey === 'playlisted-videos') {
+      const payload = await fetchViewData(
+        `/api/channels/${encodeChannelReference(channelReference)}/videos?limit=1&offset=0&sort=title`,
+      );
+      return Math.max(0, Number(payload.total || 0));
+    }
+    if (tabKey === 'playlists') {
+      const payload = await fetchViewData(
+        `/api/channels/${encodeChannelReference(channelReference)}/playlists?limit=1&offset=0&sort=title`,
+      );
+      return Math.max(0, Number(payload.total || 0));
+    }
+    if (tabKey === 'history') return fetchChannelHistoryCount(channelId);
+    const pluginTab = pluginTabs.find(tab => tab.key === tabKey);
+    if (!pluginTab) return 0;
+    const count = Number(await pluginTab.definition.count(
+      channel,
+      browserPluginHost(pluginTab.plugin.id),
+    ));
+    return Number.isFinite(count) ? Math.max(0, count) : 0;
+  }, channelTabCountCacheLimit);
+}
+
+function updateVisibleChannelTabCount(channelReference, tabKey, count) {
+  if (selected !== channelSelection(channelReference)) return;
+  const button = viewContext.querySelector(
+    `[data-channel-tab="${CSS.escape(tabKey)}"]`,
+  );
+  if (!(button instanceof HTMLButtonElement)) return;
+  const label = button.dataset.channelTabLabel || '';
+  button.textContent = `${label} (${Number(count || 0).toLocaleString()})`;
+}
+
+function hydrateChannelTabCounts({
+  channel,
+  channelReference,
+  pluginTabs,
+  generation,
+}) {
+  const channelId = channel.channel_id || channelReference;
+  const tabKeys = [
+    'playlisted-videos',
+    'playlists',
+    'history',
+    ...pluginTabs.map(tab => tab.key),
+  ];
+  for (const tabKey of tabKeys) {
+    const cached = cachedChannelTabCount(channelId, tabKey);
+    if (cached !== null) {
+      updateVisibleChannelTabCount(channelReference, tabKey, cached);
+      continue;
+    }
+    void withLoadingStatus(() => (
+      fetchChannelTabCount(channel, channelReference, tabKey, pluginTabs)
+    )).then(count => {
+      if (generation !== renderGeneration) return;
+      updateVisibleChannelTabCount(channelReference, tabKey, count);
+    }).catch(() => {
+      // An unavailable inactive tab count must not block the active channel tab.
+    });
+  }
 }
 
 function localDateKey(date) {
@@ -5477,6 +5551,7 @@ function channelTabsFor(
     button.type = 'button';
     button.className = `channel-tab${key === activeTab ? ' active' : ''}`;
     button.dataset.channelTab = key;
+    button.dataset.channelTabLabel = label;
     button.setAttribute('role', 'tab');
     button.setAttribute('aria-selected', String(key === activeTab));
     button.textContent = `${label} (${count === null ? '...' : Number(count || 0).toLocaleString()})`;
@@ -5623,14 +5698,10 @@ async function renderCurrentView() {
     const channelReference = selected.slice('__channel__:'.length);
     title.textContent = 'Channel';
     let channel;
-    let playlistedVideoSummary;
-    let playlistSummary;
     try {
-      [channel, playlistedVideoSummary, playlistSummary] = await Promise.all([
-        fetchViewData(`/api/channels/${encodeChannelReference(channelReference)}`),
-        fetchViewData(`/api/channels/${encodeChannelReference(channelReference)}/videos?limit=1&offset=0&sort=title`),
-        fetchViewData(`/api/channels/${encodeChannelReference(channelReference)}/playlists?limit=1&offset=0&sort=title`),
-      ]);
+      channel = await fetchViewData(
+        `/api/channels/${encodeChannelReference(channelReference)}`,
+      );
     } catch (error) {
       if (generation !== renderGeneration) return;
       title.textContent = 'Channel not found';
@@ -5643,19 +5714,21 @@ async function renderCurrentView() {
     if (generation !== renderGeneration) return;
     const channelId = channel.channel_id || channelReference;
     const pluginVideoTabs = browserChannelVideoTabs();
-    const pluginVideoTabCounts = await browserChannelVideoTabCounts(
-      channel,
-      pluginVideoTabs,
+    const pluginVideoTabCounts = new Map(
+      pluginVideoTabs.map(tab => [
+        tab.key,
+        cachedChannelTabCount(channelId, tab.key),
+      ]),
     );
-    if (generation !== renderGeneration) return;
     const activePluginVideoTab = pluginVideoTabs.find(
       tab => tab.key === channelDetailTab,
     ) || null;
     hydrateEntitySearchFilters('channels', channelId, generation);
     setDocumentTitle(channel.title || channelReference);
-    const playlistedVideoCount = Number(playlistedVideoSummary.total || 0);
-    const playlistCount = Number(playlistSummary.total || 0);
-    const historyCount = cachedChannelHistoryCount(channelId);
+    let playlistedVideoCount = cachedChannelTabCount(channelId, 'playlisted-videos');
+    let playlistCount = cachedChannelTabCount(channelId, 'playlists');
+    let historyCount = cachedChannelTabCount(channelId, 'history');
+    if (historyCount === null) historyCount = cachedChannelHistoryCount(channelId);
     const currentHeatmap = channelDetailTab === 'history'
       ? viewContext.querySelector(`.history-heatmap[data-history-channel-id="${CSS.escape(channelId)}"]`)
       : null;
@@ -5683,13 +5756,14 @@ async function renderCurrentView() {
       await renderHistoryResults({
         channelId,
         commitChrome: ({ activity, total }) => {
+          historyCount = storeChannelTabCount(channelId, 'history', total);
           viewContext.replaceChildren(
             channelCard,
             channelTabsFor(
               'history',
               playlistedVideoCount,
               playlistCount,
-              total,
+              historyCount,
               pluginVideoTabs,
               pluginVideoTabCounts,
             ),
@@ -5744,7 +5818,10 @@ async function renderCurrentView() {
         : limit;
       currentPage = Math.floor(Number(payload?.offset || 0) / remoteLimit) + 1;
       const pageInfo = remotePageInfo(total, rows.length, remoteLimit);
-      pluginVideoTabCounts.set(activePluginVideoTab.key, total);
+      pluginVideoTabCounts.set(
+        activePluginVideoTab.key,
+        storeChannelTabCount(channelId, activePluginVideoTab.key, total),
+      );
       meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
       renderPager(pageInfo);
       applyCardLayout(layoutContext);
@@ -5775,24 +5852,12 @@ async function renderCurrentView() {
       empty.hidden = rows.length !== 0;
       empty.textContent = activePluginVideoTab.definition.emptyMessage
         || `No videos match ${activePluginVideoTab.definition.label.toLowerCase()}.`;
-      if (historyCount === null) {
-        void withLoadingStatus(() => fetchChannelHistoryCount(channelId)).then(total => {
-          if (
-            selected === channelSelection(channelReference)
-            && channelDetailTab === activePluginVideoTab.key
-          ) {
-            const historyTab = viewContext.querySelector('[data-channel-tab="history"]');
-            if (historyTab instanceof HTMLButtonElement) {
-              historyTab.textContent = `History (${Number(total || 0).toLocaleString()})`;
-            }
-          }
-        }).catch(() => {});
-      }
     } else if (channelDetailTab === 'playlists') {
       const layoutContext = 'channel-playlists';
       const payload = await fetchChannelPlaylists(channelReference);
       if (generation !== renderGeneration) return;
       const rows = payload.results || [];
+      playlistCount = storeChannelTabCount(channelId, 'playlists', payload.total);
       const pageInfo = remotePayloadPageInfo(payload, rows.length);
       meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
       renderPager(pageInfo);
@@ -5829,19 +5894,16 @@ async function renderCurrentView() {
         pageInfo,
         page => fetchChannelPlaylists(channelReference, page),
       );
-      if (historyCount === null) {
-        void withLoadingStatus(() => fetchChannelHistoryCount(channelId)).then(() => {
-          if (
-            selected === channelSelection(channelReference)
-            && channelDetailTab === 'playlists'
-          ) render();
-        }).catch(() => {});
-      }
     } else {
       const layoutContext = 'channel-playlisted-videos';
       const payload = await fetchVideoCollection({ channelId, sort: 'title' });
       if (generation !== renderGeneration) return;
       const rows = payload.results || [];
+      playlistedVideoCount = storeChannelTabCount(
+        channelId,
+        'playlisted-videos',
+        payload.total,
+      );
       const pageInfo = remotePageInfo(Number(payload.total || 0), rows.length, Number(payload.limit || 100));
       meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
       renderPager(pageInfo);
@@ -5875,15 +5937,13 @@ async function renderCurrentView() {
       scheduleAdjacentPagePrefetch(pageInfo, page => (
         fetchVideoCollection({ channelId, sort: 'title', page })
       ));
-      if (historyCount === null) {
-        void withLoadingStatus(() => fetchChannelHistoryCount(channelId)).then(() => {
-          if (
-            selected === channelSelection(channelReference)
-            && channelDetailTab === 'playlisted-videos'
-          ) render();
-        }).catch(() => {});
-      }
     }
+    hydrateChannelTabCounts({
+      channel,
+      channelReference,
+      pluginTabs: pluginVideoTabs,
+      generation,
+    });
     return;
   }
   if (selected === '__search__') {

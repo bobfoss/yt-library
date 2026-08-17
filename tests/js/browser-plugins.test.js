@@ -168,7 +168,8 @@ test('browser plugins are loaded through a generic registration contract', () =>
   assert.match(indexSource, /libraryChannels,/);
   assert.match(indexSource, /localChannelHref,/);
   assert.match(indexSource, /validateBrowserChannelVideoTabs\(plugin\)/);
-  assert.match(indexSource, /async function browserChannelVideoTabCounts\(/);
+  assert.match(indexSource, /function hydrateChannelTabCounts\(/);
+  assert.match(indexSource, /async function fetchChannelTabCount\(/);
   assert.match(indexSource, /createSearchVideoCard: searchVideoCardFor/);
   assert.match(indexSource, /searchHighlight,/);
   assert.doesNotMatch(indexSource, /browserSearchPresets/);
@@ -234,7 +235,7 @@ test('plugin channel video tabs are capability gated and use native cards', () =
   assert.match(indexSource, /const hydratedVideos = await libraryVideos\(videoIds\)/);
   assert.match(indexSource, /const cards = rows\.map\(video => searchVideoCardFor\(video\)\)/);
   assert.match(indexSource, /'channel-plugin-video-tab'/);
-  assert.match(indexSource, /channelDetailTab === activePluginVideoTab\.key/);
+  assert.match(indexSource, /else if \(activePluginVideoTab\)/);
 });
 
 test('entity-card definitions and canonical native descriptors are validated', () => {

@@ -508,13 +508,34 @@ def _video_candidate_query(
         )
     query_match_sql = " OR ".join(search_clauses) or "0"
     query_clause = f"AND (:query = '%%' OR ({query_match_sql}))"
-    history_cte = """
+    history_scope_clause = ""
+    if playlist_id:
+        params["playlist_id"] = playlist_id
+        history_scope_clause = """
+          WHERE video_id IN (
+            SELECT video_id
+            FROM playlist_items
+            WHERE playlist_id = :playlist_id AND video_id IS NOT NULL
+          )
+        """
+    elif channel_id:
+        params["channel_id"] = channel_id
+        history_scope_clause = """
+          WHERE video_id IN (
+            SELECT pi.video_id
+            FROM playlist_items pi
+            JOIN videos candidate_video ON candidate_video.video_id = pi.video_id
+            WHERE candidate_video.channel_id = :channel_id
+          )
+        """
+    history_cte = f"""
       WITH history_stats AS (
         SELECT video_id,
                COUNT(*) AS watch_count,
                MAX(COALESCE(watched_at, watch_date)) AS latest_watch_at,
                MAX(watch_progress_percent) AS watch_progress_percent
         FROM history_events
+        {history_scope_clause}
         GROUP BY video_id
       )
     """

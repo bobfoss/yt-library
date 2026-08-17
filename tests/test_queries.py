@@ -2360,6 +2360,68 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         self.assertFalse(any(detail.startswith("SCAN PI") for detail in plan), plan)
 
+    def test_channel_collection_limits_history_rollup_to_candidate_videos(self) -> None:
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLchannel', 'Channel videos')"
+        )
+        self.add_video("channel-video", "Channel video", "UC_target")
+        self.add_video("other-video", "Other video", "UC_other")
+        self.conn.execute(
+            """
+            INSERT INTO playlist_items(playlist_id, position, video_id)
+            VALUES ('PLchannel', 1, 'channel-video')
+            """
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES (?, ?, '2026-08-01', 'date_only')
+            """,
+            [
+                ("channel-watch", "channel-video"),
+                ("other-watch", "other-video"),
+            ],
+        )
+        self.conn.commit()
+
+        statements: list[str] = []
+        self.conn.set_trace_callback(statements.append)
+        try:
+            page = video_collection_data(
+                self.conn,
+                channel_id="UC_target",
+                sort="title",
+                limit=1,
+            )
+        finally:
+            self.conn.set_trace_callback(None)
+
+        self.assertEqual([row["video_id"] for row in page["results"]], ["channel-video"])
+        self.assertEqual(page["results"][0]["watch_count"], 1)
+        paged_query = next(
+            statement
+            for statement in statements
+            if "WITH raw_candidates AS MATERIALIZED" in statement
+            and "LIMIT 1 OFFSET 0" in " ".join(statement.upper().split())
+        )
+        normalized_query = " ".join(paged_query.upper().split())
+        self.assertIn(
+            "FROM HISTORY_EVENTS WHERE VIDEO_ID IN ( SELECT PI.VIDEO_ID",
+            normalized_query,
+        )
+        self.assertIn("CANDIDATE_VIDEO.CHANNEL_ID = 'UC_TARGET'", normalized_query)
+        plan = [
+            str(row["detail"]).upper()
+            for row in self.conn.execute(f"EXPLAIN QUERY PLAN {paged_query}")
+        ]
+        self.assertTrue(
+            any(
+                "SEARCH HISTORY_EVENTS USING INDEX IDX_HISTORY_EVENTS_VIDEO" in detail
+                for detail in plan
+            ),
+            plan,
+        )
+
     def test_video_and_channel_collections_hydrate_only_requested_page(self) -> None:
         self.add_video("available1", "Alpha", "UC_subscribed")
         self.add_video("unavailable1", "Beta", "UC_other")

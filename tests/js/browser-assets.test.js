@@ -263,10 +263,10 @@ test('foreground loads share the app loading status lifecycle', () => {
   assert.match(indexSource, /async function withLoadingStatus\(load\)/);
   assert.match(indexSource, /async function render\(\) \{\s*const loadingToken = beginLoadingStatus\(\{ reset: true \}\)/);
   assert.match(indexSource, /function loadingMessageAnimation[\s\S]{0,320}loading-dots/);
-  assert.equal(
-    (indexSource.match(/withLoadingStatus\(\(\) => fetchChannelHistoryCount/g) || []).length,
-    3,
-    'deferred channel counts must keep the shared loading status active',
+  assert.match(
+    indexSource,
+    /function hydrateChannelTabCounts[\s\S]{0,900}withLoadingStatus\(\(\) => \([\s\S]{0,160}fetchChannelTabCount/,
+    'lazy channel tab counts must keep the shared loading status active',
   );
   assert.match(
     indexSource,
@@ -292,7 +292,10 @@ test('internal channel links prefer aliases while channel queries use canonical 
   assert.match(indexSource, /playlist\.owner_channel_reference \|\| playlist\.owner_channel_id/);
   assert.match(indexSource, /channel\.preferred_reference \|\| channel\.channel_id/);
   assert.match(indexSource, /replace\(\/%40\/gi, '@'\)/);
-  assert.match(indexSource, /fetchViewData\(`\/api\/channels\/\$\{encodeChannelReference\(channelReference\)\}`\)/);
+  assert.match(
+    indexSource,
+    /fetchViewData\(\s*`\/api\/channels\/\$\{encodeChannelReference\(channelReference\)\}`/,
+  );
   assert.match(indexSource, /const channelId = channel\.channel_id \|\| channelReference/);
 });
 
@@ -1149,6 +1152,34 @@ test('channel tabs distinguish playlisted videos from owned playlists', () => {
   assert.match(indexSource, /\['playlists', 'Playlists', playlistCount\]/);
   assert.match(indexSource, /fetchChannelPlaylists\(channelReference\)/);
   assert.match(indexSource, /No playlists match this channel\./);
+});
+
+test('channel detail paints before inactive tab counts are hydrated', () => {
+  const indexSource = source('index.js');
+  const renderStart = indexSource.indexOf('async function renderCurrentView()');
+  const channelStart = indexSource.indexOf(
+    "if (selected.startsWith('__channel__:')) {",
+    renderStart,
+  );
+  const searchStart = indexSource.indexOf("if (selected === '__search__')", channelStart);
+  const channelSource = indexSource.slice(channelStart, searchStart);
+  const initialChrome = channelSource.indexOf('viewContext.replaceChildren(\n      channelCard,');
+  const activeHistory = channelSource.indexOf("if (channelDetailTab === 'history')");
+  const lazyCounts = channelSource.lastIndexOf('hydrateChannelTabCounts({');
+
+  assert.match(
+    channelSource,
+    /channel = await fetchViewData\([\s\S]{0,100}`\/api\/channels\/\$\{encodeChannelReference\(channelReference\)\}`/,
+  );
+  assert.doesNotMatch(
+    channelSource.slice(0, channelSource.indexOf('const channelId =')),
+    /\/videos\?limit=1|\/playlists\?limit=1|browserChannelVideoTabCounts/,
+  );
+  assert.ok(initialChrome >= 0 && initialChrome < activeHistory);
+  assert.ok(lazyCounts > activeHistory);
+  assert.match(channelSource, /storeChannelTabCount\(channelId, 'history', total\)/);
+  assert.match(channelSource, /storeChannelTabCount\(channelId, 'playlists', payload\.total\)/);
+  assert.match(channelSource, /'playlisted-videos',[\s\S]{0,80}payload\.total/);
 });
 
 test('channel tab transitions preserve only the current channel chrome', () => {
