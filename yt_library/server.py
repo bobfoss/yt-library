@@ -114,7 +114,7 @@ from .core import (
     worker_queue_rows,
     worker_queue_rows_by_id,
 )
-from .network import validated_socks5_proxy_url
+from .network import ProxyUnavailableError, validated_socks5_proxy_url
 from .request_pacing import configure_request_pacing
 from .plugins import PluginManager
 from .queries import (
@@ -464,6 +464,7 @@ class UpdateScheduler:
         self._next_run_at: datetime | None = None
         self._last_queued_at = ""
         self._last_error = ""
+        self._last_error_kind = ""
         self._archivarix_checked_utc_date = ""
 
     def start(
@@ -506,8 +507,16 @@ class UpdateScheduler:
             self._config_data = config_data
             self._next_run_at = self._calculate_next_run(config_data)
             self._last_error = ""
+            self._last_error_kind = ""
             self._archivarix_checked_utc_date = ""
         self._wake.set()
+
+    def clear_proxy_error(self) -> None:
+        with self._lock:
+            if self._last_error_kind != "proxy":
+                return
+            self._last_error = ""
+            self._last_error_kind = ""
 
     def status(self, config_data: dict[str, Any]) -> dict[str, Any]:
         frequency = configured_update_frequency(config_data)
@@ -563,6 +572,9 @@ class UpdateScheduler:
                 except Exception as exc:
                     with self._lock:
                         self._last_error = str(exc)
+                        self._last_error_kind = (
+                            "proxy" if isinstance(exc, ProxyUnavailableError) else "update"
+                        )
                 else:
                     with self._lock:
                         self._archivarix_checked_utc_date = current_utc_date
@@ -586,6 +598,7 @@ class UpdateScheduler:
 
             queued_at = utc_now()
             error = ""
+            error_kind = ""
             try:
                 result = enqueue_library_update(
                     db_path,
@@ -598,11 +611,14 @@ class UpdateScheduler:
                 dispatcher = result["dispatcher"]
                 if dispatcher.get("blocked"):
                     error = str(dispatcher.get("message") or "Worker queue could not start")
+                    error_kind = "proxy"
             except Exception as exc:
                 error = str(exc)
+                error_kind = "proxy" if isinstance(exc, ProxyUnavailableError) else "update"
             with self._lock:
                 self._last_queued_at = queued_at
                 self._last_error = error
+                self._last_error_kind = error_kind
                 self._next_run_at = self._calculate_next_run(config_data)
 
 
@@ -752,11 +768,14 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.config_data,
         )
         plugin_manager = getattr(self, "plugin_manager", None)
-        return (
+        dispatcher = (
             WORKER_QUEUE_DISPATCHER.start(*args, plugin_manager)
             if plugin_manager is not None
             else WORKER_QUEUE_DISPATCHER.start(*args)
         )
+        if not dispatcher.get("blocked"):
+            UPDATE_SCHEDULER.clear_proxy_error()
+        return dispatcher
 
     def _enqueue_and_start(
         self,

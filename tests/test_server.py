@@ -2073,6 +2073,10 @@ class AdminServerTests(unittest.TestCase):
             handler.config_data = load_config(Path(temp_dir) / "config.json")
             handler.send_json = Mock()
 
+            scheduler = server.UpdateScheduler()
+            scheduler._last_error = "SOCKS5 proxy is unavailable"
+            scheduler._last_error_kind = "proxy"
+
             blocked_when_started: list[bool] = []
 
             def recover_proxy(*_args, **_kwargs):
@@ -2091,7 +2095,7 @@ class AdminServerTests(unittest.TestCase):
                 workers.WORKER_QUEUE_DISPATCHER,
                 "start",
                 side_effect=recover_proxy,
-            ) as start:
+            ) as start, patch.object(server, "UPDATE_SCHEDULER", scheduler):
                 handler.do_POST()
 
             self.assertEqual(blocked_when_started, [True])
@@ -2120,6 +2124,29 @@ class AdminServerTests(unittest.TestCase):
             self.assertTrue(response["ok"])
             self.assertTrue(response["cleared"])
             self.assertFalse(response["proxyBlock"]["blocked"])
+            self.assertEqual(scheduler.status(handler.config_data)["lastError"], "")
+
+    def test_successful_queue_start_preserves_non_proxy_scheduler_error(self) -> None:
+        scheduler = server.UpdateScheduler()
+        scheduler._last_error = "YouTube authentication failed"
+        scheduler._last_error_kind = "update"
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.cookie_file = Path("youtube-cookies.txt")
+        handler.video_thumbs = Path("video-thumbs")
+        handler.config_data = {}
+
+        with patch.object(
+            server.WORKER_QUEUE_DISPATCHER,
+            "start",
+            return_value={"started": True},
+        ), patch.object(server, "UPDATE_SCHEDULER", scheduler):
+            handler._start_worker_queue()
+
+        self.assertEqual(
+            scheduler.status(handler.config_data)["lastError"],
+            "YouTube authentication failed",
+        )
 
     def test_feature_backfill_endpoint_queues_selected_kind(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
