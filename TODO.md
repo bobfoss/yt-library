@@ -31,11 +31,11 @@ versioned migrations as well as creating a fresh current schema.
   videos with `DELETED_*` or `NOT_FOUND` recovery evidence are correctly
   modeled and require no repair.
 - Six possible legacy-overwrite candidates were rescanned directly on
-  2026-08-10, but YouTube returned inconclusive `no_metadata` results. This
-  follow-up is complete by product decision: future authoritative scans may
-  update their canonical state naturally, but no targeted repair, inference,
-  or speculative backfill remains planned. Their independent `video_recovery`
-  evidence is preserved.
+  2026-08-10, but YouTube returned inconclusive `no_metadata` results. These
+  candidates are resolved by product decision: future authoritative scans may
+  update their canonical state naturally, but no targeted retry, repair,
+  inference, or speculative backfill remains planned. Their independent
+  `video_recovery` evidence is preserved.
 
 ### Time And URL Normalization
 
@@ -290,9 +290,7 @@ The left-navigation library lists are named omni-search presets. Search returns 
 
 ## Suggested Order
 
-1. Retry the six legacy Archivarix-write candidates only when direct YouTube
-   metadata can produce conclusive availability evidence.
-2. Investigate foreign playlist continuation extraction when a reproducible fixture is available.
-3. Define the History layout extension and the saved-search preset specification.
-4. Persist scheduled Update last-run and failure status across service restarts.
-5. Improve the visual hierarchy and partial-selection states of nested filters.
+1. Investigate foreign playlist continuation extraction when a reproducible fixture is available.
+2. Define the History layout extension and the saved-search preset specification.
+3. Persist scheduled Update last-run and failure status across service restarts.
+4. Improve the visual hierarchy and partial-selection states of nested filters.
