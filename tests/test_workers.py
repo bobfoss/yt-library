@@ -1218,6 +1218,9 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 1)
                 remaining = core.metadata_queue_rows(conn)[0]
                 self.assertEqual(remaining["video_id"], "authcheck1")
+                auth_status = core.cookie_auth_statuses(conn)["youtube"]
+                self.assertEqual(auth_status["status"], "rejected")
+                self.assertIn("not accepted", auth_status["message"])
                 debug_log = conn.execute(
                     """
                     SELECT level, video_id, message
@@ -4188,6 +4191,13 @@ class WorkerQueueTests(unittest.TestCase):
                         current_title="After account proxy",
                         priority=0,
                     )
+                    core.record_cookie_auth_status(
+                        conn,
+                        "google",
+                        "valid",
+                        "Previous authenticated request accepted.",
+                        checked_at="2026-08-19T17:00:00Z",
+                    )
                 account_queue_id = conn.execute(
                     "SELECT queue_id FROM worker_queue WHERE subject_key='account:sync'"
                 ).fetchone()[0]
@@ -4235,6 +4245,7 @@ class WorkerQueueTests(unittest.TestCase):
                         "SELECT message FROM metadata_worker_log ORDER BY id"
                     )
                 ]
+                auth_status = core.cookie_auth_statuses(conn)["google"]
             finally:
                 conn.close()
 
@@ -4243,6 +4254,8 @@ class WorkerQueueTests(unittest.TestCase):
             self.assertTrue(
                 any("pending items were retained" in message for message in messages)
             )
+            self.assertEqual(auth_status["status"], "valid")
+            self.assertEqual(auth_status["checked_at"], "2026-08-19T17:00:00Z")
 
     def test_account_failure_is_consumed_until_the_next_update(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -4276,6 +4289,9 @@ class WorkerQueueTests(unittest.TestCase):
             try:
                 self.assertEqual(core.worker_queue_type_count(conn, "account"), 0)
                 self.assertFalse(core.external_service_block(conn, "proxy")["blocked"])
+                auth_status = core.cookie_auth_statuses(conn)["google"]
+                self.assertEqual(auth_status["status"], "rejected")
+                self.assertIn("refresh the cookie export", auth_status["message"])
             finally:
                 conn.close()
             self.assertEqual(fetch_activity.call_count, 1)

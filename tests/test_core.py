@@ -4656,6 +4656,50 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_cookie_auth_status_tracks_and_clears_remote_verdicts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                initial = core.cookie_auth_statuses(conn)
+                self.assertEqual(initial["youtube"]["status"], "unknown")
+                self.assertEqual(initial["google"]["checked_at"], "")
+
+                with conn:
+                    core.record_cookie_auth_status(
+                        conn,
+                        "youtube",
+                        "valid",
+                        "Authenticated request accepted.",
+                        checked_at="2026-08-19T19:20:21Z",
+                    )
+                current = core.cookie_auth_statuses(conn)["youtube"]
+                self.assertEqual(current["status"], "valid")
+                self.assertEqual(current["checked_at"], "2026-08-19T19:20:21Z")
+                self.assertEqual(current["message"], "Authenticated request accepted.")
+
+                with conn:
+                    self.assertTrue(core.clear_cookie_auth_status(conn, "youtube"))
+                self.assertEqual(
+                    core.cookie_auth_statuses(conn)["youtube"]["status"],
+                    "unknown",
+                )
+            finally:
+                conn.close()
+
+    def test_cookie_auth_failure_status_distinguishes_known_failures(self) -> None:
+        self.assertEqual(
+            core.cookie_auth_failure_status("Archivarix cookie expired"),
+            "expired",
+        )
+        self.assertEqual(
+            core.cookie_auth_failure_status("Cookie file is missing"),
+            "missing",
+        )
+        self.assertEqual(
+            core.cookie_auth_failure_status("YouTube login session was rejected"),
+            "rejected",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

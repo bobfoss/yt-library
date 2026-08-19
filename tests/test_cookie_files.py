@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock
 
-from yt_library import server
+from yt_library import core, server
 from yt_library.config import load_config
 from yt_library.cookie_files import CookieFileError, cookie_file_status, replace_cookie_file
 
@@ -43,9 +43,23 @@ class CookieFileTests(unittest.TestCase):
     def test_admin_route_accepts_valid_text_without_echoing_cookie_values(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = load_config(Path(temp_dir) / "config.json")
+            db_path = Path(temp_dir) / "library.sqlite3"
+            core.migrate_database(db_path)
+            conn = core.connect(db_path)
+            try:
+                with conn:
+                    core.record_cookie_auth_status(
+                        conn,
+                        "google",
+                        "valid",
+                        "Authenticated request accepted.",
+                    )
+            finally:
+                conn.close()
             content = netscape_cookie("google.com")
             handler = object.__new__(server.LibraryHandler)
             handler.path = "/api/admin/cookies/google"
+            handler.db_path = db_path
             handler.config_data = config
             handler.headers = {
                 "Content-Type": "text/plain; charset=utf-8",
@@ -64,6 +78,14 @@ class CookieFileTests(unittest.TestCase):
             self.assertTrue(payload["status"]["valid"])
             self.assertNotIn("secret-value", repr(payload))
             self.assertTrue((Path(temp_dir) / "my_activity_cookies.txt").is_file())
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(
+                    core.cookie_auth_statuses(conn)["google"]["status"],
+                    "unknown",
+                )
+            finally:
+                conn.close()
 
 
 if __name__ == "__main__":

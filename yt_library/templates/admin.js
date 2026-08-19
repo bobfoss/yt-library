@@ -11,6 +11,7 @@ const fields = {
   updateHourMinute: document.getElementById('updateHourMinute'),
   updateStatus: document.getElementById('updateStatus'),
   updateScheduleStatus: document.getElementById('updateScheduleStatus'),
+  updateCookieStatus: document.getElementById('updateCookieStatus'),
   playlistRows: document.getElementById('playlistRows'),
   distinctVideos: document.getElementById('distinctVideos'),
   playlistBackfillCount: document.getElementById('playlistBackfillCount'),
@@ -108,7 +109,8 @@ function formatUpdateResult(result) {
     result?.alreadyQueued ?? result?.already_queued ?? 0,
   ).toLocaleString();
   const prefix = result?.source === 'scheduled' ? 'Scheduled: queued' : 'Queued';
-  return `${prefix} ${inserted}; ${alreadyQueued} already queued`;
+  const timestamp = result?.queuedAt ? `${fmtTime(result.queuedAt)}: ` : '';
+  return `${timestamp}${prefix} ${inserted}; ${alreadyQueued} already queued`;
 }
 fields.displayTimezone.value = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
 fields.themeToggle.checked = window.YTLibraryTheme.current() === 'dark';
@@ -124,6 +126,8 @@ const queueRowHeight = 72;
 const queueOverscan = 10;
 const runtimeStatusPollMs = 5000;
 const statusPollMs = 30000;
+const cookieFileStatuses = {};
+let currentCookieAuthStatuses = {};
 const statusRequestTimeoutMs = 5000;
 let dispatchSettingsSaving = false;
 let dispatchSettingsDirty = false;
@@ -196,6 +200,60 @@ function renderCookieStatus(kind, status) {
   target.textContent = `${status.message || 'Cookie status unavailable'} ${matching} matching, ${unexpired} unexpired.${modified}`;
   target.classList.toggle('warn', !status.exists || !status.valid || unexpired === 0);
   target.title = status.configuredPath || '';
+  cookieFileStatuses[kind] = status;
+  renderUpdateCookieStatuses(currentCookieAuthStatuses);
+}
+
+function effectiveCookieStatus(kind, authStatus) {
+  const fileStatus = cookieFileStatuses[kind] || {};
+  if (fileStatus.exists === false) return { label: 'not configured', tone: 'warn', checkedAt: '', message: fileStatus.message || '' };
+  if (fileStatus.exists && !fileStatus.valid) return { label: 'invalid file', tone: 'warn', checkedAt: '', message: fileStatus.message || '' };
+  if (fileStatus.exists && Number(fileStatus.unexpiredMatchingCookieCount || 0) === 0) {
+    return { label: 'expired', tone: 'warn', checkedAt: '', message: fileStatus.message || '' };
+  }
+  const checkedAt = String(authStatus?.checked_at || '');
+  const modifiedAt = String(fileStatus.modifiedAt || '');
+  if (
+    !checkedAt
+    || (modifiedAt && Date.parse(modifiedAt) > Date.parse(checkedAt))
+  ) {
+    return { label: 'not checked', tone: '', checkedAt: '', message: 'The current cookie file has not been used successfully yet.' };
+  }
+  const status = String(authStatus?.status || 'unknown');
+  const labels = {
+    valid: 'valid',
+    expired: 'expired',
+    rejected: 'rejected',
+    missing: 'not configured',
+    error: 'error',
+  };
+  return {
+    label: labels[status] || 'not checked',
+    tone: status === 'valid' ? 'valid' : (status === 'unknown' ? '' : 'warn'),
+    checkedAt,
+    message: String(authStatus?.message || ''),
+  };
+}
+
+function renderUpdateCookieStatuses(statuses = {}) {
+  currentCookieAuthStatuses = statuses || {};
+  const labels = [
+    ['youtube', 'YouTube'],
+    ['google', 'My Activity'],
+    ['archivarix', 'Archivarix'],
+  ];
+  const children = [document.createTextNode('Cookies:')];
+  labels.forEach(([kind, label], index) => {
+    const status = effectiveCookieStatus(kind, currentCookieAuthStatuses[kind] || {});
+    const item = document.createElement('span');
+    item.className = status.tone === 'valid'
+      ? 'cookie-auth-valid'
+      : (status.tone === 'warn' ? 'cookie-auth-warn' : '');
+    item.textContent = `${label}: ${status.label}${status.checkedAt ? ` (${fmtTime(status.checkedAt)})` : ''}${index < labels.length - 1 ? ';' : ''}`;
+    item.title = status.message;
+    children.push(item);
+  });
+  fields.updateCookieStatus.replaceChildren(...children);
 }
 
 async function loadCookieStatuses() {
@@ -816,6 +874,7 @@ function renderRuntimeStatus(data) {
     service.startedAt ? `Started ${fmtTime(service.startedAt)}` : '',
   ].filter(Boolean).join(' | ');
   fields.restartService.disabled = serviceState === 'restarting';
+  renderUpdateCookieStatuses(data.cookieAuthStatuses || {});
 
   const queueWorkerRunning = Boolean(data.workerQueueRunning);
   const queueWorkerStopping = Boolean(data.workerQueueStopping);

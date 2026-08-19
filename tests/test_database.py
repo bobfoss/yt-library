@@ -581,6 +581,42 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertIsNotNone(table)
         self.assertEqual(retained, "Featured owner")
 
+    def test_database_module_migrates_cookie_auth_status_from_version_28(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO channels(channel_id, title) "
+                        "VALUES ('UCcookiekeep', 'Cookie migration survivor')"
+                    )
+                    conn.execute("DROP TABLE cookie_auth_status")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 29")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                table = conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='cookie_auth_status'"
+                ).fetchone()
+                retained = conn.execute(
+                    "SELECT title FROM channels WHERE channel_id = 'UCcookiekeep'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertIsNotNone(table)
+        self.assertEqual(retained, "Cookie migration survivor")
+
 
 if __name__ == "__main__":
     unittest.main()

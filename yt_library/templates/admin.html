@@ -64,6 +64,9 @@
     .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0 18px; }
     .history-controls { align-items: flex-start; }
     .update-controls { align-items: center; }
+    .update-cookie-status { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: -10px 0 18px; }
+    .cookie-auth-valid { color: var(--ok); }
+    .cookie-auth-warn { color: var(--warn); }
     .update-schedule-label { display: flex; align-items: center; gap: 6px; }
     .update-schedule-select { width: 100px; }
     label.update-time-label { display: flex; align-items: center; gap: 6px; }
@@ -278,6 +281,7 @@
           <span id="updateStatus" class="metric" aria-live="polite"></span>
           <span id="updateScheduleStatus" class="metric" aria-live="polite"></span>
         </div>
+        <div id="updateCookieStatus" class="metric update-cookie-status" aria-live="polite"></div>
       </section>
 
       <section class="workstream advanced-only">

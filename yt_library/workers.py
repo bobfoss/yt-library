@@ -49,6 +49,7 @@ from .core import (
     cache_video_thumbnail,
     clear_external_service_block,
     connect,
+    cookie_auth_failure_status,
     enqueue_new_history_metadata_targets,
     enqueue_clip_item,
     enqueue_metadata_item,
@@ -85,6 +86,7 @@ from .core import (
     probe_youtube_authentication_ytdlp,
     rebuild_history_reconciliation,
     rebuild_playlist_reconciliation,
+    record_cookie_auth_status,
     recover_archivarix_video,
     remove_worker_queue_entry,
     request_text,
@@ -438,6 +440,13 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                 )
                 if record_summary:
                     log_worker_event(conn, run_id, "info", f"Queued {initial_total} metadata items")
+                if not cookie_file.is_file():
+                    record_cookie_auth_status(
+                        conn,
+                        "youtube",
+                        "missing",
+                        "YouTube cookie file is not configured.",
+                    )
 
             processed = 0
             found = 0
@@ -471,6 +480,12 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                         authentication_error = f"Metadata worker stopped: {session_message}"
                         self._set_blocked_reason(authentication_error)
                         with conn:
+                            record_cookie_auth_status(
+                                conn,
+                                "youtube",
+                                cookie_auth_failure_status(session_message),
+                                session_message,
+                            )
                             runs.finish(
                                 run_id,
                                 status="error",
@@ -511,6 +526,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                     "reaction": "",
                     "yt_status": "",
                 }
+                youtube_auth_confirmed = False
                 try:
                     if metadata_source == "channel" and queued_channel_id:
                         metadata = fetch_channel_metadata(
@@ -535,6 +551,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                         )
                         if not useful_video_metadata(metadata):
                             status = "no_metadata"
+                    youtube_auth_confirmed = cookie_file.is_file()
                 except YouTubeAuthenticationError as exc:
                     authentication_error = f"Metadata worker stopped: {exc}"
                     self._set_blocked_reason(authentication_error)
@@ -544,6 +561,12 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                         proxy_url,
                     )
                     with conn:
+                        record_cookie_auth_status(
+                            conn,
+                            "youtube",
+                            cookie_auth_failure_status(str(exc)),
+                            str(exc),
+                        )
                         runs.finish(
                             run_id,
                             status="error",
@@ -585,6 +608,12 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                             proxy_url,
                         )
                         with conn:
+                            record_cookie_auth_status(
+                                conn,
+                                "youtube",
+                                cookie_auth_failure_status(str(exc)),
+                                str(exc),
+                            )
                             runs.finish(
                                 run_id,
                                 status="error",
@@ -601,6 +630,14 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                         return
                 now = utc_now()
                 with conn:
+                    if youtube_auth_confirmed:
+                        record_cookie_auth_status(
+                            conn,
+                            "youtube",
+                            "valid",
+                            "Authenticated YouTube metadata request accepted.",
+                            checked_at=now,
+                        )
                     if channel_status:
                         store_channel_metadata(conn, channel_metadata, channel_status, channel_error, updated_at=now)
                     if metadata_source == "channel":
@@ -797,6 +834,14 @@ class ClipWorker(_ThreadWorkerLifecycle):
         task_type = str(row.get("task_type") or "scan").strip()
         conn = connect(db_path)
         try:
+            if not cookie_file.is_file():
+                with conn:
+                    record_cookie_auth_status(
+                        conn,
+                        "youtube",
+                        "missing",
+                        "YouTube cookie file is not configured.",
+                    )
             if cookie_file.exists():
                 session_valid, session_message = youtube_session_status(
                     cookie_file,
@@ -807,11 +852,23 @@ class ClipWorker(_ThreadWorkerLifecycle):
                     message = f"Clip worker stopped: {session_message}"
                     self._set_blocked_reason(message)
                     with conn:
+                        record_cookie_auth_status(
+                            conn,
+                            "youtube",
+                            cookie_auth_failure_status(session_message),
+                            session_message,
+                        )
                         log_worker_event(conn, run_id, "clip error", message, clip_id)
                     return
             if task_type == "discover":
                 _opener, records = fetch_current_youtube_clips(cookie_file, proxy_url)
                 with conn:
+                    record_cookie_auth_status(
+                        conn,
+                        "youtube",
+                        "valid",
+                        "Authenticated YouTube clip discovery request accepted.",
+                    )
                     saved = save_discovered_clips(conn, records)
                     scan_ids = (
                         [str(record.get("clip_id") or "") for record in records]
@@ -875,6 +932,13 @@ class ClipWorker(_ThreadWorkerLifecycle):
                     referer_url=f"https://www.youtube.com/clip/{clip_id}",
                 )
             with conn:
+                if cookie_file.is_file():
+                    record_cookie_auth_status(
+                        conn,
+                        "youtube",
+                        "valid",
+                        "Authenticated YouTube clip request accepted.",
+                    )
                 existing = conn.execute(
                     "SELECT source_video_id FROM clips WHERE clip_id = ?",
                     (clip_id,),
@@ -919,6 +983,12 @@ class ClipWorker(_ThreadWorkerLifecycle):
             message = f"Clip worker stopped: {exc}"
             self._set_blocked_reason(message)
             with conn:
+                record_cookie_auth_status(
+                    conn,
+                    "youtube",
+                    cookie_auth_failure_status(str(exc)),
+                    str(exc),
+                )
                 log_worker_event(conn, run_id, "clip error", message, clip_id)
         except ProxyUnavailableError as exc:
             with conn:
@@ -1173,6 +1243,12 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 f"{len(scan_records)} scans added, "
                                 f"{remaining} playlist scans queued"
                             )
+                            record_cookie_auth_status(
+                                conn,
+                                "youtube",
+                                "valid",
+                                "Authenticated YouTube playlist discovery request accepted.",
+                            )
                             log_playlist_scan_event(conn, run_id, "info", message)
                             runs.update(
                                 run_id,
@@ -1187,6 +1263,13 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         raise
                     except Exception as exc:
                         with conn:
+                            if isinstance(exc, YouTubeAuthenticationError):
+                                record_cookie_auth_status(
+                                    conn,
+                                    "youtube",
+                                    cookie_auth_failure_status(str(exc)),
+                                    str(exc),
+                                )
                             processed += 1
                             failed += 1
                             message = f"Playlist discovery failed: {exc}"
@@ -1251,6 +1334,13 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 if not header_count_available and header_page_requires_login:
                     status = "error"
                     error = "skipping: YouTube login session is not accepted by YouTube"
+                    with conn:
+                        record_cookie_auth_status(
+                            conn,
+                            "youtube",
+                            "rejected",
+                            "YouTube login session is not accepted by YouTube.",
+                        )
                     youtube_debug = (
                         youtube_page_diagnostics(header_page, "playlist header")
                         + " | "
@@ -1372,7 +1462,21 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         status = "error"
                         error = f"skipping: {session_message}"
                         youtube_debug = youtube_cookie_diagnostics(row_cookie_file)
+                        with conn:
+                            record_cookie_auth_status(
+                                conn,
+                                "youtube",
+                                cookie_auth_failure_status(session_message),
+                                session_message,
+                            )
                     else:
+                        with conn:
+                            record_cookie_auth_status(
+                                conn,
+                                "youtube",
+                                "valid",
+                                "Authenticated YouTube playlist request accepted.",
+                            )
                         web_attempted = True
                         try:
                             web_videos = scan_playlist_videos(
@@ -1738,6 +1842,13 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                     requested_limit=batch_size,
                 )
                 log_live_history_event(conn, run_id, "info", f"{label} started with {batch_size} per batch")
+                if not cookie_file.is_file():
+                    record_cookie_auth_status(
+                        conn,
+                        "youtube",
+                        "missing",
+                        "YouTube cookie file is not configured.",
+                    )
 
             if self._stop.is_set():
                 with conn:
@@ -1767,6 +1878,13 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                 if overlap_tracker and seen < batch_size:
                     overlap_reached = overlap_tracker.finish()
                 with conn:
+                    if cookie_file.is_file():
+                        record_cookie_auth_status(
+                            conn,
+                            "youtube",
+                            "valid",
+                            "Authenticated YouTube history request accepted.",
+                        )
                     save_stats = save_youtube_history_events(
                         conn,
                         rows,
@@ -1940,6 +2058,13 @@ class LiveHistoryWorker(_ThreadWorkerLifecycle):
                 error_message = str(exc)
                 debug_message = ""
             with conn:
+                if isinstance(exc, YouTubeAuthenticationError):
+                    record_cookie_auth_status(
+                        conn,
+                        "youtube",
+                        cookie_auth_failure_status(error_message),
+                        error_message,
+                    )
                 runs.finish(
                     run_id,
                     status="error",
@@ -2088,6 +2213,12 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
             if not session_valid:
                 self._set_blocked_reason(session_message)
                 with conn:
+                    record_cookie_auth_status(
+                        conn,
+                        "archivarix",
+                        cookie_auth_failure_status(session_message),
+                        session_message,
+                    )
                     set_external_service_block(
                         conn,
                         "archivarix",
@@ -2217,6 +2348,16 @@ class PlaceholderRecoveryWorker(_ThreadWorkerLifecycle):
             title = (video or {}).get("title") or title
 
             with conn:
+                if (
+                    not recovery_options["no_api"]
+                    and status in {"found", "thumbnail_only", "not_found", "rate_limited"}
+                ):
+                    record_cookie_auth_status(
+                        conn,
+                        "archivarix",
+                        "valid",
+                        "Archivarix accepted the authenticated request.",
+                    )
                 if status == "rate_limited":
                     message = error or "Archivarix daily search limit reached"
                     self._set_blocked_reason(message)
@@ -2375,6 +2516,12 @@ def run_optional_account_sync(
         conn = connect(db_path)
         try:
             with conn:
+                record_cookie_auth_status(
+                    conn,
+                    "google",
+                    "missing",
+                    "Google My Activity cookie file is not configured.",
+                )
                 log_worker_queue_event(
                     conn,
                     "info",
@@ -2406,6 +2553,12 @@ def run_optional_account_sync(
             conn = connect(db_path)
             try:
                 with conn:
+                    record_cookie_auth_status(
+                        conn,
+                        "google",
+                        "valid",
+                        "Google My Activity accepted the authenticated request.",
+                    )
                     stats = save_my_activity_events(
                         conn,
                         watch_events,
@@ -2440,6 +2593,25 @@ def run_optional_account_sync(
             conn = connect(db_path)
             try:
                 with conn:
+                    error_text = str(exc)
+                    lowered_error = error_text.casefold()
+                    auth_status = (
+                        "expired"
+                        if "expired" in lowered_error
+                        else "rejected"
+                        if any(
+                            marker in lowered_error
+                            for marker in ("cookie", "login", "bootstrap", "signed in")
+                        )
+                        else "error"
+                    )
+                    if detected_proxy_error is None:
+                        record_cookie_auth_status(
+                            conn,
+                            "google",
+                            auth_status,
+                            error_text,
+                        )
                     log_worker_queue_event(
                         conn,
                         "warn",

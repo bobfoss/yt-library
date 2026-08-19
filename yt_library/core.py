@@ -8262,6 +8262,7 @@ def _admin_runtime_status_from_connection(
         "workerQueueStopping": queue_stopping,
         "workerQueueStats": queue_stats,
         "workerQueueCount": queue_count,
+        "cookieAuthStatuses": cookie_auth_statuses(conn),
         "archivarixBlock": external_service_block(conn, "archivarix"),
         "proxyBlock": external_service_block(conn, "proxy"),
     }
@@ -8302,6 +8303,77 @@ def external_service_block(conn: sqlite3.Connection, service: str) -> dict[str, 
         "retry_eligible": True,
         "manual_retry_required": not bool(row["retry_after"]),
     }
+
+
+COOKIE_AUTH_SERVICES = ("youtube", "google", "archivarix")
+COOKIE_AUTH_STATES = {"valid", "expired", "rejected", "missing", "error"}
+
+
+def cookie_auth_statuses(conn: sqlite3.Connection) -> dict[str, dict[str, str]]:
+    statuses = {
+        service: {
+            "service": service,
+            "status": "unknown",
+            "checked_at": "",
+            "message": "",
+        }
+        for service in COOKIE_AUTH_SERVICES
+    }
+    for row in conn.execute("SELECT * FROM cookie_auth_status"):
+        service = str(row["service"] or "")
+        if service in statuses:
+            statuses[service] = dict(row)
+    return statuses
+
+
+def record_cookie_auth_status(
+    conn: sqlite3.Connection,
+    service: str,
+    status: str,
+    message: str = "",
+    *,
+    checked_at: str | None = None,
+) -> None:
+    service = (service or "").strip().lower()
+    status = (status or "").strip().lower()
+    if service not in COOKIE_AUTH_SERVICES:
+        raise ValueError(f"Unknown cookie service: {service}")
+    if status not in COOKIE_AUTH_STATES:
+        raise ValueError(f"Unknown cookie authentication status: {status}")
+    conn.execute(
+        """
+        INSERT INTO cookie_auth_status(service, status, checked_at, message)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(service) DO UPDATE SET
+          status = excluded.status,
+          checked_at = excluded.checked_at,
+          message = excluded.message
+        """,
+        (service, status, checked_at or utc_now(), str(message or "")),
+    )
+
+
+def clear_cookie_auth_status(conn: sqlite3.Connection, service: str) -> bool:
+    service = (service or "").strip().lower()
+    if service not in COOKIE_AUTH_SERVICES:
+        raise ValueError(f"Unknown cookie service: {service}")
+    return bool(
+        conn.execute(
+            "DELETE FROM cookie_auth_status WHERE service = ?",
+            (service,),
+        ).rowcount
+    )
+
+
+def cookie_auth_failure_status(message: str) -> str:
+    normalized = str(message or "").casefold()
+    if "expired" in normalized:
+        return "expired"
+    if "missing" in normalized:
+        return "missing"
+    if "could not be read" in normalized:
+        return "error"
+    return "rejected"
 
 
 def set_external_service_block(

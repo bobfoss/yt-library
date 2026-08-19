@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -1174,6 +1174,23 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (28, utc_now()),
+        )
+    if current_version < 29:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cookie_auth_status (
+              service TEXT PRIMARY KEY
+                CHECK(service IN ('youtube', 'google', 'archivarix')),
+              status TEXT NOT NULL
+                CHECK(status IN ('valid', 'expired', 'rejected', 'missing', 'error')),
+              checked_at TEXT NOT NULL,
+              message TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (29, utc_now()),
         )
 
 

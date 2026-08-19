@@ -301,6 +301,13 @@ CREATE TABLE IF NOT EXISTS external_service_blocks (
   queue_id INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS cookie_auth_status (
+  service TEXT PRIMARY KEY CHECK(service IN ('youtube', 'google', 'archivarix')),
+  status TEXT NOT NULL CHECK(status IN ('valid', 'expired', 'rejected', 'missing', 'error')),
+  checked_at TEXT NOT NULL,
+  message TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TRIGGER IF NOT EXISTS worker_queue_event_insert
 AFTER INSERT ON worker_queue
 BEGIN

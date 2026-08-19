@@ -478,11 +478,26 @@ test('admin status polling renders the latest manual or scheduled update result'
   const adminSource = source('admin.js');
 
   assert.match(adminSource, /function formatUpdateResult\(result\)/);
+  assert.match(adminSource, /result\?\.queuedAt \? `\$\{fmtTime\(result\.queuedAt\)\}: ` : ''/);
   assert.match(adminSource, /result\?\.source === 'scheduled' \? 'Scheduled: queued' : 'Queued'/);
   assert.match(adminSource, /updateSchedule\.lastResult\?\.queuedAt/);
   assert.match(adminSource, /fields\.updateStatus\.textContent = updateSchedule\.lastResult\?\.queuedAt/);
   assert.match(adminSource, /if \(!updateRequestPending\)/);
   assert.match(adminSource, /formatUpdateResult\(result\.queue \|\| \{\}\)/);
+});
+
+test('admin shows durable remote cookie status separately from update results', () => {
+  const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
+
+  assert.match(adminHtml, /id="updateCookieStatus"/);
+  assert.match(adminSource, /function effectiveCookieStatus\(kind, authStatus\)/);
+  assert.match(adminSource, /function renderUpdateCookieStatuses\(statuses = \{\}\)/);
+  assert.match(adminSource, /\['youtube', 'YouTube'\]/);
+  assert.match(adminSource, /\['google', 'My Activity'\]/);
+  assert.match(adminSource, /\['archivarix', 'Archivarix'\]/);
+  assert.match(adminSource, /Date\.parse\(modifiedAt\) > Date\.parse\(checkedAt\)/);
+  assert.match(adminSource, /renderUpdateCookieStatuses\(data\.cookieAuthStatuses \|\| \{\}\)/);
 });
 
 test('admin log messages identify completed Archivarix requests', () => {

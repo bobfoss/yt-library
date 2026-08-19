@@ -77,6 +77,7 @@ from .core import (
     ROOT,
     admin_runtime_status,
     admin_status,
+    clear_cookie_auth_status,
     clear_external_service_block,
     clear_worker_queue,
     connect,
@@ -1692,6 +1693,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             except CookieFileError as exc:
                 self.send_json({"error": str(exc)}, status=400)
                 return
+            conn = connect(self.db_path)
+            try:
+                with conn:
+                    clear_cookie_auth_status(conn, kind)
+            finally:
+                conn.close()
             self.send_json({"ok": True, "kind": kind, "status": status})
             return
 
@@ -2226,10 +2233,17 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 self.config_data,
                 plugin_manager=getattr(self, "plugin_manager", None),
             )
+            queued_at = utc_now()
             UPDATE_SCHEDULER.record_update_result(
                 result.get("queue") or {},
                 scheduled=False,
+                queued_at=queued_at,
             )
+            result["queue"] = {
+                **(result.get("queue") or {}),
+                "source": "manual",
+                "queuedAt": queued_at,
+            }
             self.send_json({"ok": True, **result})
             return
         if parsed.path == "/api/admin/metadata/start":
