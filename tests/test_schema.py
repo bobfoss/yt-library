@@ -1211,6 +1211,58 @@ class SchemaTests(unittest.TestCase):
         self.assertTrue(update_priorities)
         self.assertLess(max(update_priorities), placeholder_priority)
 
+    def test_update_promotes_active_broadcast_rechecks_ahead_of_bulk_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                fetched_at = core.utc_now()
+                with conn:
+                    for video_id, status in (
+                        ("active12345", "live"),
+                        ("future12345", "upcoming"),
+                        ("ordinary12", ""),
+                    ):
+                        core.upsert_video(
+                            conn,
+                            video_id,
+                            title=video_id,
+                            video_type=("video" if status == "" else "livestream"),
+                            broadcast_status=status,
+                            broadcast_status_checked_at=fetched_at,
+                            fetch_status="ok",
+                            fetched_at=fetched_at,
+                            source="youtube",
+                        )
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="ordinary12",
+                        current_title="ordinary12",
+                        priority=100,
+                    )
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="active12345",
+                        current_title="active12345",
+                        priority=9_999,
+                    )
+                    core.enqueue_update_tasks(conn)
+
+                priorities = {
+                    row["subject_key"]: int(row["priority"])
+                    for row in conn.execute(
+                        "SELECT subject_key, priority FROM worker_queue"
+                    )
+                }
+            finally:
+                conn.close()
+
+        ordinary_priority = priorities["metadata:video:ordinary12"]
+        active_priority = priorities["metadata:video:active12345"]
+        upcoming_priority = priorities["metadata:video:future12345"]
+        self.assertLess(active_priority, ordinary_priority)
+        self.assertLess(upcoming_priority, ordinary_priority)
+        self.assertEqual({active_priority, upcoming_priority}, {1, 2})
+
     def test_playlist_due_selection_ignores_scan_age_but_keeps_integrity_signals(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")

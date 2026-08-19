@@ -9004,7 +9004,7 @@ def metadata_queue_candidate_rows(
           GROUP BY v.video_id
         )
         SELECT video_id, channel_id, channel_title, playlist_count, current_title,
-               metadata_source, priority
+               metadata_source, priority, broadcast_status
         FROM candidates
         {where}
         ORDER BY priority,
@@ -9331,6 +9331,7 @@ class LibraryQueuePlan:
     include_liked_videos: bool
     metadata_selection: str
     metadata_stale_days: int
+    prioritize_broadcast_rechecks: bool = False
     replace_worker_types: tuple[str, ...] = ()
     insert_before_worker_types: tuple[str, ...] = ()
 
@@ -9356,6 +9357,7 @@ UPDATE_QUEUE_PLAN = LibraryQueuePlan(
     include_liked_videos=False,
     metadata_selection="never",
     metadata_stale_days=30,
+    prioritize_broadcast_rechecks=True,
     insert_before_worker_types=("placeholder",),
 )
 REBUILD_QUEUE_PLAN = LibraryQueuePlan(
@@ -9420,14 +9422,27 @@ def enqueue_library_queue_plan(
         if row["playlist_id"] != LIKED_VIDEOS_PLAYLIST_ID
     ]
     playlist_count = len(playlist_priorities)
+    playlist_priority_ceiling = max([0, *playlist_priorities])
+    metadata_priorities: list[int] = []
+    broadcast_recheck_count = 0
+    for index, row in enumerate(metadata_rows, start=1):
+        if (
+            plan.prioritize_broadcast_rechecks
+            and row["broadcast_status"] in {"live", "upcoming"}
+        ):
+            broadcast_recheck_count += 1
+            metadata_priorities.append(
+                playlist_priority_ceiling + broadcast_recheck_count
+            )
+            continue
+        metadata_priorities.append(
+            1_000_000 + int(row["priority"] or 0) * 1_000_000 + index
+        )
     priority_ceiling = max(
         [
             0,
             *playlist_priorities,
-            *(
-                1_000_000 + int(row["priority"] or 0) * 1_000_000 + index
-                for index, row in enumerate(metadata_rows, start=1)
-            ),
+            *metadata_priorities,
         ]
     )
     priority_offset = 0
@@ -9486,14 +9501,9 @@ def enqueue_library_queue_plan(
             manual=False,
         )
 
-    for index, row in enumerate(metadata_rows, start=1):
+    for row, relative_priority in zip(metadata_rows, metadata_priorities, strict=True):
         source = row["metadata_source"] or "history"
-        priority = (
-            priority_offset
-            + 1_000_000
-            + int(row["priority"] or 0) * 1_000_000
-            + index
-        )
+        priority = priority_offset + relative_priority
         enqueue_metadata_item(
             conn,
             video_id=row["video_id"] or "",
