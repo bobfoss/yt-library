@@ -79,6 +79,7 @@ const fields = {
   settingsStatus: document.getElementById('settingsStatus'),
   advancedToggle: document.getElementById('advancedToggle'),
   themeToggle: document.getElementById('themeToggle'),
+  currentDateTime: document.getElementById('currentDateTime'),
   serviceStatus: document.getElementById('serviceStatus'),
   restartService: document.getElementById('restartService'),
   youtubeCookieStatus: document.getElementById('youtubeCookieStatus'),
@@ -304,6 +305,10 @@ function syncDispatchModeInputs() {
 
 function fmtTime(value) {
   return window.YTLibraryTime.format(value);
+}
+
+function updateCurrentDateTime(now = new Date()) {
+  fields.currentDateTime.textContent = fmtTime(now);
 }
 
 function fmtClockDuration(seconds) {
@@ -1762,6 +1767,7 @@ fields.themeToggle.addEventListener('change', () => {
   const selectedTheme = window.YTLibraryTheme.set(fields.themeToggle.checked ? 'dark' : 'light');
   fields.themeToggle.checked = selectedTheme === 'dark';
 });
+window.addEventListener('ytlibrarytimezonechange', () => updateCurrentDateTime());
 fields.displayTimezone.addEventListener('input', () => { settingsDirty = true; });
 fields.weekStartSunday.addEventListener('change', () => { settingsDirty = true; });
 fields.weekStartMonday.addEventListener('change', () => { settingsDirty = true; });
@@ -1836,6 +1842,7 @@ function connectLogEvents() {
 
 connectQueueEvents();
 connectLogEvents();
+updateCurrentDateTime();
 fields.workerQueuePanel.addEventListener('scroll', scheduleQueueRender, { passive: true });
 fields.logPanel.addEventListener('scroll', loadMoreLogsIfNeeded, { passive: true });
 new ResizeObserver(scheduleQueueRender).observe(fields.workerQueuePanel);
@@ -1855,3 +1862,4 @@ document.addEventListener('visibilitychange', () => {
   loadStatus({ force: true }).catch(() => {});
 });
 setInterval(updateQueueTimingDisplay, 1000);
+setInterval(updateCurrentDateTime, 1000);

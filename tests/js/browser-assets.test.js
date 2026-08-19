@@ -145,6 +145,19 @@ test('timezone reset persists the detected zone in one request', () => {
   assert.doesNotMatch(timezoneSource, /method: 'DELETE'/);
 });
 
+test('admin header shows a live current time in the configured timezone', () => {
+  const adminSource = source('admin.js');
+  const adminHtml = source('admin.html');
+
+  assert.match(adminHtml, /id="currentDateTime" class="metric header-current-time"/);
+  assert.match(
+    adminSource,
+    /function updateCurrentDateTime\(now = new Date\(\)\) \{\s*fields\.currentDateTime\.textContent = fmtTime\(now\);\s*\}/,
+  );
+  assert.match(adminSource, /setInterval\(updateCurrentDateTime, 1000\);/);
+  assert.match(adminSource, /window\.addEventListener\('ytlibrarytimezonechange', \(\) => updateCurrentDateTime\(\)\);/);
+});
+
 test('detail navigation retains the active search state', () => {
   const indexSource = source('index.js');
 

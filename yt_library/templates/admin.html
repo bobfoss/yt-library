@@ -80,6 +80,7 @@
     .header-settings label { text-align: left; }
     .service-controls { display: flex; align-items: center; gap: 8px; min-height: 36px; }
     .service-controls strong { font-size: 14px; }
+    .header-current-time { justify-self: end; min-height: 18px; font-variant-numeric: tabular-nums; }
     .theme-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
     body:not(.advanced-enabled) .advanced-only { display: none !important; }
     body:not(.advanced-enabled) .initialize-controls.initialization-complete { display: none; }
@@ -177,6 +178,7 @@
       main { padding: 16px; }
       header, .workstream-header { display: block; }
       .header-settings { justify-items: start; margin-top: 12px; }
+      .header-current-time { justify-self: start; }
       .service-controls { flex-wrap: wrap; }
       .header-settings-row { justify-content: flex-start; }
       .timezone-settings-row { display: flex; }
@@ -243,6 +245,7 @@
             <span>Dark</span>
           </div>
         </div>
+        <div id="currentDateTime" class="metric header-current-time"></div>
         <div class="header-settings-row timezone-settings-row advanced-only">
           <label>IANA time zone<input id="displayTimezone" class="timezone-input" type="text" placeholder="America/Los_Angeles"></label>
           <button id="detectTimezone" type="button">Use browser time zone</button>
