@@ -101,6 +101,15 @@ function syncUpdateScheduleControls() {
   fields.updateTime.hidden = frequency !== 'daily';
   fields.updateHourMinute.hidden = frequency !== 'hourly';
 }
+
+function formatUpdateResult(result) {
+  const inserted = Number(result?.inserted || 0).toLocaleString();
+  const alreadyQueued = Number(
+    result?.alreadyQueued ?? result?.already_queued ?? 0,
+  ).toLocaleString();
+  const prefix = result?.source === 'scheduled' ? 'Scheduled: queued' : 'Queued';
+  return `${prefix} ${inserted}; ${alreadyQueued} already queued`;
+}
 fields.displayTimezone.value = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
 fields.themeToggle.checked = window.YTLibraryTheme.current() === 'dark';
 
@@ -134,6 +143,7 @@ let updateScheduleSaving = false;
 let updateScheduleDirty = false;
 let updateScheduleRevision = 0;
 let updateScheduleSaveTimer = null;
+let updateRequestPending = false;
 let advancedSaving = false;
 let advancedDirty = false;
 let advancedRevision = 0;
@@ -871,6 +881,11 @@ function render(data) {
     fields.updateHourMinute.value = String(settings.updateHourMinute ?? 0);
     syncUpdateScheduleControls();
     const updateSchedule = settings.updateSchedule || {};
+    if (!updateRequestPending) {
+      fields.updateStatus.textContent = updateSchedule.lastResult?.queuedAt
+        ? formatUpdateResult(updateSchedule.lastResult)
+        : '';
+    }
     fields.updateScheduleStatus.textContent = updateSchedule.lastError
       ? `Error: ${updateSchedule.lastError}`
       : (updateSchedule.enabled && updateSchedule.nextRunAt
@@ -1454,16 +1469,16 @@ fields.initializeLibrary.addEventListener('click', async () => {
   }
 });
 fields.updateLibrary.addEventListener('click', async () => {
+  updateRequestPending = true;
   fields.updateLibrary.disabled = true;
   fields.updateStatus.textContent = 'Queueing';
   try {
     const result = await post('/api/admin/update/start');
-    const queue = result.queue || {};
-    fields.updateStatus.textContent =
-      `Queued ${Number(queue.inserted || 0).toLocaleString()}; ${Number(queue.already_queued || 0).toLocaleString()} already queued`;
+    fields.updateStatus.textContent = formatUpdateResult(result.queue || {});
   } catch (error) {
     fields.updateStatus.textContent = error.message;
   } finally {
+    updateRequestPending = false;
     fields.updateLibrary.disabled = false;
   }
 });

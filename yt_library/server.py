@@ -463,6 +463,7 @@ class UpdateScheduler:
         self._plugin_manager: PluginManager | None = None
         self._next_run_at: datetime | None = None
         self._last_queued_at = ""
+        self._last_result: dict[str, Any] = {}
         self._last_error = ""
         self._last_error_kind = ""
         self._archivarix_checked_utc_date = ""
@@ -518,6 +519,35 @@ class UpdateScheduler:
             self._last_error = ""
             self._last_error_kind = ""
 
+    def record_update_result(
+        self,
+        queue_stats: dict[str, Any],
+        *,
+        scheduled: bool,
+        queued_at: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._record_update_result_locked(
+                queue_stats,
+                scheduled=scheduled,
+                queued_at=queued_at or utc_now(),
+            )
+
+    def _record_update_result_locked(
+        self,
+        queue_stats: dict[str, Any],
+        *,
+        scheduled: bool,
+        queued_at: str,
+    ) -> None:
+        self._last_queued_at = queued_at
+        self._last_result = {
+            "source": "scheduled" if scheduled else "manual",
+            "queuedAt": queued_at,
+            "inserted": int(queue_stats.get("inserted") or 0),
+            "alreadyQueued": int(queue_stats.get("already_queued") or 0),
+        }
+
     def status(self, config_data: dict[str, Any]) -> dict[str, Any]:
         frequency = configured_update_frequency(config_data)
         enabled = frequency != "off"
@@ -532,6 +562,7 @@ class UpdateScheduler:
                 "time": configured_update_time(config_data),
                 "nextRunAt": utc_timestamp(next_run_at) if enabled and next_run_at else "",
                 "lastQueuedAt": self._last_queued_at,
+                "lastResult": dict(self._last_result),
                 "lastError": self._last_error,
             }
 
@@ -599,6 +630,7 @@ class UpdateScheduler:
             queued_at = utc_now()
             error = ""
             error_kind = ""
+            queue_result: dict[str, Any] | None = None
             try:
                 result = enqueue_library_update(
                     db_path,
@@ -608,6 +640,7 @@ class UpdateScheduler:
                     scheduled=True,
                     plugin_manager=plugin_manager,
                 )
+                queue_result = result.get("queue")
                 dispatcher = result["dispatcher"]
                 if dispatcher.get("blocked"):
                     error = str(dispatcher.get("message") or "Worker queue could not start")
@@ -616,7 +649,14 @@ class UpdateScheduler:
                 error = str(exc)
                 error_kind = "proxy" if isinstance(exc, ProxyUnavailableError) else "update"
             with self._lock:
-                self._last_queued_at = queued_at
+                if queue_result is None:
+                    self._last_queued_at = queued_at
+                else:
+                    self._record_update_result_locked(
+                        queue_result,
+                        scheduled=True,
+                        queued_at=queued_at,
+                    )
                 self._last_error = error
                 self._last_error_kind = error_kind
                 self._next_run_at = self._calculate_next_run(config_data)
@@ -2185,6 +2225,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 self.video_thumbs,
                 self.config_data,
                 plugin_manager=getattr(self, "plugin_manager", None),
+            )
+            UPDATE_SCHEDULER.record_update_result(
+                result.get("queue") or {},
+                scheduled=False,
             )
             self.send_json({"ok": True, **result})
             return

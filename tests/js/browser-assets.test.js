@@ -474,6 +474,17 @@ test('admin status polling renders the Archivarix UTC reset countdown', () => {
   assert.match(adminSource, /`\(\$\{archivarixRemaining\} remaining\)`/);
 });
 
+test('admin status polling renders the latest manual or scheduled update result', () => {
+  const adminSource = source('admin.js');
+
+  assert.match(adminSource, /function formatUpdateResult\(result\)/);
+  assert.match(adminSource, /result\?\.source === 'scheduled' \? 'Scheduled: queued' : 'Queued'/);
+  assert.match(adminSource, /updateSchedule\.lastResult\?\.queuedAt/);
+  assert.match(adminSource, /fields\.updateStatus\.textContent = updateSchedule\.lastResult\?\.queuedAt/);
+  assert.match(adminSource, /if \(!updateRequestPending\)/);
+  assert.match(adminSource, /formatUpdateResult\(result\.queue \|\| \{\}\)/);
+});
+
 test('admin log messages identify completed Archivarix requests', () => {
   const adminSource = source('admin.js');
 

@@ -1952,6 +1952,62 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(response["settings"]["updateTime"], "04:30")
         schedule_changed.assert_called_once_with(config)
 
+    def test_manual_update_records_latest_result_for_status_polling(self) -> None:
+        scheduler = server.UpdateScheduler()
+        handler = object.__new__(server.LibraryHandler)
+        handler.path = "/api/admin/update/start"
+        handler.db_path = Path("library.sqlite3")
+        handler.cookie_file = Path("youtube-cookies.txt")
+        handler.video_thumbs = Path("video-thumbs")
+        handler.config_data = {}
+        handler.send_json = Mock()
+        update_result = {
+            "queue": {"inserted": 2, "already_queued": 36},
+            "pluginQueue": [],
+            "dispatcher": {"started": True},
+        }
+
+        with patch.object(
+            server,
+            "enqueue_library_update",
+            return_value=update_result,
+        ), patch.object(server, "UPDATE_SCHEDULER", scheduler):
+            handler.do_POST()
+
+        status = scheduler.status(handler.config_data)
+        self.assertEqual(
+            status["lastResult"],
+            {
+                "source": "manual",
+                "queuedAt": status["lastQueuedAt"],
+                "inserted": 2,
+                "alreadyQueued": 36,
+            },
+        )
+        self.assertTrue(status["lastQueuedAt"].endswith("Z"))
+        handler.send_json.assert_called_once_with({"ok": True, **update_result})
+
+    def test_update_scheduler_records_scheduled_result(self) -> None:
+        scheduler = server.UpdateScheduler()
+
+        scheduler.record_update_result(
+            {"inserted": 4, "already_queued": 12},
+            scheduled=True,
+            queued_at="2026-08-19T18:00:00Z",
+        )
+
+        status = scheduler.status({})
+        self.assertEqual(
+            status["lastResult"],
+            {
+                "source": "scheduled",
+                "queuedAt": "2026-08-19T18:00:00Z",
+                "inserted": 4,
+                "alreadyQueued": 12,
+            },
+        )
+        self.assertEqual(status["lastQueuedAt"], "2026-08-19T18:00:00Z")
+
     def test_update_schedule_endpoint_rejects_invalid_time(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.path = "/api/admin/update-schedule?frequency=daily&at=25%3A00"
