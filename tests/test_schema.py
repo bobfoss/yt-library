@@ -1170,7 +1170,7 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(discovery["source_key"], "new")
         self.assertFalse(discovery["manual"])
 
-    def test_update_queues_plan_work_before_pending_placeholder_recovery(self) -> None:
+    def test_update_queues_plan_work_at_front_of_existing_queue(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
             try:
@@ -1191,6 +1191,27 @@ class SchemaTests(unittest.TestCase):
                         current_title="Unavailable video",
                         priority=-500,
                     )
+                    core.upsert_video(
+                        conn,
+                        "background01",
+                        title="Existing background task",
+                        fetch_status="ok",
+                        fetched_at=core.utc_now(),
+                        source="youtube",
+                    )
+                    background_subject = core.enqueue_metadata_item(
+                        conn,
+                        video_id="background01",
+                        current_title="Existing background task",
+                        priority=-1_000,
+                    )
+                    existing_update_subject = core.enqueue_metadata_item(
+                        conn,
+                        channel_id="UCpriority",
+                        channel_title="Priority channel",
+                        metadata_source="channel",
+                        priority=9_999,
+                    )
                     placeholder_subject = core.placeholder_queue_subject_key(
                         "unavailable01"
                     )
@@ -1202,14 +1223,22 @@ class SchemaTests(unittest.TestCase):
             finally:
                 conn.close()
 
-        placeholder_priority = next(
-            row["priority"] for row in rows if row["subject_key"] == placeholder_subject
-        )
+        existing_priorities = [
+            row["priority"]
+            for row in rows
+            if row["subject_key"] in {background_subject, placeholder_subject}
+        ]
         update_priorities = [
-            row["priority"] for row in rows if row["subject_key"] != placeholder_subject
+            row["priority"]
+            for row in rows
+            if row["subject_key"] not in {background_subject, placeholder_subject}
         ]
         self.assertTrue(update_priorities)
-        self.assertLess(max(update_priorities), placeholder_priority)
+        self.assertLess(max(update_priorities), min(existing_priorities))
+        self.assertIn(
+            existing_update_subject,
+            {row["subject_key"] for row in rows if row["priority"] < -1_000},
+        )
 
     def test_update_promotes_active_broadcast_rechecks_ahead_of_bulk_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1261,7 +1290,7 @@ class SchemaTests(unittest.TestCase):
         upcoming_priority = priorities["metadata:video:future12345"]
         self.assertLess(active_priority, ordinary_priority)
         self.assertLess(upcoming_priority, ordinary_priority)
-        self.assertEqual({active_priority, upcoming_priority}, {1, 2})
+        self.assertEqual(abs(active_priority - upcoming_priority), 1)
 
     def test_playlist_due_selection_ignores_scan_age_but_keeps_integrity_signals(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

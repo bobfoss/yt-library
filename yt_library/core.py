@@ -9333,7 +9333,7 @@ class LibraryQueuePlan:
     metadata_stale_days: int
     prioritize_broadcast_rechecks: bool = False
     replace_worker_types: tuple[str, ...] = ()
-    insert_before_worker_types: tuple[str, ...] = ()
+    insert_at_queue_front: bool = False
 
 
 INITIALIZATION_QUEUE_PLAN = LibraryQueuePlan(
@@ -9358,7 +9358,7 @@ UPDATE_QUEUE_PLAN = LibraryQueuePlan(
     metadata_selection="never",
     metadata_stale_days=30,
     prioritize_broadcast_rechecks=True,
-    insert_before_worker_types=("placeholder",),
+    insert_at_queue_front=True,
 )
 REBUILD_QUEUE_PLAN = LibraryQueuePlan(
     name="rebuild",
@@ -9446,15 +9446,12 @@ def enqueue_library_queue_plan(
         ]
     )
     priority_offset = 0
-    if plan.insert_before_worker_types:
-        placeholders = ", ".join("?" for _ in plan.insert_before_worker_types)
+    if plan.insert_at_queue_front:
         boundary = conn.execute(
-            f"""
+            """
             SELECT MIN(priority) AS priority
             FROM worker_queue
-            WHERE worker_type IN ({placeholders})
-            """,
-            plan.insert_before_worker_types,
+            """
         ).fetchone()["priority"]
         if boundary is not None:
             priority_offset = min(0, int(boundary) - priority_ceiling - 1)
