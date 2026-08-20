@@ -8307,6 +8307,11 @@ def external_service_block(conn: sqlite3.Connection, service: str) -> dict[str, 
 
 COOKIE_AUTH_SERVICES = ("youtube", "google", "archivarix")
 COOKIE_AUTH_STATES = {"valid", "expired", "rejected", "missing", "error"}
+COOKIE_AUTH_SERVICE_LABELS = {
+    "youtube": "YouTube",
+    "google": "Google My Activity",
+    "archivarix": "Archivarix",
+}
 
 
 def cookie_auth_statuses(conn: sqlite3.Connection) -> dict[str, dict[str, str]]:
@@ -8340,6 +8345,11 @@ def record_cookie_auth_status(
         raise ValueError(f"Unknown cookie service: {service}")
     if status not in COOKIE_AUTH_STATES:
         raise ValueError(f"Unknown cookie authentication status: {status}")
+    previous = conn.execute(
+        "SELECT status FROM cookie_auth_status WHERE service = ?",
+        (service,),
+    ).fetchone()
+    previous_status = str(previous["status"] or "") if previous else ""
     conn.execute(
         """
         INSERT INTO cookie_auth_status(service, status, checked_at, message)
@@ -8351,6 +8361,17 @@ def record_cookie_auth_status(
         """,
         (service, status, checked_at or utc_now(), str(message or "")),
     )
+    if status != "valid" and status != previous_status:
+        detail = str(message or "").strip()
+        log_worker_queue_event(
+            conn,
+            "warn",
+            (
+                f"{COOKIE_AUTH_SERVICE_LABELS[service]} cookie status changed to "
+                f"{status}"
+                + (f": {detail}" if detail else "")
+            ),
+        )
 
 
 def clear_cookie_auth_status(conn: sqlite3.Connection, service: str) -> bool:

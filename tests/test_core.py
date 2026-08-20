@@ -4700,6 +4700,65 @@ class CoreHelperTests(unittest.TestCase):
             "rejected",
         )
 
+    def test_cookie_auth_status_logs_each_unusable_transition_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.record_cookie_auth_status(
+                        conn,
+                        "google",
+                        "valid",
+                        "Authenticated request accepted.",
+                    )
+                    core.record_cookie_auth_status(
+                        conn,
+                        "google",
+                        "rejected",
+                        "Signed-out response received.",
+                    )
+                    core.record_cookie_auth_status(
+                        conn,
+                        "google",
+                        "rejected",
+                        "Repeated signed-out response received.",
+                    )
+                    core.record_cookie_auth_status(
+                        conn,
+                        "google",
+                        "valid",
+                        "Authenticated request accepted again.",
+                    )
+                    core.record_cookie_auth_status(
+                        conn,
+                        "google",
+                        "expired",
+                        "Cookie expired.",
+                    )
+
+                rows = conn.execute(
+                    """
+                    SELECT level, video_id, message
+                    FROM metadata_worker_log
+                    ORDER BY id
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["level"], "queue warn")
+        self.assertEqual(rows[0]["video_id"], "")
+        self.assertEqual(
+            rows[0]["message"],
+            "Google My Activity cookie status changed to rejected: "
+            "Signed-out response received.",
+        )
+        self.assertEqual(
+            rows[1]["message"],
+            "Google My Activity cookie status changed to expired: Cookie expired.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
