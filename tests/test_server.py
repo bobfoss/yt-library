@@ -935,6 +935,21 @@ class AdminServerTests(unittest.TestCase):
             }
         )
 
+    def test_service_status_includes_current_server_time(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.restart_pending = Mock(return_value=False)
+        handler.service_started_at = "2026-08-21T12:00:00Z"
+
+        with patch(
+            "yt_library.server.utc_timestamp",
+            return_value="2026-08-21T12:34:56Z",
+        ) as timestamp:
+            status = handler.service_status()
+
+        timestamp.assert_called_once()
+        self.assertEqual(status["serverTime"], "2026-08-21T12:34:56Z")
+        self.assertEqual(status["startedAt"], "2026-08-21T12:00:00Z")
+
     def test_video_batch_route_hydrates_requested_library_videos(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler.db_path = Path("library.sqlite3")

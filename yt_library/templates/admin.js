@@ -130,6 +130,7 @@ const statusPollMs = 30000;
 const cookieFileStatuses = {};
 let currentCookieAuthStatuses = {};
 const statusRequestTimeoutMs = 5000;
+const serverClockSyncIntervalMs = 60 * 60 * 1000;
 let dispatchSettingsSaving = false;
 let dispatchSettingsDirty = false;
 let dispatchSettingsRevision = 0;
@@ -307,8 +308,35 @@ function fmtTime(value) {
   return window.YTLibraryTime.format(value);
 }
 
-function updateCurrentDateTime(now = new Date()) {
-  fields.currentDateTime.textContent = fmtTime(now);
+const serverClock = {
+  epochMs: null,
+  monotonicAtSync: 0,
+};
+
+function syncServerClock(serverTime, requestStartedAt, responseReceivedAt = performance.now()) {
+  const serverEpochMs = Date.parse(serverTime || '');
+  if (!Number.isFinite(serverEpochMs)) return false;
+  if (
+    Number.isFinite(serverClock.epochMs)
+    && responseReceivedAt - serverClock.monotonicAtSync < serverClockSyncIntervalMs
+  ) {
+    return false;
+  }
+  const halfRoundTripMs = Math.max(0, responseReceivedAt - requestStartedAt) / 2;
+  serverClock.epochMs = serverEpochMs + halfRoundTripMs;
+  serverClock.monotonicAtSync = responseReceivedAt;
+  updateCurrentDateTime(responseReceivedAt);
+  return true;
+}
+
+function currentServerTime(nowMonotonic = performance.now()) {
+  if (!Number.isFinite(serverClock.epochMs)) return null;
+  return new Date(serverClock.epochMs + Math.max(0, nowMonotonic - serverClock.monotonicAtSync));
+}
+
+function updateCurrentDateTime(nowMonotonic = performance.now()) {
+  const now = currentServerTime(nowMonotonic);
+  fields.currentDateTime.textContent = now ? fmtTime(now) : '';
 }
 
 function fmtClockDuration(seconds) {
@@ -1155,8 +1183,12 @@ async function loadRuntimeStatus(options = {}) {
       // A forced action refresh should still get its own current read.
     }
   }
+  const requestStartedAt = performance.now();
   runtimeStatusRequest = fetchStatusJson('/api/admin/runtime/status')
-    .then(renderRuntimeStatus)
+    .then(data => {
+      syncServerClock(data.service?.serverTime, requestStartedAt);
+      renderRuntimeStatus(data);
+    })
     .catch(error => {
       renderServiceUnavailable(error);
       throw error;

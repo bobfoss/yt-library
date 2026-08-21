@@ -145,15 +145,17 @@ test('timezone reset persists the detected zone in one request', () => {
   assert.doesNotMatch(timezoneSource, /method: 'DELETE'/);
 });
 
-test('admin header shows a live current time in the configured timezone', () => {
+test('admin header shows a locally ticking clock calibrated from server time', () => {
   const adminSource = source('admin.js');
   const adminHtml = source('admin.html');
 
   assert.match(adminHtml, /id="currentDateTime" class="metric header-current-time"/);
-  assert.match(
-    adminSource,
-    /function updateCurrentDateTime\(now = new Date\(\)\) \{\s*fields\.currentDateTime\.textContent = fmtTime\(now\);\s*\}/,
-  );
+  assert.match(adminSource, /const serverClockSyncIntervalMs = 60 \* 60 \* 1000;/);
+  assert.match(adminSource, /function syncServerClock\(serverTime, requestStartedAt,/);
+  assert.match(adminSource, /serverClock\.epochMs = serverEpochMs \+ halfRoundTripMs;/);
+  assert.match(adminSource, /function currentServerTime\(nowMonotonic = performance\.now\(\)\)/);
+  assert.match(adminSource, /syncServerClock\(data\.service\?\.serverTime, requestStartedAt\);/);
+  assert.doesNotMatch(adminSource, /function updateCurrentDateTime\(now = new Date\(\)\)/);
   assert.match(adminSource, /setInterval\(updateCurrentDateTime, 1000\);/);
   assert.match(adminSource, /window\.addEventListener\('ytlibrarytimezonechange', \(\) => updateCurrentDateTime\(\)\);/);
 });

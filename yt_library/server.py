@@ -2658,6 +2658,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             "status": "restarting" if self.restart_pending() else "running",
             "pid": os.getpid(),
             "startedAt": self.service_started_at,
+            "serverTime": utc_timestamp(datetime.now(timezone.utc)),
         }
 
     def send_json(self, data: Any, status: int = 200) -> None:
