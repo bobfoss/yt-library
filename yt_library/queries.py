@@ -11,6 +11,11 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .annotations import (
+    annotation_presence,
+    annotation_search_matches,
+    attach_annotations,
+)
 from .core import (
     archivarix_media_url,
     history_match_type_label,
@@ -281,6 +286,7 @@ def _playlist_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             playlist.get("owner_channel_aliases", ""),
         )
     _attach_playlist_collaborators(conn, rows)
+    attach_annotations(conn, "playlist", rows)
     return rows
 
 
@@ -469,6 +475,7 @@ def playlist_list_data(
             playlist.get("owner_channel_aliases", ""),
         )
     _attach_playlist_collaborators(conn, rows)
+    attach_annotations(conn, "playlist", rows)
     return {
         "results": rows,
         "total": total,
@@ -490,6 +497,7 @@ def _video_candidate_query(
     query: str = "",
     search_fields: set[str] | None = None,
     has_video_search_matches: bool = False,
+    has_annotation_search_matches: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     params: dict[str, Any] = {"query": f"%{_omni_like_pattern(query.strip())[1:-1]}%"}
     active_search_fields = {"titles", "descriptions"} if search_fields is None else set(search_fields)
@@ -504,6 +512,11 @@ def _video_candidate_query(
     if has_video_search_matches:
         search_clauses.append(
             "EXISTS (SELECT 1 FROM temp.video_collection_search_matches matches "
+            "WHERE matches.video_id = v.video_id)"
+        )
+    if has_annotation_search_matches:
+        search_clauses.append(
+            "EXISTS (SELECT 1 FROM temp.video_collection_annotation_search_matches matches "
             "WHERE matches.video_id = v.video_id)"
         )
     query_match_sql = " OR ".join(search_clauses) or "0"
@@ -546,6 +559,7 @@ def _video_candidate_query(
                  '' AS membership_state, '' AS unavailable_kind, '' AS source_quality,
                  '' AS match_type, '' AS match_confidence, '' AS added_at,
                  v.is_playable, v.availability, v.reaction, v.uploader_category,
+                 v.note,
                  v.video_type, v.broadcast_status,
                  COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent,
                  COALESCE(hs.watch_count, 0) AS watch_count,
@@ -575,6 +589,7 @@ def _video_candidate_query(
                  pi.match_type, pi.match_confidence, COALESCE(pi.added_at, '') AS added_at,
                  v.is_playable, COALESCE(v.reaction, '') AS reaction,
                  COALESCE(v.uploader_category, '') AS uploader_category,
+                 COALESCE(v.note, '') AS note,
                  COALESCE(v.video_type, '') AS video_type,
                  v.broadcast_status,
                  COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent,
@@ -707,6 +722,7 @@ def video_collection_data(
     video_type_filters: set[str] | None = None,
     broadcast_status_filters: set[str] | None = None,
     uploader_category_filters: set[str] | None = None,
+    note_filters: set[str] | None = None,
     included_video_ids: Collection[str] | None = None,
     excluded_video_ids: Collection[str] = (),
     video_facet_memberships: Mapping[str, Collection[str]] | None = None,
@@ -721,6 +737,29 @@ def video_collection_data(
         for video_id in video_search_match_ids
         if str(video_id).strip()
     }
+    annotation_matches = annotation_search_matches(
+        conn,
+        query,
+        search_notes=search_fields is None or "notes" in search_fields,
+        search_tags=search_fields is None or "tags" in search_fields,
+        entity_kinds={"video"},
+    )["video"]
+    conn.execute("DROP TABLE IF EXISTS temp.video_collection_annotation_search_matches")
+    if query.strip() and annotation_matches:
+        conn.execute(
+            """
+            CREATE TEMP TABLE video_collection_annotation_search_matches(
+              video_id TEXT PRIMARY KEY
+            ) WITHOUT ROWID
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO temp.video_collection_annotation_search_matches(video_id)
+            VALUES (?)
+            """,
+            ((video_id,) for video_id in annotation_matches),
+        )
     conn.execute("DROP TABLE IF EXISTS temp.video_collection_search_matches")
     if query.strip() and active_search_match_ids:
         conn.execute(
@@ -772,6 +811,7 @@ def video_collection_data(
         query=query,
         search_fields=search_fields,
         has_video_search_matches=bool(query.strip() and active_search_match_ids),
+        has_annotation_search_matches=bool(query.strip() and annotation_matches),
     )
     selected_categories = {
         category
@@ -818,6 +858,11 @@ def video_collection_data(
             for category in uploader_category_filters
             if str(category).strip()
         }
+    )
+    selected_note_filters = (
+        set(OMNI_SEARCH_NOTE_FILTERS)
+        if note_filters is None
+        else set(note_filters) & set(OMNI_SEARCH_NOTE_FILTERS)
     )
     partial_min_percent = _bounded_partial_min_percent(partial_min_percent)
     params["partial_min_percent"] = partial_min_percent
@@ -869,6 +914,10 @@ def video_collection_data(
           END
         END
     """
+    note_presence_sql = """
+        CASE WHEN trim(COALESCE(note, '')) <> ''
+          THEN 'with_note' ELSE 'without_note' END
+    """
     categorized_cte = f"""
         WITH raw_candidates AS MATERIALIZED (
           {candidate_sql}
@@ -889,6 +938,7 @@ def video_collection_data(
                  {reaction_category_sql} AS reaction_category,
                  {video_type_sql} AS video_type_category,
                  {broadcast_status_sql} AS broadcast_status_category,
+                 {note_presence_sql} AS note_presence_category,
                  {uploader_category_sql} AS uploader_category_category,
                  CASE
                    WHEN COALESCE(video_id, '') <> '' THEN 'video:' || video_id
@@ -962,6 +1012,11 @@ def video_collection_data(
           FROM categorized
           WHERE {plugin_filter_clause}
           GROUP BY uploader_category_category
+          UNION ALL
+          SELECT 'note', note_presence_category, COUNT(DISTINCT count_key)
+          FROM categorized
+          WHERE {plugin_filter_clause}
+          GROUP BY note_presence_category
         """,
         params,
     ).fetchall()
@@ -983,6 +1038,7 @@ def video_collection_data(
         "total": 0,
         NO_UPLOADER_CATEGORY_FILTER: 0,
     }
+    note_counts = {category: 0 for category in OMNI_SEARCH_NOTE_FILTERS}
     for row in count_rows:
         if row["count_type"] == "collection":
             target = counts
@@ -994,6 +1050,8 @@ def video_collection_data(
             target = video_type_counts
         elif row["count_type"] == "broadcast_status":
             target = broadcast_status_counts
+        elif row["count_type"] == "note":
+            target = note_counts
         else:
             target = uploader_category_counts
         target[row["category"]] = row["count"]
@@ -1105,6 +1163,20 @@ def video_collection_data(
             if selected_uploader_category_filters
             else "0"
         )
+    note_placeholders = ", ".join(
+        f":note_{index}" for index in range(len(selected_note_filters))
+    )
+    filter_params.update(
+        {
+            f"note_{index}": value
+            for index, value in enumerate(sorted(selected_note_filters))
+        }
+    )
+    note_clause = (
+        f"note_presence_category IN ({note_placeholders})"
+        if selected_note_filters
+        else "0"
+    )
     duplicate_clause = (
         "playlist_occurrence_count > 1"
         if playlist_id and duplicates_only
@@ -1113,7 +1185,7 @@ def video_collection_data(
     native_filter_clause = (
         f"{video_type_clause} AND {broadcast_status_clause} AND {selected_clause} AND {completion_clause} "
         f"AND {reaction_clause} "
-        f"AND {uploader_category_clause} AND {duplicate_clause}"
+        f"AND {uploader_category_clause} AND {note_clause} AND {duplicate_clause}"
     )
 
     active_video_facet_memberships = {
@@ -1245,6 +1317,7 @@ def video_collection_data(
         item.pop("video_type_category", None)
         item.pop("broadcast_status_category", None)
         item.pop("uploader_category_category", None)
+        item.pop("note_presence_category", None)
         item.pop("count_key", None)
         item.pop("playlist_occurrence_count", None)
         item.pop("candidate_rank", None)
@@ -1264,6 +1337,7 @@ def video_collection_data(
         "videoTypeCounts": video_type_counts,
         "broadcastStatusCounts": broadcast_status_counts,
         "uploaderCategoryCounts": uploader_category_counts,
+        "noteCounts": note_counts,
         "metaCounts": {"videoPlugins": video_facet_counts},
         "duplicateCount": duplicate_count,
         "limit": limit,
@@ -1393,6 +1467,7 @@ def channel_list_data(
             row.get("aliases") or "",
         )
     _attach_channel_featured_channels(conn, rows)
+    attach_annotations(conn, "channel", rows)
     return {
         "results": rows,
         "total": total,
@@ -1435,6 +1510,7 @@ def channel_detail_data(conn: sqlite3.Connection, channel_reference: str) -> dic
     )
     item["url"] = preferred_youtube_channel_url(channel_id, item.get("aliases") or "")
     _attach_channel_featured_channels(conn, [item])
+    attach_annotations(conn, "channel", [item])
     return item
 
 
@@ -1468,6 +1544,7 @@ def channel_summaries_data(
         )
         channels.append(item)
     _attach_channel_featured_channels(conn, channels)
+    attach_annotations(conn, "channel", channels)
     return {"channels": channels}
 
 
@@ -1570,7 +1647,7 @@ def video_summaries_data(
     }
 
 
-OMNI_SEARCH_FIELDS = {"titles", "descriptions"}
+OMNI_SEARCH_FIELDS = {"titles", "descriptions", "notes", "tags"}
 OMNI_SEARCH_SORTS = {
     "relevance",
     "title",
@@ -1594,6 +1671,7 @@ OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS = ("mine", "others", "ownership_unknown")
 OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS = ("subscribed", "non_subscribed")
 OMNI_SEARCH_CHANNEL_STATUS_FILTERS = ("active", "terminated")
 OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS = ("mine", "others", "ownership_unknown")
+OMNI_SEARCH_NOTE_FILTERS = ("with_note", "without_note")
 
 
 _CLIP_RELATIVE_AGE_RE = re.compile(
@@ -1773,6 +1851,7 @@ def _assign_omni_meta_categories(
     } if any(result["kind"] == "playlist" for result in results) else {}
     for result in results:
         item = result["item"]
+        result["notePresence"] = annotation_presence(item)
         if result["kind"] == "video":
             availability_category = _video_availability_category(item)
             item["availability_category"] = availability_category
@@ -1810,21 +1889,28 @@ def _omni_meta_counts(results: list[dict[str, Any]]) -> dict[str, dict[str, int]
     }
     counts["channels"] = {
         "total": 0,
+        **{category: 0 for category in OMNI_SEARCH_NOTE_FILTERS},
         **{category: 0 for category in OMNI_SEARCH_CHANNEL_SUBSCRIPTION_FILTERS},
         **{category: 0 for category in OMNI_SEARCH_CHANNEL_STATUS_FILTERS},
     }
     counts["clips"] = {
         "total": 0,
+        **{category: 0 for category in OMNI_SEARCH_NOTE_FILTERS},
         **{category: 0 for category in OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS},
     }
     counts["playlists"].update(
         {
+            **{category: 0 for category in OMNI_SEARCH_NOTE_FILTERS},
             **{category: 0 for category in OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS},
         }
+    )
+    counts["videos"].update(
+        {category: 0 for category in OMNI_SEARCH_NOTE_FILTERS}
     )
     for result in results:
         group = counts[f"{result['kind']}s"]
         group["total"] += 1
+        group[result["notePresence"]] += 1
         if result["kind"] == "channel":
             group[result["channelSubscription"]] += 1
             group[result["channelStatus"]] += 1
@@ -2105,6 +2191,7 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
                v.availability,
                v.title AS metadata_title,
                v.description AS metadata_description,
+               v.note,
                COALESCE(v.channel_id, '') AS metadata_channel_id,
                COALESCE(ch.title, '') AS metadata_channel,
                COALESCE(ch.aliases, '') AS metadata_channel_aliases,
@@ -2168,6 +2255,11 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
         item["match_label"] = playlist_match_type_label(item.get("match_type") or "")
         item["match_note"] = playlist_match_type_note(item.get("match_type") or "")
         result["item"] = item
+    attach_annotations(
+        conn,
+        "video",
+        [result["item"] for result in results if result["kind"] == "video"],
+    )
 
 
 def _populate_omni_video_filter_table(
@@ -2243,6 +2335,8 @@ def _omni_video_sql_data(
     query: str,
     search_titles: bool,
     search_descriptions: bool,
+    has_annotation_search_matches: bool,
+    annotation_search_match_sql: str,
     has_video_search_matches: bool,
     video_search_match_sql: str,
     video_source: str,
@@ -2253,6 +2347,7 @@ def _omni_video_sql_data(
     selected_video_type_filters: Collection[str],
     selected_broadcast_status_filters: Collection[str],
     selected_uploader_category_filters: Collection[str],
+    selected_note_filters: Collection[str],
     known_uploader_categories: Collection[str],
     partial_min_percent: int,
     active_video_id_filters: Sequence[Collection[str]],
@@ -2299,6 +2394,8 @@ def _omni_video_sql_data(
             video_matches.append(video_description_match)
         if has_video_search_matches:
             video_matches.append(video_search_match_sql)
+        if has_annotation_search_matches:
+            video_matches.append(annotation_search_match_sql)
     else:
         video_matches.append("1 = 1")
     video_title_hit = (
@@ -2407,8 +2504,10 @@ def _omni_video_sql_data(
                  COALESCE(v.uploader_category, '') AS uploader_category,
                  COALESCE(v.video_type, '') AS video_type,
                  v.broadcast_status,
+                 COALESCE(v.note, '') AS note,
                  CASE WHEN {video_title_hit} THEN 1 ELSE 0 END AS title_hit,
-                 CASE WHEN {video_search_match_sql} THEN 1 ELSE 0 END AS plugin_search_hit
+                 CASE WHEN {video_search_match_sql} THEN 1 ELSE 0 END AS plugin_search_hit,
+                 CASE WHEN {annotation_search_match_sql} THEN 1 ELSE 0 END AS annotation_search_hit
           FROM videos v
           {candidate_channel_join}
           WHERE ({' OR '.join(f'({match})' for match in video_matches)})
@@ -2431,6 +2530,7 @@ def _omni_video_sql_data(
                  source_order,
                  title_hit,
                  plugin_search_hit,
+                 annotation_search_hit,
                  {availability_sql} AS availability_category,
                  CASE upper(COALESCE(reaction, ''))
                    WHEN 'LIKE' THEN 'liked'
@@ -2469,7 +2569,13 @@ def _omni_video_sql_data(
                    THEN '{NO_UPLOADER_CATEGORY_FILTER}'
                    ELSE trim(uploader_category)
                  END AS uploader_category_category,
-                 CASE WHEN title_hit = 1 THEN 0 ELSE 3 END AS score,
+                 CASE
+                   WHEN title_hit = 1 THEN 0
+                   WHEN annotation_search_hit = 1 THEN 2
+                   ELSE 3
+                 END AS score,
+                 CASE WHEN trim(note) <> '' THEN 'with_note' ELSE 'without_note' END
+                   AS note_presence_category,
                  watch_count,
                  latest_youtube_ordinal,
                  CASE WHEN latest_watch_at = '' THEN 1 ELSE 0 END AS sort_date_fallback,
@@ -2548,6 +2654,12 @@ def _omni_video_sql_data(
             "selected_uploader_category",
             sql_params,
         ),
+        _omni_sql_set_clause(
+            "candidate.note_presence_category",
+            selected_note_filters,
+            "selected_video_note",
+            sql_params,
+        ),
     ]
     broadcast_clause = _omni_sql_set_clause(
         "candidate.broadcast_status_category",
@@ -2596,6 +2708,11 @@ def _omni_video_sql_data(
         FROM temp.omni_video_candidates candidate
         WHERE {plugin_match_clause}
         GROUP BY uploader_category_category
+        UNION ALL
+        SELECT 'note', note_presence_category, COUNT(*)
+        FROM temp.omni_video_candidates candidate
+        WHERE {plugin_match_clause}
+        GROUP BY note_presence_category
         """,
         sql_params,
     ).fetchall()
@@ -2614,6 +2731,7 @@ def _omni_video_sql_data(
             NO_UPLOADER_CATEGORY_FILTER: 0,
             **{category: 0 for category in known_uploader_categories},
         },
+        "note": {category: 0 for category in OMNI_SEARCH_NOTE_FILTERS},
     }
     for row in count_rows:
         counts[row["count_type"]][row["category"]] = int(row["count"] or 0)
@@ -2693,10 +2811,13 @@ def _omni_video_sql_data(
         }
         title_hit = bool(row["title_hit"])
         plugin_search_hit = bool(row["plugin_search_hit"])
+        annotation_search_hit = bool(row["annotation_search_hit"])
         result = {
             "kind": "video",
             "score": int(row["score"]),
-            "matchedDescription": not title_hit and not plugin_search_hit,
+            "matchedDescription": (
+                not title_hit and not plugin_search_hit and not annotation_search_hit
+            ),
             "item": item,
             "_title": row["sort_title"],
             "_sort_date": row["sort_date"],
@@ -2762,6 +2883,10 @@ def omni_search_data(
     channel_subscription_filters: set[str] | None = None,
     channel_status_filters: set[str] | None = None,
     clip_ownership_filters: set[str] | None = None,
+    video_note_filters: set[str] | None = None,
+    clip_note_filters: set[str] | None = None,
+    playlist_note_filters: set[str] | None = None,
+    channel_note_filters: set[str] | None = None,
     playlist_meta_filters: set[str] | None = None,
     playlist_ownership_filters: set[str] | None = None,
     sort: str | None = None,
@@ -2877,6 +3002,52 @@ def omni_search_data(
     )
     search_titles = "titles" in active_search_fields
     search_descriptions = "descriptions" in active_search_fields
+    annotation_matches = annotation_search_matches(
+        conn,
+        query,
+        search_notes="notes" in active_search_fields,
+        search_tags="tags" in active_search_fields,
+        entity_kinds=active_result_kinds,
+    )
+    conn.execute("DROP TABLE IF EXISTS temp.omni_annotation_search_matches")
+    conn.execute(
+        """
+        CREATE TEMP TABLE omni_annotation_search_matches(
+          entity_kind TEXT NOT NULL,
+          entity_id TEXT NOT NULL,
+          PRIMARY KEY(entity_kind, entity_id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO temp.omni_annotation_search_matches(entity_kind, entity_id)
+        VALUES (?, ?)
+        """,
+        (
+            (entity_kind, entity_id)
+            for entity_kind, entity_ids in annotation_matches.items()
+            for entity_id in entity_ids
+        ),
+    )
+    annotation_match_sql = {
+        "video": (
+            "EXISTS (SELECT 1 FROM temp.omni_annotation_search_matches annotation "
+            "WHERE annotation.entity_kind = 'video' AND annotation.entity_id = v.video_id)"
+        ),
+        "clip": (
+            "EXISTS (SELECT 1 FROM temp.omni_annotation_search_matches annotation "
+            "WHERE annotation.entity_kind = 'clip' AND annotation.entity_id = c.clip_id)"
+        ),
+        "playlist": (
+            "EXISTS (SELECT 1 FROM temp.omni_annotation_search_matches annotation "
+            "WHERE annotation.entity_kind = 'playlist' AND annotation.entity_id = p.playlist_id)"
+        ),
+        "channel": (
+            "EXISTS (SELECT 1 FROM temp.omni_annotation_search_matches annotation "
+            "WHERE annotation.entity_kind = 'channel' AND annotation.entity_id = ch.channel_id)"
+        ),
+    }
     active_video_id_filters = [frozenset(values) for values in video_id_filters]
     active_video_id_exclusion_filters = [
         frozenset(values) for values in video_id_exclusion_filters
@@ -3021,6 +3192,28 @@ def omni_search_data(
         if clip_ownership_filters is None
         else set(clip_ownership_filters) & set(OMNI_SEARCH_CLIP_OWNERSHIP_FILTERS)
     )
+    selected_note_filters = {
+        "video": (
+            set(OMNI_SEARCH_NOTE_FILTERS)
+            if video_note_filters is None
+            else set(video_note_filters) & set(OMNI_SEARCH_NOTE_FILTERS)
+        ),
+        "clip": (
+            set(OMNI_SEARCH_NOTE_FILTERS)
+            if clip_note_filters is None
+            else set(clip_note_filters) & set(OMNI_SEARCH_NOTE_FILTERS)
+        ),
+        "playlist": (
+            set(OMNI_SEARCH_NOTE_FILTERS)
+            if playlist_note_filters is None
+            else set(playlist_note_filters) & set(OMNI_SEARCH_NOTE_FILTERS)
+        ),
+        "channel": (
+            set(OMNI_SEARCH_NOTE_FILTERS)
+            if channel_note_filters is None
+            else set(channel_note_filters) & set(OMNI_SEARCH_NOTE_FILTERS)
+        ),
+    }
     results: list[dict[str, Any]] = []
     video_sql_data: dict[str, Any] = {
         "filtered_total": 0,
@@ -3028,7 +3221,12 @@ def omni_search_data(
         "facet_counts": {},
     }
 
-    if "clip" in active_result_kinds and (not query or search_titles or has_clip_search_matches):
+    if "clip" in active_result_kinds and (
+        not query
+        or search_titles
+        or has_clip_search_matches
+        or bool(annotation_matches.get("clip"))
+    ):
         clip_title_match = """
             lower(
               c.title || ' ' || c.clip_id || ' ' || c.owner_title || ' ' ||
@@ -3042,6 +3240,8 @@ def omni_search_data(
                 clip_matches.append(clip_title_match)
             if has_clip_search_matches:
                 clip_matches.append(clip_search_match_sql)
+            if annotation_matches.get("clip"):
+                clip_matches.append(annotation_match_sql["clip"])
         else:
             clip_matches.append("1 = 1")
         clip_title_hit = "1" if not query else (clip_title_match if search_titles else "0")
@@ -3062,7 +3262,8 @@ def omni_search_data(
                    COALESCE(source_channel.aliases, '') AS source_channel_aliases,
                    COALESCE(source_channel.thumbnail_path, '') AS source_channel_thumbnail_path,
                    CASE WHEN {clip_title_hit} THEN 1 ELSE 0 END AS title_hit,
-                   CASE WHEN {clip_search_match_sql} THEN 1 ELSE 0 END AS plugin_search_hit
+                   CASE WHEN {clip_search_match_sql} THEN 1 ELSE 0 END AS plugin_search_hit,
+                   CASE WHEN {annotation_match_sql['clip']} THEN 1 ELSE 0 END AS annotation_search_hit
             FROM clips c
             LEFT JOIN channels owner ON owner.channel_id = c.owner_channel_id
             LEFT JOIN videos source ON source.video_id = c.source_video_id
@@ -3074,6 +3275,7 @@ def omni_search_data(
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
             plugin_search_hit = bool(item.pop("plugin_search_hit"))
+            annotation_search_hit = bool(item.pop("annotation_search_hit"))
             item["video_id"] = item.get("source_video_id") or ""
             item["url"] = f"https://www.youtube.com/clip/{urllib.parse.quote(item['clip_id'])}"
             item["owner_channel_reference"] = preferred_youtube_channel_reference(
@@ -3095,7 +3297,7 @@ def omni_search_data(
             )
             result = _omni_result(
                     "clip",
-                    1 if title_hit else 4,
+                    1 if title_hit else 2 if annotation_search_hit else 4,
                     item,
                     matched_description=False,
                 )
@@ -3107,7 +3309,9 @@ def omni_search_data(
             )
             results.append(result)
 
-    if "playlist" in active_result_kinds and (not query or search_titles or search_descriptions):
+    if "playlist" in active_result_kinds and (
+        not query or search_titles or search_descriptions or bool(annotation_matches.get("playlist"))
+    ):
         playlist_title_match = """
             lower(
               p.title || ' ' || COALESCE(owner.title, '') || ' ' ||
@@ -3121,6 +3325,8 @@ def omni_search_data(
                 playlist_matches.append(playlist_title_match)
             if search_descriptions:
                 playlist_matches.append(playlist_description_match)
+            if annotation_matches.get("playlist"):
+                playlist_matches.append(annotation_match_sql["playlist"])
         else:
             playlist_matches.append("1 = 1")
         playlist_title_hit = (
@@ -3139,7 +3345,8 @@ def omni_search_data(
                    COALESCE(owner.thumbnail_path, '') AS owner_channel_thumbnail_path,
                    COALESCE(owner.status, '') AS owner_channel_status,
                    COALESCE(playlist_dates.newest_video_upload_date, '') AS newest_video_upload_date,
-                   CASE WHEN {playlist_title_hit} THEN 1 ELSE 0 END AS title_hit
+                   CASE WHEN {playlist_title_hit} THEN 1 ELSE 0 END AS title_hit,
+                   CASE WHEN {annotation_match_sql['playlist']} THEN 1 ELSE 0 END AS annotation_search_hit
             FROM playlists p
             LEFT JOIN playlist_scans ps ON ps.playlist_id = p.playlist_id
             LEFT JOIN playlist_unavailable_counts puc
@@ -3159,6 +3366,7 @@ def omni_search_data(
         ):
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
+            annotation_search_hit = bool(item.pop("annotation_search_hit"))
             item["url"] = youtube_playlist_url(item.get("playlist_id") or "")
             item["owner_channel_reference"] = preferred_youtube_channel_reference(
                 item.get("owner_channel_id") or "",
@@ -3168,9 +3376,16 @@ def omni_search_data(
                 item.get("owner_channel_id") or "",
                 item.get("owner_channel_aliases") or "",
             )
-            results.append(_omni_result("playlist", 2 if title_hit else 5, item, matched_description=not title_hit))
+            results.append(_omni_result(
+                "playlist",
+                2 if title_hit else 3 if annotation_search_hit else 5,
+                item,
+                matched_description=not title_hit and not annotation_search_hit,
+            ))
 
-    if "channel" in active_result_kinds and (not query or search_titles or search_descriptions):
+    if "channel" in active_result_kinds and (
+        not query or search_titles or search_descriptions or bool(annotation_matches.get("channel"))
+    ):
         channel_title_match = """
             lower(
               ch.title || ' ' || ch.channel_id || ' ' || ch.aliases || ' ' ||
@@ -3184,6 +3399,8 @@ def omni_search_data(
                 channel_matches.append(channel_title_match)
             if search_descriptions:
                 channel_matches.append(channel_description_match)
+            if annotation_matches.get("channel"):
+                channel_matches.append(annotation_match_sql["channel"])
         else:
             channel_matches.append("1 = 1")
         channel_title_hit = (
@@ -3192,7 +3409,8 @@ def omni_search_data(
         for row in conn.execute(
             f"""
             SELECT ch.*,
-                   CASE WHEN {channel_title_hit} THEN 1 ELSE 0 END AS title_hit
+                   CASE WHEN {channel_title_hit} THEN 1 ELSE 0 END AS title_hit,
+                   CASE WHEN {annotation_match_sql['channel']} THEN 1 ELSE 0 END AS annotation_search_hit
             FROM channels ch
             WHERE ({' OR '.join(f'({match})' for match in channel_matches)})
               AND ({channel_group_filter_sql})
@@ -3209,6 +3427,7 @@ def omni_search_data(
         ):
             item = dict(row)
             title_hit = bool(item.pop("title_hit"))
+            annotation_search_hit = bool(item.pop("annotation_search_hit"))
             item["preferred_reference"] = preferred_youtube_channel_reference(
                 item.get("channel_id") or "",
                 item.get("aliases") or "",
@@ -3217,11 +3436,22 @@ def omni_search_data(
                 item.get("channel_id") or "",
                 item.get("aliases") or "",
             )
-            results.append(_omni_result("channel", 1 if title_hit else 4, item, matched_description=not title_hit))
+            results.append(_omni_result(
+                "channel",
+                1 if title_hit else 2 if annotation_search_hit else 4,
+                item,
+                matched_description=not title_hit and not annotation_search_hit,
+            ))
 
     if (
         "video" in active_result_kinds
-        and (not query or search_titles or search_descriptions or has_video_search_matches)
+        and (
+            not query
+            or search_titles
+            or search_descriptions
+            or has_video_search_matches
+            or bool(annotation_matches.get("video"))
+        )
     ):
         video_sql_data = _omni_video_sql_data(
             conn,
@@ -3229,6 +3459,8 @@ def omni_search_data(
             query=query,
             search_titles=search_titles,
             search_descriptions=search_descriptions,
+            has_annotation_search_matches=bool(annotation_matches.get("video")),
+            annotation_search_match_sql=annotation_match_sql["video"],
             has_video_search_matches=has_video_search_matches,
             video_search_match_sql=video_search_match_sql,
             video_source=video_source,
@@ -3239,6 +3471,7 @@ def omni_search_data(
             selected_video_type_filters=selected_video_type_filters,
             selected_broadcast_status_filters=selected_broadcast_status_filters,
             selected_uploader_category_filters=selected_uploader_category_filters,
+            selected_note_filters=selected_note_filters["video"],
             known_uploader_categories=known_uploader_categories,
             partial_min_percent=video_partial_min_percent,
             active_video_id_filters=active_video_id_filters,
@@ -3387,15 +3620,20 @@ def omni_search_data(
             native_match = (
                 result["channelSubscription"] in selected_channel_subscription_filters
                 and result["channelStatus"] in selected_channel_status_filters
+                and result["notePresence"] in selected_note_filters["channel"]
             )
         elif kind == "playlist":
             native_match = (
                 result["metaCategory"] in selected_meta_filters[kind]
                 and result["playlistOwnership"] in selected_playlist_ownership_filters
+                and result["notePresence"] in selected_note_filters["playlist"]
             )
         elif kind == "clip":
             clip_id = str(item.get("clip_id") or "")
-            native_match = result["clipOwnership"] in selected_clip_ownership_filters
+            native_match = (
+                result["clipOwnership"] in selected_clip_ownership_filters
+                and result["notePresence"] in selected_note_filters["clip"]
+            )
             for plugin_id, clip_ids in active_clip_facet_memberships.items():
                 if native_match:
                     facet = "present" if clip_id in clip_ids else "absent"
@@ -3431,6 +3669,7 @@ def omni_search_data(
                 and completion_category in selected_completion_filters
                 and membership_category in selected_playlist_membership_filters
                 and uploader_category in selected_uploader_category_filters
+                and result["notePresence"] in selected_note_filters["video"]
             )
             for plugin_id, video_ids in active_video_facet_memberships.items():
                 if native_match:
@@ -3448,6 +3687,7 @@ def omni_search_data(
 
         group = meta_counts[f"{kind}s"]
         group["total"] += 1
+        group[result["notePresence"]] += 1
         if kind == "channel":
             group[result["channelSubscription"]] += 1
             group[result["channelStatus"]] += 1
@@ -3499,6 +3739,8 @@ def omni_search_data(
         uploader_category_counts.setdefault(category, 0)
         uploader_category_counts[category] += count
         uploader_category_counts["total"] += count
+    for category, count in sql_counts.get("note", {}).items():
+        meta_counts["videos"][category] += count
     for plugin_id, counts in (video_sql_data.get("facet_counts") or {}).items():
         for category in ("present", "absent"):
             video_facet_counts[plugin_id][category] += counts[category]
@@ -3536,6 +3778,12 @@ def omni_search_data(
         conn,
         [result["item"] for result in page if result["kind"] == "channel"],
     )
+    for entity_kind in ("clip", "playlist", "channel"):
+        attach_annotations(
+            conn,
+            entity_kind,
+            [result["item"] for result in page if result["kind"] == entity_kind],
+        )
     for result in page:
         if result["kind"] == "video":
             video_id = str(result["item"].get("video_id") or "")

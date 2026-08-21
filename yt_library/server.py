@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+from .annotations import save_entity_annotation, tag_suggestions
 from .config import (
     CARD_LAYOUTS,
     ConfigStore,
@@ -232,6 +233,7 @@ def video_collection_filter_args(params: dict[str, list[str]]) -> dict[str, Any]
         "video_type_filters": query_set_param(params, "video_type"),
         "broadcast_status_filters": query_set_param(params, "broadcast_status"),
         "uploader_category_filters": query_set_param(params, "uploader_category"),
+        "note_filters": query_set_param(params, "notes"),
         "partial_min_percent": query_partial_min_percent(
             params,
             "completion_min_percent",
@@ -1102,6 +1104,20 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def _handle_library_get(self, parsed: urllib.parse.ParseResult) -> None:
+        if parsed.path == "/api/tags":
+            params = urllib.parse.parse_qs(parsed.query)
+            query = (params.get("q") or [""])[0]
+            try:
+                limit = min(100, max(1, int((params.get("limit") or ["20"])[0])))
+            except ValueError:
+                limit = 20
+            conn = connect(self.db_path)
+            try:
+                tags = tag_suggestions(conn, query=query, limit=limit)
+            finally:
+                conn.close()
+            self.send_json({"tags": tags})
+            return
         if parsed.path.startswith("/plugins/"):
             suffix = parsed.path[len("/plugins/") :]
             plugin_id, separator, asset_path = suffix.partition("/assets/")
@@ -1585,6 +1601,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                     ),
                     channel_status_filters=query_set_param(params, "channel_status"),
                     clip_ownership_filters=query_set_param(params, "clip_ownership"),
+                    video_note_filters=query_set_param(params, "video_notes"),
+                    clip_note_filters=query_set_param(params, "clip_notes"),
+                    playlist_note_filters=query_set_param(params, "playlist_notes"),
+                    channel_note_filters=query_set_param(params, "channel_notes"),
                     playlist_meta_filters=query_set_param(params, "playlist_meta"),
                     playlist_ownership_filters=query_set_param(
                         params,
@@ -1750,6 +1770,90 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             body,
         )
         self.send_json(payload, status=status)
+
+    def _handle_annotation_put(self, parsed: urllib.parse.ParseResult) -> None:
+        match = re.fullmatch(
+            r"/api/annotations/(video|clip|playlist|channel)/([^/]+)",
+            parsed.path,
+        )
+        if match is None:
+            self.send_json({"error": "Annotation route is invalid"}, status=404)
+            return
+        if not self.headers.get("Content-Type", "").lower().startswith(
+            "application/json"
+        ):
+            self.send_json(
+                {"error": "Annotation updates require application/json"},
+                status=415,
+            )
+            return
+        origin = self.headers.get("Origin", "")
+        if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host", ""):
+            self.send_json(
+                {"error": "Cross-origin annotation updates are not allowed"},
+                status=403,
+            )
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            content_length = 0
+        if content_length < 1 or content_length > 131_072:
+            self.send_json(
+                {"error": "Annotation JSON body must be from 1 byte to 128 KiB"},
+                status=413,
+            )
+            return
+        try:
+            body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.send_json({"error": "Annotation JSON body is invalid"}, status=400)
+            return
+        if not isinstance(body, dict):
+            self.send_json(
+                {"error": "Annotation JSON body must be an object"},
+                status=400,
+            )
+            return
+        note = body.get("note", "")
+        tags = body.get("tags", [])
+        if not isinstance(note, str) or not isinstance(tags, list) or any(
+            not isinstance(tag, str) for tag in tags
+        ):
+            self.send_json(
+                {"error": "Annotation note must be text and tags must be a text list"},
+                status=400,
+            )
+            return
+        entity_kind, encoded_entity_id = match.groups()
+        entity_id = urllib.parse.unquote(encoded_entity_id)
+        conn = connect(self.db_path)
+        try:
+            try:
+                with conn:
+                    annotation = save_entity_annotation(
+                        conn,
+                        entity_kind,
+                        entity_id,
+                        note=note,
+                        tags=tags,
+                    )
+            except KeyError:
+                self.send_json({"error": "Entity was not found"}, status=404)
+                return
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
+                return
+        finally:
+            conn.close()
+        self.send_json(
+            {
+                "ok": True,
+                "kind": entity_kind,
+                "id": entity_id,
+                **annotation,
+            }
+        )
 
     def _handle_preference_post(
         self,
@@ -2603,6 +2707,13 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path.startswith("/api/admin/"):
             self._handle_admin_action_post(parsed, params)
+            return
+        self.send_error(404, "Not found")
+
+    def do_PUT(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/api/annotations/"):
+            self._handle_annotation_put(parsed)
             return
         self.send_error(404, "Not found")
 

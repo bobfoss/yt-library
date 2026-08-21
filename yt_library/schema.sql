@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS channels (
   channel_id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
   aliases TEXT NOT NULL DEFAULT '',
   subscribed INTEGER NOT NULL DEFAULT 0 CHECK (subscribed IN (0, 1)),
   subscribed_at TEXT,
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS playlists (
   playlist_id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
   owner_channel_id TEXT REFERENCES channels(channel_id),
   visibility TEXT NOT NULL DEFAULT '',
   created_at TEXT,
@@ -85,6 +87,7 @@ CREATE TABLE IF NOT EXISTS videos (
   video_id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
   channel_id TEXT REFERENCES channels(channel_id),
   duration_text TEXT NOT NULL DEFAULT '',
   view_count TEXT NOT NULL DEFAULT '',
@@ -127,6 +130,7 @@ CREATE TABLE IF NOT EXISTS videos (
 CREATE TABLE IF NOT EXISTS clips (
   clip_id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
   owner_channel_id TEXT REFERENCES channels(channel_id),
   owner_title TEXT NOT NULL DEFAULT '',
   owner_thumbnail_url TEXT NOT NULL DEFAULT '',
@@ -151,6 +155,114 @@ CREATE TABLE IF NOT EXISTS clips (
   last_seen_at TEXT,
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
+
+CREATE TABLE IF NOT EXISTS tags (
+  tag_id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS video_tags (
+  video_id TEXT NOT NULL REFERENCES videos(video_id) ON DELETE CASCADE,
+  tag_id INTEGER NOT NULL REFERENCES tags(tag_id) ON DELETE CASCADE,
+  PRIMARY KEY (video_id, tag_id)
+);
+
+CREATE TABLE IF NOT EXISTS clip_tags (
+  clip_id TEXT NOT NULL REFERENCES clips(clip_id) ON DELETE CASCADE,
+  tag_id INTEGER NOT NULL REFERENCES tags(tag_id) ON DELETE CASCADE,
+  PRIMARY KEY (clip_id, tag_id)
+);
+
+CREATE TABLE IF NOT EXISTS playlist_tags (
+  playlist_id TEXT NOT NULL REFERENCES playlists(playlist_id) ON DELETE CASCADE,
+  tag_id INTEGER NOT NULL REFERENCES tags(tag_id) ON DELETE CASCADE,
+  PRIMARY KEY (playlist_id, tag_id)
+);
+
+CREATE TABLE IF NOT EXISTS channel_tags (
+  channel_id TEXT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
+  tag_id INTEGER NOT NULL REFERENCES tags(tag_id) ON DELETE CASCADE,
+  PRIMARY KEY (channel_id, tag_id)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS entity_note_fts USING fts5(
+  entity_kind UNINDEXED,
+  entity_id UNINDEXED,
+  note,
+  tokenize = 'unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS videos_note_fts_insert
+AFTER INSERT ON videos WHEN trim(NEW.note) <> '' BEGIN
+  INSERT INTO entity_note_fts(entity_kind, entity_id, note)
+  VALUES ('video', NEW.video_id, NEW.note);
+END;
+CREATE TRIGGER IF NOT EXISTS videos_note_fts_update
+AFTER UPDATE OF note ON videos BEGIN
+  DELETE FROM entity_note_fts WHERE entity_kind = 'video' AND entity_id = OLD.video_id;
+  INSERT INTO entity_note_fts(entity_kind, entity_id, note)
+  SELECT 'video', NEW.video_id, NEW.note WHERE trim(NEW.note) <> '';
+END;
+CREATE TRIGGER IF NOT EXISTS videos_note_fts_delete
+AFTER DELETE ON videos BEGIN
+  DELETE FROM entity_note_fts WHERE entity_kind = 'video' AND entity_id = OLD.video_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS clips_note_fts_insert
+AFTER INSERT ON clips WHEN trim(NEW.note) <> '' BEGIN
+  INSERT INTO entity_note_fts(entity_kind, entity_id, note)
+  VALUES ('clip', NEW.clip_id, NEW.note);
+END;
+CREATE TRIGGER IF NOT EXISTS clips_note_fts_update
+AFTER UPDATE OF note ON clips BEGIN
+  DELETE FROM entity_note_fts WHERE entity_kind = 'clip' AND entity_id = OLD.clip_id;
+  INSERT INTO entity_note_fts(entity_kind, entity_id, note)
+  SELECT 'clip', NEW.clip_id, NEW.note WHERE trim(NEW.note) <> '';
+END;
+CREATE TRIGGER IF NOT EXISTS clips_note_fts_delete
+AFTER DELETE ON clips BEGIN
+  DELETE FROM entity_note_fts WHERE entity_kind = 'clip' AND entity_id = OLD.clip_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS playlists_note_fts_insert
+AFTER INSERT ON playlists WHEN trim(NEW.note) <> '' BEGIN
+  INSERT INTO entity_note_fts(entity_kind, entity_id, note)
+  VALUES ('playlist', NEW.playlist_id, NEW.note);
+END;
+CREATE TRIGGER IF NOT EXISTS playlists_note_fts_update
+AFTER UPDATE OF note ON playlists BEGIN
+  DELETE FROM entity_note_fts WHERE entity_kind = 'playlist' AND entity_id = OLD.playlist_id;
+  INSERT INTO entity_note_fts(entity_kind, entity_id, note)
+  SELECT 'playlist', NEW.playlist_id, NEW.note WHERE trim(NEW.note) <> '';
+END;
+CREATE TRIGGER IF NOT EXISTS playlists_note_fts_delete
+AFTER DELETE ON playlists BEGIN
+  DELETE FROM entity_note_fts WHERE entity_kind = 'playlist' AND entity_id = OLD.playlist_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS channels_note_fts_insert
+AFTER INSERT ON channels WHEN trim(NEW.note) <> '' BEGIN
+  INSERT INTO entity_note_fts(entity_kind, entity_id, note)
+  VALUES ('channel', NEW.channel_id, NEW.note);
+END;
+CREATE TRIGGER IF NOT EXISTS channels_note_fts_update
+AFTER UPDATE OF note ON channels BEGIN
+  DELETE FROM entity_note_fts WHERE entity_kind = 'channel' AND entity_id = OLD.channel_id;
+  INSERT INTO entity_note_fts(entity_kind, entity_id, note)
+  SELECT 'channel', NEW.channel_id, NEW.note WHERE trim(NEW.note) <> '';
+END;
+CREATE TRIGGER IF NOT EXISTS channels_note_fts_delete
+AFTER DELETE ON channels BEGIN
+  DELETE FROM entity_note_fts WHERE entity_kind = 'channel' AND entity_id = OLD.channel_id;
+END;
+
+CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id, video_id);
+CREATE INDEX IF NOT EXISTS idx_clip_tags_tag ON clip_tags(tag_id, clip_id);
+CREATE INDEX IF NOT EXISTS idx_playlist_tags_tag ON playlist_tags(tag_id, playlist_id);
+CREATE INDEX IF NOT EXISTS idx_channel_tags_tag ON channel_tags(tag_id, channel_id);
 
 CREATE TABLE IF NOT EXISTS playlist_tombstones (
   playlist_id TEXT PRIMARY KEY,

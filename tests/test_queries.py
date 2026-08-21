@@ -1645,12 +1645,16 @@ class NormalizedReadModelTests(unittest.TestCase):
                     "unavailable": 1,
                     "members_only": 1,
                     "unknown": 1,
+                    "with_note": 0,
+                    "without_note": 5,
                 },
                 "clips": {
                     "total": 0,
                     "mine": 0,
                     "others": 0,
                     "ownership_unknown": 0,
+                    "with_note": 0,
+                    "without_note": 0,
                 },
                 "channels": {
                     "total": 3,
@@ -1658,6 +1662,8 @@ class NormalizedReadModelTests(unittest.TestCase):
                     "non_subscribed": 1,
                     "active": 2,
                     "terminated": 1,
+                    "with_note": 0,
+                    "without_note": 3,
                 },
                 "playlists": {
                     "total": 10,
@@ -1669,6 +1675,8 @@ class NormalizedReadModelTests(unittest.TestCase):
                     "mine": 5,
                     "others": 1,
                     "ownership_unknown": 4,
+                    "with_note": 0,
+                    "without_note": 10,
                 },
             },
         )

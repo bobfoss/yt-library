@@ -222,7 +222,14 @@ test('structured search presentation and entity-detail panels are first-class', 
   assert.match(indexSource, /async function renderBrowserPluginClipPanels\(clip\)/);
   assert.match(indexSource, /const extension = plugin\.clipDetail/);
   assert.match(indexSource, /renderBrowserPluginClipPanels\(clip\)/);
-  assert.match(indexSource, /grid\.replaceChildren\(card, \.\.\.pluginPanels\)/);
+  assert.match(
+    indexSource,
+    /grid\.replaceChildren\([\s\S]*?annotationEditorFor\('clip', clip\)[\s\S]*?\.\.\.pluginPanels/,
+  );
+  assert.match(
+    indexSource,
+    /grid\.replaceChildren\([\s\S]*?annotationEditorFor\('video', video\)[\s\S]*?\.\.\.pluginPanels/,
+  );
 });
 
 test('plugin channel video tabs are capability gated and use native cards', () => {

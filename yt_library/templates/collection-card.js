@@ -39,7 +39,11 @@
       </div>
       ${options.bodyHtml || ''}
       <span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>
-      <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
+      <div class="entity-card-decoration-row">
+        <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
+        ${options.annotationMetaHtml || ''}
+      </div>
+      ${options.annotationNoteHtml || ''}
       <div class="search-result-summary-slot" data-search-result-slot="summaries"></div>
       ${options.tailHtml || ''}
     `;

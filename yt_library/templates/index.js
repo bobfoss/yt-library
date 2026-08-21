@@ -498,6 +498,10 @@ const defaultSearchMetaVisibility = {
     unknown: true,
   },
   playlistOwnership: { mine: true, others: true, ownership_unknown: true },
+  videoNotes: { with_note: true, without_note: true },
+  clipNotes: { with_note: true, without_note: true },
+  playlistNotes: { with_note: true, without_note: true },
+  channelNotes: { with_note: true, without_note: true },
 };
 let searchMetaVisibility = Object.fromEntries(
   Object.entries(defaultSearchMetaVisibility).map(([groupName, visibility]) => [
@@ -519,6 +523,10 @@ const searchMetaParamNames = {
   channelStatus: 'cstatus',
   playlistAvailability: 'pm',
   playlistOwnership: 'po',
+  videoNotes: 'vn',
+  clipNotes: 'cn',
+  playlistNotes: 'pn',
+  channelNotes: 'chn',
 };
 const searchOptInMetaFilters = [
   {
@@ -671,6 +679,7 @@ let videoBroadcastStatusCountsCache = new Map();
 let videoCompletionCountsCache = new Map();
 let videoReactionCountsCache = new Map();
 let videoUploaderCategoryCountsCache = new Map();
+let videoNoteCountsCache = new Map();
 let videoPluginFacetCountsCache = new Map();
 let omniMetaCountsCache = new Map();
 let omniVideoTypeCountsCache = new Map();
@@ -764,6 +773,7 @@ async function loadData({ preserveSearchContent = false } = {}) {
     videoCompletionCountsCache = new Map();
     videoReactionCountsCache = new Map();
     videoUploaderCategoryCountsCache = new Map();
+    videoNoteCountsCache = new Map();
     videoPluginFacetCountsCache = new Map();
     omniMetaCountsCache = new Map();
     omniVideoTypeCountsCache = new Map();
@@ -1596,6 +1606,10 @@ function applySearchLocation(pathname, params) {
     channelStatus: params.get(searchMetaParamNames.channelStatus),
     playlistAvailability: params.get(searchMetaParamNames.playlistAvailability),
     playlistOwnership: params.get(searchMetaParamNames.playlistOwnership),
+    videoNotes: params.get(searchMetaParamNames.videoNotes),
+    clipNotes: params.get(searchMetaParamNames.clipNotes),
+    playlistNotes: params.get(searchMetaParamNames.playlistNotes),
+    channelNotes: params.get(searchMetaParamNames.channelNotes),
   };
   const uploaderCategoryParam = metaParamValues.uploaderCategory;
   uploaderCategorySelectionExplicit = uploaderCategoryParam !== null;
@@ -1948,6 +1962,10 @@ function metaFilterGroupVisibility(groupName) {
     'search-channelStatus': searchMetaVisibility.channelStatus,
     'search-playlistAvailability': searchMetaVisibility.playlistAvailability,
     'search-playlistOwnership': searchMetaVisibility.playlistOwnership,
+    'search-videoNotes': searchMetaVisibility.videoNotes,
+    'search-clipNotes': searchMetaVisibility.clipNotes,
+    'search-playlistNotes': searchMetaVisibility.playlistNotes,
+    'search-channelNotes': searchMetaVisibility.channelNotes,
   };
   return groups[groupName] || null;
 }
@@ -2061,10 +2079,11 @@ const searchVideoFacetKeys = [
   'completion',
   'membership',
   'uploaderCategory',
+  'videoNotes',
 ];
-const searchPlaylistFacetKeys = ['playlistAvailability', 'playlistOwnership'];
-const searchChannelFacetKeys = ['channelSubscription', 'channelStatus'];
-const searchClipFacetKeys = ['clipOwnership'];
+const searchPlaylistFacetKeys = ['playlistAvailability', 'playlistOwnership', 'playlistNotes'];
+const searchChannelFacetKeys = ['channelSubscription', 'channelStatus', 'channelNotes'];
+const searchClipFacetKeys = ['clipOwnership', 'clipNotes'];
 
 function searchKindFacetKeys(kind) {
   if (kind === 'videos') return searchVideoFacetKeys;
@@ -3600,6 +3619,10 @@ const playlistOwnershipMetaFilterDefinitions = [
   { key: 'others', label: 'others' },
   { key: 'ownership_unknown', label: 'unknown' },
 ];
+const noteMetaFilterDefinitions = [
+  { key: 'with_note', label: 'notes', decoratorHtml: noteIconHtml() },
+  { key: 'without_note', label: 'no notes' },
+];
 function visibleMetaFilterDefinitions(visibility, counts, definitions) {
   return definitions.filter(({ key }) => (
     Object.prototype.hasOwnProperty.call(visibility, key)
@@ -3914,6 +3937,7 @@ function searchMetaFiltersHtml(
       ...(uploaderCategoryDefinitions.length ? [
         facetHtml({ key: 'uploaderCategory', visibility: searchMetaVisibility.uploaderCategory, definitions: uploaderCategoryDefinitions, counts: uploaderCategoryCounts, allLabel: 'Uploader category', kind: 'videos' }),
       ] : []),
+      facetHtml({ key: 'videoNotes', visibility: searchMetaVisibility.videoNotes, definitions: noteMetaFilterDefinitions, counts: metaCounts?.videos, allLabel: 'Notes', kind: 'videos' }),
       ...browserVideoFilterPlugins().map(pluginVideoFacetHtml),
     ].join('')),
     showClips ? kindHtml('Clips', 'clips', clipCount, [
@@ -3925,15 +3949,18 @@ function searchMetaFiltersHtml(
           allLabel: 'Ownership',
           kind: 'clips',
         }),
+        facetHtml({ key: 'clipNotes', visibility: searchMetaVisibility.clipNotes, definitions: noteMetaFilterDefinitions, counts: metaCounts?.clips, allLabel: 'Notes', kind: 'clips' }),
         ...browserClipFilterPlugins().map(pluginClipFacetHtml),
       ].join('')) : '',
     kindHtml('Playlists', 'playlists', metaCounts?.playlists?.total, [
       facetHtml({ key: 'playlistAvailability', visibility: searchMetaVisibility.playlistAvailability, definitions: playlistAvailabilityMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Availability', kind: 'playlists' }),
       facetHtml({ key: 'playlistOwnership', visibility: searchMetaVisibility.playlistOwnership, definitions: playlistOwnershipMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Ownership', kind: 'playlists' }),
+      facetHtml({ key: 'playlistNotes', visibility: searchMetaVisibility.playlistNotes, definitions: noteMetaFilterDefinitions, counts: metaCounts?.playlists, allLabel: 'Notes', kind: 'playlists' }),
     ].join('')),
     kindHtml('Channels', 'channels', metaCounts?.channels?.total, [
       facetHtml({ key: 'channelSubscription', visibility: searchMetaVisibility.channelSubscription, definitions: channelSubscriptionMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Subscription', kind: 'channels' }),
       facetHtml({ key: 'channelStatus', visibility: searchMetaVisibility.channelStatus, definitions: channelStatusMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Status', kind: 'channels' }),
+      facetHtml({ key: 'channelNotes', visibility: searchMetaVisibility.channelNotes, definitions: noteMetaFilterDefinitions, counts: metaCounts?.channels, allLabel: 'Notes', kind: 'channels' }),
     ].join('')),
     ...browserResultSearchPlugins().map(plugin => kindHtml(
       plugin.search.label || plugin.id,
@@ -3991,7 +4018,10 @@ function renderSearchMetaFilters({
     const kindCount = searchFilterRegion.querySelector(`[data-search-kind-count="${kind}"]`);
     if (kindCount) kindCount.textContent = searchKindEnabled(kind) ? (count || '') : '';
   }
-  for (const key of ['videoType', 'broadcastStatus', 'videos', 'reactions', 'completion', 'membership', 'uploaderCategory', 'clipOwnership', 'playlistAvailability', 'playlistOwnership', 'channelSubscription', 'channelStatus']) {
+  const renderedFacetKeys = new Set(
+    ['videos', 'clips', 'playlists', 'channels'].flatMap(searchKindFacetKeys),
+  );
+  for (const key of renderedFacetKeys) {
     syncMetaFilterGroup(`search-${key}`, countsPending);
   }
   for (const plugin of browserVideoFilterPlugins()) {
@@ -4040,6 +4070,12 @@ function syncSearchFiltersForSelection() {
   const alreadyHidden = searchFilterTree.hidden;
   searchFilters.hidden = false;
   searchFilterTree.hidden = historySelected;
+  for (const label of searchInFields.querySelectorAll('.core-library-search-field')) {
+    label.hidden = historySelected;
+    label.style.display = historySelected ? 'none' : '';
+    const input = label.querySelector('input.search-field');
+    if (input instanceof HTMLInputElement) input.disabled = historySelected;
+  }
   syncBrowserPluginSearchFieldVisibility();
   const placeholders = {
     videos: 'Search videos',
@@ -4198,6 +4234,36 @@ function liveBroadcastIconHtml() {
       <path clip-rule="evenodd" d="M18.364 4.224a1 1 0 011.414 0 11 11 0 010 15.557 1 1 0 01-1.414-1.414 9 9 0 000-12.729 1 1 0 010-1.414ZM4.222 4.222a1 1 0 011.414 1.415 9 9 0 000 12.728 1 1 0 11-1.414 1.414 11.002 11.002 0 010-15.557Zm3.181 3.181a1.002 1.002 0 011.415 1.415 4.503 4.503 0 00-.975 4.904c.226.545.558 1.042.975 1.46a1.001 1.001 0 01-1.415 1.414 6.502 6.502 0 010-9.193Zm7.779 0c.39-.39 1.024-.39 1.415 0a6.5 6.5 0 010 9.193 1.001 1.001 0 01-1.415-1.415 4.5 4.5 0 000-6.363 1.001 1.001 0 010-1.415ZM12 10a2 2 0 110 4 2 2 0 010-4Z" fill-rule="evenodd"></path>
     </svg>
   `;
+}
+
+function noteIconHtml() {
+  return `
+    <svg class="annotation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path>
+      <path d="M14 2v6h6"></path>
+      <path d="M8 13h8"></path>
+      <path d="M8 17h6"></path>
+    </svg>
+  `;
+}
+
+function annotationCardOptions(entity) {
+  const note = String(entity?.note || '').trim();
+  const tags = Array.isArray(entity?.tags)
+    ? entity.tags.map(tag => String(tag || '').trim()).filter(Boolean)
+    : [];
+  if (!note && !tags.length) return {};
+  return {
+    annotationMetaHtml: `
+      <div class="entity-annotations">
+        ${note ? `<span class="annotation-note-indicator">${noteIconHtml()}<span>Notes</span></span>` : ''}
+        ${tags.map(tag => `<span class="annotation-tag">#${escapeHtml(tag)}</span>`).join('')}
+      </div>
+    `,
+    annotationNoteHtml: note
+      ? `<div class="entity-note-text">${escapeHtml(note)}</div>`
+      : '',
+  };
 }
 
 function liveNowBroadcastIconHtml() {
@@ -4572,11 +4638,15 @@ async function fetchOmniSearch(query, page = currentPage) {
     video_completion: metaFilterParamValue(searchMetaVisibility.completion),
     video_completion_min_percent: String(partialCompletionMinimumPercent),
     video_playlist_membership: metaFilterParamValue(searchMetaVisibility.membership),
+    video_notes: metaFilterParamValue(searchMetaVisibility.videoNotes),
     clip_ownership: metaFilterParamValue(searchMetaVisibility.clipOwnership),
+    clip_notes: metaFilterParamValue(searchMetaVisibility.clipNotes),
     channel_subscription: metaFilterParamValue(searchMetaVisibility.channelSubscription),
     channel_status: metaFilterParamValue(searchMetaVisibility.channelStatus),
+    channel_notes: metaFilterParamValue(searchMetaVisibility.channelNotes),
     playlist_meta: metaFilterParamValue(searchMetaVisibility.playlistAvailability),
     playlist_ownership: metaFilterParamValue(searchMetaVisibility.playlistOwnership),
+    playlist_notes: metaFilterParamValue(searchMetaVisibility.playlistNotes),
     sort: searchResultsSort,
   });
   if (!allMetaFiltersEnabled(searchMetaVisibility.uploaderCategory)) {
@@ -4603,6 +4673,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     String(partialCompletionMinimumPercent),
     metaFilterParamValue(searchMetaVisibility.membership),
     metaFilterParamValue(searchMetaVisibility.uploaderCategory),
+    metaFilterParamValue(searchMetaVisibility.videoNotes),
     query ? browserVideoFilterPlugins().map(browserVideoFacetSearchActive) : [],
   ]);
   const clipPluginFacetCountsKey = JSON.stringify([
@@ -4612,6 +4683,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     searchPlaylistGroupKey,
     searchChannelGroupKey,
     metaFilterParamValue(searchMetaVisibility.clipOwnership),
+    metaFilterParamValue(searchMetaVisibility.clipNotes),
     query ? browserClipFilterPlugins().map(browserClipFacetSearchActive) : [],
   ]);
   const key = `${coreParams.toString()}&plugins=${encodeURIComponent(pluginKey)}&limit=${limit}&offset=${offset}`;
@@ -4794,6 +4866,7 @@ async function fetchVideoCollection({
   completion = null,
   reactions = null,
   uploaderCategories = null,
+  notes = null,
   useSearchFacets = false,
   partialMinimumPercent = 1,
   duplicatesOnly = false,
@@ -4829,6 +4902,7 @@ async function fetchVideoCollection({
     completion ? metaFilterParamValue(completion) : '',
     reactions ? metaFilterParamValue(reactions) : '',
     uploaderCategories ? metaFilterParamValue(uploaderCategories) : '',
+    notes ? metaFilterParamValue(notes) : '',
     partialMinimumPercent,
     duplicatesOnly,
   ]);
@@ -4858,6 +4932,7 @@ async function fetchVideoCollection({
   if (uploaderCategories && !allMetaFiltersEnabled(uploaderCategories)) {
     params.set('uploader_category', metaFilterParamValue(uploaderCategories));
   }
+  if (notes) params.set('notes', metaFilterParamValue(notes));
   if (useSearchFacets) {
     for (const plugin of browserVideoFilterPlugins()) {
       const state = browserVideoFacetState(plugin);
@@ -4901,6 +4976,9 @@ async function fetchVideoCollection({
       { ...(payload.uploaderCategoryCounts || {}) },
     );
   }
+  if (!videoNoteCountsCache.has(metaCountsKey)) {
+    videoNoteCountsCache.set(metaCountsKey, { ...(payload.noteCounts || {}) });
+  }
   if (!videoPluginFacetCountsCache.has(pluginFacetCountsKey)) {
     videoPluginFacetCountsCache.set(
       pluginFacetCountsKey,
@@ -4919,6 +4997,7 @@ async function fetchVideoCollection({
     completionCounts: videoCompletionCountsCache.get(metaCountsKey),
     reactionCounts: videoReactionCountsCache.get(metaCountsKey),
     uploaderCategoryCounts: videoUploaderCategoryCountsCache.get(metaCountsKey),
+    noteCounts: videoNoteCountsCache.get(metaCountsKey),
     metaCounts: {
       ...(payload.metaCounts || {}),
       videoPlugins: videoPluginFacetCountsCache.get(pluginFacetCountsKey),
@@ -5401,6 +5480,7 @@ function videoDetailCardFor(video) {
   const thumbnail = video.metadata_thumbnail_path
     ? thumbnailWithProgress(video.metadata_thumbnail_path, video)
     : document.createElement('div');
+  const annotation = annotationCardOptions(video);
   const body = document.createElement('div');
   body.className = 'body';
   body.innerHTML = `
@@ -5438,7 +5518,11 @@ function videoDetailCardFor(video) {
         ${watchSparklineHtml(video, true)}
         ${reactionIconsHtml(video)}
         ${uploaderCategoryHtml(video.uploader_category)}
-        <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
+        <div class="entity-card-decoration-row">
+          <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
+          ${annotation.annotationMetaHtml || ''}
+        </div>
+        ${annotation.annotationNoteHtml || ''}
         ${playlistSourceLinksHtml(video)}
         ${video.metadata_description ? `<div class="description">${escapeHtml(video.metadata_description)}</div>` : '<div class="empty">No description captured for this video.</div>'}
       </div>
@@ -5460,6 +5544,7 @@ function channelDetailCardFor(channel) {
   const avatar = channel.thumbnail_path
     ? `<img class="channel-avatar-large" src="/${escapeHtml(channel.thumbnail_path)}" alt="">`
     : '<div class="channel-avatar-large"></div>';
+  const annotation = annotationCardOptions(channel);
   const body = document.createElement('div');
   body.className = 'body';
   body.innerHTML = `
@@ -5486,7 +5571,11 @@ function channelDetailCardFor(channel) {
         ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
         ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
         ${featuredChannelsHtml(channel)}
-        <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
+        <div class="entity-card-decoration-row">
+          <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
+          ${annotation.annotationMetaHtml || ''}
+        </div>
+        ${annotation.annotationNoteHtml || ''}
         ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : '<div class="empty">No channel description captured.</div>'}
       </div>
     </div>
@@ -5580,6 +5669,118 @@ function channelTabsFor(
   return tabs;
 }
 
+function entityAnnotationIdentity(kind, entity) {
+  const idField = {
+    video: 'video_id',
+    clip: 'clip_id',
+    playlist: 'playlist_id',
+    channel: 'channel_id',
+  }[kind];
+  return idField ? String(entity?.[idField] || '') : '';
+}
+
+function annotationEditorFor(kind, entity) {
+  const entityId = entityAnnotationIdentity(kind, entity);
+  if (!entityId) return document.createDocumentFragment();
+  const editor = document.createElement('form');
+  editor.className = 'entity-annotation-editor';
+  editor.dataset.annotationEditor = kind;
+  editor.dataset.annotationEntityId = entityId;
+  const listId = `annotation-tags-${kind}-${Math.random().toString(36).slice(2)}`;
+  const tags = Array.isArray(entity.tags) ? entity.tags.join(', ') : '';
+  editor.innerHTML = `
+    <label>Notes
+      <textarea name="note" maxlength="100000">${escapeHtml(entity.note || '')}</textarea>
+    </label>
+    <label>Tags
+      <input name="tags" type="text" value="${escapeHtml(tags)}" list="${listId}" autocomplete="off" placeholder="Comma-separated tags">
+      <datalist id="${listId}"></datalist>
+    </label>
+    <div class="entity-annotation-actions">
+      <button type="submit">Save</button>
+      <span class="entity-annotation-status" role="status" aria-live="polite"></span>
+    </div>
+  `;
+  return editor;
+}
+
+function clearAnnotationReadCaches() {
+  viewDataCache = new Map();
+  omniSearchCache = new Map();
+  videoMetaCountsCache = new Map();
+  videoNoteCountsCache = new Map();
+  omniMetaCountsCache = new Map();
+}
+
+let annotationTagSuggestionTimer = null;
+
+document.addEventListener('input', event => {
+  const input = event.target.closest('.entity-annotation-editor input[name="tags"]');
+  if (!(input instanceof HTMLInputElement)) return;
+  if (annotationTagSuggestionTimer !== null) clearTimeout(annotationTagSuggestionTimer);
+  annotationTagSuggestionTimer = setTimeout(async () => {
+    annotationTagSuggestionTimer = null;
+    const query = input.value.split(',').at(-1)?.trim() || '';
+    try {
+      const response = await fetch(`/api/tags?q=${encodeURIComponent(query)}&limit=20`, {
+        cache: 'no-store',
+      });
+      if (!response.ok || !input.isConnected) return;
+      const payload = await response.json();
+      const list = document.getElementById(input.getAttribute('list') || '');
+      if (list instanceof HTMLDataListElement) {
+        list.replaceChildren(...(payload.tags || []).map(tag => {
+          const option = document.createElement('option');
+          option.value = String(tag);
+          return option;
+        }));
+      }
+    } catch (_error) {
+      // Suggestions are optional; saving remains available when they fail.
+    }
+  }, 150);
+});
+
+document.addEventListener('submit', async event => {
+  const editor = event.target.closest('[data-annotation-editor]');
+  if (!(editor instanceof HTMLFormElement)) return;
+  event.preventDefault();
+  const button = editor.querySelector('button[type="submit"]');
+  const status = editor.querySelector('.entity-annotation-status');
+  const note = editor.elements.namedItem('note');
+  const tags = editor.elements.namedItem('tags');
+  if (!(button instanceof HTMLButtonElement)
+      || !(status instanceof HTMLElement)
+      || !(note instanceof HTMLTextAreaElement)
+      || !(tags instanceof HTMLInputElement)) return;
+  button.disabled = true;
+  status.classList.remove('error');
+  status.textContent = 'Saving';
+  try {
+    const response = await fetch(
+      `/api/annotations/${encodeURIComponent(editor.dataset.annotationEditor || '')}/${encodeURIComponent(editor.dataset.annotationEntityId || '')}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          note: note.value,
+          tags: tags.value.split(',').map(tag => tag.trim()).filter(Boolean),
+        }),
+      },
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Save failed: ${response.status}`);
+    status.textContent = 'Saved';
+    clearAnnotationReadCaches();
+    await render();
+  } catch (error) {
+    status.classList.add('error');
+    status.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
+});
+
 async function renderCurrentView() {
   const generation = ++renderGeneration;
   cancelAdjacentPagePrefetch();
@@ -5667,7 +5868,11 @@ async function renderCurrentView() {
       'detailed',
       generation,
     );
-    grid.replaceChildren(card, ...pluginPanels);
+    grid.replaceChildren(
+      card,
+      annotationEditorFor('clip', clip),
+      ...pluginPanels,
+    );
     await decoration;
     if (generation !== renderGeneration) return;
     empty.hidden = true;
@@ -5707,6 +5912,7 @@ async function renderCurrentView() {
     );
     grid.replaceChildren(
       videoCard,
+      annotationEditorFor('video', video),
       ...pluginPanels,
     );
     await decoration;
@@ -5755,9 +5961,11 @@ async function renderCurrentView() {
     const channelCard = channelDetailCardFor(channel);
     channelCard.dataset.channelReference = channelReference;
     const channelEntry = entityCardEntry('channel', channel, channelCard);
+    const channelAnnotationEditor = annotationEditorFor('channel', channel);
     viewContext.hidden = false;
     viewContext.replaceChildren(
       channelCard,
+      channelAnnotationEditor,
       channelTabsFor(
         channelDetailTab,
         playlistedVideoCount,
@@ -5779,6 +5987,7 @@ async function renderCurrentView() {
           historyCount = storeChannelTabCount(channelId, 'history', total);
           viewContext.replaceChildren(
             channelCard,
+            channelAnnotationEditor,
             channelTabsFor(
               'history',
               playlistedVideoCount,
@@ -5857,6 +6066,7 @@ async function renderCurrentView() {
       );
       viewContext.replaceChildren(
         channelCard,
+        channelAnnotationEditor,
         channelTabsFor(
           activePluginVideoTab.key,
           playlistedVideoCount,
@@ -5896,6 +6106,7 @@ async function renderCurrentView() {
       );
       viewContext.replaceChildren(
         channelCard,
+        channelAnnotationEditor,
         channelTabsFor(
           'playlists',
           playlistedVideoCount,
@@ -5940,6 +6151,7 @@ async function renderCurrentView() {
       );
       viewContext.replaceChildren(
         channelCard,
+        channelAnnotationEditor,
         channelTabsFor(
           'playlisted-videos',
           playlistedVideoCount,
@@ -6071,6 +6283,7 @@ async function renderCurrentView() {
           completion: searchMetaVisibility.completion,
           reactions: searchMetaVisibility.reactions,
           uploaderCategories: searchMetaVisibility.uploaderCategory,
+          notes: searchMetaVisibility.videoNotes,
           useSearchFacets: true,
           partialMinimumPercent: partialCompletionMinimumPercent,
           duplicatesOnly: playlistDuplicatesOnly,
@@ -6090,6 +6303,7 @@ async function renderCurrentView() {
           completion: searchMetaVisibility.completion,
           reactions: searchMetaVisibility.reactions,
           uploaderCategories: searchMetaVisibility.uploaderCategory,
+          notes: searchMetaVisibility.videoNotes,
           useSearchFacets: true,
           partialMinimumPercent: partialCompletionMinimumPercent,
           duplicatesOnly: false,
@@ -6108,6 +6322,8 @@ async function renderCurrentView() {
     if (generation !== renderGeneration) return;
     stopSearchFilterProgress();
     setDocumentTitle(playlist.title || playlistId);
+    viewContext.hidden = false;
+    viewContext.replaceChildren(annotationEditorFor('playlist', playlist));
     const rows = payload.results || [];
     const distinctVideoCount = Number(
       payload.distinctTotal
@@ -6117,6 +6333,7 @@ async function renderCurrentView() {
       metaCounts: {
         videos: {
           ...(payload.counts || {}),
+          ...(payload.noteCounts || {}),
           total: distinctVideoCount,
         },
         videoPlugins: payload.metaCounts?.videoPlugins || {},
@@ -6176,6 +6393,7 @@ async function renderCurrentView() {
       completion: searchMetaVisibility.completion,
       reactions: searchMetaVisibility.reactions,
       uploaderCategories: searchMetaVisibility.uploaderCategory,
+      notes: searchMetaVisibility.videoNotes,
       useSearchFacets: true,
       partialMinimumPercent: partialCompletionMinimumPercent,
       duplicatesOnly: playlistDuplicatesOnly,
@@ -6203,6 +6421,7 @@ function cardFor(playlist, options = {}) {
   const playlistCount = playlistVideoCountLabel(playlist);
   const owner = playlistOwnerHtml(playlist);
   return CollectionCard.create({
+    ...annotationCardOptions(playlist),
     resultKind: options.resultKind,
     thumbnailPath: playlist.thumbnail_path,
     thumbnailHref: localHref,
@@ -6342,6 +6561,7 @@ function playlistVideoCardFor(video, options = {}) {
   const channelUrl = displayVideoChannelLocalUrl(video);
   const duration = displayVideoDuration(video);
   return videoCardFor({
+    ...annotationCardOptions(video),
     thumbnailPath: video.metadata_thumbnail_path,
     progressVideo: video,
     resultKind: options.resultKind,
@@ -6490,6 +6710,7 @@ function clipCardFor(clip, options = {}) {
     ? ''
     : `<span class="${availability === 'unavailable' ? 'status' : ''}">${escapeHtml(availability === 'unavailable' ? 'Unavailable' : 'Unknown')}</span>`;
   return CollectionCard.create({
+    ...annotationCardOptions(clip),
     resultKind: options.resultKind || 'Clip',
     className: 'clip-card',
     thumbnailPath: clip.source_thumbnail_path || '',
@@ -6595,6 +6816,7 @@ function channelCardFor(channel, options = {}) {
     channelReference ? localChannelHref(channelReference) : ''
   );
   return CollectionCard.create({
+    ...annotationCardOptions(channel),
     className: 'channel-card',
     resultKind: options.resultKind,
     thumbnailPath: channel.thumbnail_path,

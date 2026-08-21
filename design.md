@@ -53,14 +53,15 @@ The browser path is the authoritative search context. `/search` can enable or di
 
 The left sidebar separates search controls from navigation:
 
-- **Search in** selects searchable fields such as titles, descriptions, and
-  plugin-provided text fields.
+- **Search in** selects searchable fields such as titles, descriptions, notes,
+  tags, and plugin-provided text fields.
 - `/search` renders one uninterrupted facet tree above navigation. Videos,
   Clips, Playlists, Channels, and plugin result kinds are parent selectors in
   this tree, not navigation links. Their native child facets are video
   availability, reactions, completion, playlist membership, uploader category,
-  and plugin video facets; Clip ownership; playlist availability and ownership;
-  and channel subscription and status. The tree does not insert navigation
+  note presence, and plugin video facets; Clip ownership and note presence;
+  playlist availability, ownership, and note presence; and channel subscription,
+  status, and note presence. The tree does not insert navigation
   section headings or dividers between result kinds.
 - Navigation follows the complete broad-search facet tree and is grouped under
   Videos, Playlists, and Channels. Category and group names are real links.
@@ -1212,6 +1213,11 @@ The database models the best-known current state of YouTube. Imports and scans r
 - `playlist_items` links playlists to videos and retains only membership, position, unavailable-slot, and reconciliation facts.
 - `history_events` stores watch events. Exact Takeout timestamps and date-only live observations share this table without fabricating precision.
 - `video_recovery` stores only current Archivarix recovery status, capture time, media availability, and errors.
+- Canonical `videos`, `clips`, `playlists`, and `channels` own their user-authored
+  note. `tags` owns normalized reusable names, and the four entity-tag mapping
+  tables attach tags without duplicating them. `entity_note_fts` indexes note
+  text for full-text search; tags remain relational so suggestions and future
+  tag operations do not depend on parsing display text.
 - `worker_queue` stores prioritized account, Clip, metadata, playlist, History,
   recovery, and plugin tasks. Queue events and worker-specific run/log tables
   provide operational history.

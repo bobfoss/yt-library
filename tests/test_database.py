@@ -46,6 +46,13 @@ class DatabaseModuleTests(unittest.TestCase):
                 clips_table = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='clips'"
                 ).fetchone()
+                tags_table = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='tags'"
+                ).fetchone()
+                note_fts_table = conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='entity_note_fts'"
+                ).fetchone()
                 foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
             finally:
                 conn.close()
@@ -74,7 +81,53 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertIsNotNone(collaborator_table)
         self.assertIsNotNone(featured_channels_table)
         self.assertIsNotNone(clips_table)
+        self.assertIsNotNone(tags_table)
+        self.assertIsNotNone(note_fts_table)
+        self.assertIn("note", video_columns)
         self.assertEqual(foreign_keys, 1)
+
+    def test_database_module_migrates_annotations_from_version_29(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    for trigger_name in (
+                        "videos_note_fts_insert", "videos_note_fts_update", "videos_note_fts_delete",
+                        "clips_note_fts_insert", "clips_note_fts_update", "clips_note_fts_delete",
+                        "playlists_note_fts_insert", "playlists_note_fts_update", "playlists_note_fts_delete",
+                        "channels_note_fts_insert", "channels_note_fts_update", "channels_note_fts_delete",
+                    ):
+                        conn.execute(f"DROP TRIGGER {trigger_name}")
+                    conn.execute("DROP TABLE entity_note_fts")
+                    for table_name in ("video_tags", "clip_tags", "playlist_tags", "channel_tags", "tags"):
+                        conn.execute(f"DROP TABLE {table_name}")
+                    for table_name in ("videos", "clips", "playlists", "channels"):
+                        conn.execute(f"ALTER TABLE {table_name} DROP COLUMN note")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 30")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+                note_columns = {
+                    table_name: {
+                        row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})")
+                    }
+                    for table_name in ("videos", "clips", "playlists", "channels")
+                }
+                tags_table = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='tags'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertTrue(all("note" in columns for columns in note_columns.values()))
+        self.assertIsNotNone(tags_table)
 
     def test_database_module_migrates_uploader_category_from_version_14(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

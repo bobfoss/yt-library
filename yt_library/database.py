@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -1191,6 +1191,38 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (29, utc_now()),
+        )
+    if current_version < 30:
+        for table_name in ("videos", "clips", "playlists", "channels"):
+            columns = {
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table_name})")
+            }
+            if "note" not in columns:
+                conn.execute(
+                    f"ALTER TABLE {table_name} "
+                    "ADD COLUMN note TEXT NOT NULL DEFAULT ''"
+                )
+        conn.executescript(SCHEMA)
+        conn.execute("DELETE FROM entity_note_fts")
+        for entity_kind, table_name, id_column in (
+            ("video", "videos", "video_id"),
+            ("clip", "clips", "clip_id"),
+            ("playlist", "playlists", "playlist_id"),
+            ("channel", "channels", "channel_id"),
+        ):
+            conn.execute(
+                f"""
+                INSERT INTO entity_note_fts(entity_kind, entity_id, note)
+                SELECT ?, {id_column}, note
+                FROM {table_name}
+                WHERE trim(note) <> ''
+                """,
+                (entity_kind,),
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (30, utc_now()),
         )
 
 

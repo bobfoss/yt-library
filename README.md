@@ -5,6 +5,7 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 ## Features
 
 - Browse current playlists, canonical videos, and retained unavailable videos.
+- Add searchable notes and reusable tags to videos, clips, playlists, and channels.
 - Search watch history with paginated results across titles, channels, IDs, and fetched metadata descriptions.
 - Import YouTube Takeout history zip files without extracting them first.
 - Collect exact YouTube watch and channel-subscription timestamps from Google My Activity directly into SQLite.
@@ -294,7 +295,7 @@ mistaken for watch time.
 
 Recent history fetches use 200-entry batches and stop after two consecutive complete days have the same per-video occurrence counts as the prior YouTube observation. Full history verification retains 1,000-entry batches and scans to the end. A live watch occurrence is reused by video ID, local watch date, and occurrence number within that video/day group; `youtube_ordinal` records current display order and is not event identity.
 
-The database stores canonical video metadata once in `videos`; playlist membership and history events link to that entity. Metadata revisions are intentionally discarded, except that the last useful state is retained when a video becomes unavailable. Exact timestamps use ISO 8601 UTC. The configured display timezone lives in `yt_library.config.json`; the UI can update it from Admin.
+The database stores canonical video metadata once in `videos`; playlist membership and history events link to that entity. User-authored notes attach to canonical videos, clips, playlists, and channels rather than individual watch occurrences. Tags are normalized once and linked to those entities through dedicated relationship tables. Note text is indexed with SQLite FTS5, while tag names use their normalized representation for search and suggestions. Metadata revisions are intentionally discarded, except that the last useful state is retained when a video becomes unavailable. Exact timestamps use ISO 8601 UTC. The configured display timezone lives in `yt_library.config.json`; the UI can update it from Admin.
 
 ## Optional plugins
 
