@@ -1281,6 +1281,7 @@ Most similar projects are archive or download oriented:
 - Tube Archivist ([site](https://www.tubearchivist.com/), [GitHub](https://github.com/tubearchivist/tubearchivist)): self-hosted YouTube media server for downloading, indexing, searching, and tracking watched/unwatched archived videos.
 - Pinchflat ([GitHub](https://github.com/kieraneglin/pinchflat)): self-hosted YouTube media manager for periodically archiving channels and playlists.
 - MeTube ([GitHub](https://github.com/alexta69/metube)): web UI for yt-dlp downloads, including playlists, channels, thumbnails, and queues.
+- Kaset ([GitHub](https://github.com/sozercan/kaset), [YouTube architecture](https://github.com/sozercan/kaset/blob/main/docs/youtube.md)): native YouTube client with an authenticated `WEB` InnerTube implementation, strict response parsers, and captured fixtures. Use it alongside yt-dlp as a reference for discoverable YouTube API capabilities, request profiles, authentication, continuations, and renderer changes; it is not a runtime dependency or an authority on YT Library behavior.
 - YouTube History Analyzer ([GitHub](https://github.com/positron48/youtube-history-analyzer)): Takeout/watch-history analytics and reports.
 - youtube-playlists-tracker-app ([GitHub](https://github.com/devbret/youtube-playlists-tracker-app)): playlist collection and viewing-progress tracking, especially for playthrough-style playlists.
 

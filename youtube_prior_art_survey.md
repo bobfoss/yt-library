@@ -155,6 +155,7 @@ would add authentication and layout fragility without removing that wait.
 | [Google APIs Python Client](https://github.com/googleapis/google-api-python-client) | [2026-07-14 commit](https://github.com/googleapis/google-api-python-client/commit/ce8b4331dddfa4026c2c97514720c4fb34650a18) | Official OAuth client for the YouTube Data API and Data Portability API. | Strongest authoritative source. The Data API supports a user's own and private playlists. Data Portability covers private, unlisted, and public playlists, subscriptions, comments, and My Activity exports. |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | [2026-07-23 commit](https://github.com/yt-dlp/yt-dlp/commit/fdcc954df4955267ec1627cbeb347b661a110e7c) | Cookie authentication, private content, and special signed-in feeds including `:ythistory`, `:ytwatchlater`, `:ytfav`, `:ytsubs`, and notifications. | The broadest mature extractor. It is likely useful for playlist membership and video metadata, but the target playlist timestamps and playback progress are not advertised as standard output fields. |
 | [YouTube.js](https://github.com/LuanRT/YouTube.js) | [2026-07-03 commit](https://github.com/LuanRT/YouTube.js/commit/14825d7712e32b208830895701973a5a934a3522) | Cookie authentication, limited TV OAuth, history, library, user playlists, subscriptions, and notifications. | The richest reusable InnerTube implementation found. Its typed models include history continuation and `percent_duration_watched`, making it especially promising for playback-progress research. |
+| [Kaset](https://github.com/sozercan/kaset) | Active 2026 development with documented YouTube request profiles and sanitized parser fixtures. | Authenticated `WEB` InnerTube requests for regular YouTube, including search, subscriptions, Shorts, Watch Later, history, comments, watch metadata, and continuations. | A useful implementation reference alongside yt-dlp and YouTube.js for identifying API capabilities, authentication requirements, current renderer shapes, and fail-closed parsing patterns. Treat it as prior art, not a runtime dependency or behavioral authority. |
 | [ytmusicapi](https://github.com/sigma67/ytmusicapi) | [2026-07-25 commit](https://github.com/sigma67/ytmusicapi/commit/39251815605c2b5078f525e86e2e01c02c952e41) | Cookie or OAuth authentication; library, likes, subscriptions, playlists, uploads, and play history. | Strong for YouTube Music account data. `get_history` advertises a `played` value, but the documented responses do not advertise playlist creation time, item-added time, or watch percentage. |
 | [yt-digest](https://github.com/corca-ai/yt-digest) | [2026-04-21 commit](https://github.com/corca-ai/yt-digest/commit/c10a198f02d220095761427ea5afa4dd9209c9b9) | Uses a logged-in browser to combine YouTube History with Google My Activity. | Highly relevant to the target problem. Its specification advertises date, exact time, duration, progress percentage, and last resume position. |
 | [google_takeout_parser](https://github.com/purarue/google_takeout_parser) | [2026-01-23 commit](https://github.com/purarue/google_takeout_parser/commit/aebb2dcade4b9156c59ea04a4ced6063dc209c82) | Parses and merges Google Takeout data including YouTube and My Activity history, comments, live chat, and likes. | A useful offline import baseline with evolving-format and deduplication handling. Playlist timestamp coverage is not prominently advertised. |
@@ -166,6 +167,8 @@ would add authentication and layout fragility without removing that wait.
 - YouTube.js: [authentication](https://ytjs.dev/guide/authentication),
   [Innertube API](https://ytjs.dev/api/classes/Innertube), and
   [`ThumbnailOverlayResumePlayback`](https://ytjs.dev/api/youtubei.js/namespaces/YTNodes/classes/ThumbnailOverlayResumePlayback).
+- Kaset: [YouTube mode architecture](https://github.com/sozercan/kaset/blob/main/docs/youtube.md)
+  and [overall API architecture](https://github.com/sozercan/kaset/blob/main/docs/architecture.md).
 - ytmusicapi: [library reference](https://ytmusicapi.readthedocs.io/en/stable/reference/library.html)
   and [playlist reference](https://ytmusicapi.readthedocs.io/en/stable/reference/playlists.html).
 - yt-digest: [data-collection specification](https://github.com/corca-ai/yt-digest/blob/main/docs/spec.md).
@@ -209,9 +212,12 @@ The next phase should investigate these sources in roughly this order:
    overlays, timestamps, and authenticated completeness guards.
 3. **yt-dlp** — inventory the actual output fields for its signed-in special feeds
    and compare them with direct playlist extraction.
-4. **ytmusicapi** — determine the precision and semantics of the `played` value
+4. **Kaset** — compare its authenticated `WEB` request profiles, parser fixtures,
+   continuation handling, and capability boundaries with YT Library's direct web
+   extraction before implementing unfamiliar YouTube surfaces.
+5. **ytmusicapi** — determine the precision and semantics of the `played` value
    and whether undocumented playlist timestamps are present in raw responses.
-5. **google_takeout_parser** — map supported Takeout formats, timestamp
+6. **google_takeout_parser** — map supported Takeout formats, timestamp
    preservation, deduplication behavior, and playlist coverage.
 
 Across all candidates, the drill-down should explicitly test:
