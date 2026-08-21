@@ -1341,7 +1341,7 @@ class PluginManager:
         return payload
 
     def statuses(self) -> list[dict[str, Any]]:
-        return [self._record_status(self._records[key]) for key in sorted(self._records)]
+        return [self._record_status(record) for record in self._records.values()]
 
     def _worker_process_statuses(
         self,

@@ -544,8 +544,8 @@ test('shared card builders keep host slots in the same structural order for ever
     /title-row[\s\S]*data-entity-card-slot="actions"/,
   );
   assert.ok(
-    videoCardSource.indexOf('data-entity-card-slot="primaryMetadata"')
-      < videoCardSource.indexOf('options.compactAvailabilityHtml'),
+    videoCardSource.indexOf('options.compactAvailabilityHtml')
+      < videoCardSource.indexOf('data-entity-card-slot="primaryMetadata"'),
   );
   assert.ok(
     videoCardSource.indexOf('uploaderCategoryHtml(options.uploaderCategory)')

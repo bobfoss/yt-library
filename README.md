@@ -303,6 +303,9 @@ YT Library discovers separately installed plugins through the
 enabled in local configuration. Plugin API routes are namespaced below
 `/api/plugins/{plugin_id}/`; discovery, startup, status, and request failures are
 contained so the base application remains usable.
+Configured plugin order is preserved when browser assets are loaded and when
+multiple plugins contribute decorators to the same card slot. Native YT Library
+decorators remain ahead of that ordered plugin contribution slot.
 
 Plugin API version 2 adds optional worker processes without giving plugins
 direct access to the YT Library database. A plugin declares validated process

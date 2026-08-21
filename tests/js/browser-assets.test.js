@@ -1016,11 +1016,11 @@ test('video cards decorate Shorts, Live, and Movies while filters also decorate 
   assert.match(typeDecoratorSource, /return '';/);
   assert.match(
     videoCardSource,
-    /data-entity-card-slot="primaryMetadata"><\/span>\$\{options\.typeDecoratorHtml \|\| ''\}/,
+    /\$\{options\.typeDecoratorHtml \|\| ''\}[\s\S]{0,120}data-entity-card-slot="primaryMetadata"/,
   );
   assert.match(
     namedFunctionSource(indexSource, 'videoDetailCardFor'),
-    /data-entity-card-slot="primaryMetadata"><\/span>[\s\S]{0,100}videoTypeDecoratorHtml\(video\)/,
+    /videoTypeDecoratorHtml\(video\)[\s\S]{0,100}data-entity-card-slot="primaryMetadata"/,
   );
   assert.match(
     namedFunctionSource(indexSource, 'playlistVideoCardFor'),

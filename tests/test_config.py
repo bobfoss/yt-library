@@ -143,7 +143,7 @@ class ConfigTests(unittest.TestCase):
                 [],
             )
 
-    def test_plugin_configuration_is_explicit_and_preserves_plugin_settings(self) -> None:
+    def test_plugin_configuration_preserves_settings_and_order(self) -> None:
         normalized = configured_plugins(
             {
                 "plugins": {
@@ -153,17 +153,20 @@ class ConfigTests(unittest.TestCase):
                     },
                     "bad id": {"enabled": True},
                     "ignored": "invalid",
+                    "llm": {"enabled": False},
                 }
             }
         )
 
+        self.assertEqual(list(normalized), ["subtitles", "llm"])
         self.assertEqual(
             normalized,
             {
                 "subtitles": {
                     "enabled": True,
                     "config": "../YT Subtitles/yt_subtitles.config.json",
-                }
+                },
+                "llm": {"enabled": False},
             },
         )
 

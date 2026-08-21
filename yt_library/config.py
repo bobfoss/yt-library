@@ -361,7 +361,7 @@ def configured_plugins(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
             enabled = str(enabled).strip().lower() in {"1", "true", "yes", "on"}
         settings["enabled"] = enabled
         normalized[plugin_id] = settings
-    return dict(sorted(normalized.items()))
+    return normalized
 
 
 def valid_update_time(value: str) -> bool:

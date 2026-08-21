@@ -435,6 +435,22 @@ class PluginManagerTests(unittest.TestCase):
             ],
         )
 
+    def test_plugin_statuses_preserve_configured_order(self) -> None:
+        manager = PluginManager(
+            {
+                "plugins": {
+                    "subtitles": {"enabled": False},
+                    "llm": {"enabled": False},
+                }
+            },
+            entry_points=[],
+        )
+
+        self.assertEqual(
+            [status["id"] for status in manager.statuses()],
+            ["subtitles", "llm"],
+        )
+
     def test_enabled_plugin_loads_with_versioned_context_and_routes_requests(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

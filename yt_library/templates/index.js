@@ -5415,8 +5415,8 @@ function videoDetailCardFor(video) {
         </div>
         <div class="video-availability-row">
           ${videoAvailabilityHtml(video)}
-          <span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>
           ${videoTypeDecoratorHtml(video)}
+          <span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>
         </div>
         ${movieMetadataHtml(video)}
         ${videoFeatureMetadataHtml(video)}
