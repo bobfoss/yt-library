@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import threading
@@ -485,6 +486,73 @@ class AdminServerTests(unittest.TestCase):
             {"q": ["history"]},
         )
         handler.send_json.assert_called_once_with({"hits": []}, status=200)
+
+    def test_plugin_json_mutations_are_bounded_and_delegated(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.plugin_manager = Mock()
+        handler.plugin_manager.handle_api.return_value = (
+            201,
+            {"conversationId": "chat-1"},
+        )
+        body = json.dumps({"message": "Summarize this video"}).encode("utf-8")
+        handler.headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Length": str(len(body)),
+            "Origin": "http://127.0.0.1:8765",
+            "Host": "127.0.0.1:8765",
+        }
+        handler.rfile = io.BytesIO(body)
+        handler.send_json = Mock()
+
+        handler._handle_plugin_post(
+            urllib.parse.urlparse("/api/plugins/llm/videos/abcdefghijk/chats")
+        )
+
+        handler.plugin_manager.handle_api.assert_called_once_with(
+            "llm",
+            "POST",
+            "videos/abcdefghijk/chats",
+            {},
+            {"message": "Summarize this video"},
+        )
+        handler.send_json.assert_called_once_with(
+            {"conversationId": "chat-1"},
+            status=201,
+        )
+
+    def test_plugin_json_mutations_reject_cross_origin_and_non_objects(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.plugin_manager = Mock()
+        handler.send_json = Mock()
+        body = b"[]"
+        handler.headers = {
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+            "Origin": "https://example.com",
+            "Host": "127.0.0.1:8765",
+        }
+        handler.rfile = io.BytesIO(body)
+
+        handler._handle_plugin_post(
+            urllib.parse.urlparse("/api/plugins/llm/chats")
+        )
+
+        handler.send_json.assert_called_once_with(
+            {"error": "Cross-origin plugin mutations are not allowed"},
+            status=403,
+        )
+        handler.plugin_manager.handle_api.assert_not_called()
+
+        handler.send_json.reset_mock()
+        handler.headers["Origin"] = "http://127.0.0.1:8765"
+        handler.rfile = io.BytesIO(body)
+        handler._handle_plugin_post(
+            urllib.parse.urlparse("/api/plugins/llm/chats")
+        )
+        handler.send_json.assert_called_once_with(
+            {"error": "Plugin JSON body must be an object"},
+            status=400,
+        )
 
     def test_search_applies_generic_plugin_video_filters(self) -> None:
         handler = object.__new__(server.LibraryHandler)

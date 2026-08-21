@@ -42,6 +42,7 @@ from .config import (
     configured_page_size,
     configured_partial_completion_min_percent,
     configured_playlist_card_layout,
+    configured_proxy,
     configured_proxy_address,
     configured_request_delay_range,
     configured_search_filter_tree_expanded,
@@ -117,7 +118,7 @@ from .core import (
 )
 from .network import ProxyUnavailableError, validated_socks5_proxy_url
 from .request_pacing import configure_request_pacing
-from .plugins import PluginManager
+from .plugins import PLUGIN_JSON_REQUEST_BYTES, PluginManager
 from .queries import (
     channel_detail_data,
     channel_list_data,
@@ -1702,6 +1703,54 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "kind": kind, "status": status})
             return
 
+    def _handle_plugin_post(self, parsed: urllib.parse.ParseResult) -> None:
+        suffix = parsed.path[len("/api/plugins/") :]
+        plugin_id, separator, plugin_path = suffix.partition("/")
+        if not separator or not plugin_id or not plugin_path:
+            self.send_json({"error": "Plugin route is required"}, status=404)
+            return
+        if not self.headers.get("Content-Type", "").lower().startswith(
+            "application/json"
+        ):
+            self.send_json(
+                {"error": "Plugin mutations require application/json"},
+                status=415,
+            )
+            return
+        origin = self.headers.get("Origin", "")
+        if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host", ""):
+            self.send_json(
+                {"error": "Cross-origin plugin mutations are not allowed"},
+                status=403,
+            )
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            content_length = 0
+        if content_length < 1 or content_length > PLUGIN_JSON_REQUEST_BYTES:
+            self.send_json(
+                {"error": "Plugin JSON body must be from 1 byte to 64 KiB"},
+                status=413,
+            )
+            return
+        try:
+            body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.send_json({"error": "Plugin JSON body is invalid"}, status=400)
+            return
+        if not isinstance(body, dict):
+            self.send_json({"error": "Plugin JSON body must be an object"}, status=400)
+            return
+        status, payload = self.plugin_manager.handle_api(
+            plugin_id,
+            "POST",
+            urllib.parse.unquote(plugin_path),
+            urllib.parse.parse_qs(parsed.query),
+            body,
+        )
+        self.send_json(payload, status=status)
+
     def _handle_preference_post(
         self,
         parsed: urllib.parse.ParseResult,
@@ -2540,6 +2589,9 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if parsed.path.startswith("/api/plugins/"):
+            self._handle_plugin_post(parsed)
+            return
         if parsed.path.startswith("/api/admin/cookies/"):
             self._handle_cookie_post(parsed)
             return
@@ -2821,7 +2873,12 @@ def serve(args: argparse.Namespace) -> None:
         LIVE_HISTORY_WORKER,
         PLACEHOLDER_RECOVERY_WORKER,
     )
-    plugin_manager = PluginManager(args.config_data, db_path=db_path)
+    plugin_manager = PluginManager(
+        args.config_data,
+        db_path=db_path,
+        youtube_cookie_file=Path(args.cookies),
+        proxy_url=configured_proxy(args.config_data),
+    )
     config_store = ConfigStore(args.config_data)
     service_started_at = utc_now()
     restart_requested = threading.Event()

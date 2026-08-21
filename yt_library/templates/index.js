@@ -235,6 +235,7 @@ window.YTLibraryBrowserPlugins = Object.freeze({
   features: Object.freeze({
     channelVideoTabs: 1,
     entityCards: 1,
+    pluginJsonMutations: 1,
     searchResultPresentations: 1,
   }),
   register: registerBrowserPlugin,
@@ -4395,6 +4396,25 @@ function browserPluginHost(pluginId) {
       const response = await fetch(
         browserPluginRequestUrl(pluginId, path, params),
         { cache: 'no-store' },
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || `Plugin request failed (${response.status})`);
+      }
+      return payload;
+    },
+    postJson: async (path, body = {}, params = {}) => {
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw new TypeError('Plugin JSON body must be an object');
+      }
+      const response = await fetch(
+        browserPluginRequestUrl(pluginId, path, params),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          cache: 'no-store',
+        },
       );
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {

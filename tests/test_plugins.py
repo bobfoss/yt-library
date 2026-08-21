@@ -5,9 +5,11 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
+from http.cookiejar import CookieJar
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from yt_library import core
 from yt_library.config import load_config
@@ -17,6 +19,7 @@ from yt_library.plugins import (
     PluginManager,
     PluginPlanningContext,
     PluginTaskWorker,
+    PluginYoutubeSession,
     PluginWorkerRuntime,
     PluginWorkerStopped,
 )
@@ -95,6 +98,11 @@ class FakePlugin:
     def handle_api(self, method, path, query):
         if method == "GET" and path == "search":
             return 200, {"query": (query.get("q") or [""])[0]}
+        return None
+
+    def handle_api_request(self, method, path, query, body):
+        if method == "POST" and path == "messages":
+            return 201, {"body": body, "query": query}
         return None
 
     def handle_browser_asset(self, path):
@@ -449,6 +457,13 @@ class PluginManagerTests(unittest.TestCase):
             response_status, payload = manager.handle_api(
                 "subtitles", "GET", "search", {"q": ["history"]}
             )
+            mutation_status, mutation_payload = manager.handle_api(
+                "subtitles",
+                "POST",
+                "messages",
+                {"draft": ["1"]},
+                {"message": "hello"},
+            )
 
             self.assertEqual(entry_point.load_count, 1)
             self.assertEqual(status["state"], "ready")
@@ -477,6 +492,11 @@ class PluginManagerTests(unittest.TestCase):
             )
             self.assertEqual(response_status, 200)
             self.assertEqual(payload, {"query": "history"})
+            self.assertEqual(mutation_status, 201)
+            self.assertEqual(
+                mutation_payload,
+                {"body": {"message": "hello"}, "query": {"draft": ["1"]}},
+            )
             asset_status, content_type, body = manager.handle_browser_asset(
                 "subtitles", "browser.js"
             )
@@ -583,6 +603,65 @@ class PluginManagerTests(unittest.TestCase):
                 parent_channel_ids,
                 frozenset({"UCparent", "UCchild", "UCgrandchild"}),
             )
+
+    def test_youtube_session_factory_is_exposed_through_plugin_context(self) -> None:
+        plugin = FakePlugin()
+        expected_session = object()
+        factory = Mock(return_value=expected_session)
+        PluginManager(
+            {"plugins": {"subtitles": {"enabled": True}}},
+            entry_points=[FakeEntryPoint(lambda: plugin)],
+            youtube_session_factory=factory,
+        )
+
+        session = plugin.context.youtube_video_session("abcdefghijk")
+
+        self.assertIs(session, expected_session)
+        factory.assert_called_once_with("abcdefghijk")
+
+    def test_youtube_session_injects_host_context_and_bounds_transport(self) -> None:
+        opener = Mock(spec=urllib.request.OpenerDirector)
+        jar = CookieJar()
+        session = PluginYoutubeSession(
+            video_id="abcdefghijk",
+            initial_data={"welcome": {"continuation": "opaque"}},
+            opener=opener,
+            cookie_jar=jar,
+            api_key="public-key",
+            client_version="1.2.3",
+            client_context={"client": {"clientName": "WEB"}},
+            referer="https://www.youtube.com/watch?v=abcdefghijk",
+        )
+
+        with patch(
+            "yt_library.core.request_youtubei_json",
+            return_value={"actions": []},
+        ) as request:
+            response = session.request_json(
+                "get_panel",
+                {"continuation": "opaque"},
+                click_tracking_params="tracking",
+            )
+
+        self.assertEqual(response, {"actions": []})
+        sent = request.call_args.args[3]
+        self.assertEqual(sent["continuation"], "opaque")
+        self.assertEqual(sent["context"]["client"]["clientName"], "WEB")
+        self.assertEqual(
+            sent["context"]["clickTracking"]["clickTrackingParams"],
+            "tracking",
+        )
+        self.assertNotIn("Authorization", sent)
+        copied = session.initial_data
+        copied["welcome"] = {}
+        self.assertEqual(
+            session.initial_data,
+            {"welcome": {"continuation": "opaque"}},
+        )
+        with self.assertRaisesRegex(ValueError, "host-owned"):
+            session.request_json("get_panel", {"context": {}})
+        with self.assertRaisesRegex(ValueError, "Unsupported"):
+            session.request_json("browse", {})
 
     def test_video_projection_contract_rejects_invalid_plugin_rows(self) -> None:
         class InvalidProjectionPlugin(FakePlugin):

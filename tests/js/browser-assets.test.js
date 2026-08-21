@@ -1036,6 +1036,20 @@ test('video cards decorate Shorts, Live, and Movies while filters also decorate 
   assert.match(indexHtml, /\.youtube-video-icon \{[\s\S]{0,100}width: 19px;[\s\S]{0,80}height: 13px;[\s\S]{0,80}flex-basis: 19px;/);
 });
 
+test('browser plugin host exposes feature-gated JSON mutations', () => {
+  const indexSource = source('index.js');
+  const registrationStart = indexSource.indexOf('window.YTLibraryBrowserPlugins');
+  const registrationEnd = indexSource.indexOf('function browserPluginStatus');
+  const registration = indexSource.slice(registrationStart, registrationEnd);
+  const hostSource = namedFunctionSource(indexSource, 'browserPluginHost');
+
+  assert.match(registration, /pluginJsonMutations: 1/);
+  assert.match(hostSource, /postJson: async \(path, body = \{\}, params = \{\}\)/);
+  assert.match(hostSource, /method: 'POST'/);
+  assert.match(hostSource, /'Content-Type': 'application\/json'/);
+  assert.match(hostSource, /body: JSON\.stringify\(body\)/);
+});
+
 test('video cards render observed feature metadata outside compact layouts', () => {
   const indexSource = source('index.js');
   const videoCardSource = source('video-card.js');

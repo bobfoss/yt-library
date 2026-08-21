@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import (
     Callable,
     Collection,
@@ -10,18 +11,20 @@ from collections.abc import (
 )
 from contextlib import nullcontext
 from functools import partial
+import http.cookiejar
 import importlib.metadata as importlib_metadata
 import json
 import re
 import sqlite3
 import threading
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 from .database import connect
-from .network import ytdlp_proxy_options
+from .network import socks5_proxy_handlers, ytdlp_proxy_options
 from .request_pacing import request_paced_youtube_dl
 from .time_utils import utc_now
 from .worker_runs import WorkerRunRecorder
@@ -29,7 +32,12 @@ from .worker_runs import WorkerRunRecorder
 
 PLUGIN_API_VERSION = 2
 PLUGIN_HOST_FEATURES = frozenset(
-    {"library_video_lookup_v1", "youtube_ytdlp_v1"}
+    {
+        "library_video_lookup_v1",
+        "plugin_json_mutations_v1",
+        "youtube_watch_session_v1",
+        "youtube_ytdlp_v1",
+    }
 )
 PLUGIN_ENTRY_POINT_GROUP = "yt_library.plugins"
 PLUGIN_ID = re.compile(r"^[a-z][a-z0-9_-]*$")
@@ -43,6 +51,10 @@ PLUGIN_ADMIN_METRIC_FORMATS = {"integer", "bytes"}
 PLUGIN_ADMIN_METRIC_LIMIT = 12
 PLUGIN_TASK_LIMIT = 250_000
 PLUGIN_TASK_PAYLOAD_BYTES = 64 * 1024
+PLUGIN_JSON_REQUEST_BYTES = 64 * 1024
+PLUGIN_YOUTUBE_PAGE_BYTES = 16 * 1024 * 1024
+PLUGIN_YOUTUBE_REQUEST_BYTES = 64 * 1024
+PLUGIN_YOUTUBE_RESPONSE_BYTES = 16 * 1024 * 1024
 PLUGIN_NAVIGATION_GROUP_LIMIT = 10_000
 PLUGIN_NAVIGATION_MEMBERSHIP_LIMIT = 250_000
 PLUGIN_PLAYLIST_GROUP_KEY_PREFIX = "plugin:"
@@ -70,6 +82,139 @@ PLUGIN_YTDLP_HOST_OPTIONS = frozenset(
 )
 
 
+class PluginYoutubeSession:
+    """Authenticated, video-bound YouTube transport without exposed cookies."""
+
+    def __init__(
+        self,
+        *,
+        video_id: str,
+        initial_data: dict[str, Any],
+        opener: urllib.request.OpenerDirector,
+        cookie_jar: http.cookiejar.CookieJar,
+        api_key: str,
+        client_version: str,
+        client_context: dict[str, Any],
+        referer: str,
+    ) -> None:
+        self.video_id = video_id
+        self._initial_data = copy.deepcopy(initial_data)
+        self._opener = opener
+        self._cookie_jar = cookie_jar
+        self._api_key = api_key
+        self._client_version = client_version
+        self._client_context = copy.deepcopy(client_context)
+        self._referer = referer
+        self._request_lock = threading.Lock()
+
+    @property
+    def initial_data(self) -> dict[str, Any]:
+        return copy.deepcopy(self._initial_data)
+
+    def request_json(
+        self,
+        api_path: str,
+        payload: Mapping[str, Any],
+        *,
+        click_tracking_params: str = "",
+    ) -> dict[str, Any]:
+        """Submit one bounded request with host-owned authentication and no retries."""
+
+        if api_path != "get_panel":
+            raise ValueError(f"Unsupported plugin YouTube API path: {api_path}")
+        if not isinstance(payload, Mapping):
+            raise TypeError("Plugin YouTube request payload must be an object")
+        if "context" in payload:
+            raise ValueError("Plugin YouTube request context is host-owned")
+        tracking = str(click_tracking_params or "")
+        if len(tracking.encode("utf-8")) > 16 * 1024:
+            raise ValueError("Plugin YouTube click tracking exceeds 16 KiB")
+        context = copy.deepcopy(self._client_context)
+        if tracking:
+            context["clickTracking"] = {"clickTrackingParams": tracking}
+        request_payload = {"context": context, **dict(payload)}
+        encoded = json.dumps(request_payload, ensure_ascii=False).encode("utf-8")
+        if len(encoded) > PLUGIN_YOUTUBE_REQUEST_BYTES:
+            raise ValueError("Plugin YouTube request exceeds 64 KiB")
+
+        from .core import request_youtubei_json
+
+        with self._request_lock:
+            response = request_youtubei_json(
+                self._opener,
+                self._cookie_jar,
+                self._api_key,
+                request_payload,
+                self._referer,
+                self._client_version,
+                api_path=api_path,
+            )
+        response_size = len(
+            json.dumps(response, ensure_ascii=False).encode("utf-8")
+        )
+        if response_size > PLUGIN_YOUTUBE_RESPONSE_BYTES:
+            raise RuntimeError("Plugin YouTube response exceeds 16 MiB")
+        return response
+
+
+def _open_plugin_youtube_session(
+    cookie_file: Path,
+    proxy_url: str,
+    video_id: str,
+) -> PluginYoutubeSession:
+    normalized_video_id = str(video_id or "").strip()
+    if not YOUTUBE_VIDEO_ID.fullmatch(normalized_video_id):
+        raise ValueError(
+            f"Expected an 11-character YouTube video ID: {normalized_video_id}"
+        )
+    if not cookie_file.exists():
+        raise RuntimeError("Configured YouTube cookie file is unavailable")
+
+    from .core import (
+        extract_json_assignment,
+        extract_ytcfg,
+        load_cookie_jar,
+        request_bytes,
+        youtube_authentication_error,
+        youtube_page_is_authenticated,
+        youtube_web_context,
+    )
+
+    jar = load_cookie_jar(cookie_file)
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+        *socks5_proxy_handlers(proxy_url),
+    )
+    referer = "https://www.youtube.com/watch?v=" + normalized_video_id
+    page_body, _content_type = request_bytes(opener, referer, timeout=30)
+    if len(page_body) > PLUGIN_YOUTUBE_PAGE_BYTES:
+        raise RuntimeError("YouTube watch page exceeds 16 MiB")
+    page = page_body.decode("utf-8", "replace")
+    if not youtube_page_is_authenticated(page):
+        raise youtube_authentication_error(page, "plugin video session")
+    config = extract_ytcfg(page)
+    api_key = str(config.get("INNERTUBE_API_KEY") or "")
+    client_version = str(config.get("INNERTUBE_CLIENT_VERSION") or "")
+    initial_data = extract_json_assignment(page, "ytInitialData")
+    if not api_key or not client_version or not initial_data:
+        raise RuntimeError("YouTube watch page is missing required session data")
+    initial_data_size = len(
+        json.dumps(initial_data, ensure_ascii=False).encode("utf-8")
+    )
+    if initial_data_size > PLUGIN_YOUTUBE_RESPONSE_BYTES:
+        raise RuntimeError("YouTube initial data exceeds 16 MiB")
+    return PluginYoutubeSession(
+        video_id=normalized_video_id,
+        initial_data=initial_data,
+        opener=opener,
+        cookie_jar=jar,
+        api_key=api_key,
+        client_version=client_version,
+        client_context=youtube_web_context(config),
+        referer=referer,
+    )
+
+
 @dataclass(frozen=True)
 class PluginContext:
     """Narrow host services made available to an activated plugin."""
@@ -82,6 +227,7 @@ class PluginContext:
     _library_video_lookup: (
         Callable[[tuple[str, ...]], Iterable[dict[str, Any]]] | None
     ) = None
+    _youtube_session_factory: Callable[[str], PluginYoutubeSession] | None = None
 
     def resolve_path(self, value: str | Path) -> Path:
         path = Path(value)
@@ -112,6 +258,13 @@ class PluginContext:
         if not normalized or not callable(self._library_video_lookup):
             return ()
         return tuple(self._library_video_lookup(normalized))
+
+    def youtube_video_session(self, video_id: str) -> PluginYoutubeSession:
+        """Open a bounded authenticated session for one YouTube watch page."""
+
+        if not callable(self._youtube_session_factory):
+            raise RuntimeError("YouTube video sessions are unavailable")
+        return self._youtube_session_factory(video_id)
 
 
 def _library_videos_by_id(
@@ -1019,9 +1172,19 @@ class PluginManager:
         *,
         db_path: Path | None = None,
         entry_points: Iterable[Any] | None = None,
+        youtube_cookie_file: Path | None = None,
+        proxy_url: str = "",
+        youtube_session_factory: Callable[[str], PluginYoutubeSession] | None = None,
     ) -> None:
         self._config = config
         self._db_path = Path(db_path) if db_path is not None else None
+        self._youtube_session_factory = youtube_session_factory
+        if self._youtube_session_factory is None and youtube_cookie_file is not None:
+            self._youtube_session_factory = partial(
+                _open_plugin_youtube_session,
+                Path(youtube_cookie_file),
+                str(proxy_url or ""),
+            )
         self._records: dict[str, _PluginRecord] = {}
         configured = config.get("plugins")
         if not isinstance(configured, dict):
@@ -1124,6 +1287,7 @@ class PluginManager:
                     if self._db_path is not None
                     else None
                 ),
+                _youtube_session_factory=self._youtube_session_factory,
             )
             instance.start(context)
             record.instance = instance
@@ -1484,6 +1648,7 @@ class PluginManager:
         method: str,
         path: str,
         query: dict[str, list[str]],
+        body: dict[str, Any] | None = None,
     ) -> tuple[int, Any]:
         record = self._records.get(plugin_id)
         if record is None:
@@ -1494,7 +1659,15 @@ class PluginManager:
                 "plugin": self._record_status(record),
             }
         try:
-            response = record.instance.handle_api(method, path, query)
+            if body is None:
+                response = record.instance.handle_api(method, path, query)
+            else:
+                handler = getattr(record.instance, "handle_api_request", None)
+                if not callable(handler):
+                    return 405, {
+                        "error": f"Plugin method is not supported: {plugin_id}/{path}"
+                    }
+                response = handler(method, path, query, body)
             if response is None:
                 return 404, {"error": f"Unknown plugin route: {plugin_id}/{path}"}
             status, payload = response

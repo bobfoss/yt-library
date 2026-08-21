@@ -141,8 +141,9 @@ reference plugins in the same development slice as either change.
 Additive Python services are feature-negotiated. A plugin may declare
 `required_host_features`; the host refuses to activate it when any named
 feature is unavailable. The current feature set includes
-`library_video_lookup_v1` and `youtube_ytdlp_v1`. Activated plugins receive the
-immutable set as `context.host_features`.
+`library_video_lookup_v1`, `plugin_json_mutations_v1`,
+`youtube_watch_session_v1`, and `youtube_ytdlp_v1`. Activated plugins receive
+the immutable set as `context.host_features`.
 
 This section is the handoff for designing and implementing another plugin. The
 authoritative implementation is `yt_library/plugins.py`; HTTP integration lives
@@ -403,23 +404,35 @@ The current generic HTTP surfaces are:
 
 - `GET /api/plugins` returns all configured plugin status records.
 - `GET /api/plugins/{plugin_id}/{path}` delegates to `handle_api`.
+- `POST /api/plugins/{plugin_id}/{path}` delegates a bounded JSON object to
+  `handle_api_request`.
 - `GET /plugins/{plugin_id}/assets/{path}` delegates declared browser assets.
 - `/api/bootstrap` and `/api/admin/status` include the same generic plugin
   status records.
 
-Custom plugin API routes are GET-only in the current contract. `path` has no
-leading slash. Query parameters come from `urllib.parse.parse_qs`, so every
-present parameter maps to a list of strings. The plugin should parse, validate,
-and bound every parameter, explicitly cap pagination and batch IDs, and return
-400 for invalid input. Query values are URL-decoded, but plugins should
-explicitly use `urllib.parse.unquote` for dynamic route segments. Returning
-`None` produces 404. Plugin exceptions are contained and returned as 503
-without taking down the request handler.
+`path` has no leading slash. Query parameters come from
+`urllib.parse.parse_qs`, so every present parameter maps to a list of strings.
+The plugin should parse, validate, and bound every parameter, explicitly cap
+pagination and batch IDs, and return 400 for invalid input. Query values are
+URL-decoded, but plugins should explicitly use `urllib.parse.unquote` for
+dynamic route segments. Returning `None` produces 404. Plugin exceptions are
+contained and returned as 503 without taking down the request handler.
 
-Do not use browser API routes for arbitrary mutation. Long-running or mutating
-operations belong in the host-owned worker queue. If a future plugin requires a
-different mutation primitive, extend the host with a generic reviewed contract
-instead of adding a plugin name to `server.py`.
+JSON mutations require the `plugin_json_mutations_v1` host feature. They are
+same-origin `application/json` POST requests with an object body capped at 64
+KiB. The browser host exposes them as `postJson(path, body, params)`. Plugins
+implement `handle_api_request(method, path, query, body)` without changing the
+legacy GET-only `handle_api` signature. Use this synchronous primitive only for
+bounded local mutations such as saving preferences or short interactive
+messages. Long-running operations remain in the host-owned worker queue.
+
+The `youtube_watch_session_v1` feature adds
+`context.youtube_video_session(video_id)`. The returned video-bound session
+provides parsed watch-page initial data and an allowlisted `request_json`
+transport for `get_panel`. YTL owns cookies, proxy policy, authentication
+headers, request pacing, body limits, and serialization. Plugins must keep
+server-issued commands in memory, must not log or persist them, and must not
+automatically retry a command whose delivery is uncertain.
 
 ### Browser assets and browser API version 2
 
@@ -503,6 +516,8 @@ The browser `host` object passed to extension functions contains:
 - `supports(capability)`: readiness and capability check.
 - `requestJson(path, params)`: namespaced GET request to the plugin. Scalar or
   array values become query parameters; non-2xx responses throw.
+- `postJson(path, body, params)`: feature-gated namespaced JSON POST request.
+  The body must be an object; non-2xx responses throw.
 - `libraryVideos(videoIds)`: bounded lookup of canonical YTL video summaries;
   the host batches requests in groups of 100 and returns a `Map` keyed by ID.
 - `libraryChannels(channelIds)`: bounded lookup of canonical YTL channel rows;
