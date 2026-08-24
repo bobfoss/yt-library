@@ -242,6 +242,11 @@ The left-navigation library lists are named omni-search presets. Search returns 
 
 ## Planned Features
 
+- Add an Advanced Search mode that builds on the existing server-owned search
+  model while keeping simple search as the default. Support composable entity,
+  field, date-range, exact-phrase, exclusion, and facet criteria through the UI
+  without requiring users to edit URL parameters directly; keep the resulting
+  state shareable in the URL and compatible with future saved searches.
 - Persist scheduled Update last-run and failure status across service restarts; the daily schedule and next-run status are available now.
 - Make parent-child relationships in hierarchical filters more visually obvious, including enabled, disabled, selected, and partially selected states.
 - Begin publishing versioned releases through GitHub with a defined versioning and release process.
