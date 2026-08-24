@@ -6,15 +6,37 @@ import http.cookiejar
 import os
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
 MAX_COOKIE_FILE_BYTES = 2 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class CookieServiceConfig:
+    config_key: str
+    label: str
+    expected_domains: tuple[str, ...]
+
+
 COOKIE_CONFIG = {
-    "youtube": ("youtube_cookies", ("youtube.com", "googlevideo.com")),
-    "google": ("my_activity_cookies", ("google.com",)),
-    "archivarix": ("archivarix_cookies", ("archivarix.net",)),
+    "youtube": CookieServiceConfig(
+        "youtube_cookies",
+        "YouTube",
+        ("youtube.com",),
+    ),
+    "google": CookieServiceConfig(
+        "my_activity_cookies",
+        "Google My Activity",
+        ("myactivity.google.com",),
+    ),
+    "archivarix": CookieServiceConfig(
+        "archivarix_cookies",
+        "Archivarix",
+        ("archivarix.net",),
+    ),
 }
 
 
@@ -37,6 +59,34 @@ def _matches_expected_domain(domain: str, expected_domains: tuple[str, ...]) -> 
         normalized == expected.casefold()
         or normalized.endswith("." + expected.casefold())
         for expected in expected_domains
+    )
+
+
+def _detected_cookie_services(path: Path, expected_kind: str) -> list[str]:
+    jar = _load_cookie_jar(path)
+    return [
+        service.label
+        for kind, service in COOKIE_CONFIG.items()
+        if kind != expected_kind
+        and any(
+            _matches_expected_domain(cookie.domain, service.expected_domains)
+            for cookie in jar
+        )
+    ]
+
+
+def _cookie_service_error(path: Path, expected_kind: str) -> str:
+    expected = COOKIE_CONFIG[expected_kind]
+    detected = _detected_cookie_services(path, expected_kind)
+    if detected:
+        return (
+            f"Cookie export appears to belong to {detected[0]}, "
+            f"not {expected.label}."
+        )
+    expected_hosts = " or ".join(expected.expected_domains)
+    return (
+        f"Cookie export does not look like it belongs to {expected.label}. "
+        f"Expected at least one cookie scoped to {expected_hosts}."
     )
 
 
@@ -99,6 +149,8 @@ def replace_cookie_file(
     path: Path,
     value: bytes,
     expected_domains: tuple[str, ...],
+    *,
+    expected_kind: str = "",
 ) -> dict[str, Any]:
     if not value:
         raise CookieFileError("Cookie file content is empty.")
@@ -129,7 +181,12 @@ def replace_cookie_file(
                 handle.write("\n")
         status = cookie_file_status(temp_path, expected_domains)
         if not status["valid"]:
-            raise CookieFileError(status["message"])
+            message = (
+                _cookie_service_error(temp_path, expected_kind)
+                if expected_kind in COOKIE_CONFIG
+                else status["message"]
+            )
+            raise CookieFileError(message)
         os.replace(temp_path, path)
     finally:
         if temp_path.exists():

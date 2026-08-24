@@ -1016,10 +1016,10 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 {
                     "cookies": {
                         kind: cookie_file_status(
-                            config_path(self.config_data, config_key),
-                            expected_domains,
+                            config_path(self.config_data, service.config_key),
+                            service.expected_domains,
                         )
-                        for kind, (config_key, expected_domains) in COOKIE_CONFIG.items()
+                        for kind, service in COOKIE_CONFIG.items()
                     }
                 }
             )
@@ -1704,12 +1704,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"error": "Cookie content must be from 1 byte to 2 MiB"}, status=413)
                 return
             content = self.rfile.read(content_length)
-            config_key, expected_domains = cookie_config
             try:
                 status = replace_cookie_file(
-                    config_path(self.config_data, config_key),
+                    config_path(self.config_data, cookie_config.config_key),
                     content,
-                    expected_domains,
+                    cookie_config.expected_domains,
+                    expected_kind=kind,
                 )
             except CookieFileError as exc:
                 self.send_json({"error": str(exc)}, status=400)
