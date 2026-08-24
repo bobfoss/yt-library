@@ -156,7 +156,10 @@ test('admin header shows a locally ticking clock calibrated from server time', (
   assert.match(adminSource, /function currentServerTime\(nowMonotonic = performance\.now\(\)\)/);
   assert.match(adminSource, /syncServerClock\(data\.service\?\.serverTime, requestStartedAt\);/);
   assert.doesNotMatch(adminSource, /function updateCurrentDateTime\(now = new Date\(\)\)/);
-  assert.match(adminSource, /setInterval\(updateCurrentDateTime, 1000\);/);
+  assert.match(
+    adminSource,
+    /setInterval\(\(\) => \{\s*if \(adminPageIsActive\(\)\) updateCurrentDateTime\(\);\s*\}, 1000\);/,
+  );
   assert.match(adminSource, /window\.addEventListener\('ytlibrarytimezonechange', \(\) => updateCurrentDateTime\(\)\);/);
 });
 
@@ -466,17 +469,38 @@ test('admin runtime polling owns queue controls and recovers on tab return', () 
   const adminHtml = source('admin.html');
 
   assert.match(adminSource, /const runtimeStatusPollMs = 5000;/);
-  assert.match(adminSource, /const statusRequestTimeoutMs = 5000;/);
+  assert.match(adminSource, /const runtimeStatusRequestTimeoutMs = 5000;/);
+  assert.match(adminSource, /const statusRequestTimeoutMs = 15000;/);
   assert.match(adminSource, /function renderRuntimeStatus\(data\)/);
-  assert.match(adminSource, /fetchStatusJson\('\/api\/admin\/runtime\/status'\)/);
+  assert.match(adminSource, /'\/api\/admin\/runtime\/status'/);
   assert.match(adminSource, /fields\.startWorkerQueue\.disabled = queueWorkerActive;/);
   assert.match(adminSource, /fields\.stopWorkerQueue\.disabled = !queueWorkerRunning \|\| queueWorkerStopping;/);
   assert.match(adminSource, /function renderServiceUnavailable\(error\)/);
   assert.match(adminSource, /fields\.serviceStatus\.textContent = 'Unavailable';/);
   assert.match(adminSource, /document\.addEventListener\('visibilitychange'/);
-  assert.match(adminSource, /document\.visibilityState !== 'visible'/);
+  assert.match(adminSource, /function suspendAdminPage\(\)/);
+  assert.match(adminSource, /function resumeAdminPage\(\)/);
+  assert.match(adminSource, /disconnectAdminEventStreams\(\);/);
+  assert.match(adminSource, /state\.controller\?\.abort\(\);/);
+  assert.match(adminSource, /window\.addEventListener\('pagehide', suspendAdminPage\)/);
+  assert.match(adminSource, /window\.addEventListener\('pageshow', resumeAdminPage\)/);
+  assert.match(adminSource, /document\.addEventListener\('freeze', suspendAdminPage\)/);
+  assert.match(adminSource, /document\.addEventListener\('resume', resumeAdminPage\)/);
   assert.match(adminHtml, /id="startWorkerQueue" type="button" disabled/);
   assert.match(adminHtml, /id="stopWorkerQueue" type="button" disabled/);
+});
+
+test('admin bounds unattended live logs and rebuilds streams after wake', () => {
+  const adminSource = source('admin.js');
+
+  assert.match(adminSource, /const maxLiveLogRows = 500;/);
+  assert.match(adminSource, /function trimLiveLogRows\(\)/);
+  assert.match(adminSource, /logState\.rows\.splice\(maxLiveLogRows\)/);
+  assert.match(adminSource, /queueEventStream\?\.close\(\);/);
+  assert.match(adminSource, /logEventStream\?\.close\(\);/);
+  assert.match(adminSource, /if \(queueEventStream \|\| !adminPageIsActive\(\)\) return;/);
+  assert.match(adminSource, /if \(logEventStream \|\| !adminPageIsActive\(\)\) return;/);
+  assert.match(adminSource, /if \(!adminPageIsActive\(\)\) return;/);
 });
 
 test('admin status polling renders the Archivarix UTC reset countdown', () => {

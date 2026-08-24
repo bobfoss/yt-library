@@ -54,6 +54,12 @@ class DatabaseModuleTests(unittest.TestCase):
                     "WHERE type='table' AND name='entity_note_fts'"
                 ).fetchone()
                 foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+                indexes = {
+                    row["name"]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'"
+                    )
+                }
             finally:
                 conn.close()
 
@@ -84,7 +90,54 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertIsNotNone(tags_table)
         self.assertIsNotNone(note_fts_table)
         self.assertIn("note", video_columns)
+        self.assertIn("idx_plugin_worker_log_created", indexes)
+        self.assertIn("idx_plugin_worker_log_level", indexes)
         self.assertEqual(foreign_keys, 1)
+
+    def test_database_module_migrates_worker_log_indexes_from_version_30(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    for index_name in (
+                        "idx_metadata_worker_log_created",
+                        "idx_metadata_worker_log_level",
+                        "idx_plugin_worker_log_created",
+                        "idx_plugin_worker_log_level",
+                        "idx_plugin_worker_log_plugin_level",
+                    ):
+                        conn.execute(f"DROP INDEX {index_name}")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 31")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                indexes = {
+                    row["name"]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'"
+                    )
+                }
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertTrue(
+            {
+                "idx_metadata_worker_log_created",
+                "idx_metadata_worker_log_level",
+                "idx_plugin_worker_log_created",
+                "idx_plugin_worker_log_level",
+                "idx_plugin_worker_log_plugin_level",
+            }.issubset(indexes)
+        )
 
     def test_database_module_migrates_annotations_from_version_29(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

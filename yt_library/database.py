@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -1223,6 +1223,37 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (30, utc_now()),
+        )
+    if current_version < 31:
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_created
+              ON metadata_worker_log(created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_level
+              ON metadata_worker_log(level);
+            CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_created
+              ON playlist_scan_worker_log(created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_level
+              ON playlist_scan_worker_log(level);
+            CREATE INDEX IF NOT EXISTS idx_live_history_worker_log_created
+              ON live_history_worker_log(created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_live_history_worker_log_level
+              ON live_history_worker_log(level);
+            CREATE INDEX IF NOT EXISTS idx_placeholder_recovery_worker_log_created
+              ON placeholder_recovery_worker_log(created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_placeholder_recovery_worker_log_level
+              ON placeholder_recovery_worker_log(level);
+            CREATE INDEX IF NOT EXISTS idx_plugin_worker_log_created
+              ON plugin_worker_log(created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_plugin_worker_log_level
+              ON plugin_worker_log(level);
+            CREATE INDEX IF NOT EXISTS idx_plugin_worker_log_plugin_level
+              ON plugin_worker_log(plugin_id, level);
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (31, utc_now()),
         )
 
 

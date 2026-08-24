@@ -8088,6 +8088,47 @@ def _worker_log_display_level(name: str, level: str) -> str:
     return value
 
 
+def _worker_log_severity(level: str) -> str:
+    tokens = str(level or "").strip().lower().split()
+    if "error" in tokens:
+        return "error"
+    if "warn" in tokens or "warning" in tokens:
+        return "warn"
+    if "debug" in tokens:
+        return "debug"
+    return "info"
+
+
+def _worker_log_count(
+    conn: sqlite3.Connection,
+    name: str,
+    table: str,
+    source: str,
+    severity: str,
+) -> int:
+    params: list[str] = []
+    where_sql = ""
+    if name == "pluginWorkerLogs" and source.startswith("plugin:"):
+        where_sql = " WHERE plugin_id = ?"
+        params.append(source.removeprefix("plugin:"))
+
+    rows = conn.execute(
+        f"SELECT level, COUNT(*) AS count FROM {table}{where_sql} GROUP BY level",
+        params,
+    ).fetchall()
+    severity_ranks = {"info": 0, "warn": 1, "error": 2, "debug": 3}
+    selected_rank = severity_ranks.get(severity, severity_ranks["debug"])
+    total = 0
+    for row in rows:
+        level = str(row["level"] or "")
+        if name == "metadataLogs" and source and _worker_log_source(name, level) != source:
+            continue
+        if severity_ranks[_worker_log_severity(level)] > selected_rank:
+            continue
+        total += int(row["count"] or 0)
+    return total
+
+
 def _worker_log_filter_sql(
     name: str,
     source: str,
@@ -8199,12 +8240,12 @@ def worker_log_page(
         if filter_result is None:
             continue
         where_sql, params = filter_result
-        total += int(
-            conn.execute(
-                f"SELECT COUNT(*) AS count FROM {table} l WHERE {where_sql}",
-                params,
-            ).fetchone()["count"]
-            or 0
+        total += _worker_log_count(
+            conn,
+            name,
+            table,
+            source_filter,
+            severity_filter,
         )
         rows = conn.execute(
             worker_log_select(name)

@@ -596,9 +596,31 @@ CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_run ON metadata_worker_log(ru
 CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_run ON playlist_scan_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_live_history_worker_log_run ON live_history_worker_log(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_placeholder_recovery_worker_log_run ON placeholder_recovery_worker_log(run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_created
+  ON metadata_worker_log(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_metadata_worker_log_level
+  ON metadata_worker_log(level);
+CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_created
+  ON playlist_scan_worker_log(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_playlist_scan_worker_log_level
+  ON playlist_scan_worker_log(level);
+CREATE INDEX IF NOT EXISTS idx_live_history_worker_log_created
+  ON live_history_worker_log(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_live_history_worker_log_level
+  ON live_history_worker_log(level);
+CREATE INDEX IF NOT EXISTS idx_placeholder_recovery_worker_log_created
+  ON placeholder_recovery_worker_log(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_placeholder_recovery_worker_log_level
+  ON placeholder_recovery_worker_log(level);
 CREATE INDEX IF NOT EXISTS idx_plugin_worker_runs_process
   ON plugin_worker_runs(plugin_id, worker_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_plugin_worker_runs_subject
   ON plugin_worker_runs(plugin_id, worker_id, subject_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_plugin_worker_log_process
   ON plugin_worker_log(plugin_id, worker_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_plugin_worker_log_created
+  ON plugin_worker_log(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_plugin_worker_log_level
+  ON plugin_worker_log(level);
+CREATE INDEX IF NOT EXISTS idx_plugin_worker_log_plugin_level
+  ON plugin_worker_log(plugin_id, level);

@@ -129,7 +129,9 @@ const runtimeStatusPollMs = 5000;
 const statusPollMs = 30000;
 const cookieFileStatuses = {};
 let currentCookieAuthStatuses = {};
-const statusRequestTimeoutMs = 5000;
+const runtimeStatusRequestTimeoutMs = 5000;
+const statusRequestTimeoutMs = 15000;
+const logRequestTimeoutMs = 20000;
 const serverClockSyncIntervalMs = 60 * 60 * 1000;
 let dispatchSettingsSaving = false;
 let dispatchSettingsDirty = false;
@@ -163,8 +165,10 @@ const logState = {
   ready: false,
   generation: 0,
   loadingGeneration: null,
+  requestController: null,
 };
 const logPageSize = 100;
+const maxLiveLogRows = 500;
 
 function escapeHtml(value) {
   return String(value || '').replace(/[&<>"']/g, ch => ({
@@ -536,11 +540,18 @@ function addLogRows(rows) {
   return added;
 }
 
+function trimLiveLogRows() {
+  if (fields.logPanel.scrollTop > 40 || logState.rows.length <= maxLiveLogRows) return;
+  const removed = logState.rows.splice(maxLiveLogRows);
+  for (const log of removed) logState.keys.delete(logKey(log));
+}
+
 function applyLogs(data) {
   const oldHeight = fields.logPanel.scrollHeight;
   const preserveScroll = fields.logPanel.scrollTop > 0;
   const added = addLogRows(normalizedLogs(data).filter(logMatchesSelection));
   logState.total += added;
+  trimLiveLogRows();
   renderLogs();
   if (preserveScroll && added) {
     requestAnimationFrame(() => {
@@ -550,6 +561,8 @@ function applyLogs(data) {
 }
 
 function resetLogState() {
+  logState.requestController?.abort();
+  logState.requestController = null;
   logState.generation += 1;
   logState.rows = [];
   logState.keys.clear();
@@ -572,17 +585,24 @@ async function loadLogPage(reset = false) {
     source: selectedLogSource(),
     level: selectedLogLevel(),
   });
+  const controller = new AbortController();
+  logState.requestController = controller;
   try {
-    const response = await fetch(`/api/admin/logs?${params}`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || 'Unable to load logs');
+    const payload = await fetchStatusJson(
+      `/api/admin/logs?${params}`,
+      controller,
+      logRequestTimeoutMs,
+    );
     if (generation !== logState.generation) return;
     addLogRows(payload.rows || []);
     logState.total = Math.max(Number(payload.total || 0), logState.rows.length);
     logState.ready = true;
     renderLogs();
+  } catch (error) {
+    if (error?.name !== 'AbortError') throw error;
   } finally {
     if (logState.loadingGeneration === generation) logState.loadingGeneration = null;
+    if (logState.requestController === controller) logState.requestController = null;
   }
 }
 
@@ -1129,24 +1149,40 @@ function renderServiceUnavailable(error) {
   fields.stopWorkerQueue.classList.remove('danger');
 }
 
-let runtimeStatusRequest = null;
-let statusRequest = null;
+const runtimeStatusRequest = { controller: null, generation: 0, promise: null };
+const statusRequest = { controller: null, generation: 0, promise: null };
 
 let operationPollTimer = null;
 let operationPollsRemaining = 0;
+let queueEventStream = null;
+let logEventStream = null;
+let adminPageSuspended = document.visibilityState === 'hidden';
+let resumeRefreshPromise = null;
+
+function adminPageIsActive() {
+  return !adminPageSuspended && document.visibilityState !== 'hidden';
+}
+
+function cancelStatusRequest(state) {
+  state.generation += 1;
+  state.controller?.abort();
+  state.controller = null;
+  state.promise = null;
+}
 
 function scheduleActionPolls() {
   operationPollsRemaining = Math.max(operationPollsRemaining, 10);
-  if (operationPollTimer !== null) return;
+  if (operationPollTimer !== null || !adminPageIsActive()) return;
   const poll = () => {
     operationPollTimer = null;
+    if (!adminPageIsActive()) return;
     Promise.allSettled([
       loadRuntimeStatus({ force: true }),
       loadStatus({ force: true }),
     ])
       .finally(() => {
         operationPollsRemaining -= 1;
-        if (operationPollsRemaining > 0) {
+        if (operationPollsRemaining > 0 && adminPageIsActive()) {
           operationPollTimer = window.setTimeout(poll, 1000);
         }
       });
@@ -1154,9 +1190,12 @@ function scheduleActionPolls() {
   operationPollTimer = window.setTimeout(poll, 500);
 }
 
-async function fetchStatusJson(endpoint) {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), statusRequestTimeoutMs);
+async function fetchStatusJson(endpoint, controller, timeoutMs) {
+  let timedOut = false;
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
     const response = await fetch(endpoint, {
       cache: 'no-store',
@@ -1165,58 +1204,67 @@ async function fetchStatusJson(endpoint) {
     if (!response.ok) throw new Error(`Status failed: ${response.status}`);
     return await response.json();
   } catch (error) {
-    throw error?.name === 'AbortError'
-      ? new Error('Status request timed out')
-      : error;
+    if (error?.name === 'AbortError' && timedOut) {
+      throw new Error('Request timed out');
+    }
+    throw error;
   } finally {
     window.clearTimeout(timeout);
   }
 }
 
-async function loadRuntimeStatus(options = {}) {
+function runStatusRequest(state, endpoint, timeoutMs, apply, options = {}) {
   const force = Boolean(options.force);
-  if (runtimeStatusRequest && !force) return runtimeStatusRequest;
-  if (runtimeStatusRequest && force) {
-    try {
-      await runtimeStatusRequest;
-    } catch (error) {
-      // A forced action refresh should still get its own current read.
-    }
-  }
-  const requestStartedAt = performance.now();
-  runtimeStatusRequest = fetchStatusJson('/api/admin/runtime/status')
+  if (state.promise && !force) return state.promise;
+  if (force) cancelStatusRequest(state);
+
+  const generation = state.generation + 1;
+  const controller = new AbortController();
+  state.generation = generation;
+  state.controller = controller;
+  const promise = fetchStatusJson(endpoint, controller, timeoutMs)
     .then(data => {
-      syncServerClock(data.service?.serverTime, requestStartedAt);
-      renderRuntimeStatus(data);
+      if (state.generation === generation) apply(data);
+      return data;
     })
     .catch(error => {
-      renderServiceUnavailable(error);
+      if (error?.name === 'AbortError' || state.generation !== generation) return null;
       throw error;
+    })
+    .finally(() => {
+      if (state.generation !== generation) return;
+      state.controller = null;
+      state.promise = null;
     });
-  try {
-    await runtimeStatusRequest;
-  } finally {
-    runtimeStatusRequest = null;
-  }
+  state.promise = promise;
+  return promise;
 }
 
-async function loadStatus(options = {}) {
-  const force = Boolean(options.force);
-  if (statusRequest && !force) return statusRequest;
-  if (statusRequest && force) {
-    try {
-      await statusRequest;
-    } catch (error) {
-      // A forced action refresh should still get its own current read.
-    }
-  }
-  statusRequest = fetchStatusJson('/api/admin/status?queue_limit=0&include_logs=0')
-    .then(render);
-  try {
-    await statusRequest;
-  } finally {
-    statusRequest = null;
-  }
+function loadRuntimeStatus(options = {}) {
+  const requestStartedAt = performance.now();
+  return runStatusRequest(
+    runtimeStatusRequest,
+    '/api/admin/runtime/status',
+    runtimeStatusRequestTimeoutMs,
+    data => {
+      syncServerClock(data.service?.serverTime, requestStartedAt);
+      renderRuntimeStatus(data);
+    },
+    options,
+  ).catch(error => {
+    renderServiceUnavailable(error);
+    throw error;
+  });
+}
+
+function loadStatus(options = {}) {
+  return runStatusRequest(
+    statusRequest,
+    '/api/admin/status?queue_limit=0&include_logs=0',
+    statusRequestTimeoutMs,
+    render,
+    options,
+  );
 }
 
 async function post(path, params = {}) {
@@ -1829,7 +1877,9 @@ for (const button of document.querySelectorAll('.save-cookie')) {
 }
 
 function connectQueueEvents() {
+  if (queueEventStream || !adminPageIsActive()) return;
   const stream = new EventSource('/api/admin/queue/events');
+  queueEventStream = stream;
   stream.addEventListener('queue_reset', event => {
     const payload = JSON.parse(event.data);
     resetQueueState(payload.total || 0);
@@ -1849,15 +1899,19 @@ function connectQueueEvents() {
     applyQueueDelta(JSON.parse(event.data));
   });
   stream.onerror = () => {
+    if (queueEventStream !== stream) return;
     fields.commonQueueCount.title = 'Queue event stream reconnecting';
   };
   stream.onopen = () => {
+    if (queueEventStream !== stream) return;
     fields.commonQueueCount.title = '';
   };
 }
 
 function connectLogEvents() {
+  if (logEventStream || !adminPageIsActive()) return;
   const stream = new EventSource('/api/admin/logs/events');
+  logEventStream = stream;
   stream.addEventListener('log_reset', () => {
     loadLogPage(true).catch(error => { fields.logs.title = error.message; });
   });
@@ -1865,33 +1919,74 @@ function connectLogEvents() {
     applyLogs(JSON.parse(event.data));
   });
   stream.onerror = () => {
+    if (logEventStream !== stream) return;
     fields.logs.title = 'Log event stream reconnecting';
   };
   stream.onopen = () => {
+    if (logEventStream !== stream) return;
     fields.logs.title = '';
   };
 }
 
-connectQueueEvents();
-connectLogEvents();
+function disconnectAdminEventStreams() {
+  queueEventStream?.close();
+  logEventStream?.close();
+  queueEventStream = null;
+  logEventStream = null;
+}
+
+function suspendAdminPage() {
+  adminPageSuspended = true;
+  disconnectAdminEventStreams();
+  cancelStatusRequest(runtimeStatusRequest);
+  cancelStatusRequest(statusRequest);
+  logState.requestController?.abort();
+  if (operationPollTimer !== null) {
+    window.clearTimeout(operationPollTimer);
+    operationPollTimer = null;
+  }
+}
+
+function resumeAdminPage() {
+  if (document.visibilityState === 'hidden') return;
+  adminPageSuspended = false;
+  connectQueueEvents();
+  connectLogEvents();
+  if (operationPollsRemaining > 0) scheduleActionPolls();
+  if (resumeRefreshPromise) return;
+  resumeRefreshPromise = Promise.allSettled([
+    loadRuntimeStatus({ force: true }),
+    loadStatus({ force: true }),
+  ]).finally(() => { resumeRefreshPromise = null; });
+}
+
 updateCurrentDateTime();
 fields.workerQueuePanel.addEventListener('scroll', scheduleQueueRender, { passive: true });
 fields.logPanel.addEventListener('scroll', loadMoreLogsIfNeeded, { passive: true });
 new ResizeObserver(scheduleQueueRender).observe(fields.workerQueuePanel);
-loadRuntimeStatus({ force: true }).catch(() => {});
-loadStatus({ force: true }).catch(() => {});
 loadCookieStatuses()
   .catch(error => { fields.googleCookieStatus.textContent = error.message; });
 setInterval(() => {
+  if (!adminPageIsActive()) return;
   loadRuntimeStatus().catch(() => {});
 }, runtimeStatusPollMs);
 setInterval(() => {
+  if (!adminPageIsActive()) return;
   loadStatus().catch(() => {});
 }, statusPollMs);
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return;
-  loadRuntimeStatus({ force: true }).catch(() => {});
-  loadStatus({ force: true }).catch(() => {});
+  if (document.visibilityState === 'hidden') suspendAdminPage();
+  else resumeAdminPage();
 });
-setInterval(updateQueueTimingDisplay, 1000);
-setInterval(updateCurrentDateTime, 1000);
+window.addEventListener('pagehide', suspendAdminPage);
+window.addEventListener('pageshow', resumeAdminPage);
+document.addEventListener('freeze', suspendAdminPage);
+document.addEventListener('resume', resumeAdminPage);
+window.addEventListener('online', resumeAdminPage);
+resumeAdminPage();
+setInterval(() => {
+  if (adminPageIsActive()) updateQueueTimingDisplay();
+}, 1000);
+setInterval(() => {
+  if (adminPageIsActive()) updateCurrentDateTime();
+}, 1000);
