@@ -503,9 +503,14 @@ def _video_candidate_query(
     active_search_fields = {"titles", "descriptions"} if search_fields is None else set(search_fields)
     search_clauses = []
     if "titles" in active_search_fields:
+        title_haystack = (
+            "COALESCE(v.title, '') || ' ' || COALESCE(v.video_id, '')"
+            if scope == "channel"
+            else "COALESCE(v.title, '') || ' ' || COALESCE(ch.title, '') || ' ' || "
+            "COALESCE(v.video_id, '')"
+        )
         search_clauses.append(
-            "lower(COALESCE(v.title, '') || ' ' || COALESCE(ch.title, '') || ' ' || "
-            "COALESCE(v.video_id, '')) LIKE :query ESCAPE '\\'"
+            f"lower({title_haystack}) LIKE :query ESCAPE '\\'"
         )
     if "descriptions" in active_search_fields:
         search_clauses.append("lower(COALESCE(v.description, '')) LIKE :query ESCAPE '\\'")
@@ -533,14 +538,24 @@ def _video_candidate_query(
         """
     elif channel_id:
         params["channel_id"] = channel_id
-        history_scope_clause = """
-          WHERE video_id IN (
-            SELECT pi.video_id
-            FROM playlist_items pi
-            JOIN videos candidate_video ON candidate_video.video_id = pi.video_id
-            WHERE candidate_video.channel_id = :channel_id
-          )
-        """
+        history_scope_clause = (
+            """
+              WHERE video_id IN (
+                SELECT video_id
+                FROM videos
+                WHERE channel_id = :channel_id
+              )
+            """
+            if scope == "channel"
+            else """
+              WHERE video_id IN (
+                SELECT pi.video_id
+                FROM playlist_items pi
+                JOIN videos candidate_video ON candidate_video.video_id = pi.video_id
+                WHERE candidate_video.channel_id = :channel_id
+              )
+            """
+        )
     history_cte = f"""
       WITH history_stats AS (
         SELECT video_id,
@@ -552,7 +567,12 @@ def _video_candidate_query(
         GROUP BY video_id
       )
     """
-    if scope == "liked":
+    if scope in {"liked", "channel"}:
+        if scope == "liked":
+            source_clause = "upper(v.reaction) = 'LIKE'"
+        else:
+            params["channel_id"] = channel_id
+            source_clause = "v.channel_id = :channel_id" if channel_id else "0"
         sql = history_cte + f"""
           SELECT v.video_id, v.title, v.title AS metadata_title, v.upload_date AS metadata_upload_date,
                  v.updated_at, '' AS playlist_id, '' AS playlist_title, 0 AS position,
@@ -568,7 +588,7 @@ def _video_candidate_query(
           FROM videos v
           LEFT JOIN channels ch ON ch.channel_id = v.channel_id
           LEFT JOIN history_stats hs ON hs.video_id = v.video_id
-          WHERE upper(v.reaction) = 'LIKE'
+          WHERE {source_clause}
           {query_clause}
         """
     else:

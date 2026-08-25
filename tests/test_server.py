@@ -950,6 +950,42 @@ class AdminServerTests(unittest.TestCase):
         connection.close.assert_called_once_with()
         handler.send_json.assert_called_once_with(payload)
 
+    def test_video_route_preserves_channel_search_scope_and_fields(self) -> None:
+        handler = object.__new__(server.LibraryHandler)
+        handler.db_path = Path("library.sqlite3")
+        handler.plugin_manager = Mock()
+        handler.send_json = Mock()
+        connection = Mock()
+        payload = {"results": [], "total": 0}
+
+        with (
+            patch("yt_library.server.connect", return_value=connection),
+            patch(
+                "yt_library.server.video_collection_data",
+                return_value=payload,
+            ) as collection_data,
+        ):
+            handler._handle_library_get(
+                urllib.parse.urlparse(
+                    "/api/videos?scope=channel&channel_id=UCscoped&q=needle"
+                    "&search_fields=titles,notes&video_type=video"
+                    "&limit=12&offset=24"
+                )
+            )
+
+        kwargs = collection_data.call_args.kwargs
+        self.assertEqual(kwargs["scope"], "channel")
+        self.assertEqual(kwargs["channel_id"], "UCscoped")
+        self.assertEqual(kwargs["query"], "needle")
+        self.assertEqual(kwargs["search_fields"], {"titles", "notes"})
+        self.assertEqual(kwargs["video_type_filters"], {"video"})
+        self.assertIsNone(kwargs["included_video_ids"])
+        self.assertEqual(kwargs["excluded_video_ids"], set())
+        self.assertEqual(kwargs["limit"], 12)
+        self.assertEqual(kwargs["offset"], 24)
+        connection.close.assert_called_once_with()
+        handler.send_json.assert_called_once_with(payload)
+
     def test_get_dispatches_page_admin_and_library_routes(self) -> None:
         handler = object.__new__(server.LibraryHandler)
         handler._handle_page_get = Mock(return_value=False)

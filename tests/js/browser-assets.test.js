@@ -245,10 +245,10 @@ test('entity details enter their scoped category context', () => {
   const indexSource = source('index.js');
 
   assert.match(indexSource, /function selectedEntityCategory\(\)[\s\S]{0,320}'__video__:'[\s\S]*?'videos'[\s\S]*?'__clip__:'[\s\S]*?'clips'[\s\S]*?'__playlist__:'[\s\S]*?'playlists'[\s\S]*?'__channel__:'[\s\S]*?'channels'/);
-  assert.match(indexSource, /function searchContextKind\(\)[\s\S]{0,180}selected === '__search__' \? activeSearchScope : selectedEntityCategory\(\)/);
-  assert.match(indexSource, /function activeSidebarCategory\(\)[\s\S]{0,160}return selectedEntityCategory\(\)/);
+  assert.match(indexSource, /function searchContextKind\(\)[\s\S]{0,300}selected === '__search__' \? activeSearchScope : selectedEntityCategory\(\)/);
+  assert.match(indexSource, /function activeSidebarCategory\(\)[\s\S]{0,260}return selectedEntityCategory\(\)/);
   assert.match(indexSource, /function activateSearchFromSelection[\s\S]{0,240}const scope = searchContextKind\(\)[\s\S]{0,160}activeSearchScope = scope/);
-  assert.match(indexSource, /search\.placeholder = selected === '__history__'[\s\S]{0,220}selected\.startsWith\('__playlist__:'\)[\s\S]{0,120}placeholders\[contextKind\]/);
+  assert.match(indexSource, /search\.placeholder = selected === '__history__'[\s\S]{0,320}selected\.startsWith\('__playlist__:'\)[\s\S]{0,180}selected\.startsWith\('__channel__:'\)[\s\S]{0,120}placeholders\[contextKind\]/);
   assert.match(indexSource, /async function fetchEntitySearchFilters\(category, entityId\)[\s\S]{0,480}q: entityId[\s\S]{0,220}limit: '1'/);
   assert.match(indexSource, /function hydrateEntitySearchFilters\(category, entityId, generation\)[\s\S]{0,300}fetchEntitySearchFilters\(category, entityId\)[\s\S]{0,180}renderSearchMetaFilters\(payload\)/);
   assert.match(indexSource, /hydrateEntitySearchFilters\('videos', video\.video_id \|\| videoId, generation\)/);
@@ -267,6 +267,21 @@ test('playlist detail reuses the sidebar video search facets', () => {
   assert.match(indexSource, /const distinctVideoCount = Number\([\s\S]{0,180}payload\.distinctTotal/);
   assert.match(indexSource, /setPresetLinkCount\('videos', distinctVideoCount\)/);
   assert.doesNotMatch(indexSource, /function playlistVideoFiltersHtml/);
+});
+
+test('channel detail search stays scoped to channel-owned videos', () => {
+  const indexSource = source('index.js');
+
+  assert.match(indexSource, /let channelDetailSearchActive = false/);
+  assert.match(indexSource, /function searchContextKind\(\)[\s\S]{0,220}channelDetailSearchActive[\s\S]{0,80}'videos'/);
+  assert.match(indexSource, /channelDetailSearchActive = params\.has\('q'\)[\s\S]{0,100}applySearchLocation\('\/videos', params\)/);
+  assert.match(indexSource, /selected\.startsWith\('__channel__:'\)[\s\S]{0,120}'Search channel'/);
+  assert.match(indexSource, /function channelScopedVideoCollectionOptions\(channelId[\s\S]{0,180}scope: 'channel'[\s\S]{0,100}channelId/);
+  assert.match(indexSource, /if \(channelDetailSearchActive\)[\s\S]{0,700}fetchVideoCollection\([\s\S]{0,120}channelScopedVideoCollectionOptions\(channelId\)/);
+  assert.match(indexSource, /setPresetLinkLabel\('videos', channel\.title \|\| channelReference\)/);
+  assert.match(indexSource, /setDocumentTitle\(channel\.title \|\| channelReference\);[\s\S]{0,140}search\.placeholder = channel\.title \? `Search \$\{channel\.title\}` : 'Search channel'/);
+  assert.match(indexSource, /function activeSidebarCategory\(\)[\s\S]{0,180}channelDetailSearchActive[\s\S]{0,80}return 'videos'/);
+  assert.match(indexSource, /if \(selected\.startsWith\('__channel__:'\)\)[\s\S]{0,220}const nextActive = Boolean\(search\.value\.trim\(\)\)[\s\S]{0,220}applySearchPresetState\(activeSearchScope\)[\s\S]{0,100}updateCurrentUrl\(true\)/);
 });
 
 test('foreground loads share the app loading status lifecycle', () => {
@@ -1242,7 +1257,7 @@ test('channel detail paints before inactive tab counts are hydrated', () => {
   );
   const searchStart = indexSource.indexOf("if (selected === '__search__')", channelStart);
   const channelSource = indexSource.slice(channelStart, searchStart);
-  const initialChrome = channelSource.indexOf('viewContext.replaceChildren(\n      channelCard,');
+  const initialChrome = channelSource.indexOf('viewContext.replaceChildren(...channelChrome)');
   const activeHistory = channelSource.indexOf("if (channelDetailTab === 'history')");
   const lazyCounts = channelSource.lastIndexOf('hydrateChannelTabCounts({');
 

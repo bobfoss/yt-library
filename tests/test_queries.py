@@ -2430,6 +2430,48 @@ class NormalizedReadModelTests(unittest.TestCase):
             plan,
         )
 
+    def test_channel_search_scopes_all_owned_videos_without_matching_channel_title(self) -> None:
+        self.add_video("owned-history", "Needle from history", "UC_target")
+        self.add_video("owned-library", "Needle from library", "UC_target")
+        self.add_video("other-channel", "Needle elsewhere", "UC_other")
+        self.conn.execute(
+            "UPDATE channels SET title = 'Needle Channel' WHERE channel_id = 'UC_target'"
+        )
+        self.conn.execute(
+            """
+            INSERT INTO history_events(event_id, video_id, watch_date, time_precision)
+            VALUES ('owned-watch', 'owned-history', '2026-08-02', 'date_only')
+            """
+        )
+        self.conn.commit()
+
+        page = video_collection_data(
+            self.conn,
+            scope="channel",
+            channel_id="UC_target",
+            query="needle from",
+            search_fields={"titles"},
+            sort="title",
+        )
+
+        self.assertEqual(
+            [row["video_id"] for row in page["results"]],
+            ["owned-history", "owned-library"],
+        )
+        self.assertEqual(page["total"], 2)
+        self.assertEqual(page["distinctTotal"], 2)
+        self.assertEqual(page["results"][0]["watch_count"], 1)
+        self.assertEqual(
+            video_collection_data(
+                self.conn,
+                scope="channel",
+                channel_id="UC_target",
+                query="needle channel",
+                search_fields={"titles"},
+            )["results"],
+            [],
+        )
+
     def test_video_and_channel_collections_hydrate_only_requested_page(self) -> None:
         self.add_video("available1", "Alpha", "UC_subscribed")
         self.add_video("unavailable1", "Beta", "UC_other")
@@ -2944,6 +2986,16 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.conn.executemany(
             "INSERT INTO playlist_items(playlist_id, position, video_id) VALUES ('PLfacets', ?, ?)",
             [(1, "facet-alpha"), (2, "facet-beta"), (3, "facet-gamma")],
+        )
+        self.add_video("facet-outside", "Outside")
+        self.conn.execute(
+            "UPDATE videos SET description = 'Contains the needle' WHERE video_id = 'facet-outside'"
+        )
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLoutside', 'Outside')"
+        )
+        self.conn.execute(
+            "INSERT INTO playlist_items(playlist_id, position, video_id) VALUES ('PLoutside', 1, 'facet-outside')"
         )
         self.conn.commit()
 

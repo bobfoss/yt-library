@@ -695,6 +695,7 @@ let historyNavigationDate = '';
 let channelHistoryCounts = new Map();
 let channelTabCountCache = new Map();
 let channelDetailTab = 'playlisted-videos';
+let channelDetailSearchActive = false;
 let historyHeatmapDayFrame = null;
 let renderGeneration = 0;
 let renderedOmniSearchQuery = '';
@@ -1007,6 +1008,15 @@ function localChannelHref(channelId, includePagination = false) {
 }
 
 function channelDetailParams() {
+  if (channelDetailSearchActive) {
+    const params = new URL(searchUrl(), window.location.origin).searchParams;
+    for (const key of ['view', 'group', 'sort', 'page', 'removed', 'duplicates']) {
+      params.delete(key);
+    }
+    if (channelDetailTab !== 'playlisted-videos') params.set('tab', channelDetailTab);
+    if (currentPage > 1) params.set('page', String(currentPage));
+    return params;
+  }
   if (channelDetailTab === 'history') {
     const params = new URLSearchParams();
     params.set('tab', 'history');
@@ -1419,7 +1429,13 @@ function selectedEntityCategory() {
 
 function searchContextKind() {
   if (selected.startsWith('__playlist__:')) return 'videos';
+  if (channelDetailSearchActive && selected.startsWith('__channel__:')) return 'videos';
   return selected === '__search__' ? activeSearchScope : selectedEntityCategory();
+}
+
+function scopedVideoDetailSearchActive() {
+  return selected.startsWith('__playlist__:')
+    || (selected.startsWith('__channel__:') && channelDetailSearchActive);
 }
 
 function selectedSearchResultKinds() {
@@ -1748,6 +1764,8 @@ function selectionFromLocation() {
   if (parts.length === 2 && parts[0] === 'channels') {
     const channelId = decodeURIComponent(parts[1]);
     if (channelId) {
+      channelDetailSearchActive = params.has('q');
+      if (channelDetailSearchActive) applySearchLocation('/videos', params);
       channelDetailTab = channelDetailTabFromParams(params);
       return channelSelection(channelId);
     }
@@ -1778,7 +1796,7 @@ function activateSearchPreset(preset, groupKey = '') {
 }
 
 function activateSearchFromSelection({ resetMetaVisibility = false } = {}) {
-  if (selected === '__search__' || selected.startsWith('__playlist__:')) return false;
+  if (selected === '__search__' || scopedVideoDetailSearchActive()) return false;
   const scope = searchContextKind();
   selected = '__search__';
   activeSearchPreset = '';
@@ -2233,9 +2251,11 @@ function refreshSearchAfterFilterChange(groupName, activatedFromSelection) {
   currentPage = 1;
   syncSearchKindFilter(searchKindForFacet(groupName), false);
   syncBrowserPluginSearchFieldVisibility();
-  if (selected.startsWith('__playlist__:')) {
-    Object.assign(playlistVisibility, searchMetaVisibility.videos);
-    Object.assign(playlistCompletionVisibility, searchMetaVisibility.completion);
+  if (scopedVideoDetailSearchActive()) {
+    if (selected.startsWith('__playlist__:')) {
+      Object.assign(playlistVisibility, searchMetaVisibility.videos);
+      Object.assign(playlistCompletionVisibility, searchMetaVisibility.completion);
+    }
     showSearchMetaProgress(groupName);
     updateCurrentUrl(true);
     void render();
@@ -4088,7 +4108,11 @@ function syncSearchFiltersForSelection() {
     : (
       selected.startsWith('__playlist__:')
         ? 'Search this playlist'
-        : (placeholders[contextKind] || 'Search everything')
+        : (
+          selected.startsWith('__channel__:')
+            ? 'Search channel'
+            : (placeholders[contextKind] || 'Search everything')
+        )
     );
   if (!historySelected && renderedSearchFilterContext !== contextKind) {
     renderSearchMetaFilters();
@@ -5014,6 +5038,49 @@ async function fetchChannelPlaylists(channelReference, page = currentPage) {
   return fetchViewData(path);
 }
 
+function renderScopedVideoSearchFacets(payload) {
+  const distinctVideoCount = Number(
+    payload.distinctTotal
+    ?? Object.values(payload.counts || {}).reduce((sum, value) => sum + Number(value || 0), 0),
+  );
+  renderSearchMetaFilters({
+    metaCounts: {
+      videos: {
+        ...(payload.counts || {}),
+        ...(payload.noteCounts || {}),
+        total: distinctVideoCount,
+      },
+      videoPlugins: payload.metaCounts?.videoPlugins || {},
+    },
+    videoTypeCounts: payload.videoTypeCounts || null,
+    broadcastStatusCounts: payload.broadcastStatusCounts || null,
+    reactionCounts: payload.reactionCounts || null,
+    completionCounts: payload.completionCounts || null,
+    uploaderCategoryCounts: payload.uploaderCategoryCounts || null,
+  });
+  setPresetLinkCount('videos', distinctVideoCount);
+  return distinctVideoCount;
+}
+
+function channelScopedVideoCollectionOptions(channelId, page = currentPage) {
+  return {
+    scope: 'channel',
+    channelId,
+    query: search.value.trim(),
+    visibility: searchMetaVisibility.videos,
+    videoTypes: searchMetaVisibility.videoType,
+    broadcastStatuses: searchMetaVisibility.broadcastStatus,
+    completion: searchMetaVisibility.completion,
+    reactions: searchMetaVisibility.reactions,
+    uploaderCategories: searchMetaVisibility.uploaderCategory,
+    notes: searchMetaVisibility.videoNotes,
+    useSearchFacets: true,
+    partialMinimumPercent: partialCompletionMinimumPercent,
+    sort: 'newest_added',
+    page,
+  };
+}
+
 function groupLinkFor(group, preset, membershipMap, childMap) {
   const link = document.createElement('a');
   link.className = 'group group-tree-action';
@@ -5261,6 +5328,12 @@ function setPresetLinkCount(preset, count) {
   if (countNode) countNode.textContent = filterCountText(count);
 }
 
+function setPresetLinkLabel(preset, label) {
+  const link = groupsEl.querySelector(`.group[data-preset="${preset}"]`);
+  const labelNode = link?.querySelector('span:not(.count)');
+  if (labelNode) labelNode.textContent = label;
+}
+
 function searchFilterSlot(kind, className = 'search-filter-slot') {
   const slot = document.createElement('div');
   slot.className = className;
@@ -5337,6 +5410,7 @@ function searchNavigationHref() {
 
 function activeSidebarCategory() {
   if (selected === '__search__' && !activeSearchPreset) return activeSearchScope;
+  if (channelDetailSearchActive && selected.startsWith('__channel__:')) return 'videos';
   return selectedEntityCategory();
 }
 
@@ -5799,7 +5873,7 @@ async function renderCurrentView() {
   viewTop.classList.toggle('history-top', selected === '__history__');
   viewTop.classList.toggle(
     'video-collection-top',
-    selected.startsWith('__playlist__:'),
+    scopedVideoDetailSearchActive(),
   );
   stopSearchProgress();
   empty.textContent = 'No playlists match.';
@@ -5949,8 +6023,11 @@ async function renderCurrentView() {
     const activePluginVideoTab = pluginVideoTabs.find(
       tab => tab.key === channelDetailTab,
     ) || null;
-    hydrateEntitySearchFilters('channels', channelId, generation);
+    if (!channelDetailSearchActive) {
+      hydrateEntitySearchFilters('channels', channelId, generation);
+    }
     setDocumentTitle(channel.title || channelReference);
+    search.placeholder = channel.title ? `Search ${channel.title}` : 'Search channel';
     let playlistedVideoCount = cachedChannelTabCount(channelId, 'playlisted-videos');
     let playlistCount = cachedChannelTabCount(channelId, 'playlists');
     let historyCount = cachedChannelTabCount(channelId, 'history');
@@ -5963,20 +6040,67 @@ async function renderCurrentView() {
     const channelEntry = entityCardEntry('channel', channel, channelCard);
     const channelAnnotationEditor = annotationEditorFor('channel', channel);
     viewContext.hidden = false;
-    viewContext.replaceChildren(
-      channelCard,
-      channelAnnotationEditor,
-      channelTabsFor(
+    const channelChrome = [channelCard, channelAnnotationEditor];
+    if (!channelDetailSearchActive) {
+      channelChrome.push(channelTabsFor(
         channelDetailTab,
         playlistedVideoCount,
         playlistCount,
         historyCount,
         pluginVideoTabs,
         pluginVideoTabCounts,
-      ),
-      ...(currentHeatmap ? [currentHeatmap] : []),
-    );
-    if (channelDetailTab === 'history') {
+      ));
+      if (currentHeatmap) channelChrome.push(currentHeatmap);
+    }
+    viewContext.replaceChildren(...channelChrome);
+    if (channelDetailSearchActive) {
+      const layoutContext = 'channel-playlisted-videos';
+      meta.textContent = '';
+      grid.replaceChildren();
+      empty.hidden = true;
+      let payload;
+      try {
+        payload = await fetchVideoCollection(
+          channelScopedVideoCollectionOptions(channelId),
+        );
+      } catch (error) {
+        if (generation !== renderGeneration) return;
+        stopSearchFilterProgress();
+        hidePager();
+        empty.hidden = false;
+        empty.textContent = error instanceof Error ? error.message : String(error);
+        return;
+      }
+      if (generation !== renderGeneration) return;
+      stopSearchFilterProgress();
+      const rows = payload.results || [];
+      renderScopedVideoSearchFacets(payload);
+      setPresetLinkLabel('videos', channel.title || channelReference);
+      const pageInfo = remotePayloadPageInfo(payload, rows.length);
+      meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
+      renderPager(pageInfo);
+      applyCardLayout(layoutContext);
+      const cards = rows.map(video => searchVideoCardFor(video));
+      const decoration = decorateEntityCardBatch(
+        [
+          channelEntry,
+          ...rows.map((video, index) => entityCardEntry('video', video, cards[index])),
+        ],
+        'channel-search',
+        cardLayoutFor(layoutContext),
+        generation,
+      );
+      viewContext.replaceChildren(channelCard, channelAnnotationEditor);
+      grid.replaceChildren(...cards);
+      await decoration;
+      if (generation !== renderGeneration) return;
+      empty.hidden = rows.length !== 0;
+      empty.textContent = 'No videos match this channel.';
+      scheduleAdjacentPagePrefetch(
+        pageInfo,
+        page => fetchVideoCollection(channelScopedVideoCollectionOptions(channelId, page)),
+      );
+    } else if (channelDetailTab === 'history') {
       const layoutContext = 'channel-history';
       meta.textContent = '';
       grid.replaceChildren();
@@ -6170,12 +6294,14 @@ async function renderCurrentView() {
         fetchVideoCollection({ channelId, sort: 'title', page })
       ));
     }
-    hydrateChannelTabCounts({
-      channel,
-      channelReference,
-      pluginTabs: pluginVideoTabs,
-      generation,
-    });
+    if (!channelDetailSearchActive) {
+      hydrateChannelTabCounts({
+        channel,
+        channelReference,
+        pluginTabs: pluginVideoTabs,
+        generation,
+      });
+    }
     return;
   }
   if (selected === '__search__') {
@@ -6325,26 +6451,7 @@ async function renderCurrentView() {
     viewContext.hidden = false;
     viewContext.replaceChildren(annotationEditorFor('playlist', playlist));
     const rows = payload.results || [];
-    const distinctVideoCount = Number(
-      payload.distinctTotal
-      ?? Object.values(payload.counts || {}).reduce((sum, value) => sum + Number(value || 0), 0),
-    );
-    renderSearchMetaFilters({
-      metaCounts: {
-        videos: {
-          ...(payload.counts || {}),
-          ...(payload.noteCounts || {}),
-          total: distinctVideoCount,
-        },
-        videoPlugins: payload.metaCounts?.videoPlugins || {},
-      },
-      videoTypeCounts: payload.videoTypeCounts || null,
-      broadcastStatusCounts: payload.broadcastStatusCounts || null,
-      reactionCounts: payload.reactionCounts || null,
-      completionCounts: payload.completionCounts || null,
-      uploaderCategoryCounts: payload.uploaderCategoryCounts || null,
-    });
-    setPresetLinkCount('videos', distinctVideoCount);
+    renderScopedVideoSearchFacets(payload);
     const playlistCount = playlistVideoCountLabel(playlist);
     const playlistHeadingMeta = [
       playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : '',
@@ -6869,6 +6976,21 @@ search.addEventListener('input', () => {
   if (selected.startsWith('__playlist__:')) {
     updateCurrentUrl(true);
     if (searchInputTimer !== null) clearTimeout(searchInputTimer);
+    searchInputTimer = setTimeout(() => {
+      searchInputTimer = null;
+      void render();
+    }, 250);
+    return;
+  }
+  if (selected.startsWith('__channel__:')) {
+    const nextActive = Boolean(search.value.trim());
+    if (channelDetailSearchActive !== nextActive) {
+      channelDetailSearchActive = nextActive;
+      activeSearchScope = nextActive ? 'videos' : 'channels';
+      applySearchPresetState(activeSearchScope);
+      renderGroups();
+    }
+    updateCurrentUrl(true);
     searchInputTimer = setTimeout(() => {
       searchInputTimer = null;
       void render();
@@ -7456,7 +7578,7 @@ function bindSearchField(input) {
       void render();
       return;
     }
-    if (selected.startsWith('__playlist__:')) {
+    if (scopedVideoDetailSearchActive()) {
       currentPage = 1;
       updateCurrentUrl(true);
       void render();
@@ -7470,7 +7592,10 @@ function bindSearchField(input) {
 for (const input of searchFields) bindSearchField(input);
 function handleBrowserLocationChange() {
   selected = selectionFromLocation();
-  if (!selected.startsWith('__channel__:')) channelDetailTab = 'playlisted-videos';
+  if (!selected.startsWith('__channel__:')) {
+    channelDetailTab = 'playlisted-videos';
+    channelDetailSearchActive = false;
+  }
   if (selected.startsWith('__playlist__:')) resetPlaylistVisibilityFor(selected.slice('__playlist__:'.length));
   renderGroups();
   void render();

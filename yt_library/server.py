@@ -309,6 +309,22 @@ def video_plugin_query_data(
     }
 
 
+def video_plugin_collection_filters(plugin_data: Mapping[str, Any]) -> dict[str, Any]:
+    included_sets = plugin_data["video_id_filters"]
+    return {
+        "included_video_ids": (
+            set.intersection(*(set(values) for values in included_sets))
+            if included_sets
+            else None
+        ),
+        "excluded_video_ids": set().union(
+            *plugin_data["video_id_exclusion_filters"]
+        ),
+        "video_facet_memberships": plugin_data["video_facet_memberships"],
+        "video_search_match_ids": plugin_data["video_search_match_ids"],
+    }
+
+
 def clip_plugin_query_data(
     plugin_manager: PluginManager,
     params: dict[str, list[str]],
@@ -1293,28 +1309,12 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                             status=503,
                         )
                         return
-                    included_sets = plugin_data["video_id_filters"]
-                    included_video_ids = (
-                        set.intersection(*(set(values) for values in included_sets))
-                        if included_sets
-                        else None
-                    )
-                    excluded_video_ids = set().union(
-                        *plugin_data["video_id_exclusion_filters"]
-                    )
                     data = video_collection_data(
                         conn,
                         playlist_id=playlist_id,
                         query=query,
                         search_fields=query_set_param(params, "search_fields"),
-                        included_video_ids=included_video_ids,
-                        excluded_video_ids=excluded_video_ids,
-                        video_facet_memberships=plugin_data[
-                            "video_facet_memberships"
-                        ],
-                        video_search_match_ids=plugin_data[
-                            "video_search_match_ids"
-                        ],
+                        **video_plugin_collection_filters(plugin_data),
                         **video_collection_filter_args(params),
                         sort=(params.get("sort") or ["playlist_order"])[0],
                         limit=limit,
@@ -1331,18 +1331,33 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/videos":
             params = urllib.parse.parse_qs(parsed.query)
+            query = (params.get("q") or [""])[0]
             try:
                 limit = max(1, min(500, int((params.get("limit") or ["100"])[0] or 100)))
                 offset = max(0, int((params.get("offset") or ["0"])[0] or 0))
             except ValueError:
                 limit, offset = 100, 0
+            try:
+                plugin_data = video_plugin_query_data(
+                    self.plugin_manager,
+                    params,
+                    query,
+                )
+            except (LookupError, RuntimeError, TypeError, ValueError) as exc:
+                self.send_json(
+                    {"error": "Video filter unavailable", "message": str(exc)},
+                    status=503,
+                )
+                return
             conn = connect(self.db_path)
             try:
                 data = video_collection_data(
                     conn,
                     scope=(params.get("scope") or ["playlist"])[0],
                     channel_id=(params.get("channel_id") or [""])[0],
-                    query=(params.get("q") or [""])[0],
+                    query=query,
+                    search_fields=query_set_param(params, "search_fields"),
+                    **video_plugin_collection_filters(plugin_data),
                     **video_collection_filter_args(params),
                     sort=(params.get("sort") or ["newest_added"])[0],
                     limit=limit,
