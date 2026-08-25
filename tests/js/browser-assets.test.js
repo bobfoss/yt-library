@@ -60,6 +60,19 @@ test('all served browser assets have valid JavaScript syntax', () => {
   }
 });
 
+test('empty entity notes collapse behind a shared add-notes control', () => {
+  const editorSource = namedFunctionSource(source('index.js'), 'annotationEditorFor');
+  const htmlSource = source('index.html');
+
+  assert.match(editorSource, /const hasNote = Boolean\(note\.trim\(\)\)/);
+  assert.match(editorSource, />Add notes<\/button>/);
+  assert.match(editorSource, /class="entity-annotation-note-field"/);
+  assert.match(editorSource, /noteToggle\?\.addEventListener\('click'/);
+  assert.match(editorSource, /noteField\.hidden = false/);
+  assert.match(editorSource, /noteInput\.focus\(\)/);
+  assert.match(htmlSource, /\.entity-annotation-note-field\[hidden\] \{ display: none; \}/);
+});
+
 test('video cards render raw YouTube reaction statuses', () => {
   const helpers = videoCardHelpers();
 

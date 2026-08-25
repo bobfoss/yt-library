@@ -5761,10 +5761,13 @@ function annotationEditorFor(kind, entity) {
   editor.dataset.annotationEditor = kind;
   editor.dataset.annotationEntityId = entityId;
   const listId = `annotation-tags-${kind}-${Math.random().toString(36).slice(2)}`;
+  const note = String(entity.note || '');
+  const hasNote = Boolean(note.trim());
   const tags = Array.isArray(entity.tags) ? entity.tags.join(', ') : '';
   editor.innerHTML = `
-    <label>Notes
-      <textarea name="note" maxlength="100000">${escapeHtml(entity.note || '')}</textarea>
+    <button class="entity-annotation-note-toggle" type="button" aria-expanded="${hasNote}"${hasNote ? ' hidden' : ''}>Add notes</button>
+    <label class="entity-annotation-note-field"${hasNote ? '' : ' hidden'}>Notes
+      <textarea name="note" maxlength="100000">${escapeHtml(note)}</textarea>
     </label>
     <label>Tags
       <input name="tags" type="text" value="${escapeHtml(tags)}" list="${listId}" autocomplete="off" placeholder="Comma-separated tags">
@@ -5775,6 +5778,16 @@ function annotationEditorFor(kind, entity) {
       <span class="entity-annotation-status" role="status" aria-live="polite"></span>
     </div>
   `;
+  const noteToggle = editor.querySelector('.entity-annotation-note-toggle');
+  const noteField = editor.querySelector('.entity-annotation-note-field');
+  const noteInput = editor.elements.namedItem('note');
+  noteToggle?.addEventListener('click', () => {
+    if (!(noteField instanceof HTMLElement) || !(noteInput instanceof HTMLTextAreaElement)) return;
+    noteToggle.hidden = true;
+    noteToggle.setAttribute('aria-expanded', 'true');
+    noteField.hidden = false;
+    noteInput.focus();
+  });
   return editor;
 }
 
