@@ -867,9 +867,12 @@ async function fetchViewData(path) {
   }, viewDataCacheLimit);
 }
 
-function remoteListPath(path, params = {}, page = currentPage) {
+function remoteListPath(path, params = {}, page = currentPage, limitOverride = null) {
   const size = pageSizeNumber();
-  const limit = Number.isFinite(size) ? size : 500;
+  const requestedLimit = Number(limitOverride);
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.min(500, Math.floor(requestedLimit))
+    : (Number.isFinite(size) ? size : 500);
   const requestedPage = Math.max(1, Number(page) || 1);
   const queryParams = new URLSearchParams(params);
   queryParams.set('limit', String(limit));
@@ -1523,7 +1526,7 @@ function selectedEntityCategory() {
 
 function searchContextKind() {
   if (selected.startsWith('__playlist__:')) return 'videos';
-  if (channelDetailSearchActive && selected.startsWith('__channel__:')) return 'videos';
+  if (selected.startsWith('__channel__:')) return 'videos';
   return selected === '__search__' ? activeSearchScope : selectedEntityCategory();
 }
 
@@ -5008,6 +5011,7 @@ async function fetchVideoCollection({
   partialMinimumPercent = 1,
   duplicatesOnly = false,
   page = currentPage,
+  pageSize = null,
 } = {}) {
   const base = playlistId
     ? `/api/playlists/${encodeURIComponent(playlistId)}/videos`
@@ -5087,7 +5091,7 @@ async function fetchVideoCollection({
       params.append('video_search_plugin', '__none__');
     }
   }
-  const path = remoteListPath(base, params, page);
+  const path = remoteListPath(base, params, page, pageSize);
   const payload = await fetchViewData(path);
   if (!metaCountsCache.has(metaCountsKey)) {
     metaCountsCache.set(metaCountsKey, { ...(payload.counts || {}) });
@@ -5173,6 +5177,21 @@ function renderScopedVideoSearchFacets(payload) {
   });
   setPresetLinkCount('videos', distinctVideoCount);
   return distinctVideoCount;
+}
+
+function hydrateChannelVideoSearchFilters(channelId, channelLabel, generation) {
+  void withLoadingStatus(() => fetchVideoCollection({
+    ...channelScopedVideoCollectionOptions(channelId, 1),
+    query: '',
+    pageSize: 1,
+  })).then(payload => {
+    if (!payload || generation !== renderGeneration) return;
+    if (!selected.startsWith('__channel__:') || channelDetailSearchActive) return;
+    renderScopedVideoSearchFacets(payload);
+    setPresetLinkLabel('videos', channelLabel || channelId);
+  }).catch(() => {
+    // A failed facet request must not block the channel detail itself.
+  });
 }
 
 function scopedVideoSearchResults(rows) {
@@ -5532,7 +5551,7 @@ function searchNavigationHref() {
 
 function activeSidebarCategory() {
   if (selected === '__search__' && !activeSearchPreset) return activeSearchScope;
-  if (channelDetailSearchActive && selected.startsWith('__channel__:')) return 'videos';
+  if (selected.startsWith('__channel__:')) return 'videos';
   return selectedEntityCategory();
 }
 
@@ -6176,11 +6195,16 @@ async function renderCurrentView() {
     const activePluginVideoTab = pluginVideoTabs.find(
       tab => tab.key === channelDetailTab,
     ) || null;
-    if (!channelDetailSearchActive) {
-      hydrateEntitySearchFilters('channels', channelId, generation);
-    }
     setDocumentTitle(channel.title || channelReference);
     search.placeholder = channel.title ? `Search ${channel.title}` : 'Search channel';
+    setPresetLinkLabel('videos', channel.title || channelReference);
+    if (!channelDetailSearchActive) {
+      hydrateChannelVideoSearchFilters(
+        channelId,
+        channel.title || channelReference,
+        generation,
+      );
+    }
     let playlistedVideoCount = cachedChannelTabCount(channelId, 'playlisted-videos');
     let playlistCount = cachedChannelTabCount(channelId, 'playlists');
     let historyCount = cachedChannelTabCount(channelId, 'history');
@@ -6237,7 +6261,6 @@ async function renderCurrentView() {
       );
       if (generation !== renderGeneration) return;
       renderScopedVideoSearchFacets(payload);
-      setPresetLinkLabel('videos', channel.title || channelReference);
       const pageInfo = remotePayloadPageInfo(payload, rows.length);
       meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
       appendPluginSearchWarnings(meta, pluginErrors);
@@ -7161,8 +7184,8 @@ search.addEventListener('input', () => {
     const nextActive = Boolean(search.value.trim());
     if (channelDetailSearchActive !== nextActive) {
       channelDetailSearchActive = nextActive;
-      activeSearchScope = nextActive ? 'videos' : 'channels';
-      applySearchPresetState(activeSearchScope);
+      activeSearchScope = 'videos';
+      if (nextActive) applySearchPresetState(activeSearchScope);
       renderGroups();
     }
     updateCurrentUrl(true);

@@ -377,7 +377,7 @@ test('entity details enter their scoped category context', () => {
   assert.match(indexSource, /function hydrateEntitySearchFilters\(category, entityId, generation\)[\s\S]{0,300}fetchEntitySearchFilters\(category, entityId\)[\s\S]{0,180}renderSearchMetaFilters\(payload\)/);
   assert.match(indexSource, /hydrateEntitySearchFilters\('videos', video\.video_id \|\| videoId, generation\)/);
   assert.match(indexSource, /hydrateEntitySearchFilters\('clips', clip\.clip_id \|\| clipId, generation\)/);
-  assert.match(indexSource, /hydrateEntitySearchFilters\('channels', channelId, generation\)/);
+  assert.doesNotMatch(indexSource, /hydrateEntitySearchFilters\('channels', channelId, generation\)/);
 });
 
 test('playlist detail reuses the sidebar video search facets', () => {
@@ -397,16 +397,19 @@ test('channel detail search stays scoped to channel-owned videos', () => {
   const indexSource = source('index.js');
 
   assert.match(indexSource, /let channelDetailSearchActive = false/);
-  assert.match(indexSource, /function searchContextKind\(\)[\s\S]{0,220}channelDetailSearchActive[\s\S]{0,80}'videos'/);
+  assert.match(indexSource, /function searchContextKind\(\)[\s\S]{0,160}selected\.startsWith\('__channel__:'\)[\s\S]{0,40}'videos'/);
   assert.match(indexSource, /channelDetailSearchActive = params\.has\('q'\)[\s\S]{0,100}applySearchLocation\('\/videos', params\)/);
   assert.match(indexSource, /selected\.startsWith\('__channel__:'\)[\s\S]{0,120}'Search channel'/);
   assert.match(indexSource, /function channelScopedVideoCollectionOptions\(channelId[\s\S]{0,180}scope: 'channel'[\s\S]{0,100}channelId/);
+  assert.match(indexSource, /function hydrateChannelVideoSearchFilters\(channelId, channelLabel, generation\)[\s\S]{0,240}channelScopedVideoCollectionOptions\(channelId, 1\)[\s\S]{0,100}query: ''[\s\S]{0,80}pageSize: 1/);
+  assert.match(indexSource, /function hydrateChannelVideoSearchFilters[\s\S]{0,650}renderScopedVideoSearchFacets\(payload\)[\s\S]{0,120}setPresetLinkLabel\('videos', channelLabel \|\| channelId\)/);
+  assert.match(indexSource, /if \(!channelDetailSearchActive\) \{[\s\S]{0,220}hydrateChannelVideoSearchFilters\([\s\S]{0,160}channel\.title \|\| channelReference/);
   assert.match(indexSource, /if \(channelDetailSearchActive\)[\s\S]{0,700}fetchVideoCollection\([\s\S]{0,120}channelScopedVideoCollectionOptions\(channelId\)/);
   assert.match(indexSource, /setPresetLinkLabel\('videos', channel\.title \|\| channelReference\)/);
   assert.match(indexSource, /setDocumentTitle\(channel\.title \|\| channelReference\);[\s\S]{0,140}search\.placeholder = channel\.title \? `Search \$\{channel\.title\}` : 'Search channel'/);
-  assert.match(indexSource, /function activeSidebarCategory\(\)[\s\S]{0,180}channelDetailSearchActive[\s\S]{0,80}return 'videos'/);
+  assert.match(indexSource, /function activeSidebarCategory\(\)[\s\S]{0,180}selected\.startsWith\('__channel__:'\)[\s\S]{0,80}return 'videos'/);
   assert.match(indexSource, /function browserSearchFieldAppliesToCurrentContext\(plugin\)[\s\S]{0,220}selected\.startsWith\('__channel__:'\)[\s\S]{0,60}'videos'/);
-  assert.match(indexSource, /if \(selected\.startsWith\('__channel__:'\)\)[\s\S]{0,220}const nextActive = Boolean\(search\.value\.trim\(\)\)[\s\S]{0,220}applySearchPresetState\(activeSearchScope\)[\s\S]{0,100}updateCurrentUrl\(true\)/);
+  assert.match(indexSource, /if \(selected\.startsWith\('__channel__:'\)\)[\s\S]{0,220}const nextActive = Boolean\(search\.value\.trim\(\)\)[\s\S]{0,140}activeSearchScope = 'videos'[\s\S]{0,140}if \(nextActive\) applySearchPresetState\(activeSearchScope\)[\s\S]{0,100}updateCurrentUrl\(true\)/);
   assert.match(indexSource, /if \(channelDetailSearchActive\)[\s\S]{0,3200}scopedVideoSearchResults\(rows\)/);
   assert.match(indexSource, /scopedVideoSearchResults\(rows\)[\s\S]{0,500}prepareBrowserSearchResultPresentations\([\s\S]{0,700}searchResultCardFor\(result/);
 });
