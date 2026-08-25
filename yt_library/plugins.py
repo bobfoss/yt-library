@@ -283,7 +283,7 @@ def _library_videos_by_id(
                 for row in conn.execute(
                     f"""
                     SELECT video_id, title, COALESCE(channel_id, '') AS channel_id,
-                           availability, is_playable, video_type,
+                           upload_date, availability, is_playable, video_type,
                            broadcast_status, broadcast_started_at,
                            broadcast_ended_at, broadcast_status_checked_at
                     FROM videos
@@ -309,7 +309,7 @@ class PluginPlanningContext:
         rows = self._conn.execute(
             """
             SELECT video_id, title, COALESCE(channel_id, '') AS channel_id,
-                   availability, is_playable,
+                   upload_date, availability, is_playable,
                    video_type, broadcast_status, broadcast_started_at,
                    broadcast_ended_at, broadcast_status_checked_at
             FROM videos
@@ -1450,10 +1450,12 @@ class PluginManager:
         if process is None:
             raise LookupError(f"Unknown plugin worker process: {plugin_id}/{worker_id}")
         try:
+            planning_params = dict(params or {})
+            planning_params["manual"] = bool(manual)
             planned = record.instance.plan_worker(
                 worker_id,
                 PluginPlanningContext(conn, plugin_id),
-                dict(params or {}),
+                planning_params,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -1565,6 +1567,8 @@ class PluginManager:
         conn: sqlite3.Connection,
         hook: str,
         params: Mapping[str, Any] | None = None,
+        *,
+        manual: bool = False,
     ) -> list[dict[str, Any]]:
         normalized_hook = str(hook or "").strip()
         hook_params = dict(params or {})
@@ -1583,7 +1587,7 @@ class PluginManager:
                     plugin_id,
                     worker_id,
                     hook_params,
-                    manual=False,
+                    manual=manual,
                 )
             except Exception as exc:
                 conn.execute(f"ROLLBACK TO {savepoint}")

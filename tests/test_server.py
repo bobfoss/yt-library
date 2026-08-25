@@ -48,6 +48,7 @@ class AdminServerTests(unittest.TestCase):
                 call.args[1:],
                 ("video_scan", {"video_id": ["abcdefghijk"]}),
             )
+            self.assertEqual(call.kwargs, {"manual": True})
             payload = handler.send_json.call_args.args[0]
             self.assertEqual(payload["video_id"], "abcdefghijk")
             self.assertEqual(

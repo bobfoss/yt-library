@@ -422,7 +422,11 @@ def enqueue_library_update(
         with conn:
             queue_stats = enqueue_update_tasks(conn)
             plugin_queue = (
-                plugin_manager.enqueue_hook(conn, "library_update")
+                plugin_manager.enqueue_hook(
+                    conn,
+                    "library_update",
+                    manual=not scheduled,
+                )
                 if plugin_manager is not None
                 else []
             )
@@ -835,7 +839,11 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             return {
                 **core_queue,
                 "plugins": (
-                    plugin_manager.enqueue_hook(conn, "library_initialize")
+                    plugin_manager.enqueue_hook(
+                        conn,
+                        "library_initialize",
+                        manual=True,
+                    )
                     if plugin_manager is not None
                     else []
                 ),
@@ -2443,6 +2451,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
                             conn,
                             "video_scan",
                             {"video_id": [video_id]},
+                            manual=True,
                         )
                         if video_id
                         else []

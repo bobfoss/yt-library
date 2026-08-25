@@ -278,11 +278,12 @@ the active YTL config path, `context.plugin_id` is the configured ID, and
 With the negotiated `library_video_lookup_v1` feature, a plugin may call
 `context.library_videos(video_ids)` while activated to retrieve bounded,
 read-only canonical metadata for up to 250,000 explicit video IDs. Results
-include `video_id`, `title`, `channel_id`, availability/playability, video type,
-and broadcast lifecycle fields. The host performs the lookup; plugins must not
-open the YTL database directly. Status metrics based on this lookup should cache
-their result and refresh only when plugin data changes or after a reasonable
-interval rather than querying the full identity set on every status poll.
+include `video_id`, `title`, `channel_id`, `upload_date`,
+availability/playability, video type, and broadcast lifecycle fields. The host
+performs the lookup; plugins must not open the YTL database directly. Status
+metrics based on this lookup should cache their result and refresh only when
+plugin data changes or after a reasonable interval rather than querying the
+full identity set on every status poll.
 
 On service startup, YTL follows this lifecycle:
 
@@ -985,7 +986,8 @@ task.
 
 - `context.plugin_id` identifies the current plugin.
 - `context.library_videos()` streams dictionaries with `video_id`, `title`,
-  `channel_id`, `availability`, `is_playable`, `video_type`, `broadcast_status`,
+  `channel_id`, `upload_date`, `availability`, `is_playable`, `video_type`,
+  `broadcast_status`,
   `broadcast_started_at`, `broadcast_ended_at`, and
   `broadcast_status_checked_at`, ordered by video ID. A `video_type` of
   `livestream` is durable identity; `broadcast_status` is the current observed
@@ -1088,8 +1090,11 @@ events are:
   one-item list. A plugin should resolve canonical clip bounds through
   `context.library_clips()` rather than treating event parameters as metadata.
 
-The planner receives `params["hook"]` plus event parameters. `video_scan`
-currently includes `video_id` as a list containing the resolved ID. Hook plans
+The planner receives `params["hook"]`, a boolean `params["manual"]`, and the
+event parameters. The host also supplies `params["manual"]` for direct process
+planning: explicit Admin actions are manual, while scheduled and automatic
+planning is not. `video_scan` currently includes `video_id` as a list
+containing the resolved ID. Hook plans
 are wrapped in a savepoint: an exception rolls back that plugin's partial plan,
 writes a `queue error` log, and allows core planning and other plugins to
 continue. A hook should be an idempotent planning notification, not the work

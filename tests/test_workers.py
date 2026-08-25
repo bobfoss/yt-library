@@ -108,6 +108,7 @@ class WorkerQueueTests(unittest.TestCase):
                 "source_video_id": ["sourceworker1"],
             },
         ))
+        self.assertEqual(plugin_manager.enqueue_hook.call_args.kwargs, {"manual": True})
 
     def test_worker_log_wrappers_write_to_their_owned_tables(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1075,6 +1076,7 @@ class WorkerQueueTests(unittest.TestCase):
                         current_title="New video",
                         metadata_source="history",
                         priority=0,
+                        manual=True,
                     )
             finally:
                 conn.close()
@@ -1127,6 +1129,7 @@ class WorkerQueueTests(unittest.TestCase):
                 hook_args[1:],
                 ("video_scan", {"video_id": ["abcdefghijk"]}),
             )
+            self.assertEqual(plugin_manager.enqueue_hook.call_args.kwargs, {"manual": True})
 
     def test_metadata_worker_stops_when_cookie_authentication_expires(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

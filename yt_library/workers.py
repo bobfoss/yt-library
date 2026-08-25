@@ -649,6 +649,7 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                                 conn,
                                 "video_scan",
                                 {"video_id": [video_id]},
+                                manual=bool(row["manual"]),
                             )
                         log_history_date_conflicts(
                             conn,
@@ -955,6 +956,7 @@ class ClipWorker(_ThreadWorkerLifecycle):
                             "clip_id": [clip_id],
                             "source_video_id": [source_video_id],
                         },
+                        manual=bool(row.get("manual")),
                     )
                 if source_video_id:
                     source_video = conn.execute(

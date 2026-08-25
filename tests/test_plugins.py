@@ -308,6 +308,7 @@ class PluginManagerTests(unittest.TestCase):
                     "video_id": "live1234567",
                     "title": "Active stream",
                     "channel_id": "UCstreamowner",
+                    "upload_date": "",
                     "availability": "unknown",
                     "is_playable": None,
                     "video_type": "livestream",
@@ -1058,10 +1059,11 @@ class PluginManagerTests(unittest.TestCase):
                     core.upsert_video(conn, "abcdefghijk", title="Example video")
             finally:
                 conn.close()
+            plugin = FakePlugin()
             manager = PluginManager(
                 {"plugins": {"subtitles": {"enabled": True}}},
                 db_path=db_path,
-                entry_points=[FakeEntryPoint(FakePlugin)],
+                entry_points=[FakeEntryPoint(lambda: plugin)],
             )
             conn = core.connect(db_path)
             try:
@@ -1088,6 +1090,7 @@ class PluginManagerTests(unittest.TestCase):
             self.assertEqual(row["task_type"], "fetch")
             self.assertEqual(row["plugin_subject_id"], "abcdefghijk")
             self.assertEqual(row["payload_json"], '{"example":true}')
+            self.assertTrue(plugin.planned_params["manual"])
             self.assertEqual(queue_log["subject_id"], "abcdefghijk")
 
             worker = PluginTaskWorker()
@@ -1232,10 +1235,11 @@ class PluginManagerTests(unittest.TestCase):
                     core.upsert_video(conn, "abcdefghijk", title="Example video")
             finally:
                 conn.close()
+            plugin = FakePlugin()
             manager = PluginManager(
                 {"plugins": {"subtitles": {"enabled": True}}},
                 db_path=db_path,
-                entry_points=[FakeEntryPoint(FakePlugin)],
+                entry_points=[FakeEntryPoint(lambda: plugin)],
             )
             conn = core.connect(db_path)
             try:
@@ -1249,6 +1253,10 @@ class PluginManagerTests(unittest.TestCase):
 
             self.assertEqual(results[0]["inserted"], 1)
             self.assertEqual(tuple(row), ("plugin", "subtitles", 0))
+            self.assertEqual(
+                plugin.planned_params,
+                {"hook": "library_update", "manual": False},
+            )
 
     def test_plugin_hook_forwards_event_parameters_to_planner(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1272,7 +1280,11 @@ class PluginManagerTests(unittest.TestCase):
                         conn,
                         "video_scan",
                         {"video_id": ["abcdefghijk"]},
+                        manual=True,
                     )
+                queued = conn.execute(
+                    "SELECT manual FROM worker_queue WHERE worker_type = 'plugin'"
+                ).fetchone()
             finally:
                 conn.close()
 
@@ -1281,8 +1293,10 @@ class PluginManagerTests(unittest.TestCase):
                 {
                     "hook": "video_scan",
                     "video_id": ["abcdefghijk"],
+                    "manual": True,
                 },
             )
+            self.assertEqual(queued["manual"], 1)
 
     def test_plugin_hook_failure_is_contained_and_rolls_back_partial_plan(self) -> None:
         class FailingHookPlugin(FakePlugin):
