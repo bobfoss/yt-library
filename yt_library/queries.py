@@ -4043,6 +4043,7 @@ def history_search_data(
         )
     ]
     _add_video_playlist_links(conn, rows)
+    attach_annotations(conn, "video", rows)
     for row in rows:
         _hydrate_video_identity(row)
         row["archive_url"] = wayback_video_url(

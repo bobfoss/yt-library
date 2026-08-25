@@ -73,6 +73,30 @@ test('empty entity notes collapse behind a shared add-notes control', () => {
   assert.match(htmlSource, /\.entity-annotation-note-field\[hidden\] \{ display: none; \}/);
 });
 
+test('shared card annotations render tags with and without notes', () => {
+  const indexSource = source('index.js');
+  const context = {
+    escapeHtml(value) {
+      return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;');
+    },
+  };
+  vm.runInNewContext(
+    `${namedFunctionSource(indexSource, 'noteIconHtml')}\n`
+      + `${namedFunctionSource(indexSource, 'annotationCardOptions')}`,
+    context,
+  );
+
+  const tagsOnly = context.annotationCardOptions({ tags: ['Favorite', 'Deep < Dive'] });
+  const withNote = context.annotationCardOptions({ note: 'Remember this', tags: ['Reference'] });
+
+  assert.match(tagsOnly.annotationMetaHtml, /#Favorite/);
+  assert.match(tagsOnly.annotationMetaHtml, /#Deep &lt; Dive/);
+  assert.equal(tagsOnly.annotationNoteHtml, '');
+  assert.match(withNote.annotationMetaHtml, />Notes</);
+  assert.match(withNote.annotationMetaHtml, /#Reference/);
+  assert.match(withNote.annotationNoteHtml, /Remember this/);
+});
+
 test('unsaved entity notes guard browser and in-app navigation', () => {
   const indexSource = source('index.js');
   const editorSource = namedFunctionSource(indexSource, 'annotationEditorFor');

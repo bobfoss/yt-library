@@ -105,23 +105,29 @@ def attach_annotations(
             if item.get(config.id_column)
         }
     )
+    notes_by_id: dict[str, str] = {}
     tags_by_id: dict[str, list[str]] = {entity_id: [] for entity_id in entity_ids}
     if entity_ids:
         placeholders = ",".join("?" for _ in entity_ids)
         for row in conn.execute(
             f"""
-            SELECT et.{config.id_column} AS entity_id, t.name
-            FROM {config.tag_table} et
-            JOIN tags t ON t.tag_id = et.tag_id
-            WHERE et.{config.id_column} IN ({placeholders})
-            ORDER BY et.{config.id_column}, t.normalized_name
+            SELECT entity.{config.id_column} AS entity_id, entity.note, t.name
+            FROM {config.table} entity
+            LEFT JOIN {config.tag_table} et
+              ON et.{config.id_column} = entity.{config.id_column}
+            LEFT JOIN tags t ON t.tag_id = et.tag_id
+            WHERE entity.{config.id_column} IN ({placeholders})
+            ORDER BY entity.{config.id_column}, t.normalized_name
             """,
             entity_ids,
         ):
-            tags_by_id[str(row["entity_id"])].append(str(row["name"]))
+            entity_id = str(row["entity_id"])
+            notes_by_id[entity_id] = str(row["note"] or "")
+            if row["name"] is not None:
+                tags_by_id[entity_id].append(str(row["name"]))
     for item in items:
         entity_id = str(item.get(config.id_column) or "")
-        item["note"] = str(item.get("note") or "")
+        item["note"] = notes_by_id.get(entity_id, str(item.get("note") or ""))
         item["tags"] = tags_by_id.get(entity_id, [])
 
 

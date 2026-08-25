@@ -15,7 +15,7 @@ from yt_library.annotations import (
     save_entity_annotation,
     tag_suggestions,
 )
-from yt_library.queries import omni_search_data, video_collection_data
+from yt_library.queries import history_search_data, omni_search_data, video_collection_data
 
 
 class AnnotationTests(unittest.TestCase):
@@ -101,6 +101,33 @@ class AnnotationTests(unittest.TestCase):
         self.assertEqual(collection["total"], 1)
         self.assertEqual(collection["noteCounts"], {"with_note": 1, "without_note": 0})
         self.assertEqual(collection["results"][0]["note"], "Watch again")
+
+    def test_history_cards_receive_video_notes_and_tags(self) -> None:
+        save_entity_annotation(
+            self.conn,
+            "video",
+            "video-notes",
+            note="History note",
+            tags=["Favorite", "Research"],
+        )
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO history_events(
+                  event_id, video_id, watched_at, watch_date, time_precision,
+                  source_type, match_type
+                ) VALUES (
+                  'history:video-notes', 'video-notes',
+                  '2026-08-24T12:00:00Z', '2026-08-24',
+                  'exact', 'takeout', 'takeout_only'
+                )
+                """
+            )
+
+        row = history_search_data(self.conn, "", limit=1)["watch"][0]
+
+        self.assertEqual(row["note"], "History note")
+        self.assertEqual(row["tags"], ["Favorite", "Research"])
 
     def test_annotation_put_route_updates_a_canonical_entity(self) -> None:
         handler = object.__new__(server.LibraryHandler)
