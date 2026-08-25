@@ -80,7 +80,7 @@ const fields = {
   advancedToggle: document.getElementById('advancedToggle'),
   themeToggle: document.getElementById('themeToggle'),
   currentDateTime: document.getElementById('currentDateTime'),
-  serviceStartedAt: document.getElementById('serviceStartedAt'),
+  serviceUptime: document.getElementById('serviceUptime'),
   serviceStatus: document.getElementById('serviceStatus'),
   restartService: document.getElementById('restartService'),
   youtubeCookieStatus: document.getElementById('youtubeCookieStatus'),
@@ -317,6 +317,7 @@ const serverClock = {
   epochMs: null,
   monotonicAtSync: 0,
 };
+let serviceStartedAtEpochMs = null;
 
 function syncServerClock(serverTime, requestStartedAt, responseReceivedAt = performance.now()) {
   const serverEpochMs = Date.parse(serverTime || '');
@@ -339,9 +340,31 @@ function currentServerTime(nowMonotonic = performance.now()) {
   return new Date(serverClock.epochMs + Math.max(0, nowMonotonic - serverClock.monotonicAtSync));
 }
 
+function formatServiceUptime(durationMs) {
+  const totalSeconds = Math.max(0, Math.floor(Number(durationMs || 0) / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const clock = [hours, minutes, seconds].map(value => String(value).padStart(2, '0')).join(':');
+  return days ? `${days}d ${clock}` : clock;
+}
+
+function updateServiceUptime(nowMonotonic = performance.now()) {
+  if (!Number.isFinite(serviceStartedAtEpochMs)) {
+    fields.serviceUptime.textContent = '';
+    return;
+  }
+  const now = currentServerTime(nowMonotonic);
+  fields.serviceUptime.textContent = now
+    ? `Uptime: ${formatServiceUptime(now.getTime() - serviceStartedAtEpochMs)}`
+    : '';
+}
+
 function updateCurrentDateTime(nowMonotonic = performance.now()) {
   const now = currentServerTime(nowMonotonic);
   fields.currentDateTime.textContent = now ? fmtTime(now) : '';
+  updateServiceUptime(nowMonotonic);
 }
 
 function fmtClockDuration(seconds) {
@@ -927,9 +950,9 @@ function renderRuntimeStatus(data) {
     service.pid ? `PID ${service.pid}` : '',
     service.startedAt ? `Started ${fmtTime(service.startedAt)}` : '',
   ].filter(Boolean).join(' | ');
-  fields.serviceStartedAt.textContent = service.startedAt
-    ? `Service started: ${fmtTime(service.startedAt)}`
-    : '';
+  const parsedStartedAt = Date.parse(service.startedAt || '');
+  serviceStartedAtEpochMs = Number.isFinite(parsedStartedAt) ? parsedStartedAt : null;
+  updateServiceUptime();
   fields.restartService.disabled = serviceState === 'restarting';
   renderUpdateCookieStatuses(data.cookieAuthStatuses || {});
 
@@ -1144,7 +1167,8 @@ function renderServiceUnavailable(error) {
   fields.serviceStatus.textContent = 'Unavailable';
   fields.serviceStatus.className = 'warn';
   fields.serviceStatus.title = message;
-  fields.serviceStartedAt.textContent = '';
+  serviceStartedAtEpochMs = null;
+  updateServiceUptime();
   fields.restartService.disabled = true;
   fields.commonWorkerState.textContent = 'unknown';
   fields.commonWorkerState.className = 'value warn';
