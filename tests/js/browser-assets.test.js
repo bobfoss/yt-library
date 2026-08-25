@@ -1310,6 +1310,7 @@ test('AI disclosure is a core video decorator and recursive search facet', () =>
   assert.match(decoratorSource, /Number\(video\?\.ai_disclosure\) !== 1/);
   assert.match(decoratorSource, /Made with AI/);
   assert.match(indexHtml, /\.video-type-decorator, \.ai-disclosure-decorator \{[\s\S]{0,260}font-size: 13px;[\s\S]{0,100}font-weight: 400;/);
+  assert.match(indexHtml, /\.ai-disclosure-decorator \{ color: var\(--muted\); \}/);
   assert.match(videoCardSource, /options\.typeDecoratorHtml[\s\S]{0,100}options\.aiDisclosureDecoratorHtml[\s\S]{0,140}data-entity-card-slot="primaryMetadata"/);
   assert.match(
     namedFunctionSource(indexSource, 'videoDetailCardFor'),
