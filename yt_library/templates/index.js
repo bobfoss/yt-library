@@ -309,7 +309,9 @@ function browserClipSearchFieldPlugins() {
 function browserSearchFieldAppliesToCurrentContext(plugin) {
   const applicableKinds = browserSearchFieldApplicableKinds(plugin);
   if (!applicableKinds) return true;
-  const contextKind = searchContextKind();
+  const contextKind = selected.startsWith('__channel__:')
+    ? 'videos'
+    : searchContextKind();
   if (contextKind) return applicableKinds.has(contextKind);
   return selectedSearchKinds().some(kind => applicableKinds.has(kind));
 }
@@ -4650,6 +4652,15 @@ async function prepareBrowserSearchResultPresentations(results, errors, query, g
   return prepared.presentations;
 }
 
+function appendPluginSearchWarnings(container, errors) {
+  for (const pluginError of errors) {
+    const warning = document.createElement('div');
+    warning.className = 'status plugin-search-warning';
+    warning.textContent = `${pluginError.label} unavailable: ${pluginError.message}`;
+    container.append(warning);
+  }
+}
+
 async function fetchOmniSearch(query, page = currentPage) {
   const size = pageSizeNumber();
   const limit = Number.isFinite(size) ? size : 5000;
@@ -5088,6 +5099,15 @@ function renderScopedVideoSearchFacets(payload) {
   });
   setPresetLinkCount('videos', distinctVideoCount);
   return distinctVideoCount;
+}
+
+function scopedVideoSearchResults(rows) {
+  return rows.map(video => ({
+    kind: 'video',
+    item: video,
+    pluginFacets: { ...(video.pluginFacets || {}) },
+    pluginSearchMatches: [...(video.pluginSearchMatches || [])],
+  }));
 }
 
 function channelScopedVideoCollectionOptions(channelId, page = currentPage) {
@@ -6133,13 +6153,27 @@ async function renderCurrentView() {
       if (generation !== renderGeneration) return;
       stopSearchFilterProgress();
       const rows = payload.results || [];
+      const searchResults = scopedVideoSearchResults(rows);
+      const pluginErrors = [];
+      const resultPresentations = await prepareBrowserSearchResultPresentations(
+        searchResults,
+        pluginErrors,
+        query,
+        generation,
+      );
+      if (generation !== renderGeneration) return;
       renderScopedVideoSearchFacets(payload);
       setPresetLinkLabel('videos', channel.title || channelReference);
       const pageInfo = remotePayloadPageInfo(payload, rows.length);
       meta.innerHTML = cardLayoutHtml(cardLayoutFor(layoutContext), layoutContext);
+      appendPluginSearchWarnings(meta, pluginErrors);
       renderPager(pageInfo);
       applyCardLayout(layoutContext);
-      const cards = rows.map(video => searchVideoCardFor(video));
+      const cards = searchResults.map(result => searchResultCardFor(result, {
+        query,
+        searchFields: [...activeSearchFields()],
+        presentation: resultPresentations.get(result),
+      }));
       const decoration = decorateEntityCardBatch(
         [
           channelEntry,
@@ -6414,12 +6448,7 @@ async function renderCurrentView() {
       showLayout: true,
       sortHtml: searchResultsSortHtml(),
     });
-    for (const pluginError of pluginErrors) {
-      const warning = document.createElement('div');
-      warning.className = 'status plugin-search-warning';
-      warning.textContent = `${pluginError.label} unavailable: ${pluginError.message}`;
-      meta.append(warning);
-    }
+    appendPluginSearchWarnings(meta, pluginErrors);
     renderSearchMetaFilters(payload);
     const pageInfo = remotePageInfo(total, rows.length, remoteLimit);
     renderPager(pageInfo);
@@ -6510,6 +6539,15 @@ async function renderCurrentView() {
     viewContext.hidden = false;
     viewContext.replaceChildren(annotationEditorFor('playlist', playlist));
     const rows = payload.results || [];
+    const searchResults = scopedVideoSearchResults(rows);
+    const pluginErrors = [];
+    const resultPresentations = await prepareBrowserSearchResultPresentations(
+      searchResults,
+      pluginErrors,
+      query,
+      generation,
+    );
+    if (generation !== renderGeneration) return;
     renderScopedVideoSearchFacets(payload);
     const playlistCount = playlistVideoCountLabel(playlist);
     const playlistHeadingMeta = [
@@ -6533,11 +6571,15 @@ async function renderCurrentView() {
         ${videoSortHtml(playlistViewSort, 'playlist')}
       </span>
     `;
+    appendPluginSearchWarnings(meta, pluginErrors);
     syncMetaFilterGroup('playlist-duplicates');
     const pageInfo = remotePayloadPageInfo(payload, rows.length);
     renderPager(pageInfo);
     applyCardLayout('playlist');
-    const cards = rows.map(video => playlistVideoCardFor(video, { showPosition: true }));
+    const cards = searchResults.map(result => SearchResultPresentations.apply(
+      playlistVideoCardFor(result.item, { showPosition: true }),
+      resultPresentations.get(result),
+    ));
     const decoration = decorateEntityCardBatch(
       rows.map((video, index) => entityCardEntry('video', video, cards[index])),
       'playlist',

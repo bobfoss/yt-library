@@ -322,6 +322,9 @@ def video_plugin_collection_filters(plugin_data: Mapping[str, Any]) -> dict[str,
         ),
         "video_facet_memberships": plugin_data["video_facet_memberships"],
         "video_search_match_ids": plugin_data["video_search_match_ids"],
+        "video_search_match_memberships": plugin_data[
+            "video_search_match_memberships"
+        ],
     }
 
 

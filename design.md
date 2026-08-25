@@ -752,6 +752,14 @@ Plugins perform all I/O in `prepare`, create a distinct summary element per
 result, and use the host highlighting helpers for marked snippets. There is no
 imperative native-card decoration hook.
 
+The same presentation contract applies to native-video results returned by
+scoped playlist and channel searches. Those collection responses preserve
+`pluginSearchMatches`, and the browser invokes the generic preparation and
+rendering path so a plugin match has the same label, summary, highlighting, and
+failure containment as it does in unscoped omni-search. A plugin search field
+whose applicable kind is `videos` is visible before typing on channel detail
+because that detail search box targets the channel's videos.
+
 The second pattern is a separate result type. Use it only when results are not
 best represented as canonical host entities. Omit both `videoFacet` and
 `clipFacet`, implement

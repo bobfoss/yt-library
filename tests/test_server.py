@@ -947,6 +947,10 @@ class AdminServerTests(unittest.TestCase):
             },
         )
         self.assertEqual(kwargs["video_search_match_ids"], {"beta"})
+        self.assertEqual(
+            kwargs["video_search_match_memberships"],
+            {"subtitles": frozenset({"beta"})},
+        )
         connection.close.assert_called_once_with()
         handler.send_json.assert_called_once_with(payload)
 
@@ -954,6 +958,10 @@ class AdminServerTests(unittest.TestCase):
         handler = object.__new__(server.LibraryHandler)
         handler.db_path = Path("library.sqlite3")
         handler.plugin_manager = Mock()
+        handler.plugin_manager.filter_videos.return_value = (
+            frozenset({"channel-video"}),
+            frozenset({"channel-video"}),
+        )
         handler.send_json = Mock()
         connection = Mock()
         payload = {"results": [], "total": 0}
@@ -969,6 +977,7 @@ class AdminServerTests(unittest.TestCase):
                 urllib.parse.urlparse(
                     "/api/videos?scope=channel&channel_id=UCscoped&q=needle"
                     "&search_fields=titles,notes&video_type=video"
+                    "&video_facet_plugin=example&video_search_plugin=example"
                     "&limit=12&offset=24"
                 )
             )
@@ -981,6 +990,14 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(kwargs["video_type_filters"], {"video"})
         self.assertIsNone(kwargs["included_video_ids"])
         self.assertEqual(kwargs["excluded_video_ids"], set())
+        self.assertEqual(
+            kwargs["video_facet_memberships"],
+            {"example": frozenset({"channel-video"})},
+        )
+        self.assertEqual(
+            kwargs["video_search_match_memberships"],
+            {"example": frozenset({"channel-video"})},
+        )
         self.assertEqual(kwargs["limit"], 12)
         self.assertEqual(kwargs["offset"], 24)
         connection.close.assert_called_once_with()

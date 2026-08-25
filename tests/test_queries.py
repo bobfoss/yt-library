@@ -3016,10 +3016,15 @@ class NormalizedReadModelTests(unittest.TestCase):
             query="subtitle phrase",
             search_fields={"titles"},
             video_search_match_ids={"facet-gamma"},
+            video_search_match_memberships={"subtitles": {"facet-gamma"}},
         )
         self.assertEqual(
             [row["video_id"] for row in plugin_match["results"]],
             ["facet-gamma"],
+        )
+        self.assertEqual(
+            plugin_match["results"][0]["pluginSearchMatches"],
+            ["subtitles"],
         )
 
         filtered = video_collection_data(

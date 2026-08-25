@@ -747,16 +747,27 @@ def video_collection_data(
     excluded_video_ids: Collection[str] = (),
     video_facet_memberships: Mapping[str, Collection[str]] | None = None,
     video_search_match_ids: Collection[str] = (),
+    video_search_match_memberships: Mapping[str, Collection[str]] | None = None,
     partial_min_percent: int = 1,
     sort: str = "newest_added",
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
+    active_video_search_match_memberships = {
+        str(plugin_id): {
+            str(video_id).strip()
+            for video_id in video_ids
+            if str(video_id).strip()
+        }
+        for plugin_id, video_ids in (video_search_match_memberships or {}).items()
+    }
     active_search_match_ids = {
         str(video_id).strip()
         for video_id in video_search_match_ids
         if str(video_id).strip()
     }
+    for video_ids in active_video_search_match_memberships.values():
+        active_search_match_ids.update(video_ids)
     annotation_matches = annotation_search_matches(
         conn,
         query,
@@ -1346,6 +1357,11 @@ def video_collection_data(
             plugin_id: video_id in video_ids
             for plugin_id, video_ids in active_video_facet_memberships.items()
         }
+        item["pluginSearchMatches"] = sorted(
+            plugin_id
+            for plugin_id, video_ids in active_video_search_match_memberships.items()
+            if video_id in video_ids
+        )
         results.append(item)
     return {
         "results": results,

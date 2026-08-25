@@ -366,7 +366,10 @@ test('channel detail search stays scoped to channel-owned videos', () => {
   assert.match(indexSource, /setPresetLinkLabel\('videos', channel\.title \|\| channelReference\)/);
   assert.match(indexSource, /setDocumentTitle\(channel\.title \|\| channelReference\);[\s\S]{0,140}search\.placeholder = channel\.title \? `Search \$\{channel\.title\}` : 'Search channel'/);
   assert.match(indexSource, /function activeSidebarCategory\(\)[\s\S]{0,180}channelDetailSearchActive[\s\S]{0,80}return 'videos'/);
+  assert.match(indexSource, /function browserSearchFieldAppliesToCurrentContext\(plugin\)[\s\S]{0,220}selected\.startsWith\('__channel__:'\)[\s\S]{0,60}'videos'/);
   assert.match(indexSource, /if \(selected\.startsWith\('__channel__:'\)\)[\s\S]{0,220}const nextActive = Boolean\(search\.value\.trim\(\)\)[\s\S]{0,220}applySearchPresetState\(activeSearchScope\)[\s\S]{0,100}updateCurrentUrl\(true\)/);
+  assert.match(indexSource, /if \(channelDetailSearchActive\)[\s\S]{0,3200}scopedVideoSearchResults\(rows\)/);
+  assert.match(indexSource, /scopedVideoSearchResults\(rows\)[\s\S]{0,500}prepareBrowserSearchResultPresentations\([\s\S]{0,700}searchResultCardFor\(result/);
 });
 
 test('foreground loads share the app loading status lifecycle', () => {
