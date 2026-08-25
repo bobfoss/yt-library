@@ -73,6 +73,78 @@ test('empty entity notes collapse behind a shared add-notes control', () => {
   assert.match(htmlSource, /\.entity-annotation-note-field\[hidden\] \{ display: none; \}/);
 });
 
+test('unsaved entity notes guard browser and in-app navigation', () => {
+  const indexSource = source('index.js');
+  const editorSource = namedFunctionSource(indexSource, 'annotationEditorFor');
+  const dirtySource = namedFunctionSource(indexSource, 'hasUnsavedNoteChanges');
+  const routeSource = namedFunctionSource(indexSource, 'setBrowserUrl');
+  const popstateSource = namedFunctionSource(indexSource, 'handleBrowserPopState');
+
+  assert.match(editorSource, /editor\.dataset\.annotationSavedNote = note/);
+  assert.match(dirtySource, /note\.value !== \(editor\.dataset\.annotationSavedNote \|\| ''\)/);
+  assert.match(routeSource, /if \(!confirmDiscardUnsavedNotes\(\)\)/);
+  assert.match(popstateSource, /history\.go\(acceptedBrowserHistoryIndex - targetHistoryIndex\)/);
+  assert.match(indexSource, /window\.addEventListener\('beforeunload',[\s\S]{0,180}event\.returnValue = ''/);
+  assert.match(indexSource, /editor\.dataset\.annotationSavedNote = savedNote/);
+});
+
+test('note dirty state clears when content matches the saved baseline', () => {
+  const indexSource = source('index.js');
+  const textarea = { value: 'saved note' };
+  class FakeForm {}
+  class FakeTextarea {}
+  Object.setPrototypeOf(textarea, FakeTextarea.prototype);
+  const editor = new FakeForm();
+  editor.dataset = { annotationSavedNote: 'saved note' };
+  editor.elements = { namedItem: () => textarea };
+  const confirmations = [];
+  const context = {
+    document: { querySelectorAll: () => [editor] },
+    HTMLFormElement: FakeForm,
+    HTMLTextAreaElement: FakeTextarea,
+    window: {
+      confirm(message) {
+        confirmations.push(message);
+        return false;
+      },
+    },
+  };
+  vm.runInNewContext(
+    `${namedFunctionSource(indexSource, 'hasUnsavedNoteChanges')}\n`
+      + `${namedFunctionSource(indexSource, 'confirmDiscardUnsavedNotes')}`,
+    context,
+  );
+
+  assert.equal(context.hasUnsavedNoteChanges(), false);
+  assert.equal(context.confirmDiscardUnsavedNotes(), true);
+  textarea.value = 'changed note';
+  assert.equal(context.hasUnsavedNoteChanges(), true);
+  assert.equal(context.confirmDiscardUnsavedNotes(), false);
+  assert.deepEqual(confirmations, ['You have unsaved notes. Leave without saving them?']);
+  textarea.value = 'saved note';
+  assert.equal(context.hasUnsavedNoteChanges(), false);
+});
+
+test('canceling guarded in-app navigation restores route-derived selection', () => {
+  const routeSource = namedFunctionSource(source('index.js'), 'setBrowserUrl');
+  const historyCalls = [];
+  const context = {
+    selected: '__history__',
+    currentBrowserUrl: () => '/videos/current',
+    confirmDiscardUnsavedNotes: () => false,
+    selectionFromLocation: () => '__video__:current',
+    history: {
+      replaceState: (...args) => historyCalls.push(['replace', ...args]),
+      pushState: (...args) => historyCalls.push(['push', ...args]),
+    },
+  };
+  vm.runInNewContext(routeSource, context);
+
+  assert.equal(context.setBrowserUrl('/history'), true);
+  assert.equal(context.selected, '__video__:current');
+  assert.deepEqual(historyCalls, []);
+});
+
 test('video cards render raw YouTube reaction statuses', () => {
   const helpers = videoCardHelpers();
 
@@ -250,7 +322,7 @@ test('browser routes use path scope as the authoritative search context', () => 
   assert.match(indexSource, /const base = scope \? `\/\$\{scope\}` : '\/search'/);
   assert.match(indexSource, /if \(contextKind && kind !== contextKind\) return '';/);
   assert.match(indexSource, /data-search-filter-section="\$\{escapeHtml\(kind\)\}"/);
-  assert.match(indexSource, /window\.addEventListener\('popstate', handleBrowserLocationChange\)/);
+  assert.match(indexSource, /window\.addEventListener\('popstate', handleBrowserPopState\)/);
   assert.doesNotMatch(indexSource, /window\.location\.hash|addEventListener\('hashchange'/);
 });
 

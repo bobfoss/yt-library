@@ -908,9 +908,37 @@ function currentBrowserUrl() {
   return `${window.location.pathname}${window.location.search}`;
 }
 
+const browserHistoryIndexKey = 'ytLibraryHistoryIndex';
+let browserHistoryIndex = Number.isInteger(history.state?.[browserHistoryIndexKey])
+  ? history.state[browserHistoryIndexKey]
+  : 0;
+history.replaceState(
+  { ...(history.state || {}), [browserHistoryIndexKey]: browserHistoryIndex },
+  '',
+  currentBrowserUrl(),
+);
+let acceptedBrowserHistoryIndex = browserHistoryIndex;
+let acceptedBrowserUrl = currentBrowserUrl();
+let restoringAcceptedBrowserHistory = false;
+
 function setBrowserUrl(href, replace = false) {
   if (currentBrowserUrl() === href) return false;
-  history[replace ? 'replaceState' : 'pushState'](null, '', href);
+  if (!confirmDiscardUnsavedNotes()) {
+    selected = selectionFromLocation();
+    return true;
+  }
+  if (replace) {
+    history.replaceState(
+      { ...(history.state || {}), [browserHistoryIndexKey]: browserHistoryIndex },
+      '',
+      href,
+    );
+  } else {
+    browserHistoryIndex += 1;
+    history.pushState({ [browserHistoryIndexKey]: browserHistoryIndex }, '', href);
+  }
+  acceptedBrowserHistoryIndex = browserHistoryIndex;
+  acceptedBrowserUrl = href;
   if (!replace) handleBrowserLocationChange();
   return true;
 }
@@ -5762,6 +5790,7 @@ function annotationEditorFor(kind, entity) {
   editor.dataset.annotationEntityId = entityId;
   const listId = `annotation-tags-${kind}-${Math.random().toString(36).slice(2)}`;
   const note = String(entity.note || '');
+  editor.dataset.annotationSavedNote = note;
   const hasNote = Boolean(note.trim());
   const tags = Array.isArray(entity.tags) ? entity.tags.join(', ') : '';
   editor.innerHTML = `
@@ -5789,6 +5818,20 @@ function annotationEditorFor(kind, entity) {
     noteInput.focus();
   });
   return editor;
+}
+
+function hasUnsavedNoteChanges() {
+  return [...document.querySelectorAll('[data-annotation-editor]')].some(editor => {
+    if (!(editor instanceof HTMLFormElement)) return false;
+    const note = editor.elements.namedItem('note');
+    return note instanceof HTMLTextAreaElement
+      && note.value !== (editor.dataset.annotationSavedNote || '');
+  });
+}
+
+function confirmDiscardUnsavedNotes() {
+  return !hasUnsavedNoteChanges()
+    || window.confirm('You have unsaved notes. Leave without saving them?');
 }
 
 function clearAnnotationReadCaches() {
@@ -5857,6 +5900,9 @@ document.addEventListener('submit', async event => {
     );
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Save failed: ${response.status}`);
+    const savedNote = String(payload.note ?? note.value);
+    note.value = savedNote;
+    editor.dataset.annotationSavedNote = savedNote;
     status.textContent = 'Saved';
     clearAnnotationReadCaches();
     await render();
@@ -7613,7 +7659,39 @@ function handleBrowserLocationChange() {
   renderGroups();
   void render();
 }
-window.addEventListener('popstate', handleBrowserLocationChange);
+function handleBrowserPopState() {
+  const targetHistoryIndex = Number.isInteger(history.state?.[browserHistoryIndexKey])
+    ? history.state[browserHistoryIndexKey]
+    : null;
+  if (restoringAcceptedBrowserHistory) {
+    restoringAcceptedBrowserHistory = false;
+    browserHistoryIndex = targetHistoryIndex ?? acceptedBrowserHistoryIndex;
+    return;
+  }
+  if (!confirmDiscardUnsavedNotes()) {
+    if (targetHistoryIndex !== null && targetHistoryIndex !== acceptedBrowserHistoryIndex) {
+      restoringAcceptedBrowserHistory = true;
+      history.go(acceptedBrowserHistoryIndex - targetHistoryIndex);
+    } else {
+      history.pushState(
+        { [browserHistoryIndexKey]: acceptedBrowserHistoryIndex },
+        '',
+        acceptedBrowserUrl,
+      );
+    }
+    return;
+  }
+  browserHistoryIndex = targetHistoryIndex ?? browserHistoryIndex;
+  acceptedBrowserHistoryIndex = browserHistoryIndex;
+  acceptedBrowserUrl = currentBrowserUrl();
+  handleBrowserLocationChange();
+}
+window.addEventListener('popstate', handleBrowserPopState);
+window.addEventListener('beforeunload', event => {
+  if (!hasUnsavedNoteChanges()) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
 refresh.addEventListener('click', () => {
   const preserveSearchContent = (
     selected === '__search__'
