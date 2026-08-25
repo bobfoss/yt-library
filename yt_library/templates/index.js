@@ -699,6 +699,8 @@ let channelTabCountCache = new Map();
 let channelDetailTab = 'playlisted-videos';
 let channelDetailSearchActive = false;
 let historyHeatmapDayFrame = null;
+let historyHeatmapScrollSyncToken = 0;
+let historyHeatmapScrollSyncRequest = null;
 let renderGeneration = 0;
 let renderedOmniSearchQuery = '';
 let searchResultsRendered = false;
@@ -967,15 +969,75 @@ function historyCardViewportBounds() {
 function firstVisibleHistoryCardDate() {
   const viewport = historyCardViewportBounds();
   if (!viewport || viewport.bottom <= viewport.top) return '';
+  const wholeCardTolerance = 1;
   let firstIntersectingDate = '';
   for (const card of grid.querySelectorAll('.history-card[data-watch-date]')) {
     const bounds = card.getBoundingClientRect();
     if (bounds.bottom <= viewport.top || bounds.top >= viewport.bottom) continue;
     const date = card.dataset.watchDate || '';
     if (!firstIntersectingDate) firstIntersectingDate = date;
-    if (bounds.top >= viewport.top && bounds.bottom <= viewport.bottom) return date;
+    if (
+      bounds.top >= viewport.top - wholeCardTolerance
+      && bounds.bottom <= viewport.bottom + wholeCardTolerance
+    ) return date;
   }
   return firstIntersectingDate;
+}
+
+function setHistoryHeatmapCurrentDate(heatmap, date) {
+  const current = heatmap.querySelector('.history-heatmap-day[aria-current="date"]');
+  if (current?.dataset.historyDate === date) return true;
+  current?.removeAttribute('aria-current');
+  if (!date) return false;
+  const cell = heatmap.querySelector(
+    `.history-heatmap-day[data-history-date="${CSS.escape(date)}"]`,
+  );
+  if (!(cell instanceof HTMLButtonElement)) return false;
+  cell.setAttribute('aria-current', 'date');
+  return true;
+}
+
+function cancelHistoryHeatmapScrollSync() {
+  historyHeatmapScrollSyncToken += 1;
+  historyHeatmapScrollSyncRequest = null;
+}
+
+async function syncHistoryHeatmapToVisibleDate(heatmap, date, targetOffset) {
+  if (
+    historyHeatmapScrollSyncRequest?.heatmap === heatmap
+    && historyHeatmapScrollSyncRequest.targetOffset === targetOffset
+  ) return;
+  const token = ++historyHeatmapScrollSyncToken;
+  const generation = renderGeneration;
+  historyHeatmapScrollSyncRequest = { heatmap, targetOffset, token };
+  try {
+    const channelId = heatmap.dataset.historyChannelId || '';
+    const activity = await withLoadingStatus(() => fetchHistoryActivity(channelId, targetOffset));
+    if (
+      token !== historyHeatmapScrollSyncToken
+      || generation !== renderGeneration
+      || !heatmap.isConnected
+      || !historyHeatmapIsCurrent(heatmap)
+    ) return;
+    const visibleDate = firstVisibleHistoryCardDate();
+    if (historyActivityYearOffsetForDate(visibleDate) !== targetOffset) {
+      historyHeatmapScrollSyncRequest = null;
+      scheduleHistoryHeatmapCurrentDay();
+      return;
+    }
+    historyActivityYearOffset = targetOffset;
+    const replacement = historyHeatmapFor(activity);
+    heatmap.replaceWith(replacement);
+    setHistoryHeatmapCurrentDate(replacement, visibleDate || date);
+  } catch (error) {
+    if (token === historyHeatmapScrollSyncToken) {
+      console.warn('History heatmap scroll sync failed', error);
+    }
+  } finally {
+    if (historyHeatmapScrollSyncRequest?.token === token) {
+      historyHeatmapScrollSyncRequest = null;
+    }
+  }
 }
 
 function updateHistoryHeatmapCurrentDay() {
@@ -984,12 +1046,14 @@ function updateHistoryHeatmapCurrentDay() {
   const heatmap = viewContext.querySelector('.history-heatmap');
   if (!(heatmap instanceof HTMLElement)) return;
   const date = firstVisibleHistoryCardDate();
-  const current = heatmap.querySelector('.history-heatmap-day[aria-current="date"]');
-  if (current?.dataset.historyDate === date) return;
-  current?.removeAttribute('aria-current');
-  if (!date) return;
-  const cell = heatmap.querySelector(`.history-heatmap-day[data-history-date="${CSS.escape(date)}"]`);
-  if (cell instanceof HTMLButtonElement) cell.setAttribute('aria-current', 'date');
+  if (setHistoryHeatmapCurrentDate(heatmap, date)) {
+    if (historyHeatmapScrollSyncRequest) cancelHistoryHeatmapScrollSync();
+    return;
+  }
+  if (!date || !historyActivitySyncEnabled) return;
+  const targetOffset = historyActivityYearOffsetForDate(date);
+  if (targetOffset === historyActivityYearOffset) return;
+  void syncHistoryHeatmapToVisibleDate(heatmap, date, targetOffset);
 }
 
 function scheduleHistoryHeatmapCurrentDay() {
@@ -3158,6 +3222,12 @@ function historyHeatmapNavigationIcon(paths) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
 }
 
+function historyMonthLabelColumn(naturalColumn, previousColumn = 0) {
+  const column = Math.max(1, Math.min(53, Number(naturalColumn) || 1));
+  if (!previousColumn || column - previousColumn >= 2) return column;
+  return Math.min(53, previousColumn + 2);
+}
+
 function historyHeatmapFor(payload) {
   const range = historyActivityRange();
   const activity = new Map((payload.activity || []).map(day => [day.watch_date, day]));
@@ -3220,6 +3290,7 @@ function historyHeatmapFor(payload) {
   const weeks = document.createElement('div');
   weeks.className = 'history-heatmap-weeks';
   const seenMonths = new Set();
+  let previousMonthLabelColumn = 0;
   for (let weekIndex = 0; weekIndex < 53; weekIndex += 1) {
     const weekStart = new Date(range.start);
     weekStart.setDate(weekStart.getDate() + (weekIndex * 7));
@@ -3237,7 +3308,9 @@ function historyHeatmapFor(payload) {
       seenMonths.add(monthKey);
       const label = document.createElement('span');
       label.className = 'history-heatmap-month';
-      label.style.gridColumn = String(weekIndex + 1);
+      const labelColumn = historyMonthLabelColumn(weekIndex + 1, previousMonthLabelColumn);
+      label.style.gridColumn = String(labelColumn);
+      previousMonthLabelColumn = labelColumn;
       label.textContent = monthDate.toLocaleDateString(undefined, { month: 'short' });
       months.append(label);
     }
@@ -3266,7 +3339,6 @@ function historyHeatmapFor(payload) {
   calendar.append(weekStartLabel, months, weeks);
   scroll.append(calendar);
   heatmap.append(header, scroll);
-  scheduleHistoryHeatmapCurrentDay();
   return heatmap;
 }
 
@@ -3486,11 +3558,13 @@ async function renderHistoryResults(options) {
   renderPager(pageInfo);
   applyCardLayout(layoutContext);
   grid.replaceChildren(...historyBatch.elements);
+  scheduleHistoryHeatmapCurrentDay();
   await decoration;
   if (generation !== renderGeneration) return false;
   empty.hidden = rows.length !== 0;
   empty.textContent = emptyMessage;
   scrollToPendingHistoryDate();
+  scheduleHistoryHeatmapCurrentDay();
   scheduleAdjacentPagePrefetch(
     pageInfo,
     page => fetchHistoryPage(channelId, page),

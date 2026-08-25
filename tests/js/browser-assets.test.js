@@ -887,11 +887,32 @@ test('history heatmaps track the first fully visible card', () => {
   const indexSource = source('index.js');
   const indexHtml = source('index.html');
 
-  assert.match(indexSource, /function firstVisibleHistoryCardDate\(\)[\s\S]*?bounds\.top >= viewport\.top && bounds\.bottom <= viewport\.bottom/);
-  assert.match(indexSource, /function updateHistoryHeatmapCurrentDay\(\)[\s\S]*?cell\.setAttribute\('aria-current', 'date'\)/);
+  assert.match(indexSource, /function firstVisibleHistoryCardDate\(\)[\s\S]*?const wholeCardTolerance = 1[\s\S]*?bounds\.top >= viewport\.top - wholeCardTolerance[\s\S]*?bounds\.bottom <= viewport\.bottom \+ wholeCardTolerance/);
+  assert.match(indexSource, /function setHistoryHeatmapCurrentDate\(heatmap, date\)[\s\S]*?cell\.setAttribute\('aria-current', 'date'\)/);
+  assert.match(indexSource, /function updateHistoryHeatmapCurrentDay\(\)[\s\S]*?syncHistoryHeatmapToVisibleDate\(heatmap, date, targetOffset\)/);
+  assert.match(indexSource, /function syncHistoryHeatmapToVisibleDate\(heatmap, date, targetOffset\)[\s\S]*?fetchHistoryActivity\(channelId, targetOffset\)[\s\S]*?heatmap\.replaceWith\(replacement\)/);
+  assert.match(indexSource, /grid\.replaceChildren\(\.\.\.historyBatch\.elements\);\s*scheduleHistoryHeatmapCurrentDay\(\)/);
   assert.match(indexSource, /resultsScroll\?\.addEventListener\('scroll', scheduleHistoryHeatmapCurrentDay/);
   assert.match(indexSource, /window\.addEventListener\('scroll', scheduleHistoryHeatmapCurrentDay/);
   assert.match(indexHtml, /button\.history-heatmap-day\[aria-current="date"\]/);
+});
+
+test('adjacent history month labels keep enough horizontal separation', () => {
+  const indexSource = source('index.js');
+  const helperSource = namedFunctionSource(indexSource, 'historyMonthLabelColumn');
+  const context = { positions: [] };
+
+  vm.runInNewContext(
+    `${helperSource}\npositions = [\n`
+      + '  historyMonthLabelColumn(1, 0),\n'
+      + '  historyMonthLabelColumn(2, 1),\n'
+      + '  historyMonthLabelColumn(6, 3),\n'
+      + '];',
+    context,
+    { filename: 'history-month-label-column.js' },
+  );
+
+  assert.deepEqual([...context.positions], [1, 3, 6]);
 });
 
 test('history year navigation keeps the selected month and day', () => {
