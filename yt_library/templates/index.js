@@ -1823,7 +1823,7 @@ function updateCurrentUrl(replace = false) {
 function syncSearchUrlAndRender(replaceUrl = true) {
   if (selected === '__search__') {
     const urlChanged = updateSearchUrl(replaceUrl);
-    renderGroups();
+    syncSidebarSelection();
     if (urlChanged && !replaceUrl) return;
   }
   render();

@@ -992,6 +992,9 @@ test('numbered browser pages cache and prefetch adjacent payloads', () => {
 
 test('search filters share deferred category dimming until refreshed results render', () => {
   const indexSource = source('index.js');
+  const syncStart = indexSource.indexOf('function syncSearchUrlAndRender(');
+  const syncEnd = indexSource.indexOf('\nfunction selectionFromLocation(', syncStart);
+  const syncSource = indexSource.slice(syncStart, syncEnd);
 
   assert.match(indexSource, /function setSearchKindFilter\(kind, checked\)/);
   assert.match(indexSource, /function renderedSearchKindSelectionState\(kind\)/);
@@ -1003,6 +1006,8 @@ test('search filters share deferred category dimming until refreshed results ren
   assert.match(indexSource, /setSearchKindFilter\(searchKindFilter, selectSearchKind\)[\s\S]{0,800}refreshSearchAfterFilterChange\(searchKindFilter, activatedFromSelection\)/);
   assert.match(indexSource, /setMetaFilterBranch\(treeGroupName, filterName, target\.checked\)[\s\S]{0,400}syncMetaFilterGroup\(treeGroupName\);[\s\S]{0,180}refreshSearchAfterFilterChange\(groupName, activatedFromSelection\)/);
   assert.match(indexSource, /function renderSearchMetaFilters[\s\S]*?for \(const kind of \[[\s\S]*?syncSearchKindFilter\(kind, true, countsPending\)/);
+  assert.match(syncSource, /syncSidebarSelection\(\)/);
+  assert.doesNotMatch(syncSource, /renderGroups\(\)/);
 });
 
 test('single-facet result kinds use the same parent state calculation', () => {
