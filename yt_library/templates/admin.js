@@ -80,6 +80,7 @@ const fields = {
   advancedToggle: document.getElementById('advancedToggle'),
   themeToggle: document.getElementById('themeToggle'),
   currentDateTime: document.getElementById('currentDateTime'),
+  serviceStartedAt: document.getElementById('serviceStartedAt'),
   serviceStatus: document.getElementById('serviceStatus'),
   restartService: document.getElementById('restartService'),
   youtubeCookieStatus: document.getElementById('youtubeCookieStatus'),
@@ -921,11 +922,14 @@ function renderRuntimeStatus(data) {
   fields.serviceStatus.textContent = serviceState === 'running'
     ? `Running${service.pid ? ` (${service.pid})` : ''}`
     : (serviceState === 'restarting' ? 'Restarting' : 'Unavailable');
-  fields.serviceStatus.className = `advanced-only ${serviceState === 'running' ? 'running' : 'warn'}`;
+  fields.serviceStatus.className = serviceState === 'running' ? 'running' : 'warn';
   fields.serviceStatus.title = [
     service.pid ? `PID ${service.pid}` : '',
     service.startedAt ? `Started ${fmtTime(service.startedAt)}` : '',
   ].filter(Boolean).join(' | ');
+  fields.serviceStartedAt.textContent = service.startedAt
+    ? `Service started: ${fmtTime(service.startedAt)}`
+    : '';
   fields.restartService.disabled = serviceState === 'restarting';
   renderUpdateCookieStatuses(data.cookieAuthStatuses || {});
 
@@ -1138,8 +1142,9 @@ function renderServiceUnavailable(error) {
   const message = error instanceof Error ? error.message : String(error || '');
   currentServicePid = 0;
   fields.serviceStatus.textContent = 'Unavailable';
-  fields.serviceStatus.className = 'advanced-only warn';
+  fields.serviceStatus.className = 'warn';
   fields.serviceStatus.title = message;
+  fields.serviceStartedAt.textContent = '';
   fields.restartService.disabled = true;
   fields.commonWorkerState.textContent = 'unknown';
   fields.commonWorkerState.className = 'value warn';

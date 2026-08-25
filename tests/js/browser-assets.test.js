@@ -259,11 +259,14 @@ test('admin header shows a locally ticking clock calibrated from server time', (
   const adminHtml = source('admin.html');
 
   assert.match(adminHtml, /id="currentDateTime" class="metric header-current-time"/);
+  assert.match(adminHtml, /class="service-state advanced-only"[\s\S]*?id="serviceStatus"[\s\S]*?id="serviceStartedAt" class="metric service-started-at"/);
   assert.match(adminSource, /const serverClockSyncIntervalMs = 60 \* 60 \* 1000;/);
   assert.match(adminSource, /function syncServerClock\(serverTime, requestStartedAt,/);
   assert.match(adminSource, /serverClock\.epochMs = serverEpochMs \+ halfRoundTripMs;/);
   assert.match(adminSource, /function currentServerTime\(nowMonotonic = performance\.now\(\)\)/);
   assert.match(adminSource, /syncServerClock\(data\.service\?\.serverTime, requestStartedAt\);/);
+  assert.match(adminSource, /`Service started: \$\{fmtTime\(service\.startedAt\)\}`/);
+  assert.match(adminSource, /fields\.serviceStartedAt\.textContent = '';/);
   assert.doesNotMatch(adminSource, /function updateCurrentDateTime\(now = new Date\(\)\)/);
   assert.match(
     adminSource,
