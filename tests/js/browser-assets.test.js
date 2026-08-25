@@ -735,7 +735,7 @@ test('admin parameter posts use the shared transport with caller-owned effects',
   assert.equal((adminSource.match(/method: 'POST'/g) || []).length, 1);
 });
 
-test('service controller uses the lightweight runtime health endpoint', () => {
+test('service controller preserves restart intent and reports contention', () => {
   const serviceSource = fs.readFileSync(
     path.join(process.cwd(), 'scripts', 'service.ps1'),
     'utf8',
@@ -744,6 +744,16 @@ test('service controller uses the lightweight runtime health endpoint', () => {
   assert.match(serviceSource, /\/api\/admin\/runtime\/status/);
   assert.match(serviceSource, /if \(\$statusCode -ne 404\)/);
   assert.match(serviceSource, /one older service that predates the runtime endpoint/);
+  assert.match(serviceSource, /\[int\]\$TimeoutSeconds = 90/);
+  assert.match(serviceSource, /service-recovery\.json/);
+  assert.match(serviceSource, /function New-RestartRecoveryState/);
+  assert.match(serviceSource, /function Complete-Recovery/);
+  assert.match(serviceSource, /"start"[\s\S]{0,1000}Complete-Recovery \$recoveryState/);
+  assert.match(serviceSource, /function Get-PersistentQueueCount/);
+  assert.match(serviceSource, /QueueResumePending = \$recoveryExpectedQueue/);
+  assert.match(serviceSource, /Service-operation contention:/);
+  assert.match(serviceSource, /ContendedOperationStage/);
+  assert.match(serviceSource, /ContendedControllerPid/);
 });
 
 test('history heatmaps track the first fully visible card', () => {

@@ -11,7 +11,9 @@ service streams to .codex\service-logs, verifies the listener/venv process
 chain, and resumes the queue only when it was running before a restart.
 Repository-scoped locking serializes mutating operations from concurrent chats.
 When a call encounters an active operation, it emits a warning before waiting
-and reports the lock wait in the returned result.
+and reports the lock wait plus any known operation ID, action, and stage in the
+returned result. Restart intent is persisted before shutdown so a later start
+can finish an interrupted restart and restore a previously running queue.
 
 Mutating operations write transitions and failures to the bounded rolling
 .codex\service-logs\service-control.log. The current service run writes to the
@@ -22,7 +24,8 @@ launches replace the stream logs and remove legacy service-launch files.
 status, start, restart, or stop. The default is status.
 
 .PARAMETER TimeoutSeconds
-Maximum time to wait for each queue, process, port, or health transition.
+Maximum time to wait for each queue, process, port, health, or controller-lock
+transition. The default accommodates this installation's slower startup.
 
 .PARAMETER Force
 Allows replacement of an unresponsive YT Library listener or one whose venv
@@ -50,7 +53,7 @@ param(
     [string]$Action = "status",
 
     [ValidateRange(5, 300)]
-    [int]$TimeoutSeconds = 30,
+    [int]$TimeoutSeconds = 90,
 
     [switch]$Force,
     [switch]$Json
@@ -65,6 +68,7 @@ $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
 $managerScript = "yt_library_manager.py"
 $logDirectory = Join-Path $repoRoot ".codex\service-logs"
 $controlLogPath = Join-Path $logDirectory "service-control.log"
+$recoveryStatePath = Join-Path $logDirectory "service-recovery.json"
 $controlLogMaxBytes = 262144
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 $repoNameBytes = [System.Text.Encoding]::UTF8.GetBytes($repoRoot.ToLowerInvariant())
@@ -73,6 +77,10 @@ $repoNameToken = [System.Convert]::ToHexString($repoNameHash).Substring(0, 16)
 $operationMutexName = "Local\YTLibraryServiceControl-$repoNameToken"
 $operationLockWaited = $false
 $operationLockWaitSeconds = 0.0
+$contendedOperationId = ""
+$contendedOperationAction = ""
+$contendedOperationStage = ""
+$contendedControllerPid = 0
 
 function Write-ControlLog {
     param(
@@ -127,6 +135,89 @@ function Get-ObjectValue {
     return $property.Value
 }
 
+function Write-RecoveryState {
+    param([object]$State)
+
+    $temporaryPath = "$recoveryStatePath.$PID.tmp"
+    $json = $State | ConvertTo-Json -Depth 6
+    [System.IO.File]::WriteAllText(
+        $temporaryPath,
+        $json,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    [System.IO.File]::Move($temporaryPath, $recoveryStatePath, $true)
+}
+
+function Get-RecoveryState {
+    if (-not (Test-Path -LiteralPath $recoveryStatePath -PathType Leaf)) {
+        return $null
+    }
+    try {
+        return Get-Content -LiteralPath $recoveryStatePath -Raw | ConvertFrom-Json
+    }
+    catch {
+        Write-ControlLog "WARN" "Could not read restart recovery state: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function New-RestartRecoveryState {
+    param(
+        [int]$OldPid,
+        [bool]$QueueWasRunning,
+        [int]$QueueCount
+    )
+
+    $now = (Get-Date).ToUniversalTime().ToString("o")
+    $state = [pscustomobject][ordered]@{
+        operationId = [guid]::NewGuid().ToString()
+        action = "restart"
+        controllerPid = $PID
+        oldPid = $OldPid
+        queueWasRunning = $QueueWasRunning
+        queueCount = $QueueCount
+        stage = "preparing"
+        startedAt = $now
+        updatedAt = $now
+        launcherPid = 0
+        servicePid = 0
+        lastError = ""
+    }
+    Write-RecoveryState $state
+    Write-ControlLog "INFO" "Persisted restart recovery operation $($state.operationId); queue_running=$QueueWasRunning; queue_count=$QueueCount."
+    return $state
+}
+
+function Update-RecoveryState {
+    param(
+        [object]$State,
+        [string]$Stage,
+        [hashtable]$Values = @{}
+    )
+
+    if ($null -eq $State) {
+        return
+    }
+    $State | Add-Member -NotePropertyName stage -NotePropertyValue $Stage -Force
+    $State | Add-Member -NotePropertyName updatedAt -NotePropertyValue ((Get-Date).ToUniversalTime().ToString("o")) -Force
+    foreach ($entry in $Values.GetEnumerator()) {
+        $State | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value -Force
+    }
+    Write-RecoveryState $State
+    Write-ControlLog "INFO" "Restart recovery operation $($State.operationId) stage=$Stage."
+}
+
+function Clear-RecoveryState {
+    param([object]$State)
+
+    if (Test-Path -LiteralPath $recoveryStatePath -PathType Leaf) {
+        Remove-Item -LiteralPath $recoveryStatePath -Force
+    }
+    if ($null -ne $State) {
+        Write-ControlLog "INFO" "Cleared restart recovery operation $($State.operationId)."
+    }
+}
+
 function Get-ServiceConfiguration {
     $config = [pscustomobject]@{}
     if (Test-Path -LiteralPath $configPath) {
@@ -135,6 +226,13 @@ function Get-ServiceConfiguration {
 
     $bindHost = [string](Get-ObjectValue $config "host" "127.0.0.1")
     $port = [int](Get-ObjectValue $config "port" 8765)
+    $databaseSetting = [string](Get-ObjectValue $config "database" "yt_library.sqlite3")
+    $databasePath = if ([System.IO.Path]::IsPathRooted($databaseSetting)) {
+        [System.IO.Path]::GetFullPath($databaseSetting)
+    }
+    else {
+        [System.IO.Path]::GetFullPath((Join-Path $repoRoot $databaseSetting))
+    }
     $probeHost = if ($bindHost -in @("0.0.0.0", "::")) { "127.0.0.1" } else { $bindHost }
     $uriHost = if ($probeHost.Contains(":")) { "[$probeHost]" } else { $probeHost }
 
@@ -142,10 +240,41 @@ function Get-ServiceConfiguration {
         BindHost = $bindHost
         Port = $port
         BaseUrl = "http://${uriHost}:$port"
+        DatabasePath = $databasePath
     }
 }
 
 $serviceConfig = Get-ServiceConfiguration
+
+function Get-PersistentQueueCount {
+    if (
+        -not (Test-Path -LiteralPath $venvPython -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $serviceConfig.DatabasePath -PathType Leaf)
+    ) {
+        return 0
+    }
+
+    $query = @'
+import sqlite3
+import sys
+
+connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=5)
+try:
+    print(connection.execute("SELECT COUNT(*) FROM worker_queue").fetchone()[0])
+finally:
+    connection.close()
+'@
+    try {
+        $value = & $venvPython -c $query $serviceConfig.DatabasePath 2>$null
+        if ($LASTEXITCODE -eq 0 -and $null -ne $value) {
+            return [int]$value
+        }
+    }
+    catch {
+        Write-Verbose "Persistent queue count unavailable: $($_.Exception.Message)"
+    }
+    return 0
+}
 
 function Get-ServiceStatus {
     $timeout = [Math]::Min([Math]::Max($TimeoutSeconds, 5), 15)
@@ -241,6 +370,32 @@ function Wait-ForCondition {
     throw $FailureMessage
 }
 
+function Wait-ForServiceStartup {
+    param(
+        [System.Diagnostics.Process]$Launcher,
+        [string]$StderrPath
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $Launcher.Refresh()
+        if ($Launcher.HasExited) {
+            throw "Venv launcher exited with code $($Launcher.ExitCode); see $StderrPath"
+        }
+        $currentStatus = Get-ServiceStatus
+        if ($null -ne $currentStatus -and $currentStatus.service.status -eq "running") {
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    $Launcher.Refresh()
+    if ($Launcher.HasExited) {
+        throw "Venv launcher exited with code $($Launcher.ExitCode); see $StderrPath"
+    }
+    throw "Venv launcher PID $($Launcher.Id) remains alive, but the service did not become healthy within $TimeoutSeconds seconds; see $StderrPath"
+}
+
 function Stop-QueueIfRunning {
     param([object]$Status)
 
@@ -318,6 +473,8 @@ function Stop-RunningService {
 }
 
 function Start-ServiceProcess {
+    param([object]$RecoveryState = $null)
+
     if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
         throw "Project venv Python was not found: $venvPython"
     }
@@ -339,16 +496,13 @@ function Start-ServiceProcess {
     }
     $launcher = Start-Process @start
     Write-ControlLog "INFO" "Started venv launcher PID $($launcher.Id); stdout=$stdoutPath; stderr=$stderrPath."
+    Update-RecoveryState $RecoveryState "launching" @{
+        launcherPid = [int]$launcher.Id
+        lastError = ""
+    }
 
     try {
-        Wait-ForCondition {
-            $launcher.Refresh()
-            if ($launcher.HasExited) {
-                throw "Venv launcher exited with code $($launcher.ExitCode); see $stderrPath"
-            }
-            $currentStatus = Get-ServiceStatus
-            $null -ne $currentStatus -and $currentStatus.service.status -eq "running"
-        } "Service did not become healthy within $TimeoutSeconds seconds; see $stderrPath"
+        Wait-ForServiceStartup $launcher $stderrPath
 
         $healthyStatus = Get-ServiceStatus
         if ($null -eq $healthyStatus) {
@@ -362,6 +516,14 @@ function Start-ServiceProcess {
         $venvLauncher = Get-VenvLauncherRecord $serviceProcessId
         if ($null -eq $venvLauncher -or [int]$venvLauncher.ProcessId -ne $launcher.Id) {
             throw "Service PID $serviceProcessId is not a child of venv launcher PID $($launcher.Id)"
+        }
+        $recoveryStage = if (
+            $null -ne $RecoveryState -and
+            [bool](Get-ObjectValue $RecoveryState "queueWasRunning" $false)
+        ) { "queue_resume_pending" } else { "verifying" }
+        Update-RecoveryState $RecoveryState $recoveryStage @{
+            servicePid = $serviceProcessId
+            launcherPid = [int]$launcher.Id
         }
 
         Write-ControlLog "INFO" "Service healthy at $($serviceConfig.BaseUrl); PID $serviceProcessId; venv launcher PID $($launcher.Id)."
@@ -406,11 +568,52 @@ function Resume-Queue {
     return $response.dispatcher
 }
 
+function Complete-Recovery {
+    param(
+        [object]$RecoveryState,
+        [object]$CurrentStatus
+    )
+
+    $queueShouldRun = (
+        $null -ne $RecoveryState -and
+        [bool](Get-ObjectValue $RecoveryState "queueWasRunning" $false)
+    )
+    $resumeResult = $null
+    if ($queueShouldRun -and ($null -eq $CurrentStatus -or -not [bool]$CurrentStatus.workerQueueRunning)) {
+        Update-RecoveryState $RecoveryState "queue_resume_pending"
+        $resumeResult = Resume-Queue
+        Wait-ForCondition {
+            $status = Get-ServiceStatus
+            $null -ne $status -and [bool]$status.workerQueueRunning
+        } "Worker queue did not resume within $TimeoutSeconds seconds"
+    }
+    elseif ($queueShouldRun) {
+        Write-ControlLog "INFO" "Worker queue is already running; no recovery resume is needed."
+    }
+
+    $finalStatus = Get-ServiceStatus
+    if ($null -eq $finalStatus) {
+        throw "Service health was lost while completing restart recovery"
+    }
+    if ($queueShouldRun -and -not [bool]$finalStatus.workerQueueRunning) {
+        throw "Service is healthy, but the worker queue recovery is still pending"
+    }
+    Clear-RecoveryState $RecoveryState
+    return [pscustomobject]@{
+        Status = $finalStatus
+        QueueResumed = $queueShouldRun -and $null -ne $resumeResult
+    }
+}
+
 function Write-Result {
     param([object]$Result)
 
     $Result | Add-Member -NotePropertyName OperationLockWaited -NotePropertyValue $operationLockWaited
     $Result | Add-Member -NotePropertyName OperationLockWaitSeconds -NotePropertyValue $operationLockWaitSeconds
+    $Result | Add-Member -NotePropertyName ContendedOperationId -NotePropertyValue $contendedOperationId
+    $Result | Add-Member -NotePropertyName ContendedOperationAction -NotePropertyValue $contendedOperationAction
+    $Result | Add-Member -NotePropertyName ContendedOperationStage -NotePropertyValue $contendedOperationStage
+    $Result | Add-Member -NotePropertyName ContendedControllerPid -NotePropertyValue $contendedControllerPid
     if ($Json) {
         Write-Output ($Result | ConvertTo-Json -Depth 6 -Compress)
     }
@@ -421,6 +624,7 @@ function Write-Result {
 
 $operationMutex = $null
 $operationLockHeld = $false
+$activeRecoveryState = $null
 
 try {
     if ($Action -ne "status") {
@@ -434,7 +638,20 @@ try {
         }
         if (-not $operationLockHeld) {
             $operationLockWaited = $true
-            $waitMessage = "Another service operation is active; waiting up to $TimeoutSeconds seconds for the service-operation lock."
+            $contendedState = Get-RecoveryState
+            if ($null -ne $contendedState) {
+                $contendedOperationId = [string](Get-ObjectValue $contendedState "operationId" "")
+                $contendedOperationAction = [string](Get-ObjectValue $contendedState "action" "")
+                $contendedOperationStage = [string](Get-ObjectValue $contendedState "stage" "")
+                $contendedControllerPid = [int](Get-ObjectValue $contendedState "controllerPid" 0)
+            }
+            $operationDescription = if ($contendedOperationId) {
+                "$contendedOperationAction operation $contendedOperationId (controller PID $contendedControllerPid) at stage $contendedOperationStage"
+            }
+            else {
+                "another service operation"
+            }
+            $waitMessage = "Service-operation contention: $operationDescription is active; waiting up to $TimeoutSeconds seconds for the lock."
             Write-Warning $waitMessage
             $lockWait = [System.Diagnostics.Stopwatch]::StartNew()
             try {
@@ -449,48 +666,88 @@ try {
                 $operationLockWaitSeconds = [Math]::Round($lockWait.Elapsed.TotalSeconds, 3)
             }
             if ($operationLockHeld) {
-                Write-ControlLog "INFO" "Acquired service-operation lock after waiting $operationLockWaitSeconds seconds."
+                Write-ControlLog "INFO" "Acquired service-operation lock after waiting $operationLockWaitSeconds seconds; contended_operation=$contendedOperationId; contended_action=$contendedOperationAction; contended_stage=$contendedOperationStage; contended_controller_pid=$contendedControllerPid."
             }
         }
         if (-not $operationLockHeld) {
-            throw "Another service operation is still running after waiting $TimeoutSeconds seconds"
+            throw "Service-operation contention did not clear within $TimeoutSeconds seconds; operation=$contendedOperationId; action=$contendedOperationAction; stage=$contendedOperationStage; controller_pid=$contendedControllerPid"
         }
     }
 
     $initialStatus = Get-ServiceStatus
     $initialListenerProcessId = Get-ListenerProcessId
-    $queueWasRunning = $null -ne $initialStatus -and [bool]$initialStatus.workerQueueRunning
-    $queueCount = if ($null -ne $initialStatus) { [int]$initialStatus.workerQueueCount } else { 0 }
+    $recoveryState = Get-RecoveryState
+    $queueIsRunning = $null -ne $initialStatus -and [bool]$initialStatus.workerQueueRunning
+    $recoveryExpectedQueue = (
+        $null -ne $recoveryState -and
+        [bool](Get-ObjectValue $recoveryState "queueWasRunning" $false)
+    )
+    $queueWasRunning = $queueIsRunning -or $recoveryExpectedQueue
+    $queueCount = if ($null -ne $initialStatus) {
+        [int]$initialStatus.workerQueueCount
+    }
+    else {
+        Get-PersistentQueueCount
+    }
     if ($Action -ne "status") {
-        Write-ControlLog "INFO" "Action=$Action; url=$($serviceConfig.BaseUrl); listener_pid=$initialListenerProcessId; queue_running=$queueWasRunning; queue_count=$queueCount."
+        $recoveryOperationId = if ($null -ne $recoveryState) { [string]$recoveryState.operationId } else { "" }
+        Write-ControlLog "INFO" "Action=$Action; url=$($serviceConfig.BaseUrl); listener_pid=$initialListenerProcessId; queue_running=$queueIsRunning; queue_should_run=$queueWasRunning; queue_count=$queueCount; recovery_operation=$recoveryOperationId."
     }
 
     switch ($Action) {
         "status" {
-            $state = if ($null -ne $initialStatus) { "running" } elseif ($initialListenerProcessId) { "unhealthy" } else { "stopped" }
+            $state = if ($null -ne $recoveryState) {
+                switch ([string](Get-ObjectValue $recoveryState "stage" "recovering")) {
+                    { $_ -in @("preparing", "stopping_queue", "stopping_service", "launching") } { "restarting"; break }
+                    default { "recovering" }
+                }
+            }
+            elseif ($null -ne $initialStatus) { "running" }
+            elseif ($initialListenerProcessId) { "unhealthy" }
+            else { "stopped" }
             $launcher = if ($initialListenerProcessId) { Get-VenvLauncherRecord $initialListenerProcessId } else { $null }
+            $recoveryLauncherPid = if ($null -ne $recoveryState) {
+                [int](Get-ObjectValue $recoveryState "launcherPid" 0)
+            }
+            else { 0 }
             Write-Result ([pscustomobject]@{
                 Action = "status"
                 State = $state
                 Url = $serviceConfig.BaseUrl
                 ServicePid = $initialListenerProcessId
-                LauncherPid = if ($null -ne $launcher) { [int]$launcher.ProcessId } else { 0 }
-                QueueRunning = $queueWasRunning
+                LauncherPid = if ($null -ne $launcher) { [int]$launcher.ProcessId } else { $recoveryLauncherPid }
+                QueueRunning = $queueIsRunning
                 QueueCount = $queueCount
+                QueueResumePending = $recoveryExpectedQueue -and -not $queueIsRunning
+                OperationId = if ($null -ne $recoveryState) { [string]$recoveryState.operationId } else { "" }
+                OperationStage = if ($null -ne $recoveryState) { [string]$recoveryState.stage } else { "" }
+                ControllerPid = if ($null -ne $recoveryState) { [int](Get-ObjectValue $recoveryState "controllerPid" 0) } else { 0 }
                 ProxyBlocked = $null -ne $initialStatus -and [bool]$initialStatus.proxyBlock.blocked
                 ControlLog = $controlLogPath
+                RecoveryState = $recoveryStatePath
             })
         }
         "start" {
+            $activeRecoveryState = $recoveryState
             if ($null -ne $initialStatus) {
-                Write-ControlLog "INFO" "Start skipped because service PID $([int]$initialStatus.service.pid) is already healthy."
+                $completed = if ($null -ne $recoveryState) {
+                    Write-ControlLog "INFO" "Healthy service found with pending restart recovery; completing queue restoration."
+                    Complete-Recovery $recoveryState $initialStatus
+                }
+                else {
+                    [pscustomobject]@{ Status = $initialStatus; QueueResumed = $false }
+                }
+                $activeRecoveryState = $null
+                $finalStatus = $completed.Status
+                Write-ControlLog "INFO" "Start skipped because service PID $([int]$finalStatus.service.pid) is already healthy."
                 Write-Result ([pscustomobject]@{
                     Action = "start"
-                    State = "already running"
+                    State = if ($null -ne $recoveryState) { "recovered" } else { "already running" }
                     Url = $serviceConfig.BaseUrl
-                    ServicePid = [int]$initialStatus.service.pid
-                    QueueRunning = [bool]$initialStatus.workerQueueRunning
-                    QueueCount = [int]$initialStatus.workerQueueCount
+                    ServicePid = [int]$finalStatus.service.pid
+                    QueueRecovered = [bool]$completed.QueueResumed
+                    QueueRunning = [bool]$finalStatus.workerQueueRunning
+                    QueueCount = [int]$finalStatus.workerQueueCount
                     ControlLog = $controlLogPath
                 })
                 break
@@ -498,7 +755,15 @@ try {
             if ($initialListenerProcessId) {
                 throw "Port $($serviceConfig.Port) is occupied by an unhealthy process; use restart -Force after inspecting it"
             }
-            $started = Start-ServiceProcess
+            $started = Start-ServiceProcess $recoveryState
+            $completed = if ($null -ne $recoveryState) {
+                Complete-Recovery $recoveryState $started.Status
+            }
+            else {
+                [pscustomobject]@{ Status = $started.Status; QueueResumed = $false }
+            }
+            $activeRecoveryState = $null
+            $finalStatus = $completed.Status
             Write-ControlLog "INFO" "Start complete; service PID $($started.ServiceProcessId)."
             Write-Result ([pscustomobject]@{
                 Action = "start"
@@ -506,8 +771,9 @@ try {
                 Url = $serviceConfig.BaseUrl
                 ServicePid = $started.ServiceProcessId
                 LauncherPid = $started.LauncherProcessId
-                QueueRunning = [bool]$started.Status.workerQueueRunning
-                QueueCount = [int]$started.Status.workerQueueCount
+                QueueRecovered = [bool]$completed.QueueResumed
+                QueueRunning = [bool]$finalStatus.workerQueueRunning
+                QueueCount = [int]$finalStatus.workerQueueCount
                 Stdout = $started.Stdout
                 Stderr = $started.Stderr
                 ControlLog = $controlLogPath
@@ -519,6 +785,7 @@ try {
             }
             Stop-QueueIfRunning $initialStatus
             $stopped = Stop-RunningService $initialStatus
+            Clear-RecoveryState $recoveryState
             Write-ControlLog "INFO" "Stop complete; previous service PID $($stopped.ServiceProcessId)."
             Write-Result ([pscustomobject]@{
                 Action = "stop"
@@ -535,18 +802,16 @@ try {
             if ($null -eq $initialStatus -and $initialListenerProcessId -and -not $Force) {
                 throw "The listener is not responding to status; use restart -Force after inspecting it"
             }
+            $activeRecoveryState = New-RestartRecoveryState $initialListenerProcessId $queueWasRunning $queueCount
+            Update-RecoveryState $activeRecoveryState "stopping_queue"
             Stop-QueueIfRunning $initialStatus
+            Update-RecoveryState $activeRecoveryState "stopping_service"
             $stopped = Stop-RunningService $initialStatus
-            $started = Start-ServiceProcess
-            $resumeResult = $null
-            if ($queueWasRunning) {
-                $resumeResult = Resume-Queue
-            }
-            $finalStatus = Get-ServiceStatus
-            if ($null -eq $finalStatus) {
-                throw "Service health was lost after restart"
-            }
-            Write-ControlLog "INFO" "Restart complete; old PID $($stopped.ServiceProcessId); new PID $($started.ServiceProcessId); queue_resumed=$($queueWasRunning -and $null -ne $resumeResult)."
+            $started = Start-ServiceProcess $activeRecoveryState
+            $completed = Complete-Recovery $activeRecoveryState $started.Status
+            $activeRecoveryState = $null
+            $finalStatus = $completed.Status
+            Write-ControlLog "INFO" "Restart complete; old PID $($stopped.ServiceProcessId); new PID $($started.ServiceProcessId); queue_resumed=$($completed.QueueResumed)."
             Write-Result ([pscustomobject]@{
                 Action = "restart"
                 State = "running"
@@ -555,7 +820,7 @@ try {
                 ServicePid = $started.ServiceProcessId
                 LauncherPid = $started.LauncherProcessId
                 QueueWasRunning = $queueWasRunning
-                QueueResumed = $queueWasRunning -and $null -ne $resumeResult
+                QueueResumed = [bool]$completed.QueueResumed
                 QueueRunning = $null -ne $finalStatus -and [bool]$finalStatus.workerQueueRunning
                 QueueCount = if ($null -ne $finalStatus) { [int]$finalStatus.workerQueueCount } else { $queueCount }
                 ProxyBlocked = $null -ne $finalStatus -and [bool]$finalStatus.proxyBlock.blocked
@@ -567,8 +832,19 @@ try {
     }
 }
 catch {
+    $actionError = $_.Exception.Message
     if ($operationLockHeld) {
-        Write-ControlLog "ERROR" "Action=$Action failed: $($_.Exception.Message)"
+        if ($null -ne $activeRecoveryState) {
+            try {
+                Update-RecoveryState $activeRecoveryState "failed" @{
+                    lastError = $actionError
+                }
+            }
+            catch {
+                Write-ControlLog "ERROR" "Could not persist restart recovery failure: $($_.Exception.Message)"
+            }
+        }
+        Write-ControlLog "ERROR" "Action=$Action failed: $actionError"
     }
     throw
 }
