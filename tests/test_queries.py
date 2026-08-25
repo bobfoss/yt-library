@@ -223,6 +223,8 @@ class NormalizedReadModelTests(unittest.TestCase):
             location_name="Maui",
             content_check_required=True,
             content_check_reason="Sensitive subject matter",
+            ai_disclosure=True,
+            ai_disclosure_text="Sounds or visuals were altered or fully generated.",
             source="metadata",
         )
         self.conn.execute(
@@ -250,6 +252,11 @@ class NormalizedReadModelTests(unittest.TestCase):
             self.assertEqual(item["location_name"], "Maui")
             self.assertEqual(item["content_check_required"], 1)
             self.assertEqual(item["content_check_reason"], "Sensitive subject matter")
+            self.assertEqual(item["ai_disclosure"], 1)
+            self.assertEqual(
+                item["ai_disclosure_text"],
+                "Sounds or visuals were altered or fully generated.",
+            )
 
     def test_channel_status_transition_is_consistent_across_read_models(self) -> None:
         channel_id = "UC_status_transition"
@@ -2054,6 +2061,54 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["type-live"],
         )
 
+    def test_omni_search_ai_disclosure_facet_has_stable_three_way_counts(self) -> None:
+        fixtures = (
+            ("ai-positive", 1),
+            ("ai-negative", 0),
+            ("ai-unknown", None),
+        )
+        for video_id, disclosure in fixtures:
+            self.add_video(video_id, f"AI facet {video_id}")
+            self.conn.execute(
+                "UPDATE videos SET ai_disclosure = ? WHERE video_id = ?",
+                (disclosure, video_id),
+            )
+        self.conn.commit()
+
+        unfiltered = omni_search_data(
+            self.conn,
+            "AI facet",
+            result_kinds={"video"},
+            sort="title",
+            limit=100,
+        )
+        self.assertEqual(
+            unfiltered["aiDisclosureCounts"],
+            {
+                "total": 3,
+                "made_with_ai": 1,
+                "no_disclosure": 1,
+                "unknown": 1,
+            },
+        )
+
+        filtered = omni_search_data(
+            self.conn,
+            "AI facet",
+            result_kinds={"video"},
+            video_ai_disclosure_filters={"made_with_ai"},
+            sort="title",
+            limit=100,
+        )
+        self.assertEqual(
+            [result["item"]["video_id"] for result in filtered["results"]],
+            ["ai-positive"],
+        )
+        self.assertEqual(
+            filtered["aiDisclosureCounts"],
+            unfiltered["aiDisclosureCounts"],
+        )
+
     def test_omni_search_filters_partial_completion_by_minimum_percentage(self) -> None:
         for video_id, title in (
             ("partial-low", "Partial low"),
@@ -3099,6 +3154,53 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["collection-live"],
         )
         self.assertEqual(live["videoTypeCounts"], unfiltered["videoTypeCounts"])
+
+    def test_video_collection_ai_disclosure_facet_has_stable_three_way_counts(self) -> None:
+        self.conn.execute(
+            "INSERT INTO playlists(playlist_id, title) VALUES ('PLai', 'AI disclosure')"
+        )
+        fixtures = (
+            ("collection-ai-positive", 1),
+            ("collection-ai-negative", 0),
+            ("collection-ai-unknown", None),
+        )
+        for position, (video_id, disclosure) in enumerate(fixtures, start=1):
+            self.add_video(video_id, video_id)
+            self.conn.execute(
+                "UPDATE videos SET ai_disclosure = ? WHERE video_id = ?",
+                (disclosure, video_id),
+            )
+            self.conn.execute(
+                "INSERT INTO playlist_items(playlist_id, position, video_id) "
+                "VALUES ('PLai', ?, ?)",
+                (position, video_id),
+            )
+        self.conn.commit()
+
+        unfiltered = video_collection_data(self.conn, playlist_id="PLai")
+        self.assertEqual(
+            unfiltered["aiDisclosureCounts"],
+            {
+                "total": 3,
+                "made_with_ai": 1,
+                "no_disclosure": 1,
+                "unknown": 1,
+            },
+        )
+
+        filtered = video_collection_data(
+            self.conn,
+            playlist_id="PLai",
+            ai_disclosure_filters={"made_with_ai"},
+        )
+        self.assertEqual(
+            [row["video_id"] for row in filtered["results"]],
+            ["collection-ai-positive"],
+        )
+        self.assertEqual(
+            filtered["aiDisclosureCounts"],
+            unfiltered["aiDisclosureCounts"],
+        )
 
     def test_video_collection_broadcast_status_facet_only_filters_livestreams(self) -> None:
         self.conn.execute(

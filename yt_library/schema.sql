@@ -111,6 +111,8 @@ CREATE TABLE IF NOT EXISTS videos (
   location_name TEXT,
   content_check_required INTEGER CHECK (content_check_required IN (0, 1)),
   content_check_reason TEXT,
+  ai_disclosure INTEGER CHECK (ai_disclosure IN (0, 1)),
+  ai_disclosure_text TEXT,
   thumbnail_url TEXT NOT NULL DEFAULT '',
   thumbnail_path TEXT NOT NULL DEFAULT '',
   reaction TEXT NOT NULL DEFAULT ''

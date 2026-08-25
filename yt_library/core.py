@@ -723,6 +723,8 @@ def upsert_video(
     location_name: str | None = None,
     content_check_required: bool | int | None = None,
     content_check_reason: str | None = None,
+    ai_disclosure: bool | int | None = None,
+    ai_disclosure_text: str | None = None,
     thumbnail_url: str = "",
     thumbnail_path: str = "",
     reaction: str = "",
@@ -798,6 +800,17 @@ def upsert_video(
         existing_value = existing["content_check_reason"] if existing else None
         return existing_value if existing_value is not None else incoming
 
+    def current_ai_disclosure_text() -> str | None:
+        if ai_disclosure is None:
+            return existing["ai_disclosure_text"] if existing else None
+        if not ai_disclosure:
+            return ""
+        incoming = str(ai_disclosure_text or "").strip()
+        if authoritative:
+            return incoming
+        existing_value = existing["ai_disclosure_text"] if existing else None
+        return existing_value if existing_value is not None else incoming
+
     incoming_title = video_title_or_blank(title, video_id)
     existing_title = str(existing["title"] or "").strip() if existing else ""
     if incoming_title and (authoritative or not useful_video_title(existing_title, video_id)):
@@ -854,6 +867,11 @@ def upsert_video(
             int(bool(content_check_required)) if content_check_required is not None else None,
         ),
         current_content_check_reason(),
+        current_observation(
+            "ai_disclosure",
+            int(bool(ai_disclosure)) if ai_disclosure is not None else None,
+        ),
+        current_ai_disclosure_text(),
         current("thumbnail_url", thumbnail_url),
         current("thumbnail_path", thumbnail_path),
         current("reaction", reaction),
@@ -876,7 +894,7 @@ def upsert_video(
               broadcast_ended_at=?, broadcast_status_checked_at=?,
               movie_rating=?, movie_release_date=?, movie_offer=?,
               max_video_height=?, spatial_format=?, stereo_layout=?, dynamic_range=?, license=?, location_name=?,
-              content_check_required=?, content_check_reason=?,
+              content_check_required=?, content_check_reason=?, ai_disclosure=?, ai_disclosure_text=?,
               thumbnail_url=?, thumbnail_path=?, reaction=?, is_playable=?,
               availability=?, metadata_source=?,
               fetch_status=?, fetch_error=?, fetched_at=?, last_seen_available_at=?,
@@ -894,11 +912,11 @@ def upsert_video(
               broadcast_ended_at, broadcast_status_checked_at,
               movie_rating, movie_release_date, movie_offer,
               max_video_height, spatial_format, stereo_layout, dynamic_range, license, location_name,
-              content_check_required, content_check_reason,
+              content_check_required, content_check_reason, ai_disclosure, ai_disclosure_text,
               thumbnail_url, thumbnail_path, reaction, is_playable, availability, metadata_source,
               fetch_status, fetch_error, fetched_at, last_seen_available_at,
               last_checked_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (video_id, *values),
         )
@@ -3960,6 +3978,37 @@ def youtube_content_check_metadata(
     }
 
 
+def youtube_ai_disclosure_metadata(
+    player: Mapping[str, Any],
+    initial_data: Mapping[str, Any],
+) -> dict[str, bool | str | None]:
+    playability = player.get("playabilityStatus", {})
+    details = player.get("videoDetails", {})
+    page_observed = (
+        str(playability.get("status") or "").strip().upper() == "OK"
+        and bool(details)
+    )
+    if not page_observed:
+        return {
+            "ai_disclosure": None,
+            "ai_disclosure_text": None,
+        }
+    disclosure = _first_youtube_renderer(
+        initial_data,
+        "howThisWasMadeSectionViewModel",
+    )
+    if not disclosure:
+        return {
+            "ai_disclosure": False,
+            "ai_disclosure_text": "",
+        }
+    body_text = text_from_runs(disclosure.get("bodyText") or {}).strip()
+    return {
+        "ai_disclosure": True,
+        "ai_disclosure_text": body_text,
+    }
+
+
 def opener_cookie_jar(
     opener: urllib.request.OpenerDirector,
 ) -> http.cookiejar.CookieJar | None:
@@ -4055,6 +4104,7 @@ def extract_watch_metadata(
     feature_metadata = youtube_video_feature_metadata(player, initial_data)
     broadcast_metadata = youtube_broadcast_metadata(details, microformat)
     content_check_metadata = youtube_content_check_metadata(initial_playability)
+    ai_disclosure_metadata = youtube_ai_disclosure_metadata(player, initial_data)
     return {
         "video_id": video_id,
         "title": title,
@@ -4071,6 +4121,7 @@ def extract_watch_metadata(
         **movie_metadata,
         **feature_metadata,
         **content_check_metadata,
+        **ai_disclosure_metadata,
         "thumbnail_url": thumbnail_url,
         "channel_thumbnail_url": channel_thumbnail_url,
         "reaction": reaction,
@@ -4219,6 +4270,8 @@ def store_video_metadata(
         location_name=metadata.get("location_name"),
         content_check_required=metadata.get("content_check_required"),
         content_check_reason=metadata.get("content_check_reason"),
+        ai_disclosure=metadata.get("ai_disclosure"),
+        ai_disclosure_text=metadata.get("ai_disclosure_text"),
         thumbnail_url=metadata.get("thumbnail_url", ""),
         thumbnail_path=metadata.get("thumbnail_path", ""),
         reaction=metadata.get("reaction", ""),

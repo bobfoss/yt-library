@@ -3505,6 +3505,99 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(metadata["stereo_layout"], "")
         self.assertEqual(metadata["dynamic_range"], "hdr")
 
+    def test_watch_metadata_extracts_youtube_ai_disclosure(self) -> None:
+        player = {
+            "playabilityStatus": {"status": "OK"},
+            "videoDetails": {"videoId": "29ItBOZKsbM", "title": "Even My Mamma"},
+        }
+        initial = {
+            "howThisWasMadeSectionViewModel": {
+                "sectionTitle": {"content": "How this was made"},
+                "bodyHeader": {"content": "Made with AI"},
+                "bodyText": {
+                    "content": "Sounds or visuals were altered or fully generated. Learn more"
+                },
+            }
+        }
+        html = (
+            "<script>var ytInitialPlayerResponse = "
+            + json.dumps(player)
+            + "; var ytInitialData = "
+            + json.dumps(initial)
+            + ";</script>"
+        )
+
+        metadata = core.extract_watch_metadata(html, "29ItBOZKsbM")
+
+        self.assertTrue(metadata["ai_disclosure"])
+        self.assertEqual(
+            metadata["ai_disclosure_text"],
+            "Sounds or visuals were altered or fully generated. Learn more",
+        )
+
+    def test_ai_disclosure_uses_three_way_observation_state(self) -> None:
+        observed = core.youtube_ai_disclosure_metadata(
+            {
+                "playabilityStatus": {"status": "OK"},
+                "videoDetails": {"title": "Ordinary video"},
+            },
+            {},
+        )
+        inconclusive = core.youtube_ai_disclosure_metadata(
+            {"playabilityStatus": {"status": "ERROR"}},
+            {},
+        )
+
+        self.assertEqual(
+            observed,
+            {"ai_disclosure": False, "ai_disclosure_text": ""},
+        )
+        self.assertEqual(
+            inconclusive,
+            {"ai_disclosure": None, "ai_disclosure_text": None},
+        )
+
+    def test_ai_disclosure_is_preserved_then_cleared_by_authoritative_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "aistate1234",
+                        title="AI state video",
+                        ai_disclosure=True,
+                        ai_disclosure_text="Altered or generated",
+                        source="metadata",
+                    )
+                    core.upsert_video(
+                        conn,
+                        "aistate1234",
+                        ai_disclosure=None,
+                        source="metadata",
+                    )
+                preserved = conn.execute(
+                    "SELECT ai_disclosure, ai_disclosure_text "
+                    "FROM videos WHERE video_id = 'aistate1234'"
+                ).fetchone()
+                self.assertEqual(tuple(preserved), (1, "Altered or generated"))
+
+                with conn:
+                    core.upsert_video(
+                        conn,
+                        "aistate1234",
+                        ai_disclosure=False,
+                        ai_disclosure_text="",
+                        source="metadata",
+                    )
+                cleared = conn.execute(
+                    "SELECT ai_disclosure, ai_disclosure_text "
+                    "FROM videos WHERE video_id = 'aistate1234'"
+                ).fetchone()
+                self.assertEqual(tuple(cleared), (0, ""))
+            finally:
+                conn.close()
+
     def test_watch_metadata_extracts_vr180_and_location_features(self) -> None:
         player = {
             "playabilityStatus": {"status": "OK"},

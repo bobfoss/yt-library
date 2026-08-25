@@ -580,7 +580,7 @@ def _video_candidate_query(
                  '' AS match_type, '' AS match_confidence, '' AS added_at,
                  v.is_playable, v.availability, v.reaction, v.uploader_category,
                  v.note,
-                 v.video_type, v.broadcast_status,
+                 v.video_type, v.broadcast_status, v.ai_disclosure,
                  COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent,
                  COALESCE(hs.watch_count, 0) AS watch_count,
                  COALESCE(hs.latest_watch_at, '') AS latest_watch_at,
@@ -612,6 +612,7 @@ def _video_candidate_query(
                  COALESCE(v.note, '') AS note,
                  COALESCE(v.video_type, '') AS video_type,
                  v.broadcast_status,
+                 v.ai_disclosure,
                  COALESCE(hs.watch_progress_percent, 0) AS watch_progress_percent,
                  CASE WHEN pi.video_id IS NULL THEN pi.unavailable_kind ELSE v.availability END AS availability,
                  COALESCE(hs.watch_count, 0) AS watch_count,
@@ -650,6 +651,7 @@ VIDEO_COMPLETION_CATEGORIES = (
 VIDEO_REACTION_CATEGORIES = ("none", "liked", "disliked")
 VIDEO_TYPE_CATEGORIES = ("video", "short", "livestream", "movie", "unknown")
 BROADCAST_STATUS_CATEGORIES = ("live", "ended", "upcoming", "unknown")
+AI_DISCLOSURE_CATEGORIES = ("made_with_ai", "no_disclosure", "unknown")
 NO_UPLOADER_CATEGORY_FILTER = "__no_category__"
 
 
@@ -682,6 +684,13 @@ def _video_broadcast_status_category(item: Mapping[str, Any]) -> str:
         return "unknown"
     normalized = str(status).strip().lower()
     return normalized if normalized in BROADCAST_STATUS_CATEGORIES[:-1] else "unknown"
+
+
+def _video_ai_disclosure_category(item: Mapping[str, Any]) -> str:
+    disclosure = item.get("ai_disclosure")
+    if disclosure is None:
+        return "unknown"
+    return "made_with_ai" if bool(disclosure) else "no_disclosure"
 
 
 def _video_completion_category(item: dict[str, Any]) -> str:
@@ -741,6 +750,7 @@ def video_collection_data(
     reaction_filters: set[str] | None = None,
     video_type_filters: set[str] | None = None,
     broadcast_status_filters: set[str] | None = None,
+    ai_disclosure_filters: set[str] | None = None,
     uploader_category_filters: set[str] | None = None,
     note_filters: set[str] | None = None,
     included_video_ids: Collection[str] | None = None,
@@ -881,6 +891,11 @@ def video_collection_data(
         if broadcast_status_filters is None
         else set(broadcast_status_filters) & set(BROADCAST_STATUS_CATEGORIES)
     )
+    selected_ai_disclosure_filters = (
+        set(AI_DISCLOSURE_CATEGORIES)
+        if ai_disclosure_filters is None
+        else set(ai_disclosure_filters) & set(AI_DISCLOSURE_CATEGORIES)
+    )
     selected_uploader_category_filters = (
         None
         if uploader_category_filters is None
@@ -945,6 +960,13 @@ def video_collection_data(
           END
         END
     """
+    ai_disclosure_sql = """
+        CASE ai_disclosure
+          WHEN 1 THEN 'made_with_ai'
+          WHEN 0 THEN 'no_disclosure'
+          ELSE 'unknown'
+        END
+    """
     note_presence_sql = """
         CASE WHEN trim(COALESCE(note, '')) <> ''
           THEN 'with_note' ELSE 'without_note' END
@@ -969,6 +991,7 @@ def video_collection_data(
                  {reaction_category_sql} AS reaction_category,
                  {video_type_sql} AS video_type_category,
                  {broadcast_status_sql} AS broadcast_status_category,
+                 {ai_disclosure_sql} AS ai_disclosure_category,
                  {note_presence_sql} AS note_presence_category,
                  {uploader_category_sql} AS uploader_category_category,
                  CASE
@@ -1038,6 +1061,11 @@ def video_collection_data(
           WHERE {plugin_filter_clause} AND broadcast_status_category <> 'not_applicable'
           GROUP BY broadcast_status_category
           UNION ALL
+          SELECT 'ai_disclosure', ai_disclosure_category, COUNT(DISTINCT count_key)
+          FROM categorized
+          WHERE {plugin_filter_clause}
+          GROUP BY ai_disclosure_category
+          UNION ALL
           SELECT 'uploader_category', uploader_category_category,
                  COUNT(DISTINCT count_key)
           FROM categorized
@@ -1065,6 +1093,10 @@ def video_collection_data(
         "total": 0,
         **{category: 0 for category in BROADCAST_STATUS_CATEGORIES},
     }
+    ai_disclosure_counts = {
+        "total": 0,
+        **{category: 0 for category in AI_DISCLOSURE_CATEGORIES},
+    }
     uploader_category_counts = {
         "total": 0,
         NO_UPLOADER_CATEGORY_FILTER: 0,
@@ -1081,6 +1113,8 @@ def video_collection_data(
             target = video_type_counts
         elif row["count_type"] == "broadcast_status":
             target = broadcast_status_counts
+        elif row["count_type"] == "ai_disclosure":
+            target = ai_disclosure_counts
         elif row["count_type"] == "note":
             target = note_counts
         else:
@@ -1095,6 +1129,10 @@ def video_collection_data(
     broadcast_status_counts["total"] = sum(
         broadcast_status_counts[category]
         for category in BROADCAST_STATUS_CATEGORIES
+    )
+    ai_disclosure_counts["total"] = sum(
+        ai_disclosure_counts[category]
+        for category in AI_DISCLOSURE_CATEGORIES
     )
     uploader_category_counts["total"] = sum(
         count
@@ -1176,6 +1214,21 @@ def video_collection_data(
         if selected_broadcast_status_filters
         else "broadcast_status_category = 'not_applicable'"
     )
+    ai_disclosure_placeholders = ", ".join(
+        f":ai_disclosure_{index}"
+        for index in range(len(selected_ai_disclosure_filters))
+    )
+    filter_params.update(
+        {
+            f"ai_disclosure_{index}": value
+            for index, value in enumerate(sorted(selected_ai_disclosure_filters))
+        }
+    )
+    ai_disclosure_clause = (
+        f"ai_disclosure_category IN ({ai_disclosure_placeholders})"
+        if selected_ai_disclosure_filters
+        else "0"
+    )
     if selected_uploader_category_filters is None:
         uploader_category_clause = "1"
     else:
@@ -1214,7 +1267,8 @@ def video_collection_data(
         else "1"
     )
     native_filter_clause = (
-        f"{video_type_clause} AND {broadcast_status_clause} AND {selected_clause} AND {completion_clause} "
+        f"{video_type_clause} AND {broadcast_status_clause} AND {ai_disclosure_clause} "
+        f"AND {selected_clause} AND {completion_clause} "
         f"AND {reaction_clause} "
         f"AND {uploader_category_clause} AND {note_clause} AND {duplicate_clause}"
     )
@@ -1347,6 +1401,7 @@ def video_collection_data(
         item.pop("reaction_category", None)
         item.pop("video_type_category", None)
         item.pop("broadcast_status_category", None)
+        item.pop("ai_disclosure_category", None)
         item.pop("uploader_category_category", None)
         item.pop("note_presence_category", None)
         item.pop("count_key", None)
@@ -1372,6 +1427,7 @@ def video_collection_data(
         "reactionCounts": reaction_counts,
         "videoTypeCounts": video_type_counts,
         "broadcastStatusCounts": broadcast_status_counts,
+        "aiDisclosureCounts": ai_disclosure_counts,
         "uploaderCategoryCounts": uploader_category_counts,
         "noteCounts": note_counts,
         "metaCounts": {"videoPlugins": video_facet_counts},
@@ -1637,6 +1693,8 @@ def projected_video_data(projection: Mapping[str, Any]) -> dict[str, Any]:
         "location_name": None,
         "content_check_required": None,
         "content_check_reason": None,
+        "ai_disclosure": None,
+        "ai_disclosure_text": None,
         "reaction": "",
         "is_playable": None,
         "availability": "",
@@ -1701,6 +1759,7 @@ OMNI_SEARCH_META_FILTERS = {
 OMNI_SEARCH_REACTION_FILTERS = VIDEO_REACTION_CATEGORIES
 OMNI_SEARCH_VIDEO_TYPE_FILTERS = VIDEO_TYPE_CATEGORIES
 OMNI_SEARCH_BROADCAST_STATUS_FILTERS = BROADCAST_STATUS_CATEGORIES
+OMNI_SEARCH_AI_DISCLOSURE_FILTERS = AI_DISCLOSURE_CATEGORIES
 OMNI_SEARCH_COMPLETION_FILTERS = VIDEO_COMPLETION_CATEGORIES
 OMNI_SEARCH_PLAYLIST_MEMBERSHIP_FILTERS = ("member", "non_member")
 OMNI_SEARCH_PLAYLIST_OWNERSHIP_FILTERS = ("mine", "others", "ownership_unknown")
@@ -2075,6 +2134,25 @@ def _omni_video_broadcast_status_counts(
     return counts
 
 
+def _omni_video_ai_disclosure_category(result: dict[str, Any]) -> str:
+    return _video_ai_disclosure_category(result["item"])
+
+
+def _omni_video_ai_disclosure_counts(
+    results: list[dict[str, Any]],
+) -> dict[str, int]:
+    counts = {
+        "total": 0,
+        **{category: 0 for category in OMNI_SEARCH_AI_DISCLOSURE_FILTERS},
+    }
+    for result in results:
+        if result["kind"] != "video":
+            continue
+        counts["total"] += 1
+        counts[_omni_video_ai_disclosure_category(result)] += 1
+    return counts
+
+
 def _known_uploader_categories(conn: sqlite3.Connection) -> tuple[str, ...]:
     categories = {
         str(row[0]).strip()
@@ -2250,6 +2328,8 @@ def _hydrate_omni_videos(conn: sqlite3.Connection, results: list[dict[str, Any]]
                v.location_name,
                v.content_check_required,
                v.content_check_reason,
+               v.ai_disclosure,
+               v.ai_disclosure_text,
                v.thumbnail_path AS metadata_thumbnail_path,
                COALESCE(ch.thumbnail_path, '') AS metadata_channel_thumbnail_path,
                v.fetch_status AS metadata_fetch_status,
@@ -2382,6 +2462,7 @@ def _omni_video_sql_data(
     selected_playlist_membership_filters: Collection[str],
     selected_video_type_filters: Collection[str],
     selected_broadcast_status_filters: Collection[str],
+    selected_ai_disclosure_filters: Collection[str],
     selected_uploader_category_filters: Collection[str],
     selected_note_filters: Collection[str],
     known_uploader_categories: Collection[str],
@@ -2540,6 +2621,7 @@ def _omni_video_sql_data(
                  COALESCE(v.uploader_category, '') AS uploader_category,
                  COALESCE(v.video_type, '') AS video_type,
                  v.broadcast_status,
+                 v.ai_disclosure,
                  COALESCE(v.note, '') AS note,
                  CASE WHEN {video_title_hit} THEN 1 ELSE 0 END AS title_hit,
                  CASE WHEN {video_search_match_sql} THEN 1 ELSE 0 END AS plugin_search_hit,
@@ -2601,6 +2683,11 @@ def _omni_video_sql_data(
                      ELSE 'unknown'
                    END
                  END AS broadcast_status_category,
+                 CASE ai_disclosure
+                   WHEN 1 THEN 'made_with_ai'
+                   WHEN 0 THEN 'no_disclosure'
+                   ELSE 'unknown'
+                 END AS ai_disclosure_category,
                  CASE WHEN trim(COALESCE(uploader_category, '')) = ''
                    THEN '{NO_UPLOADER_CATEGORY_FILTER}'
                    ELSE trim(uploader_category)
@@ -2658,6 +2745,12 @@ def _omni_video_sql_data(
             "candidate.video_type_category",
             selected_video_type_filters,
             "selected_video_type",
+            sql_params,
+        ),
+        _omni_sql_set_clause(
+            "candidate.ai_disclosure_category",
+            selected_ai_disclosure_filters,
+            "selected_ai_disclosure",
             sql_params,
         ),
         _omni_sql_set_clause(
@@ -2740,6 +2833,11 @@ def _omni_video_sql_data(
         WHERE {plugin_match_clause} AND broadcast_status_category <> 'not_applicable'
         GROUP BY broadcast_status_category
         UNION ALL
+        SELECT 'ai_disclosure', ai_disclosure_category, COUNT(*)
+        FROM temp.omni_video_candidates candidate
+        WHERE {plugin_match_clause}
+        GROUP BY ai_disclosure_category
+        UNION ALL
         SELECT 'uploader_category', uploader_category_category, COUNT(*)
         FROM temp.omni_video_candidates candidate
         WHERE {plugin_match_clause}
@@ -2762,6 +2860,9 @@ def _omni_video_sql_data(
         "video_type": {category: 0 for category in OMNI_SEARCH_VIDEO_TYPE_FILTERS},
         "broadcast_status": {
             category: 0 for category in OMNI_SEARCH_BROADCAST_STATUS_FILTERS
+        },
+        "ai_disclosure": {
+            category: 0 for category in OMNI_SEARCH_AI_DISCLOSURE_FILTERS
         },
         "uploader_category": {
             NO_UPLOADER_CATEGORY_FILTER: 0,
@@ -2904,6 +3005,7 @@ def omni_search_data(
     video_playlist_membership_filters: set[str] | None = None,
     video_type_filters: set[str] | None = None,
     video_broadcast_status_filters: set[str] | None = None,
+    video_ai_disclosure_filters: set[str] | None = None,
     video_uploader_category_filters: set[str] | None = None,
     video_id_filters: Sequence[Collection[str]] = (),
     video_id_exclusion_filters: Sequence[Collection[str]] = (),
@@ -3196,6 +3298,12 @@ def omni_search_data(
         if video_broadcast_status_filters is None
         else set(video_broadcast_status_filters)
         & set(OMNI_SEARCH_BROADCAST_STATUS_FILTERS)
+    )
+    selected_ai_disclosure_filters = (
+        set(OMNI_SEARCH_AI_DISCLOSURE_FILTERS)
+        if video_ai_disclosure_filters is None
+        else set(video_ai_disclosure_filters)
+        & set(OMNI_SEARCH_AI_DISCLOSURE_FILTERS)
     )
     known_uploader_categories = _known_uploader_categories(conn)
     allowed_uploader_category_filters = {
@@ -3506,6 +3614,7 @@ def omni_search_data(
             selected_playlist_membership_filters=selected_playlist_membership_filters,
             selected_video_type_filters=selected_video_type_filters,
             selected_broadcast_status_filters=selected_broadcast_status_filters,
+            selected_ai_disclosure_filters=selected_ai_disclosure_filters,
             selected_uploader_category_filters=selected_uploader_category_filters,
             selected_note_filters=selected_note_filters["video"],
             known_uploader_categories=known_uploader_categories,
@@ -3630,6 +3739,7 @@ def omni_search_data(
     reaction_counts = _omni_reaction_counts([])
     video_type_counts = _omni_video_type_counts([])
     broadcast_status_counts = _omni_video_broadcast_status_counts([])
+    ai_disclosure_counts = _omni_video_ai_disclosure_counts([])
     completion_counts = _omni_completion_counts([], video_partial_min_percent)
     playlist_membership_counts = _omni_playlist_membership_counts([])
     uploader_category_counts = _omni_uploader_category_counts(
@@ -3687,6 +3797,7 @@ def omni_search_data(
             video_id = str(item.get("video_id") or "")
             video_type_category = _omni_video_type_category(result)
             broadcast_status_category = _omni_video_broadcast_status_category(result)
+            ai_disclosure_category = _omni_video_ai_disclosure_category(result)
             reaction_category = _omni_video_reaction_category(result)
             completion_category = _omni_video_completion_category(
                 result,
@@ -3700,6 +3811,7 @@ def omni_search_data(
                     broadcast_status_category == "not_applicable"
                     or broadcast_status_category in selected_broadcast_status_filters
                 )
+                and ai_disclosure_category in selected_ai_disclosure_filters
                 and result["metaCategory"] in selected_meta_filters[kind]
                 and reaction_category in selected_reaction_filters
                 and completion_category in selected_completion_filters
@@ -3741,6 +3853,8 @@ def omni_search_data(
             if broadcast_status_category != "not_applicable":
                 broadcast_status_counts["total"] += 1
                 broadcast_status_counts[broadcast_status_category] += 1
+            ai_disclosure_counts["total"] += 1
+            ai_disclosure_counts[ai_disclosure_category] += 1
             completion_counts["total"] += 1
             completion_counts[completion_category] += 1
             playlist_membership_counts["total"] += 1
@@ -3765,6 +3879,9 @@ def omni_search_data(
     for category, count in sql_counts.get("broadcast_status", {}).items():
         broadcast_status_counts[category] += count
         broadcast_status_counts["total"] += count
+    for category, count in sql_counts.get("ai_disclosure", {}).items():
+        ai_disclosure_counts[category] += count
+        ai_disclosure_counts["total"] += count
     for category, count in sql_counts.get("completion", {}).items():
         completion_counts[category] += count
         completion_counts["total"] += count
@@ -3865,6 +3982,7 @@ def omni_search_data(
         "reactionCounts": reaction_counts,
         "videoTypeCounts": video_type_counts,
         "broadcastStatusCounts": broadcast_status_counts,
+        "aiDisclosureCounts": ai_disclosure_counts,
         "completionCounts": completion_counts,
         "playlistMembershipCounts": playlist_membership_counts,
         "uploaderCategoryCounts": uploader_category_counts,
@@ -4017,6 +4135,8 @@ def history_search_data(
                    v.location_name,
                    v.content_check_required,
                    v.content_check_reason,
+                   v.ai_disclosure,
+                   v.ai_disclosure_text,
                    v.thumbnail_path AS metadata_thumbnail_path,
                    COALESCE(ch.thumbnail_path, '') AS metadata_channel_thumbnail_path,
                    v.reaction,

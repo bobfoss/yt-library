@@ -385,7 +385,7 @@ test('playlist detail reuses the sidebar video search facets', () => {
 
   assert.match(indexSource, /search\.placeholder = selected === '__history__'[\s\S]{0,220}selected\.startsWith\('__playlist__:'\)[\s\S]{0,100}'Search this playlist'/);
   assert.match(indexSource, /function searchContextKind\(\)[\s\S]{0,100}selected\.startsWith\('__playlist__:'\)[\s\S]{0,40}'videos'/);
-  assert.match(indexSource, /fetchVideoCollection\(\{[\s\S]{0,500}useSearchFacets: true/);
+  assert.match(indexSource, /fetchVideoCollection\(\{[\s\S]{0,650}useSearchFacets: true/);
   assert.match(indexSource, /reactionCounts: payload\.reactionCounts/);
   assert.match(indexSource, /uploaderCategoryCounts: payload\.uploaderCategoryCounts/);
   assert.match(indexSource, /const distinctVideoCount = Number\([\s\S]{0,180}payload\.distinctTotal/);
@@ -1221,11 +1221,11 @@ test('video cards decorate Shorts, Live, and Movies while filters also decorate 
   assert.match(typeDecoratorSource, /return '';/);
   assert.match(
     videoCardSource,
-    /\$\{options\.typeDecoratorHtml \|\| ''\}[\s\S]{0,120}data-entity-card-slot="primaryMetadata"/,
+    /\$\{options\.typeDecoratorHtml \|\| ''\}[\s\S]{0,220}data-entity-card-slot="primaryMetadata"/,
   );
   assert.match(
     namedFunctionSource(indexSource, 'videoDetailCardFor'),
-    /videoTypeDecoratorHtml\(video\)[\s\S]{0,100}data-entity-card-slot="primaryMetadata"/,
+    /videoTypeDecoratorHtml\(video\)[\s\S]{0,200}data-entity-card-slot="primaryMetadata"/,
   );
   assert.match(
     namedFunctionSource(indexSource, 'playlistVideoCardFor'),
@@ -1236,7 +1236,7 @@ test('video cards decorate Shorts, Live, and Movies while filters also decorate 
     /movieMetadataHtml: movieMetadataHtml\(video\)/,
   );
   assert.match(videoCardSource, /\$\{options\.movieMetadataHtml \|\| ''\}/);
-  assert.match(indexHtml, /\.video-type-decorator \{[\s\S]{0,220}font-size: 13px;[\s\S]{0,100}font-weight: 400;/);
+  assert.match(indexHtml, /\.video-type-decorator, \.ai-disclosure-decorator \{[\s\S]{0,220}font-size: 13px;[\s\S]{0,100}font-weight: 400;/);
   assert.match(indexHtml, /\.video-type-icon \{[\s\S]{0,180}width: 16px;[\s\S]{0,100}fill: currentColor;/);
   assert.match(indexHtml, /\.youtube-video-icon \{[\s\S]{0,100}width: 19px;[\s\S]{0,80}height: 13px;[\s\S]{0,80}flex-basis: 19px;/);
 });
@@ -1295,6 +1295,26 @@ test('video type filters reuse the card decorators', () => {
   assert.match(definitions, /key: 'movie'[\s\S]{0,100}decoratorHtml: videoTypeDecoratorHtml\('movie'\)/);
   assert.match(typeDecoratorSource, /const isVideoRecord = typeof video !== 'string'/);
   assert.match(typeDecoratorSource, /!isVideoRecord \|\| broadcastStatus === 'live'/);
+});
+
+test('AI disclosure is a core video decorator and recursive search facet', () => {
+  const indexSource = source('index.js');
+  const videoCardSource = source('video-card.js');
+  const indexHtml = source('index.html');
+  const decoratorSource = namedFunctionSource(indexSource, 'aiDisclosureDecoratorHtml');
+
+  assert.match(indexSource, /aiDisclosure: \{ made_with_ai: true, no_disclosure: true, unknown: true \}/);
+  assert.match(indexSource, /key: 'aiDisclosure'[\s\S]{0,220}allLabel: 'AI disclosure'/);
+  assert.match(indexSource, /video_ai_disclosure: metaFilterParamValue\(searchMetaVisibility\.aiDisclosure\)/);
+  assert.match(indexSource, /params\.set\('ai_disclosure', metaFilterParamValue\(aiDisclosures\)\)/);
+  assert.match(decoratorSource, /Number\(video\?\.ai_disclosure\) !== 1/);
+  assert.match(decoratorSource, /Made with AI/);
+  assert.match(indexHtml, /\.video-type-decorator, \.ai-disclosure-decorator \{[\s\S]{0,260}font-size: 13px;[\s\S]{0,100}font-weight: 400;/);
+  assert.match(videoCardSource, /options\.typeDecoratorHtml[\s\S]{0,100}options\.aiDisclosureDecoratorHtml[\s\S]{0,140}data-entity-card-slot="primaryMetadata"/);
+  assert.match(
+    namedFunctionSource(indexSource, 'videoDetailCardFor'),
+    /videoTypeDecoratorHtml\(video\)[\s\S]{0,100}aiDisclosureDecoratorHtml\(video\)[\s\S]{0,140}data-entity-card-slot="primaryMetadata"/,
+  );
 });
 
 test('sidebar keeps facet trees separate from category navigation', () => {

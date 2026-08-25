@@ -342,16 +342,19 @@
     .video-availability-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
     .video-availability-row .video-availability { display: flex; align-items: center; margin-top: 0; }
     .video-availability-row > .badge-lines { margin-top: 0; }
-    .video-type-decorator {
+    .video-type-decorator, .ai-disclosure-decorator {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 3px;
-      color: var(--muted);
       font-size: 13px;
       font-weight: 400;
       line-height: normal;
     }
+    .video-type-decorator { color: var(--muted); }
+    .ai-disclosure-decorator { color: #7dd3fc; }
+    .ai-disclosure-icon { width: 14px; height: 14px; flex: 0 0 14px; }
+    .meta-filter-decorated .ai-disclosure-icon { width: 14px; height: 14px; flex: 0 0 14px; color: #7dd3fc; }
     .video-type-icon {
       display: block;
       width: 16px;

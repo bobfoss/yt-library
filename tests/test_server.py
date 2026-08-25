@@ -770,6 +770,7 @@ class AdminServerTests(unittest.TestCase):
                 urllib.parse.urlparse(
                     "/api/search?video_type=short,livestream"
                     "&video_broadcast_status=live,ended"
+                    "&video_ai_disclosure=made_with_ai,unknown"
                     "&video_uploader_category=Science+%26+Technology,__no_category__&limit=1"
                 )
             )
@@ -781,6 +782,10 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(
             search_data.call_args.kwargs["video_broadcast_status_filters"],
             {"live", "ended"},
+        )
+        self.assertEqual(
+            search_data.call_args.kwargs["video_ai_disclosure_filters"],
+            {"made_with_ai", "unknown"},
         )
         self.assertEqual(
             search_data.call_args.kwargs["video_uploader_category_filters"],
@@ -920,7 +925,8 @@ class AdminServerTests(unittest.TestCase):
                 urllib.parse.urlparse(
                     "/api/playlists/PLshared/videos?q=phrase"
                     "&search_fields=titles,subtitles&reaction=liked"
-                    "&video_type=video,short&uploader_category=Music"
+                    "&video_type=video,short&ai_disclosure=made_with_ai"
+                    "&uploader_category=Music"
                     "&video_facet_plugin=subtitles"
                     "&video_filter_plugin=subtitles&video_exclude_filter_plugin=blocked"
                     "&video_search_plugin=subtitles&limit=10"
@@ -936,6 +942,7 @@ class AdminServerTests(unittest.TestCase):
         self.assertEqual(kwargs["search_fields"], {"titles", "subtitles"})
         self.assertEqual(kwargs["reaction_filters"], {"liked"})
         self.assertEqual(kwargs["video_type_filters"], {"video", "short"})
+        self.assertEqual(kwargs["ai_disclosure_filters"], {"made_with_ai"})
         self.assertEqual(kwargs["uploader_category_filters"], {"Music"})
         self.assertEqual(kwargs["included_video_ids"], {"alpha", "beta"})
         self.assertEqual(kwargs["excluded_video_ids"], {"beta"})

@@ -34,6 +34,9 @@ source for unfinished or deferred work.
 - Prefer shared UI and query helpers. Facet counts must remain stable when a
   filter is toggled, and loading must preserve existing headers, controls,
   pagination, heatmaps, and results instead of briefly blanking them.
+- Unless explicitly directed otherwise, metadata decorators must reuse the
+  established shared typography, sizing, and spacing. Vary glyphs and colors
+  only where they communicate a distinct meaning.
 - Watch completion belongs to history occurrences; manual metadata scans do not
   assign it. Leave missing titles blank, and derive channel `first_seen` from
   the earliest library evidence rather than the metadata-fetch date.

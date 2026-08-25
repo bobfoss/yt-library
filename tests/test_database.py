@@ -801,6 +801,45 @@ class DatabaseModuleTests(unittest.TestCase):
         )
         self.assertEqual(rows["explicit-negative"]["is_playable"], 0)
 
+    def test_database_module_migrates_ai_disclosure_metadata_from_version_32(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO videos(video_id, title) "
+                        "VALUES ('aikeep12345', 'Keep AI candidate')"
+                    )
+                    conn.execute("ALTER TABLE videos DROP COLUMN ai_disclosure")
+                    conn.execute("ALTER TABLE videos DROP COLUMN ai_disclosure_text")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 33")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                video_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(videos)")
+                }
+                retained = conn.execute(
+                    "SELECT title, ai_disclosure, ai_disclosure_text "
+                    "FROM videos WHERE video_id = 'aikeep12345'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertTrue(
+            {"ai_disclosure", "ai_disclosure_text"}.issubset(video_columns)
+        )
+        self.assertEqual(tuple(retained), ("Keep AI candidate", None, None))
+
 
 if __name__ == "__main__":
     unittest.main()

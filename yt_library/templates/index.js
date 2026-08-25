@@ -467,6 +467,7 @@ const noUploaderCategoryFilter = '__no_category__';
 const defaultSearchMetaVisibility = {
   videoType: { video: true, short: true, livestream: true, movie: true, unknown: true },
   broadcastStatus: { live: true, ended: true, upcoming: true, unknown: true },
+  aiDisclosure: { made_with_ai: true, no_disclosure: true, unknown: true },
   videos: {
     public: true,
     unlisted: true,
@@ -515,6 +516,7 @@ let uploaderCategorySelectionExplicit = false;
 const searchMetaParamNames = {
   videoType: 'vt',
   broadcastStatus: 'vbs',
+  aiDisclosure: 'vai',
   videos: 'vm',
   reactions: 'vr',
   completion: 'vc',
@@ -678,6 +680,7 @@ let adjacentPagePrefetchGeneration = 0;
 let videoMetaCountsCache = new Map();
 let videoTypeCountsCache = new Map();
 let videoBroadcastStatusCountsCache = new Map();
+let videoAiDisclosureCountsCache = new Map();
 let videoCompletionCountsCache = new Map();
 let videoReactionCountsCache = new Map();
 let videoUploaderCategoryCountsCache = new Map();
@@ -686,6 +689,7 @@ let videoPluginFacetCountsCache = new Map();
 let omniMetaCountsCache = new Map();
 let omniVideoTypeCountsCache = new Map();
 let omniBroadcastStatusCountsCache = new Map();
+let omniAiDisclosureCountsCache = new Map();
 let omniVideoPluginFacetCountsCache = new Map();
 let omniClipPluginFacetCountsCache = new Map();
 let omniReactionCountsCache = new Map();
@@ -775,6 +779,7 @@ async function loadData({ preserveSearchContent = false } = {}) {
     videoMetaCountsCache = new Map();
     videoTypeCountsCache = new Map();
     videoBroadcastStatusCountsCache = new Map();
+    videoAiDisclosureCountsCache = new Map();
     videoCompletionCountsCache = new Map();
     videoReactionCountsCache = new Map();
     videoUploaderCategoryCountsCache = new Map();
@@ -783,6 +788,7 @@ async function loadData({ preserveSearchContent = false } = {}) {
     omniMetaCountsCache = new Map();
     omniVideoTypeCountsCache = new Map();
     omniBroadcastStatusCountsCache = new Map();
+    omniAiDisclosureCountsCache = new Map();
     omniVideoPluginFacetCountsCache = new Map();
     omniClipPluginFacetCountsCache = new Map();
     omniReactionCountsCache = new Map();
@@ -1709,6 +1715,7 @@ function applySearchLocation(pathname, params) {
   const metaParamValues = {
     videoType: params.get(searchMetaParamNames.videoType),
     broadcastStatus: params.get(searchMetaParamNames.broadcastStatus),
+    aiDisclosure: params.get(searchMetaParamNames.aiDisclosure),
     videos: params.get(searchMetaParamNames.videos),
     reactions: params.get(searchMetaParamNames.reactions),
     completion: params.get(searchMetaParamNames.completion),
@@ -2189,6 +2196,7 @@ function syncMetaFilterGroup(groupName, assumeAllChecked = false) {
 const searchVideoFacetKeys = [
   'videoType',
   'broadcastStatus',
+  'aiDisclosure',
   'videos',
   'reactions',
   'completion',
@@ -3655,6 +3663,11 @@ const broadcastStatusMetaFilterDefinitions = [
   { key: 'upcoming', label: 'Upcoming', decoratorHtml: liveBroadcastIconHtml() },
   { key: 'unknown', label: 'Unknown status' },
 ];
+const aiDisclosureMetaFilterDefinitions = [
+  { key: 'made_with_ai', label: 'Made with AI', decoratorHtml: aiDisclosureIconHtml() },
+  { key: 'no_disclosure', label: 'No disclosure' },
+  { key: 'unknown', label: 'Unknown' },
+];
 function visibleVideoMetaFilterDefinitions(counts, { includeRemoved = true } = {}) {
   return videoMetaFilterDefinitions.filter(({ key }) => (
     (includeRemoved || key !== 'removed')
@@ -3929,6 +3942,7 @@ function searchMetaFiltersHtml(
   metaCounts,
   videoTypeCounts,
   broadcastStatusCounts,
+  aiDisclosureCounts,
   reactionCounts,
   completionCounts,
   playlistMembershipCounts,
@@ -4064,6 +4078,7 @@ function searchMetaFiltersHtml(
       ...(uploaderCategoryDefinitions.length ? [
         facetHtml({ key: 'uploaderCategory', visibility: searchMetaVisibility.uploaderCategory, definitions: uploaderCategoryDefinitions, counts: uploaderCategoryCounts, allLabel: 'Uploader category', kind: 'videos' }),
       ] : []),
+      facetHtml({ key: 'aiDisclosure', visibility: searchMetaVisibility.aiDisclosure, definitions: aiDisclosureMetaFilterDefinitions, counts: aiDisclosureCounts, allLabel: 'AI disclosure', kind: 'videos' }),
       facetHtml({ key: 'videoNotes', visibility: searchMetaVisibility.videoNotes, definitions: noteMetaFilterDefinitions, counts: metaCounts?.videos, allLabel: 'Notes', kind: 'videos' }),
       ...browserVideoFilterPlugins().map(pluginVideoFacetHtml),
     ].join('')),
@@ -4103,6 +4118,7 @@ function renderSearchMetaFilters({
   metaCounts = null,
   videoTypeCounts = null,
   broadcastStatusCounts = null,
+  aiDisclosureCounts = null,
   reactionCounts = null,
   completionCounts = null,
   playlistMembershipCounts = null,
@@ -4114,6 +4130,7 @@ function renderSearchMetaFilters({
     metaCounts,
     videoTypeCounts,
     broadcastStatusCounts,
+    aiDisclosureCounts,
     reactionCounts,
     completionCounts,
     playlistMembershipCounts,
@@ -4127,6 +4144,7 @@ function renderSearchMetaFilters({
     metaCounts,
     videoTypeCounts,
     broadcastStatusCounts,
+    aiDisclosureCounts,
     reactionCounts,
     completionCounts,
     playlistMembershipCounts,
@@ -4375,6 +4393,24 @@ function noteIconHtml() {
       <path d="M8 13h8"></path>
       <path d="M8 17h6"></path>
     </svg>
+  `;
+}
+
+function aiDisclosureIconHtml() {
+  return `
+    <svg class="ai-disclosure-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="m12 3-1.4 4.1a5.5 5.5 0 0 1-3.5 3.5L3 12l4.1 1.4a5.5 5.5 0 0 1 3.5 3.5L12 21l1.4-4.1a5.5 5.5 0 0 1 3.5-3.5L21 12l-4.1-1.4a5.5 5.5 0 0 1-3.5-3.5L12 3Z"></path>
+    </svg>
+  `;
+}
+
+function aiDisclosureDecoratorHtml(video) {
+  if (Number(video?.ai_disclosure) !== 1) return '';
+  const disclosureText = String(video?.ai_disclosure_text || '').trim();
+  return `
+    <span class="ai-disclosure-decorator" title="${escapeHtml(disclosureText || 'Made with AI')}">
+      ${aiDisclosureIconHtml()}<span>Made with AI</span>
+    </span>
   `;
 }
 
@@ -4759,6 +4795,7 @@ async function fetchOmniSearch(query, page = currentPage) {
   const metaCountsCache = omniMetaCountsCache;
   const videoTypeCountsCache = omniVideoTypeCountsCache;
   const broadcastStatusCountsCache = omniBroadcastStatusCountsCache;
+  const aiDisclosureCountsCache = omniAiDisclosureCountsCache;
   const videoPluginFacetCountsCache = omniVideoPluginFacetCountsCache;
   const clipPluginFacetCountsCache = omniClipPluginFacetCountsCache;
   const reactionCountsCache = omniReactionCountsCache;
@@ -4773,6 +4810,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     channel_group_key: searchChannelGroupKey,
     video_type: metaFilterParamValue(searchMetaVisibility.videoType),
     video_broadcast_status: metaFilterParamValue(searchMetaVisibility.broadcastStatus),
+    video_ai_disclosure: metaFilterParamValue(searchMetaVisibility.aiDisclosure),
     video_meta: metaFilterParamValue(searchMetaVisibility.videos, ['removed']),
     video_reaction: metaFilterParamValue(searchMetaVisibility.reactions),
     video_completion: metaFilterParamValue(searchMetaVisibility.completion),
@@ -4807,6 +4845,7 @@ async function fetchOmniSearch(query, page = currentPage) {
     searchChannelGroupKey,
     metaFilterParamValue(searchMetaVisibility.videoType),
     metaFilterParamValue(searchMetaVisibility.broadcastStatus),
+    metaFilterParamValue(searchMetaVisibility.aiDisclosure),
     metaFilterParamValue(searchMetaVisibility.videos, ['removed']),
     metaFilterParamValue(searchMetaVisibility.reactions),
     metaFilterParamValue(searchMetaVisibility.completion),
@@ -4924,6 +4963,12 @@ async function fetchOmniSearch(query, page = currentPage) {
         { ...(payload.broadcastStatusCounts || {}) },
       );
     }
+    if (!aiDisclosureCountsCache.has(metaCountsKey)) {
+      aiDisclosureCountsCache.set(
+        metaCountsKey,
+        { ...(payload.aiDisclosureCounts || {}) },
+      );
+    }
     if (!completionCountsCache.has(metaCountsKey)) {
       completionCountsCache.set(metaCountsKey, { ...(payload.completionCounts || {}) });
     }
@@ -4949,6 +4994,7 @@ async function fetchOmniSearch(query, page = currentPage) {
       metaCounts: stableMetaCounts,
       videoTypeCounts: videoTypeCountsCache.get(metaCountsKey),
       broadcastStatusCounts: broadcastStatusCountsCache.get(metaCountsKey),
+      aiDisclosureCounts: aiDisclosureCountsCache.get(metaCountsKey),
       reactionCounts: reactionCountsCache.get(metaCountsKey),
       completionCounts: completionCountsCache.get(metaCountsKey),
       playlistMembershipCounts: playlistMembershipCountsCache.get(metaCountsKey),
@@ -5003,6 +5049,7 @@ async function fetchVideoCollection({
   visibility = playlistVisibility,
   videoTypes = null,
   broadcastStatuses = null,
+  aiDisclosures = null,
   completion = null,
   reactions = null,
   uploaderCategories = null,
@@ -5039,6 +5086,7 @@ async function fetchVideoCollection({
     browserVideoSearchFieldPlugins().map(plugin => plugin.id),
     videoTypes ? metaFilterParamValue(videoTypes) : '',
     broadcastStatuses ? metaFilterParamValue(broadcastStatuses) : '',
+    aiDisclosures ? metaFilterParamValue(aiDisclosures) : '',
     metaFilterParamValue(visibility),
     completion ? metaFilterParamValue(completion) : '',
     reactions ? metaFilterParamValue(reactions) : '',
@@ -5066,6 +5114,9 @@ async function fetchVideoCollection({
   if (videoTypes) params.set('video_type', metaFilterParamValue(videoTypes));
   if (broadcastStatuses) {
     params.set('broadcast_status', metaFilterParamValue(broadcastStatuses));
+  }
+  if (aiDisclosures) {
+    params.set('ai_disclosure', metaFilterParamValue(aiDisclosures));
   }
   if (completion) params.set('completion', metaFilterParamValue(completion));
   if (completion) params.set('completion_min_percent', String(partialMinimumPercent));
@@ -5105,6 +5156,12 @@ async function fetchVideoCollection({
       { ...(payload.broadcastStatusCounts || {}) },
     );
   }
+  if (!videoAiDisclosureCountsCache.has(metaCountsKey)) {
+    videoAiDisclosureCountsCache.set(
+      metaCountsKey,
+      { ...(payload.aiDisclosureCounts || {}) },
+    );
+  }
   if (!videoCompletionCountsCache.has(metaCountsKey)) {
     videoCompletionCountsCache.set(metaCountsKey, { ...(payload.completionCounts || {}) });
   }
@@ -5135,6 +5192,7 @@ async function fetchVideoCollection({
     counts: metaCountsCache.get(metaCountsKey),
     videoTypeCounts: videoTypeCountsCache.get(metaCountsKey),
     broadcastStatusCounts: videoBroadcastStatusCountsCache.get(metaCountsKey),
+    aiDisclosureCounts: videoAiDisclosureCountsCache.get(metaCountsKey),
     completionCounts: videoCompletionCountsCache.get(metaCountsKey),
     reactionCounts: videoReactionCountsCache.get(metaCountsKey),
     uploaderCategoryCounts: videoUploaderCategoryCountsCache.get(metaCountsKey),
@@ -5171,6 +5229,7 @@ function renderScopedVideoSearchFacets(payload) {
     },
     videoTypeCounts: payload.videoTypeCounts || null,
     broadcastStatusCounts: payload.broadcastStatusCounts || null,
+    aiDisclosureCounts: payload.aiDisclosureCounts || null,
     reactionCounts: payload.reactionCounts || null,
     completionCounts: payload.completionCounts || null,
     uploaderCategoryCounts: payload.uploaderCategoryCounts || null,
@@ -5211,6 +5270,7 @@ function channelScopedVideoCollectionOptions(channelId, page = currentPage) {
     visibility: searchMetaVisibility.videos,
     videoTypes: searchMetaVisibility.videoType,
     broadcastStatuses: searchMetaVisibility.broadcastStatus,
+    aiDisclosures: searchMetaVisibility.aiDisclosure,
     completion: searchMetaVisibility.completion,
     reactions: searchMetaVisibility.reactions,
     uploaderCategories: searchMetaVisibility.uploaderCategory,
@@ -5711,6 +5771,7 @@ function videoDetailCardFor(video) {
         <div class="video-availability-row">
           ${videoAvailabilityHtml(video)}
           ${videoTypeDecoratorHtml(video)}
+          ${aiDisclosureDecoratorHtml(video)}
           <span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>
         </div>
         ${movieMetadataHtml(video)}
@@ -6591,6 +6652,7 @@ async function renderCurrentView() {
           visibility: playlistVisibility,
           videoTypes: searchMetaVisibility.videoType,
           broadcastStatuses: searchMetaVisibility.broadcastStatus,
+          aiDisclosures: searchMetaVisibility.aiDisclosure,
           completion: searchMetaVisibility.completion,
           reactions: searchMetaVisibility.reactions,
           uploaderCategories: searchMetaVisibility.uploaderCategory,
@@ -6611,6 +6673,7 @@ async function renderCurrentView() {
           visibility: playlistVisibility,
           videoTypes: searchMetaVisibility.videoType,
           broadcastStatuses: searchMetaVisibility.broadcastStatus,
+          aiDisclosures: searchMetaVisibility.aiDisclosure,
           completion: searchMetaVisibility.completion,
           reactions: searchMetaVisibility.reactions,
           uploaderCategories: searchMetaVisibility.uploaderCategory,
@@ -6695,6 +6758,7 @@ async function renderCurrentView() {
       visibility: playlistVisibility,
       videoTypes: searchMetaVisibility.videoType,
       broadcastStatuses: searchMetaVisibility.broadcastStatus,
+      aiDisclosures: searchMetaVisibility.aiDisclosure,
       completion: searchMetaVisibility.completion,
       reactions: searchMetaVisibility.reactions,
       uploaderCategories: searchMetaVisibility.uploaderCategory,
@@ -6898,6 +6962,7 @@ function playlistVideoCardFor(video, options = {}) {
     latestWatchDateHtml: options.latestWatchDateHtml || '',
     availabilityHtml: videoAvailabilityHtml(video),
     typeDecoratorHtml: videoTypeDecoratorHtml(video),
+    aiDisclosureDecoratorHtml: aiDisclosureDecoratorHtml(video),
     movieMetadataHtml: movieMetadataHtml(video),
     featureMetadataHtml: videoFeatureMetadataHtml(video),
     contentWarningHtml: contentWarningHtml(video),
