@@ -1,0 +1,225 @@
+# YT Library Development State
+
+Last consolidated: 2026-08-25. This handoff summarizes implementation and
+decisions through `bfc23b0`. Recheck the live checkout, service, queue, schema,
+and test count before relying on snapshot values.
+
+## How To Use This Document
+
+This is the fast reorientation guide for a new development chat. It preserves
+durable engineering knowledge without making an old chat transcript part of
+the product source.
+
+- `AGENTS.md` is authoritative for the working agreement and verification
+  requirements.
+- `TODO.md` is authoritative for unfinished work and deferred decisions.
+- `design.md` is authoritative for the current architecture and plugin
+  contract.
+- `README.md` is authoritative for setup and user-facing operation.
+- This file summarizes the decisions and current implementation that connect
+  those sources. Update it when a later change materially alters the handoff.
+
+Do not add personal-library query results, cookie contents, local database
+facts, transient PIDs, or other runtime-only data here.
+
+## Product And Data Model
+
+- YT Library is a local-first personal-library manager, not primarily a
+  downloader or media server. Metadata, account organization, history,
+  reconciliation, evidence, and search remain the product center.
+- SQLite stores one best-known current state rather than a metadata revision
+  archive. Failed or unavailable responses must not erase the last useful
+  identity.
+- `videos` owns canonical video metadata. `playlist_items` owns membership and
+  unavailable-slot evidence. `history_events` owns repeated watch occurrences.
+  Equal video IDs do not collapse history occurrences.
+- Exact instants are UTC with `Z`. Date-only history observations remain
+  date-only and retain ordinal order; the UI must not fabricate a midnight
+  timestamp.
+- YouTube direct pages and authenticated account surfaces are authoritative for
+  current YouTube state. Takeout is strong historical evidence. Archivarix is
+  independent recovery evidence and must not redefine canonical YouTube
+  availability.
+- Metadata fetches use direct IDs or URLs. YouTube search is not a metadata
+  fallback.
+- Nullable feature fields are intentional three-way observations. Unknown,
+  observed absence, and observed presence are distinct states.
+- Playlist rows may support an inferred public availability, but playability
+  changes require an explicit positive or negative signal. Missing negative
+  evidence is not proof of `is_playable = 1`.
+- Supported databases upgrade through ordered migrations. The fresh schema and
+  every supported upgrade path must describe the same current model. The
+  schema version at this snapshot is 33.
+
+## Browser And Search Model
+
+- Search is the default library surface. `/search` is broad omni-search;
+  `/videos`, `/clips`, `/playlists`, and `/channels` provide canonical scoped
+  contexts.
+- History is a separate occurrence view with repeated watches, its activity
+  heatmap, and chronological paging. It is not another canonical-video search
+  preset.
+- Playlist and channel detail searches reuse the scoped native search model.
+  An empty channel query still represents that channel's video universe,
+  including its title, filters, and complete scoped counts.
+- SQLite owns filtering, stable facet counts, sorting, totals, and pagination.
+  The browser hydrates only the requested page and must preserve existing
+  controls and results while a replacement response loads.
+- Search and detail request generations reject stale work. A filter refresh
+  keeps the current tree rendered so parent/child selection does not flicker or
+  temporarily disappear.
+- Global and channel History share one workflow for cards, activity data,
+  paging, date changes, scroll synchronization, and rollback after failed or
+  superseded transitions.
+- Card DOM is shared. Page-specific adapters and CSS may change layout, but
+  should not fork core identity, metadata, annotation, or decorator behavior.
+- Native decorators precede the ordered plugin contribution slot. Unless a
+  distinct meaning requires otherwise, new decorators reuse the established
+  typography, sizing, spacing, and muted metadata color.
+
+## Notes And Tags
+
+- User-authored notes and tags are core personal-library data. External or
+  machine-generated labels remain plugin-owned unless the user explicitly
+  converts them into a personal tag.
+- Notes and tags attach to canonical videos, clips, playlists, and channels.
+  Video annotations attach by video ID, never to individual history
+  occurrences.
+- Each entity has one note. Tags are normalized reusable rows linked through
+  explicit per-entity mapping tables. Notes use a rebuildable FTS5 projection;
+  tags remain relational.
+- Notes and tags participate in search. Note presence has With notes and
+  Without notes filters; tags do not create an unbounded facet tree.
+- Cards share annotation hydration. Compact cards retain the concise annotation
+  treatment, while grid and detailed cards show tags as well.
+- Unsaved note edits survive failed saves and trigger discard protection for
+  internal navigation, Back/Forward, reload, tab close, and window close.
+
+## Optional Plugin Boundary
+
+- Plugins are optional, separately packaged repositories with their own data,
+  schema, migrations, configuration, caches, source artifacts, and tests.
+- Core must not import a plugin package, depend on its database, add its domain
+  vocabulary, or preserve plugin behavior when it is disabled or uninstalled.
+- Integration uses stable YouTube IDs and bounded, read-only host projections.
+  Plugins never open or attach the YT Library database.
+- YT Library owns activation, compatibility checks, common queue rows, run and
+  log persistence, lifecycle dispatch, generic Admin placement, request
+  policy, and failure containment.
+- A host extension must be domain-neutral and reusable by an unrelated plugin.
+  Plugin-specific policy, labels, facets, matching rules, views, and actions
+  remain in the plugin.
+- The Python plugin API and browser API are both version 2 at this snapshot.
+  Breaking changes bump the owning version; additive host services are
+  feature-negotiated.
+- Plugins are discovered through `yt_library.plugins` entry points but load
+  only when explicitly enabled. Missing, disabled, incompatible, or failing
+  plugins must not prevent core startup or rendering.
+- Plugin search can enrich canonical videos and clips, project bounded virtual
+  videos, decorate native entity cards, add scoped channel-video tabs, and
+  plan work through the host contract. It must not couple core queries or
+  templates to the plugin domain.
+
+## Service, Configuration, And Queue
+
+- Run the service from the project `.venv`; do not infer the active Python from
+  `PATH` or a standalone `yt-dlp.exe`.
+- Use `scripts\service.ps1` for status, start, restart, and stop. It serializes
+  mutations, launches the service hidden, waits for listener and API readiness,
+  and owns stable control and stream logs.
+- A restart preserves the dispatcher state only when the queue was running
+  before the restart. Always record the old and new service PID and verify the
+  queue state after readiness.
+- A verified restart commonly spends most of its wall time waiting for the
+  application to become healthy. Do not treat process launch alone as service
+  success.
+- Runtime settings live in `yt_library.config.json`, not SQLite. The server
+  clock shown in Admin is calibrated from server UTC and runs locally with a
+  monotonic clock between periodic status synchronizations.
+- The persistent dispatcher rereads SQLite before every launch. Priority
+  changes and newly queued jobs can affect the remaining run without rebuilding
+  an in-memory batch.
+- Update, Initialize, and Rebuild share the declarative queue planner. Update
+  promotes its complete selected batch ahead of older backlog while retaining
+  internal ordering. Rebuild replaces only regenerable core plan rows and
+  preserves manual, plugin, recovery, Clip, and future non-plan work.
+- Cookie uploads are validated for the selected service and saved atomically.
+  Authentication status is durable current state; transition logging records
+  entry into a non-valid state without repeating identical warnings. A service
+  block caused by timeout, proxy, or quota evidence is separate from cookie
+  validity.
+- Admin polling, queue/log streams, visibility changes, and wake refreshes are
+  designed to tolerate a frozen or sleeping browser page. A wake refresh may
+  replace stale work rather than waiting indefinitely for a pre-sleep request.
+
+## Verified Implementation Snapshot
+
+The following areas were implemented and committed before this consolidation:
+
+- Core tags and notes, FTS search, annotations on all card layouts, collapsed
+  empty editors, and unsaved-change protection (`9aeba1b`, `7d5bac6`,
+  `58dc98f`, `44e7de8`).
+- Versioned optional-plugin host services, native-before-plugin ordering,
+  scoped plugin search, and manual planning context (`fb378df`, `d2e0c7f`,
+  `bfaa264`, `5fef3db`).
+- Sleep/wake-safe Admin behavior, serialized restart recovery, server clock,
+  uptime presentation, and service-aware cookie validation (`7e6d612`,
+  `ae1b3fd`, `8273dba`, `5fe60b7`, `2f76da1`).
+- Scoped detail search, channel empty-query facets, stable filter refreshes,
+  and restored History heatmap scrolling (`d20f54e`, `af97394`, `9b679e9`,
+  `6392d5e`).
+- Explicit playlist playability observations plus repair of unsupported
+  inferred-positive rows (`6839161`).
+- YouTube AI-disclosure extraction with a three-way stored state, native
+  decorator, filter, and shared decorator styling (`769f500`, `bfc23b0`).
+- Advanced Search is planned and documented, not implemented (`16656e7`).
+
+The latest implementation milestone reported 491 Python tests and 84 browser
+asset tests passing, plus Ruff, API smoke checks, and live browser QA. Those
+counts are evidence for that milestone, not permanent expectations.
+
+## Active And Deferred Work
+
+Use `TODO.md` for the complete and current list. The main outstanding themes at
+this snapshot are:
+
+1. Investigate foreign-playlist continuation only with a reproducible fixture;
+   preserve the best nonzero scan and never synthesize hidden rows from a count
+   discrepancy alone.
+2. Design and implement Advanced Search on the existing server-owned search
+   model while preserving simple search, shareable URLs, and future saved
+   searches.
+3. Persist scheduled Update last-run and failure state across restarts.
+4. Improve hierarchy and partial-selection clarity in nested filters.
+5. Define release/changelog practice and supported Docker packaging.
+6. Keep Download and Comments as separately packaged optional plugins.
+7. Keep deleted-view reconciliation review-first and reversible; incomplete or
+   suspicious history scans must never create deletion evidence.
+
+## New Development Chat Checklist
+
+1. Read `AGENTS.md`, `TODO.md`, this file, and the relevant sections of
+   `design.md` before proposing changes.
+2. Verify the exact cwd, branch, `git status`, current schema, and recent log.
+   Preserve unrelated tracked and untracked work.
+3. Run `scripts\service.ps1 status` and record the listener, PID, queue state,
+   queue count, and any block before a runtime change.
+4. Read the owning implementation and tests. Treat this handoff as orientation,
+   not as evidence that current code still matches an older decision.
+5. Keep implementation in the owning module, add focused regressions, and run
+   the full repository checks required by `AGENTS.md`.
+6. For UI work, wait for rendered cards and counts, verify the installed
+   browser behavior, reload persistence, rapid-input behavior, and console
+   state.
+7. Restart only when the changed surface requires it, then verify API readiness
+   and restore the prior queue-running state.
+8. Commit each coherent validated milestone with a substantive body. Push only
+   when explicitly requested.
+
+## Handoff Provenance
+
+This file was consolidated from the former long-running **Current YTL
+development** chat, the current repository documentation and implementation,
+Git history, and live service status. The predecessor chat remains historical
+evidence, but new work should rely on the repository sources above so task
+history size does not become a development dependency.

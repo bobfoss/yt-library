@@ -1,7 +1,8 @@
 # Repository Guidelines
 
-Read this file at the start of every chat. Treat `TODO.md` as the separate
-source for unfinished or deferred work.
+Read this file, `TODO.md`, and `DEVELOPMENT_STATE.md` at the start of every
+development chat. `TODO.md` is the source for unfinished or deferred work;
+`DEVELOPMENT_STATE.md` is the concise implementation-and-decision handoff.
 
 ## Working Agreement
 
@@ -66,6 +67,10 @@ This repository is a Python web app for browsing, enriching, and reconciling a p
   JavaScript assets.
 - `tests/` contains the standard-library `unittest` suite for helpers, schema bootstrap, and read models.
 - `TODO.md` is the canonical project TODO and deferred-decisions list. Treat references to the TODO, TODO list, cleanup findings, or future work as references to this file.
+- `DEVELOPMENT_STATE.md` summarizes the current implementation, durable
+  decisions, and new-chat startup checklist. Keep it aligned when a change
+  materially alters the development handoff, but do not duplicate the full
+  architecture or TODO there.
 - `requirements.txt` lists Python dependencies, including `yt-dlp`.
 - `yt_library.sqlite3`, cookie files, thumbnail folders, and Takeout zip exports are local runtime data and should not be committed.
 - Put rollback copies, pre-repair SQLite snapshots, retired databases, and

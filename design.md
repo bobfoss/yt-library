@@ -1,5 +1,9 @@
 # YT Library Manager Design Notes
 
+For the maintained implementation snapshot and new-chat handoff, see
+`DEVELOPMENT_STATE.md`. This file remains authoritative for architecture and
+the optional-plugin contract.
+
 ## Product Direction
 
 YT Library Manager is a local-first tool for understanding and managing a personal YouTube library. It mirrors playlist structure, enriches videos with metadata and cached images, reconciles hidden or deleted videos from Takeout and Archivarix evidence, and exposes searchable history and playlist views through a small web UI.

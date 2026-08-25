@@ -30,6 +30,8 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 The browser loads a small navigation bootstrap, then requests playlists, videos, channels, details, search results, and history as separate server-paginated read models. It does not preload the complete video and channel catalog.
 - `requirements.txt` lists runtime dependencies; `requirements-dev.txt` adds development-only static analysis.
 - `yt_library.config.json` is the local runtime configuration file, generated on first setup or serve.
+- `DEVELOPMENT_STATE.md` is the maintained implementation-and-decision handoff
+  for starting a focused development chat without replaying older chat history.
 - Optional plugins are installed separately and activated explicitly through
   the `plugins` object in `yt_library.config.json`; disabled or missing plugins
   must not prevent the base service from starting.

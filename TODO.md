@@ -1,5 +1,8 @@
 # Project TODO
 
+`DEVELOPMENT_STATE.md` is the current implementation-and-decision handoff.
+This file remains authoritative for unfinished work and deferred decisions.
+
 This review uses the current code as truth and ranks remaining cleanup by
 duplication risk. The project supports upgrading existing databases through
 versioned migrations as well as creating a fresh current schema.
