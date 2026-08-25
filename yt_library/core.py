@@ -2616,6 +2616,41 @@ def is_unavailable_video_renderer(renderer: dict[str, Any], title: str, reason: 
     return any(word in lower_reason for word in ("unavailable", "deleted", "private"))
 
 
+def playlist_video_playability(
+    renderer: Mapping[str, Any],
+    title: str = "",
+    reason: str = "",
+) -> int | None:
+    """Return only playability explicitly supported by a playlist row."""
+    for key in ("isPlayable", "is_playable"):
+        if key not in renderer:
+            continue
+        explicit = renderer.get(key)
+        if isinstance(explicit, bool) or (
+            isinstance(explicit, int) and explicit in {0, 1}
+        ):
+            return int(explicit)
+    if is_unavailable_video_renderer(dict(renderer), title, reason):
+        return 0
+    if playlist_entry_is_unavailable(title, reason):
+        return 0
+    return None
+
+
+def playlist_video_availability(
+    video_id: str,
+    reason: str,
+    playability: int | None,
+) -> str:
+    if playability == 0:
+        return normalize_video_availability(
+            video_id,
+            reason or "unavailable",
+            playability,
+        )
+    return "public" if video_id else "unknown"
+
+
 def parse_video_renderer(
     playlist_id: str,
     renderer: dict[str, Any],
@@ -2629,7 +2664,7 @@ def parse_video_renderer(
     channel = text_from_runs(renderer.get("shortBylineText")).strip()
     duration = text_from_runs(renderer.get("lengthText")).strip()
     reason = unavailable_reason(renderer, title)
-    unavailable = is_unavailable_video_renderer(renderer, title, reason)
+    playability = playlist_video_playability(renderer, title, reason)
     return {
         "playlist_id": playlist_id,
         "position": position,
@@ -2637,8 +2672,8 @@ def parse_video_renderer(
         "title": title,
         "channel": channel,
         "duration_text": duration,
-        "is_playable": 0 if unavailable else 1,
-        "availability": reason,
+        "is_playable": playability,
+        "availability": playlist_video_availability(video_id, reason, playability),
         "url": f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}" if video_id else "",
     }
 
@@ -2656,7 +2691,7 @@ def parse_panel_video_renderer(
     channel = text_from_runs(renderer.get("shortBylineText") or renderer.get("longBylineText")).strip()
     duration = text_from_runs(renderer.get("lengthText")).strip()
     reason = unavailable_reason(renderer, title)
-    unavailable = is_unavailable_video_renderer(renderer, title, reason)
+    playability = playlist_video_playability(renderer, title, reason)
     return {
         "playlist_id": playlist_id,
         "position": position,
@@ -2664,8 +2699,8 @@ def parse_panel_video_renderer(
         "title": title,
         "channel": channel,
         "duration_text": duration,
-        "is_playable": 0 if unavailable else 1,
-        "availability": reason,
+        "is_playable": playability,
+        "availability": playlist_video_availability(video_id, reason, playability),
         "url": f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}" if video_id else "",
     }
 
@@ -2703,6 +2738,8 @@ def parse_video_lockup(
             break
     if video_id:
         watch_url = f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}"
+    reason = unavailable_reason(lockup, title)
+    playability = playlist_video_playability(lockup, title, reason)
     return {
         "playlist_id": playlist_id,
         "position": fallback_position,
@@ -2710,8 +2747,8 @@ def parse_video_lockup(
         "title": title,
         "channel": channel,
         "duration_text": duration,
-        "is_playable": 1,
-        "availability": "",
+        "is_playable": playability,
+        "availability": playlist_video_availability(video_id, reason, playability),
         "url": watch_url,
     }
 
@@ -3103,15 +3140,18 @@ def parse_shorts_lockup(
     title = text
     if "," in title:
         title = title.rsplit(",", 1)[0].strip()
+    title = video_title_or_blank(title, video_id)
+    reason = unavailable_reason(renderer, title)
+    playability = playlist_video_playability(renderer, title, reason)
     return {
         "playlist_id": playlist_id,
         "position": fallback_position,
         "video_id": video_id,
-        "title": video_title_or_blank(title, video_id),
+        "title": title,
         "channel": "",
         "duration_text": "Short",
-        "is_playable": 1,
-        "availability": "",
+        "is_playable": playability,
+        "availability": playlist_video_availability(video_id, reason, playability),
         "url": f"https://www.youtube.com/shorts/{video_id}" if video_id else "",
     }
 
@@ -4597,11 +4637,24 @@ def scan_playlist_ytdlp(
         webpage_url = str(entry.get("webpage_url") or "")
         if not webpage_url:
             webpage_url = f"https://www.youtube.com/watch?v={video_id}&list={playlist_id}"
-        availability = str(entry.get("availability") or "").strip()
-        hidden = playlist_entry_is_unavailable(title, availability)
-        if hidden and not availability:
-            availability = "unavailable"
-        availability = normalize_video_availability(video_id, availability, not hidden)
+        reported_availability = str(entry.get("availability") or "").strip()
+        playability = playlist_video_playability(
+            entry,
+            title,
+            reported_availability,
+        )
+        if playability == 0:
+            availability = normalize_video_availability(
+                video_id,
+                reported_availability or "unavailable",
+                playability,
+            )
+        else:
+            availability = normalize_video_availability(
+                video_id,
+                reported_availability or "public",
+                None,
+            )
         videos.append(
             {
                 "playlist_id": playlist_id,
@@ -4611,7 +4664,7 @@ def scan_playlist_ytdlp(
                 "channel_id": channel_id,
                 "channel": channel,
                 "duration_text": duration,
-                "is_playable": 0 if hidden else 1,
+                "is_playable": playability,
                 "availability": availability,
                 "url": webpage_url,
             }

@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -1254,6 +1254,20 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (31, utc_now()),
+        )
+    if current_version < 32:
+        conn.execute(
+            """
+            UPDATE videos
+            SET is_playable = NULL,
+                last_seen_available_at = NULL
+            WHERE visibility_checked_at IS NULL
+              AND is_playable = 1
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (32, utc_now()),
         )
 
 

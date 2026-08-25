@@ -723,6 +723,84 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertIsNotNone(table)
         self.assertEqual(retained, "Cookie migration survivor")
 
+    def test_database_module_clears_unverified_positive_playability_from_version_31(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.executemany(
+                        """
+                        INSERT INTO videos(
+                          video_id, title, availability, is_playable,
+                          visibility_checked_at, last_seen_available_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            (
+                                "inferred-positive",
+                                "Playlist inference",
+                                "public",
+                                1,
+                                None,
+                                "2026-08-20T00:00:00Z",
+                            ),
+                            (
+                                "verified-positive",
+                                "Direct observation",
+                                "public",
+                                1,
+                                "2026-08-20T00:00:00Z",
+                                "2026-08-20T00:00:00Z",
+                            ),
+                            (
+                                "explicit-negative",
+                                "Unavailable playlist row",
+                                "unavailable",
+                                0,
+                                None,
+                                None,
+                            ),
+                        ),
+                    )
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 32")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                rows = {
+                    row["video_id"]: dict(row)
+                    for row in conn.execute(
+                        """
+                        SELECT video_id, availability, is_playable,
+                               visibility_checked_at, last_seen_available_at
+                        FROM videos
+                        WHERE video_id IN (
+                          'inferred-positive', 'verified-positive', 'explicit-negative'
+                        )
+                        """
+                    )
+                }
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertEqual(rows["inferred-positive"]["availability"], "public")
+        self.assertIsNone(rows["inferred-positive"]["is_playable"])
+        self.assertIsNone(rows["inferred-positive"]["last_seen_available_at"])
+        self.assertEqual(rows["verified-positive"]["is_playable"], 1)
+        self.assertEqual(
+            rows["verified-positive"]["last_seen_available_at"],
+            "2026-08-20T00:00:00Z",
+        )
+        self.assertEqual(rows["explicit-negative"]["is_playable"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

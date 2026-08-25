@@ -2279,6 +2279,78 @@ class CoreHelperTests(unittest.TestCase):
                 conn.close()
         self.assertEqual(stored_title, "")
 
+    def test_playlist_rows_require_explicit_positive_playability(self) -> None:
+        base_renderer = {
+            "videoId": "playlistvid1",
+            "title": {"simpleText": "Playlist video"},
+        }
+
+        inferred = core.parse_video_renderer("PLexample", base_renderer, 1)
+        explicit = core.parse_video_renderer(
+            "PLexample",
+            {**base_renderer, "isPlayable": True},
+            1,
+        )
+        unavailable = core.parse_video_renderer(
+            "PLexample",
+            {**base_renderer, "isPlayable": False},
+            1,
+        )
+
+        self.assertIsNone(inferred["is_playable"])
+        self.assertEqual(inferred["availability"], "public")
+        self.assertEqual(explicit["is_playable"], 1)
+        self.assertEqual(explicit["availability"], "public")
+        self.assertEqual(unavailable["is_playable"], 0)
+        self.assertEqual(unavailable["availability"], "unavailable")
+        self.assertEqual(core.playlist_video_playability({"is_playable": 1}), 1)
+        self.assertEqual(
+            core.playlist_video_playability(
+                {},
+                "Playlist video",
+                "subscriber_only",
+            ),
+            0,
+        )
+
+    def test_playlist_lockup_shapes_do_not_infer_positive_playability(self) -> None:
+        panel = core.parse_panel_video_renderer(
+            "PLexample",
+            {
+                "videoId": "panelvideo1",
+                "title": {"simpleText": "Panel video"},
+            },
+            1,
+        )
+        lockup = core.parse_video_lockup(
+            "PLexample",
+            {
+                "contentId": "lockupvideo1",
+                "metadata": {
+                    "lockupMetadataViewModel": {
+                        "title": {"content": "Lockup video"},
+                    }
+                },
+            },
+            2,
+        )
+        short = core.parse_shorts_lockup(
+            "PLexample",
+            {
+                "onTap": {
+                    "innertubeCommand": {
+                        "reelWatchEndpoint": {"videoId": "shortvideo1"}
+                    }
+                },
+                "accessibilityText": "Short video, 100 views",
+            },
+            3,
+        )
+
+        for row in (panel, lockup, short):
+            self.assertIsNone(row["is_playable"])
+            self.assertEqual(row["availability"], "public")
+
     def test_import_history_syncs_takeout_subscriptions(self) -> None:
         original_root = core.ROOT
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3830,6 +3902,39 @@ class CoreHelperTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(row["is_playable"], 1)
                 self.assertEqual(row["availability"], "public")
+
+                verified_at = conn.execute(
+                    "SELECT visibility_checked_at FROM videos WHERE video_id = 'jhtY3OsTuwk'"
+                ).fetchone()["visibility_checked_at"]
+                core.save_playlist_scan(
+                    conn,
+                    "PLmembers",
+                    [
+                        {
+                            "playlist_id": "PLmembers",
+                            "position": 1,
+                            "video_id": "jhtY3OsTuwk",
+                            "title": "Members video",
+                            "channel_id": "",
+                            "channel": "",
+                            "duration_text": "",
+                            "is_playable": None,
+                            "availability": "public",
+                            "url": "https://www.youtube.com/watch?v=jhtY3OsTuwk",
+                        }
+                    ],
+                    "ok",
+                    "",
+                )
+                after_playlist = conn.execute(
+                    """
+                    SELECT is_playable, visibility_checked_at
+                    FROM videos
+                    WHERE video_id = 'jhtY3OsTuwk'
+                    """
+                ).fetchone()
+                self.assertEqual(after_playlist["is_playable"], 1)
+                self.assertEqual(after_playlist["visibility_checked_at"], verified_at)
             finally:
                 conn.close()
 
