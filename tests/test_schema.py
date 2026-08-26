@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from yt_library import core
 
@@ -1822,6 +1822,123 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(scans["PLnewmissing"]["scan_status"], "unavailable")
         self.assertEqual(item["video_id"], "newscanvid1")
         self.assertEqual(foreign_key_errors, [])
+
+    def test_playlist_last_changed_advances_only_after_a_detected_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                first_video = {
+                    "video_id": "changevideo1",
+                    "title": "First video",
+                    "is_playable": 1,
+                    "availability": "public",
+                }
+                second_video = {
+                    "video_id": "changevideo2",
+                    "title": "Second video",
+                    "is_playable": 1,
+                    "availability": "public",
+                }
+
+                def save_at(
+                    observed_at: str,
+                    videos: list[dict[str, object]],
+                    *,
+                    title: str = "Tracked playlist",
+                ) -> None:
+                    with patch("yt_library.core.utc_now", return_value=observed_at):
+                        with conn:
+                            core.save_playlist_scan(
+                                conn,
+                                "PLchanges",
+                                videos,
+                                "ok",
+                                "",
+                                playlist_metadata={
+                                    "title": title,
+                                    "video_count": len(videos),
+                                },
+                            )
+
+                save_at("2026-08-01T01:00:00Z", [first_video])
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT last_changed_at FROM playlists WHERE playlist_id = 'PLchanges'"
+                    ).fetchone()["last_changed_at"]
+                )
+
+                save_at("2026-08-01T02:00:00Z", [first_video])
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT last_changed_at FROM playlists WHERE playlist_id = 'PLchanges'"
+                    ).fetchone()["last_changed_at"]
+                )
+
+                save_at(
+                    "2026-08-01T03:00:00Z",
+                    [first_video, second_video],
+                )
+                changed_at = conn.execute(
+                    "SELECT last_changed_at FROM playlists WHERE playlist_id = 'PLchanges'"
+                ).fetchone()["last_changed_at"]
+                self.assertEqual(changed_at, "2026-08-01T03:00:00Z")
+
+                save_at(
+                    "2026-08-01T04:00:00Z",
+                    [first_video, second_video],
+                )
+                unchanged_at = conn.execute(
+                    "SELECT last_changed_at FROM playlists WHERE playlist_id = 'PLchanges'"
+                ).fetchone()["last_changed_at"]
+                self.assertEqual(unchanged_at, "2026-08-01T03:00:00Z")
+
+                save_at(
+                    "2026-08-01T05:00:00Z",
+                    [first_video, second_video],
+                    title="Renamed playlist",
+                )
+                renamed_at = conn.execute(
+                    "SELECT last_changed_at FROM playlists WHERE playlist_id = 'PLchanges'"
+                ).fetchone()["last_changed_at"]
+                self.assertEqual(renamed_at, "2026-08-01T05:00:00Z")
+
+                with patch(
+                    "yt_library.core.utc_now",
+                    return_value="2026-08-02T01:00:00Z",
+                ):
+                    with conn:
+                        core.save_playlist_scan_error(
+                            conn,
+                            "PLfailedbaseline",
+                            "Temporary failure",
+                        )
+                with patch(
+                    "yt_library.core.utc_now",
+                    return_value="2026-08-02T02:00:00Z",
+                ):
+                    with conn:
+                        core.save_playlist_scan(
+                            conn,
+                            "PLfailedbaseline",
+                            [first_video],
+                            "ok",
+                            "",
+                            playlist_metadata={
+                                "title": "First successful observation",
+                                "video_count": 1,
+                            },
+                        )
+                self.assertIsNone(
+                    conn.execute(
+                        """
+                        SELECT last_changed_at
+                        FROM playlists
+                        WHERE playlist_id = 'PLfailedbaseline'
+                        """
+                    ).fetchone()["last_changed_at"]
+                )
+            finally:
+                conn.close()
 
     def test_playlist_scan_preserves_duplicate_video_occurrences(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

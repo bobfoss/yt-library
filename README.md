@@ -5,6 +5,8 @@ YT Library Manager is a local Python web app for browsing, enriching, and reconc
 ## Features
 
 - Browse current playlists, canonical videos, and retained unavailable videos.
+- See the last known playlist change on playlist cards without treating a
+  routine scan as a change.
 - Add searchable notes and reusable tags to videos, clips, playlists, and channels.
 - Search watch history with paginated results across titles, channels, IDs, and fetched metadata descriptions.
 - Import YouTube Takeout history zip files without extracting them first.
@@ -196,6 +198,12 @@ remains available for explicit setup or upgrade runs.
 Existing databases are supported through versioned migrations in
 `yt_library/database.py`. Schema changes must preserve the fresh-install shape
 in `schema.sql` and provide an upgrade path for supported prior versions.
+Playlist cards show **Last updated** only when the database has defensible
+change evidence: an exact playlist creation or item-added timestamp, a retained
+historical count-change event, or a structural/metadata difference detected
+after an authoritative baseline. First observations and identical rescans leave
+the value unknown or unchanged; `playlist_scans.scanned_at` remains the separate
+last-observed scan time.
 
 The default host binds only to the local loopback interface. To expose the app
 through Tailscale without binding other interfaces, set `host` to the machine's

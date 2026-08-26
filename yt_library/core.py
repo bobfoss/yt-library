@@ -5704,6 +5704,8 @@ def save_discovered_playlists(
         playlist_id = (record.get("playlist_id") or "").strip()
         if not playlist_id:
             continue
+        previous_signature = _playlist_change_signature(conn, playlist_id)
+        now = utc_now()
         current_playlist_ids.add(playlist_id)
         clear_playlist_tombstone(conn, playlist_id)
         if playlist_id not in existing_ids:
@@ -5718,7 +5720,7 @@ def save_discovered_playlists(
                 thumbnail_url=record.get("owner_thumbnail_url", ""),
                 thumbnail_path=record.get("owner_thumbnail_path", ""),
                 source="playlist_owner",
-                updated_at=utc_now(),
+                updated_at=now,
             )
         existing = conn.execute(
             "SELECT ownership FROM playlists WHERE playlist_id = ?",
@@ -5767,9 +5769,14 @@ def save_discovered_playlists(
                 max(0, int(record.get("video_count") or 0)),
                 record.get("thumbnail_url", ""),
                 record.get("thumbnail_path", ""),
-                utc_now(),
+                now,
             ),
         )
+        if (
+            previous_signature is not None
+            and previous_signature != _playlist_change_signature(conn, playlist_id)
+        ):
+            _record_playlist_change(conn, playlist_id, now)
     reconciliation: dict[str, Any] = {
         "tombstoned": 0,
         "pending_verification": 0,
@@ -6637,6 +6644,7 @@ def save_youtube_data_api_snapshot(
         playlist_id = str(playlist.playlist_id or "").strip()
         if not playlist_id:
             continue
+        previous_signature = _playlist_change_signature(conn, playlist_id)
         owner_channel_id = upsert_channel(
             conn,
             str(playlist.owner_channel_id or ""),
@@ -6753,6 +6761,12 @@ def save_youtube_data_api_snapshot(
                 (playlist_id, position, video_id, added_at or None, now),
             )
             playlist_items_inserted += 1
+        if (
+            previous_signature is not None
+            and previous_signature != _playlist_change_signature(conn, playlist_id)
+        ):
+            _record_playlist_change(conn, playlist_id, now)
+        _refresh_playlist_known_change_at(conn, playlist_id)
         enqueue_playlist_scan_item(
             conn,
             playlist_id,
@@ -7411,6 +7425,102 @@ def _ensure_playlist_parent(
     return True
 
 
+def _playlist_change_signature(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+) -> tuple[Any, ...] | None:
+    playlist = conn.execute(
+        """
+        SELECT title, description, owner_channel_id, visibility, ownership, video_count
+        FROM playlists
+        WHERE playlist_id = ?
+        """,
+        (playlist_id,),
+    ).fetchone()
+    if not playlist:
+        return None
+    collaborators = tuple(
+        (int(row["position"]), str(row["channel_id"] or ""))
+        for row in conn.execute(
+            """
+            SELECT position, channel_id
+            FROM playlist_collaborators
+            WHERE playlist_id = ?
+            ORDER BY position, channel_id
+            """,
+            (playlist_id,),
+        )
+    )
+    items = tuple(
+        (
+            int(row["position"]),
+            str(row["video_id"] or ""),
+            str(row["membership_state"] or ""),
+            str(row["unavailable_kind"] or ""),
+        )
+        for row in conn.execute(
+            """
+            SELECT position, video_id, membership_state, unavailable_kind
+            FROM playlist_items
+            WHERE playlist_id = ?
+            ORDER BY position
+            """,
+            (playlist_id,),
+        )
+    )
+    return (
+        tuple(playlist),
+        collaborators,
+        items,
+    )
+
+
+def _record_playlist_change(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    changed_at: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE playlists
+        SET last_changed_at = CASE
+          WHEN last_changed_at IS NULL OR last_changed_at < ? THEN ?
+          ELSE last_changed_at
+        END
+        WHERE playlist_id = ?
+        """,
+        (changed_at, changed_at, playlist_id),
+    )
+
+
+def _refresh_playlist_known_change_at(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+) -> None:
+    row = conn.execute(
+        """
+        SELECT NULLIF(
+          MAX(
+            COALESCE(p.created_at, ''),
+            COALESCE((
+              SELECT MAX(pi.added_at)
+              FROM playlist_items pi
+              WHERE pi.playlist_id = p.playlist_id
+                AND pi.added_at IS NOT NULL
+                AND pi.added_at <> ''
+            ), '')
+          ),
+          ''
+        ) AS known_change_at
+        FROM playlists p
+        WHERE p.playlist_id = ?
+        """,
+        (playlist_id,),
+    ).fetchone()
+    if row and row["known_change_at"]:
+        _record_playlist_change(conn, playlist_id, str(row["known_change_at"]))
+
+
 def save_playlist_scan(
     conn: sqlite3.Connection,
     playlist_id: str,
@@ -7419,6 +7529,21 @@ def save_playlist_scan(
     error: str,
     playlist_metadata: dict[str, Any] | None = None,
 ) -> tuple[int, int]:
+    previous_signature = _playlist_change_signature(conn, playlist_id)
+    previous_scan = conn.execute(
+        "SELECT scan_status FROM playlist_scans WHERE playlist_id = ?",
+        (playlist_id,),
+    ).fetchone()
+    had_change_baseline = bool(
+        previous_scan
+        and (
+            previous_scan["scan_status"] == "ok"
+            or conn.execute(
+                "SELECT 1 FROM playlist_items WHERE playlist_id = ? LIMIT 1",
+                (playlist_id,),
+            ).fetchone()
+        )
+    )
     normalized_videos: list[dict[str, Any]] = []
     for next_position, video in enumerate(videos, start=1):
         cleaned = dict(video)
@@ -7670,6 +7795,13 @@ def save_playlist_scan(
                 """,
                 (now, playlist_id),
             )
+    if (
+        status == "ok"
+        and had_change_baseline
+        and previous_signature is not None
+        and previous_signature != _playlist_change_signature(conn, playlist_id)
+    ):
+        _record_playlist_change(conn, playlist_id, now)
     return len(videos), unavailable_count
 
 
@@ -10457,6 +10589,7 @@ def import_takeout_playlists(args: argparse.Namespace) -> None:
                         ),
                     )
                     imported_video_rows += 1
+            _refresh_playlist_known_change_at(conn, playlist_id)
         reconcile_stats = rebuild_playlist_reconciliation(conn)
 
     print(
@@ -10663,6 +10796,7 @@ def import_takeout_playlists_zip(conn: sqlite3.Connection, zip_path: Path) -> di
                     (playlist_id, position, video_id, added_at or None, now),
                 )
                 item_count += 1
+            _refresh_playlist_known_change_at(conn, playlist_id)
     return {
         "source_found": 1,
         "playlists": len(imported_playlist_ids),

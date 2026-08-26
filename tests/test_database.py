@@ -840,6 +840,108 @@ class DatabaseModuleTests(unittest.TestCase):
         )
         self.assertEqual(tuple(retained), ("Keep AI candidate", None, None))
 
+    def test_database_module_migrates_playlist_change_evidence_from_version_33(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.executemany(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                "PLitem",
+                                "Exact item evidence",
+                                "2020-01-01T00:00:00Z",
+                                "2026-08-25T00:00:00Z",
+                            ),
+                            (
+                                "PLlog",
+                                "Detected count change",
+                                None,
+                                "2026-08-25T00:00:00Z",
+                            ),
+                            (
+                                "PLscanonly",
+                                "Only scanned",
+                                None,
+                                "2026-08-25T00:00:00Z",
+                            ),
+                        ],
+                    )
+                    conn.execute(
+                        "INSERT INTO videos(video_id, title) VALUES ('playlistdate1', 'Dated')"
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_items(
+                          playlist_id, position, video_id, added_at, updated_at
+                        ) VALUES (
+                          'PLitem', 1, 'playlistdate1',
+                          '2022-03-04T05:06:07Z', '2026-08-25T00:00:00Z'
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scan_worker_log(
+                          created_at, level, playlist_id, message
+                        ) VALUES (
+                          '2023-04-05T06:07:08Z', 'info', 'PLlog',
+                          'Scanned playlist; count changed 4 -> 5 (+1)'
+                        )
+                        """
+                    )
+                    conn.executemany(
+                        """
+                        INSERT INTO playlist_scans(
+                          playlist_id, scanned_at, video_count, unavailable_count
+                        ) VALUES (?, ?, 0, 0)
+                        """,
+                        [
+                            ("PLitem", "2026-08-24T00:00:00Z"),
+                            ("PLlog", "2026-08-24T00:00:00Z"),
+                            ("PLscanonly", "2026-08-24T00:00:00Z"),
+                        ],
+                    )
+                    conn.execute("ALTER TABLE playlists DROP COLUMN last_changed_at")
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 34")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(playlists)")
+                }
+                rows = {
+                    row["playlist_id"]: row["last_changed_at"]
+                    for row in conn.execute(
+                        """
+                        SELECT playlist_id, last_changed_at
+                        FROM playlists
+                        WHERE playlist_id IN ('PLitem', 'PLlog', 'PLscanonly')
+                        """
+                    )
+                }
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertIn("last_changed_at", columns)
+        self.assertEqual(rows["PLitem"], "2022-03-04T05:06:07Z")
+        self.assertEqual(rows["PLlog"], "2023-04-05T06:07:08Z")
+        self.assertIsNone(rows["PLscanonly"])
+
 
 if __name__ == "__main__":
     unittest.main()

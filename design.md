@@ -1240,7 +1240,10 @@ The database models the best-known current state of YouTube. Imports and scans r
 
 - `videos` owns canonical video metadata, current playability, availability, reaction, progress, and fetch state.
 - `channels` owns canonical channel metadata and subscription state.
-- `playlists`, `groups`, and `group_playlists` model the current library organization.
+- `playlists`, `groups`, and `group_playlists` model the current library
+  organization. `playlists.last_changed_at` records the latest defensible
+  playlist-change evidence, while `playlists.updated_at` remains persistence
+  bookkeeping.
 - `playlist_items` links playlists to videos and retains only membership, position, unavailable-slot, and reconciliation facts.
 - `history_events` stores watch events. Exact Takeout timestamps and date-only live observations share this table without fabricating precision.
 - `video_recovery` stores only current Archivarix recovery status, capture time, media availability, and errors.
@@ -1254,6 +1257,17 @@ The database models the best-known current state of YouTube. Imports and scans r
   provide operational history.
 
 Parsers may use titles, channels, descriptions, and URLs transiently to update canonical entities, then discard those source copies. Metadata revisions and complete historical playlist snapshots are intentionally not retained.
+
+Playlist observation time and playlist change time are distinct.
+`playlist_scans.scanned_at` records when the current playlist surface was last
+observed. A first successful scan establishes the comparison baseline, and a
+failed or identical scan does not advance `playlists.last_changed_at`. Later
+membership, order, collaborator, title, description, owner, visibility,
+ownership, or reported-count differences advance it at detection time. Exact
+playlist creation and item-added timestamps are stronger evidence and may
+advance it directly. Migration backfill may also use retained worker-log count
+changes, but never generic row `updated_at` or scan timestamps; absent evidence
+remains `NULL`.
 
 Nullable categorical and text video features use a deliberate three-way state.
 `NULL` means the feature has not been authoritatively observed, an empty string
@@ -1278,7 +1292,10 @@ rollbacks to the surrounding worker transaction. Fetching, queue disposition,
 logs, retry policy, and error classification remain owned by each worker.
 
 - Metadata tasks fetch channel pages directly when keyed by channel and watch pages directly when keyed by video. They never use YouTube's search interface as a metadata fallback. Each authenticated request verifies that YouTube still accepts the configured cookie; authentication failure stops further YouTube dispatch.
-- Playlist tasks scan playlists with yt-dlp first and fall back to the web parser when needed. They record reported, exposed, and unavailable counts without replacing a fuller scan with a short result.
+- Playlist tasks scan playlists with yt-dlp first and fall back to the web
+  parser when needed. They record reported, exposed, and unavailable counts
+  without replacing a fuller scan with a short result, and compare successful
+  authoritative results with the prior baseline to detect playlist changes.
 - Placeholder tasks query Archivarix for deleted/private/unavailable video IDs, persist each recovery attempt and its run-linked logs, and preserve rate-limited tasks for a later retry. A default-on Advanced setting clears only a persisted daily-quota hold after the UTC date rolls over, records the automatic retry in the queue log, and resumes the dispatcher; authentication, proxy, timeout, and request failures remain manual recovery decisions.
 - History tasks support recent fetch and full verification modes, fetching YouTube history in batches and reconciling after each batch.
 

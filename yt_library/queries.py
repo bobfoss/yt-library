@@ -430,11 +430,11 @@ def playlist_list_data(
     order_by = {
         "title_desc": "COALESCE(NULLIF(title, ''), playlist_id) COLLATE NOCASE DESC, playlist_id",
         "newest_updated": (
-            "COALESCE(updated_at, '') DESC, "
+            "COALESCE(last_changed_at, '') DESC, "
             "COALESCE(NULLIF(title, ''), playlist_id) COLLATE NOCASE, playlist_id"
         ),
         "oldest_updated": (
-            "COALESCE(updated_at, ''), "
+            "COALESCE(last_changed_at, ''), "
             "COALESCE(NULLIF(title, ''), playlist_id) COLLATE NOCASE, playlist_id"
         ),
         "most_videos": (
@@ -4150,8 +4150,7 @@ def history_search_data(
                    COALESCE(he.watch_resume_seconds, 0) AS watch_resume_seconds,
                    counts.watch_count,
                    counts.watch_dates AS watch_dates_text,
-                   v.fetch_status AS metadata_fetch_status,
-                   v.updated_at
+                   v.fetch_status AS metadata_fetch_status
             FROM page_events page
             JOIN history_events he ON he.event_id = page.event_id
             JOIN videos v ON v.video_id = he.video_id

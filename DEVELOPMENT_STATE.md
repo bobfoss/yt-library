@@ -1,8 +1,8 @@
 # YT Library Development State
 
-Last consolidated: 2026-08-25. This handoff summarizes implementation and
-decisions through `bfc23b0`. Recheck the live checkout, service, queue, schema,
-and test count before relying on snapshot values.
+Last consolidated: 2026-08-26. This handoff summarizes the current checkout.
+Recheck the live service, queue, schema, and test count before relying on
+snapshot values.
 
 ## How To Use This Document
 
@@ -47,9 +47,14 @@ facts, transient PIDs, or other runtime-only data here.
 - Playlist rows may support an inferred public availability, but playability
   changes require an explicit positive or negative signal. Missing negative
   evidence is not proof of `is_playable = 1`.
+- `playlists.last_changed_at` is the latest defensible playlist-change evidence,
+  not the latest scan or row write. Exact playlist creation and item-added
+  timestamps can advance it; after an authoritative baseline, a detected
+  membership, order, collaborator, or meaningful metadata difference advances
+  it at observation time. Failed, first-baseline, and no-op scans do not.
 - Supported databases upgrade through ordered migrations. The fresh schema and
   every supported upgrade path must describe the same current model. The
-  schema version at this snapshot is 33.
+  schema version at this snapshot is 34.
 
 ## Browser And Search Model
 
@@ -73,6 +78,9 @@ facts, transient PIDs, or other runtime-only data here.
   superseded transitions.
 - Card DOM is shared. Page-specific adapters and CSS may change layout, but
   should not fork core identity, metadata, annotation, or decorator behavior.
+- Playlist cards alone show **Last updated**, sourced from
+  `playlists.last_changed_at`; video, Clip, channel, and occurrence cards do not
+  reinterpret their persistence `updated_at` values as user-facing changes.
 - Native decorators precede the ordered plugin contribution slot. Unless a
   distinct meaning requires otherwise, new decorators reuse the established
   typography, sizing, spacing, and muted metadata color.

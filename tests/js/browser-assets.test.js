@@ -244,7 +244,7 @@ test('video cards and details render server availability separately from Archiva
   );
 });
 
-test('all native entity cards render the last observed update in the temporal slot', () => {
+test('only playlist cards render the last detected playlist change', () => {
   const indexSource = source('index.js');
   const context = {
     Date,
@@ -260,25 +260,25 @@ test('all native entity cards render the last observed update in the temporal sl
   };
   vm.runInNewContext(
     `${namedFunctionSource(indexSource, 'cardTimestampLabel')}\n`
-      + `${namedFunctionSource(indexSource, 'lastUpdatedHtml')}`,
+      + `${namedFunctionSource(indexSource, 'playlistLastUpdatedHtml')}`,
     context,
   );
 
-  const rendered = context.lastUpdatedHtml({ updated_at: '2026-08-26T03:34:17Z' });
+  const rendered = context.playlistLastUpdatedHtml({
+    last_changed_at: '2026-08-26T03:34:17Z',
+    updated_at: '2026-08-27T03:34:17Z',
+  });
   assert.match(rendered, /class="details last-updated-line"/);
   assert.match(rendered, /Last updated Aug 25, 2026 8:34 PM/);
-  assert.equal(context.lastUpdatedHtml({ updated_at: '' }), '');
+  assert.equal(context.playlistLastUpdatedHtml({ updated_at: '2026-08-27T03:34:17Z' }), '');
 
-  assert.match(
-    source('video-card.js'),
-    /latestWatchDateHtml[\s\S]{0,80}lastUpdatedHtml[\s\S]{0,80}watchedHtml/,
-  );
+  assert.doesNotMatch(source('video-card.js'), /lastUpdatedHtml/);
   assert.match(source('collection-card.js'), /primaryMetadata[\s\S]{0,100}lastUpdatedHtml/);
-  assert.match(namedFunctionSource(indexSource, 'cardFor'), /lastUpdatedHtml: lastUpdatedHtml\(playlist\)/);
-  assert.match(namedFunctionSource(indexSource, 'clipCardFor'), /lastUpdatedHtml: lastUpdatedHtml\(clip\)/);
-  assert.match(namedFunctionSource(indexSource, 'channelCardFor'), /lastUpdatedHtml: lastUpdatedHtml\(channel\)/);
-  assert.match(namedFunctionSource(indexSource, 'videoDetailCardFor'), /\$\{lastUpdatedHtml\(video\)\}/);
-  assert.match(namedFunctionSource(indexSource, 'channelDetailCardFor'), /\$\{lastUpdatedHtml\(channel\)\}/);
+  assert.match(namedFunctionSource(indexSource, 'cardFor'), /lastUpdatedHtml: playlistLastUpdatedHtml\(playlist\)/);
+  assert.doesNotMatch(namedFunctionSource(indexSource, 'clipCardFor'), /lastUpdatedHtml/);
+  assert.doesNotMatch(namedFunctionSource(indexSource, 'channelCardFor'), /lastUpdatedHtml/);
+  assert.doesNotMatch(namedFunctionSource(indexSource, 'videoDetailCardFor'), /lastUpdatedHtml/);
+  assert.doesNotMatch(namedFunctionSource(indexSource, 'channelDetailCardFor'), /lastUpdatedHtml/);
 });
 
 test('timezone reset persists the detected zone in one request', () => {

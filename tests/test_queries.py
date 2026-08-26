@@ -155,11 +155,7 @@ class NormalizedReadModelTests(unittest.TestCase):
     def test_video_read_models_expose_uploader_category(self) -> None:
         self.add_video("category123", "Category Video")
         self.conn.execute(
-            """
-            UPDATE videos
-            SET uploader_category = 'Music', updated_at = '2026-08-03T12:34:56Z'
-            WHERE video_id = 'category123'
-            """
+            "UPDATE videos SET uploader_category = 'Music' WHERE video_id = 'category123'"
         )
         self.conn.execute(
             """
@@ -180,9 +176,6 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(detail["uploader_category"], "Music")
         self.assertEqual(search_item["uploader_category"], "Music")
         self.assertEqual(history_item["uploader_category"], "Music")
-        self.assertEqual(detail["updated_at"], "2026-08-03T12:34:56Z")
-        self.assertEqual(search_item["updated_at"], "2026-08-03T12:34:56Z")
-        self.assertEqual(history_item["updated_at"], "2026-08-03T12:34:56Z")
 
     def test_video_read_models_expose_movie_metadata(self) -> None:
         core.upsert_video(
@@ -2248,6 +2241,53 @@ class NormalizedReadModelTests(unittest.TestCase):
         )
         unavailable = playlist_list_data(self.conn, unavailable_only=True)
         self.assertEqual([row["playlist_id"] for row in unavailable["results"]], ["PLz"])
+
+    def test_playlist_read_models_expose_and_sort_by_last_changed_at(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO playlists(
+              playlist_id, title, last_changed_at, updated_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            [
+                (
+                    "PLchanged-old",
+                    "Older detected change",
+                    "2026-08-01T00:00:00Z",
+                    "2026-08-25T00:00:00Z",
+                ),
+                (
+                    "PLchanged-new",
+                    "Newer detected change",
+                    "2026-08-20T00:00:00Z",
+                    "2026-08-02T00:00:00Z",
+                ),
+            ],
+        )
+        self.conn.commit()
+
+        newest = playlist_list_data(self.conn, sort="newest_updated")["results"]
+        oldest = playlist_list_data(self.conn, sort="oldest_updated")["results"]
+        detail = playlist_detail_data(self.conn, "PLchanged-new")
+        searched = next(
+            result["item"]
+            for result in omni_search_data(
+                self.conn,
+                "Newer detected change",
+                result_kinds={"playlist"},
+            )["results"]
+        )
+
+        self.assertEqual(
+            [row["playlist_id"] for row in newest],
+            ["PLchanged-new", "PLchanged-old"],
+        )
+        self.assertEqual(
+            [row["playlist_id"] for row in oldest],
+            ["PLchanged-old", "PLchanged-new"],
+        )
+        self.assertEqual(detail["last_changed_at"], "2026-08-20T00:00:00Z")
+        self.assertEqual(searched["last_changed_at"], "2026-08-20T00:00:00Z")
 
     def test_playlist_summaries_use_current_video_availability(self) -> None:
         self.conn.execute(

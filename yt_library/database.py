@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -1283,6 +1283,41 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (33, utc_now()),
+        )
+    if current_version < 34:
+        playlist_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(playlists)")
+        }
+        if "last_changed_at" not in playlist_columns:
+            conn.execute("ALTER TABLE playlists ADD COLUMN last_changed_at TEXT")
+        conn.execute(
+            """
+            UPDATE playlists AS p
+            SET last_changed_at = NULLIF(
+              MAX(
+                COALESCE(p.last_changed_at, ''),
+                COALESCE(p.created_at, ''),
+                COALESCE((
+                  SELECT MAX(pi.added_at)
+                  FROM playlist_items pi
+                  WHERE pi.playlist_id = p.playlist_id
+                    AND pi.added_at IS NOT NULL
+                    AND pi.added_at <> ''
+                ), ''),
+                COALESCE((
+                  SELECT MAX(log.created_at)
+                  FROM playlist_scan_worker_log log
+                  WHERE log.playlist_id = p.playlist_id
+                    AND log.message LIKE '%count changed %'
+                ), '')
+              ),
+              ''
+            )
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (34, utc_now()),
         )
 
 
