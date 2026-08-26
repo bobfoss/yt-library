@@ -203,7 +203,9 @@ change evidence: an exact playlist creation or item-added timestamp, a retained
 historical count-change event, or a structural/metadata difference detected
 after an authoritative baseline. First observations and identical rescans leave
 the value unknown or unchanged; `playlist_scans.scanned_at` remains the separate
-last-observed scan time.
+last-observed scan time. The playlist **Newest** and **Oldest** search sorts use
+this same displayed value; playlists without change evidence sort after dated
+playlists in **Newest** order.
 
 The default host binds only to the local loopback interface. To expose the app
 through Tailscale without binding other interfaces, set `host` to the machine's

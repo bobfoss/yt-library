@@ -1875,9 +1875,9 @@ def _omni_result(
         watch_count = 0
     else:
         title = item.get("title") or item.get("playlist_id") or ""
-        newest_video_upload_date = item.get("newest_video_upload_date") or ""
-        sort_date = newest_video_upload_date
-        sort_date_fallback = not bool(newest_video_upload_date)
+        last_changed_at = item.get("last_changed_at") or ""
+        sort_date = last_changed_at
+        sort_date_fallback = not bool(last_changed_at)
         watch_count = 0
     return {
         "kind": kind,
@@ -3488,7 +3488,6 @@ def omni_search_data(
                    COALESCE(owner.aliases, '') AS owner_channel_aliases,
                    COALESCE(owner.thumbnail_path, '') AS owner_channel_thumbnail_path,
                    COALESCE(owner.status, '') AS owner_channel_status,
-                   COALESCE(playlist_dates.newest_video_upload_date, '') AS newest_video_upload_date,
                    CASE WHEN {playlist_title_hit} THEN 1 ELSE 0 END AS title_hit,
                    CASE WHEN {annotation_match_sql['playlist']} THEN 1 ELSE 0 END AS annotation_search_hit
             FROM playlists p
@@ -3496,13 +3495,6 @@ def omni_search_data(
             LEFT JOIN playlist_unavailable_counts puc
               ON puc.playlist_id = p.playlist_id
             LEFT JOIN channels owner ON owner.channel_id = p.owner_channel_id
-            LEFT JOIN (
-              SELECT pi.playlist_id,
-                     MAX(NULLIF(v.upload_date, '')) AS newest_video_upload_date
-              FROM playlist_items pi
-              JOIN videos v ON v.video_id = pi.video_id
-              GROUP BY pi.playlist_id
-            ) playlist_dates ON playlist_dates.playlist_id = p.playlist_id
             WHERE ({' OR '.join(f'({match})' for match in playlist_matches)})
               AND ({playlist_group_filter_sql})
             """,

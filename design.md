@@ -1267,7 +1267,9 @@ ownership, or reported-count differences advance it at detection time. Exact
 playlist creation and item-added timestamps are stronger evidence and may
 advance it directly. Migration backfill may also use retained worker-log count
 changes, but never generic row `updated_at` or scan timestamps; absent evidence
-remains `NULL`.
+remains `NULL`. Playlist Newest and Oldest search ordering uses this same
+user-visible `last_changed_at` evidence, never a member upload date or scan
+time. Unknown change dates sort after dated playlists in Newest order.
 
 Nullable categorical and text video features use a deliberate three-way state.
 `NULL` means the feature has not been authoritatively observed, an empty string

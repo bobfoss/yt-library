@@ -81,6 +81,9 @@ facts, transient PIDs, or other runtime-only data here.
 - Playlist cards alone show **Last updated**, sourced from
   `playlists.last_changed_at`; video, Clip, channel, and occurrence cards do not
   reinterpret their persistence `updated_at` values as user-facing changes.
+- Playlist **Newest** and **Oldest** search ordering uses that same
+  `last_changed_at` value. It does not substitute newest-member upload time,
+  scan time, or persistence bookkeeping; unknown dates sort last in **Newest**.
 - Native decorators precede the ordered plugin contribution slot. Unless a
   distinct meaning requires otherwise, new decorators reuse the established
   typography, sizing, spacing, and muted metadata color.

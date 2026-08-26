@@ -926,26 +926,37 @@ class NormalizedReadModelTests(unittest.TestCase):
         hydrated_results = hydrate.call_args.args[1]
         self.assertEqual(len(hydrated_results), 2)
 
-    def test_omni_search_newest_sorts_playlists_by_newest_member_upload_date(self) -> None:
+    def test_omni_search_newest_sorts_playlists_by_last_changed_at(self) -> None:
         self.add_video("contentnew1", "Newest playlist member")
-        self.add_video("contentscan1", "Older playlist member")
+        self.add_video("contentold1", "Older playlist member")
         self.add_video("contentnone1", "Undated playlist member")
         self.conn.executemany(
             "UPDATE videos SET upload_date = ? WHERE video_id = ?",
             [
                 ("2026-07-01T00:00:00Z", "contentnew1"),
-                ("2024-01-01T00:00:00Z", "contentscan1"),
+                ("2024-01-01T00:00:00Z", "contentold1"),
+                ("2026-07-31T00:00:00Z", "contentnone1"),
             ],
         )
         self.conn.executemany(
             """
-            INSERT INTO playlists(playlist_id, title, updated_at)
-            VALUES (?, ?, ?)
+            INSERT INTO playlists(playlist_id, title, last_changed_at, updated_at)
+            VALUES (?, ?, ?, ?)
             """,
             [
-                ("PLcontentnew", "Content newest", "2024-01-01T00:00:00Z"),
-                ("PLscannew", "Scan newest", "2026-07-30T00:00:00Z"),
-                ("PLundated", "Undated", "2026-07-31T00:00:00Z"),
+                (
+                    "PLcontentnew",
+                    "Content newest",
+                    "2026-07-01T00:00:00Z",
+                    "2024-01-01T00:00:00Z",
+                ),
+                (
+                    "PLchange",
+                    "Changed newest",
+                    "2026-07-30T00:00:00Z",
+                    "2024-01-01T00:00:00Z",
+                ),
+                ("PLundated", "Undated", None, "2026-07-31T00:00:00Z"),
             ],
         )
         self.conn.executemany(
@@ -955,7 +966,7 @@ class NormalizedReadModelTests(unittest.TestCase):
             """,
             [
                 ("PLcontentnew", "contentnew1"),
-                ("PLscannew", "contentscan1"),
+                ("PLchange", "contentold1"),
                 ("PLundated", "contentnone1"),
             ],
         )
@@ -972,11 +983,11 @@ class NormalizedReadModelTests(unittest.TestCase):
 
         self.assertEqual(
             [result["item"]["playlist_id"] for result in data["results"]],
-            ["PLcontentnew", "PLscannew", "PLundated"],
+            ["PLchange", "PLcontentnew", "PLundated"],
         )
         self.assertEqual(
-            [result["item"]["newest_video_upload_date"] for result in data["results"]],
-            ["2026-07-01T00:00:00Z", "2024-01-01T00:00:00Z", ""],
+            [result["item"]["last_changed_at"] for result in data["results"]],
+            ["2026-07-30T00:00:00Z", "2026-07-01T00:00:00Z", None],
         )
 
     def test_omni_search_keeps_missing_video_titles_blank(self) -> None:
