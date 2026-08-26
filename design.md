@@ -39,8 +39,10 @@ standard-library `scripts/windows_service_host.py` supervisor under the user's
 Windows account. SCM provides boot startup and session-independent lifetime;
 the host captures and archives child streams, retries failed children with
 bounded backoff, and converts in-app restart requests into supervised child
-replacement. This layer does not replace or bypass the controller's operational
-contract.
+replacement. The controller uses that same child-replacement path for installed
+mode restarts while retaining its lock, queue intent, recovery record, process
+ownership checks, readiness verification, and caller-visible result. This layer
+does not replace or bypass the controller's operational contract.
 
 Primary surfaces:
 

@@ -886,6 +886,10 @@ test('service controller preserves restart intent and reports contention', () =>
   assert.match(serviceSource, /ContendedControllerPid/);
   assert.match(serviceSource, /Global\\YTLibraryServiceControl-/);
   assert.match(serviceSource, /function Get-WindowsServiceRecord/);
+  assert.match(serviceSource, /function Get-ProcessChildOfAncestor/);
+  assert.match(serviceSource, /function Restart-WindowsServiceChild/);
+  assert.match(serviceSource, /\/api\/admin\/service\/restart/);
+  assert.match(serviceSource, /\$activeServiceMode -eq "windows-service"[\s\S]{0,500}Restart-WindowsServiceChild/);
   assert.match(serviceSource, /WindowsServiceInstalled/);
   assert.match(serviceSource, /service-queue-intent\.json/);
   assert.match(serviceSource, /Prepare-ServiceRunLogs/);

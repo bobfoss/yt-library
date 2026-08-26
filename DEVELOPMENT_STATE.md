@@ -133,7 +133,10 @@ facts, transient PIDs, or other runtime-only data here.
   current user's Windows account, automatic delayed startup, SCM host recovery,
   credential refresh, and reversible removal back to direct mode. The Python
   service host supervises the project venv process; the existing controller
-  retains queue semantics and rich contention feedback.
+  retains queue semantics and rich contention feedback. In installed mode,
+  controller restarts replace the supervised child without stopping the SCM
+  host; process ancestry is the non-elevated ownership fallback when Windows
+  hides cross-session command lines.
 - The current stdout/stderr paths remain stable. Before each child launch, the
   previous run and manifest are moved to `.codex\service-logs\archive`, bounded
   to 20 runs and 250 MiB while retaining at least the newest run.

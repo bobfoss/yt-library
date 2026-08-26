@@ -22,7 +22,8 @@ development chat. `TODO.md` is the source for unfinished or deferred work;
   use the Admin restart endpoint. The script serializes mutating calls from
   concurrent chats and across Windows sessions. If the opt-in SCM service is
   installed, it supplies auto-start and process supervision while this script
-  still owns queue intent, contention reporting, readiness, and verification.
+  still owns queue intent, contention reporting, readiness, and verification;
+  the script asks the persistent host to replace its child for a restart.
 - Restart after server, worker, served HTML/JS, schema/bootstrap, or source
   config changes. Database-only updates normally do not require a restart.
 - Run the full local checks below for code changes. UI and settings changes also

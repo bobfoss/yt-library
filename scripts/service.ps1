@@ -419,6 +419,29 @@ function Test-ProcessDescendsFrom {
     return $false
 }
 
+function Get-ProcessChildOfAncestor {
+    param(
+        [int]$ProcessId,
+        [int]$AncestorProcessId
+    )
+
+    if ($ProcessId -le 0 -or $AncestorProcessId -le 0) {
+        return $null
+    }
+    $current = Get-ProcessRecord $ProcessId
+    for ($depth = 0; $depth -lt 10 -and $null -ne $current; $depth++) {
+        $parentProcessId = [int]$current.ParentProcessId
+        if ($parentProcessId -eq $AncestorProcessId) {
+            return $current
+        }
+        if ($parentProcessId -le 0 -or $parentProcessId -eq [int]$current.ProcessId) {
+            break
+        }
+        $current = Get-ProcessRecord $parentProcessId
+    }
+    return $null
+}
+
 function Wait-ForCondition {
     param(
         [scriptblock]$Condition,
@@ -602,6 +625,98 @@ function Stop-RunningService {
     }
 }
 
+function Restart-WindowsServiceChild {
+    param(
+        [object]$Status,
+        [object]$RecoveryState
+    )
+
+    if ($null -eq $Status) {
+        throw "The Windows service child is not healthy enough to request a supervised restart"
+    }
+    $previousServiceProcessId = [int]$Status.service.pid
+    $previousWindowsService = Get-WindowsServiceRecord
+    if ($null -eq $previousWindowsService -or [string]$previousWindowsService.State -ne "Running") {
+        throw "Windows service $windowsServiceName is not running"
+    }
+    $previousWindowsServiceProcessId = [int]$previousWindowsService.ProcessId
+    if (
+        $previousWindowsServiceProcessId -le 0 -or
+        -not (Test-ProcessDescendsFrom $previousServiceProcessId $previousWindowsServiceProcessId)
+    ) {
+        throw "Service PID $previousServiceProcessId is not owned by Windows service $windowsServiceName PID $previousWindowsServiceProcessId"
+    }
+
+    Write-ControlLog "INFO" "Requesting supervised child restart from Windows service $windowsServiceName PID $previousWindowsServiceProcessId; listener PID $previousServiceProcessId."
+    $request = @{
+        Method = "Post"
+        Uri = "$($serviceConfig.BaseUrl)/api/admin/service/restart"
+        ContentType = "application/x-www-form-urlencoded"
+        Body = ""
+        TimeoutSec = [Math]::Min([Math]::Max($TimeoutSeconds, 5), 15)
+    }
+    $response = Invoke-RestMethod @request
+    if (-not [bool](Get-ObjectValue $response "ok" $false)) {
+        throw "The running service did not accept its supervised restart request"
+    }
+    Update-RecoveryState $RecoveryState "launching" @{
+        launcherPid = 0
+        servicePid = 0
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $currentWindowsService = Get-WindowsServiceRecord
+        if ($null -eq $currentWindowsService) {
+            throw "Windows service $windowsServiceName disappeared during child replacement"
+        }
+        if ([string]$currentWindowsService.State -eq "Stopped") {
+            throw "Windows service $windowsServiceName stopped during child replacement; see $logDirectory"
+        }
+        $currentStatus = Get-ServiceStatus
+        if ($null -ne $currentStatus) {
+            $serviceProcessId = [int]$currentStatus.service.pid
+            $listenerProcessId = Get-ListenerProcessId
+            $windowsServiceProcessId = [int]$currentWindowsService.ProcessId
+            if (
+                $serviceProcessId -gt 0 -and
+                $serviceProcessId -ne $previousServiceProcessId -and
+                $listenerProcessId -eq $serviceProcessId -and
+                $windowsServiceProcessId -gt 0 -and
+                (Test-ProcessDescendsFrom $serviceProcessId $windowsServiceProcessId)
+            ) {
+                $venvLauncher = Get-VenvLauncherRecord $serviceProcessId
+                if ($null -eq $venvLauncher) {
+                    $venvLauncher = Get-ProcessChildOfAncestor $serviceProcessId $windowsServiceProcessId
+                }
+                if ($null -ne $venvLauncher) {
+                    $recoveryStage = if (
+                        $null -ne $RecoveryState -and
+                        [bool](Get-ObjectValue $RecoveryState "queueWasRunning" $false)
+                    ) { "queue_resume_pending" } else { "verifying" }
+                    Update-RecoveryState $RecoveryState $recoveryStage @{
+                        servicePid = $serviceProcessId
+                        launcherPid = [int]$venvLauncher.ProcessId
+                    }
+                    Write-ControlLog "INFO" "Windows service replaced its child; host PID $windowsServiceProcessId; old service PID $previousServiceProcessId; new service PID $serviceProcessId; venv launcher PID $([int]$venvLauncher.ProcessId)."
+                    return [pscustomobject]@{
+                        Status = $currentStatus
+                        ServiceProcessId = $serviceProcessId
+                        LauncherProcessId = [int]$venvLauncher.ProcessId
+                        WindowsServiceProcessId = $windowsServiceProcessId
+                        Mode = "windows-service"
+                        Stdout = Join-Path $logDirectory "service.stdout.log"
+                        Stderr = Join-Path $logDirectory "service.stderr.log"
+                    }
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    throw "Windows service $windowsServiceName did not replace service PID $previousServiceProcessId within $TimeoutSeconds seconds; see $logDirectory"
+}
+
 function Start-ServiceProcess {
     param([object]$RecoveryState = $null)
 
@@ -642,7 +757,10 @@ function Start-ServiceProcess {
             }
             $venvLauncher = Get-VenvLauncherRecord $serviceProcessId
             if ($null -eq $venvLauncher) {
-                throw "Service PID $serviceProcessId was not launched through $venvPython"
+                $venvLauncher = Get-ProcessChildOfAncestor $serviceProcessId $windowsServiceProcessId
+            }
+            if ($null -eq $venvLauncher) {
+                throw "Service PID $serviceProcessId is not in the verified Windows service process chain"
             }
             $recoveryStage = if (
                 $null -ne $RecoveryState -and
@@ -924,6 +1042,13 @@ try {
             elseif ($initialListenerProcessId) { "unhealthy" }
             else { "stopped" }
             $launcher = if ($initialListenerProcessId) { Get-VenvLauncherRecord $initialListenerProcessId } else { $null }
+            if (
+                $null -eq $launcher -and
+                $activeServiceMode -eq "windows-service" -and
+                $windowsServiceProcessId -gt 0
+            ) {
+                $launcher = Get-ProcessChildOfAncestor $initialListenerProcessId $windowsServiceProcessId
+            }
             $recoveryLauncherPid = if ($null -ne $recoveryState) {
                 [int](Get-ObjectValue $recoveryState "launcherPid" 0)
             }
@@ -1038,8 +1163,19 @@ try {
             Update-RecoveryState $activeRecoveryState "stopping_queue"
             Stop-QueueIfRunning $initialStatus
             Update-RecoveryState $activeRecoveryState "stopping_service"
-            $stopped = Stop-RunningService $initialStatus
-            $started = Start-ServiceProcess $activeRecoveryState
+            if ($activeServiceMode -eq "windows-service" -and $null -ne $initialStatus) {
+                $stopped = [pscustomobject]@{
+                    ServiceProcessId = $initialListenerProcessId
+                    LauncherProcessId = 0
+                    WindowsServiceProcessId = $windowsServiceProcessId
+                    Mode = "windows-service"
+                }
+                $started = Restart-WindowsServiceChild $initialStatus $activeRecoveryState
+            }
+            else {
+                $stopped = Stop-RunningService $initialStatus
+                $started = Start-ServiceProcess $activeRecoveryState
+            }
             $completed = Complete-Recovery $activeRecoveryState $started.Status
             $activeRecoveryState = $null
             $finalStatus = $completed.Status

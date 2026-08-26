@@ -92,7 +92,9 @@ The same controller can use Windows Service Control Manager for startup at
 boot, persistence across interactive/RDP sessions, and crash recovery. The
 Windows service is only the lifecycle host: `scripts\service.ps1` remains the
 single operational interface and retains its queue handling, readiness checks,
-cross-session lock, and contention feedback.
+cross-session lock, and contention feedback. In this mode, a controller restart
+keeps the Windows service host running and asks it to replace the supervised app
+process, then verifies the new PID and restores the prior queue intent.
 
 Installation is opt-in and must be run once from an elevated PowerShell window:
 
