@@ -302,6 +302,12 @@ The left-navigation library lists are named omni-search presets. Search returns 
   temporarily shown as **YT Last updated**. Survey its coverage and conflicts
   across the library before deciding whether it should replace the observed
   value for display and sorting, then remove or promote the temporary label.
+- Audit check-versus-change semantics app-wide. A scan, poll, fetch, or row write
+  must update its explicit checked/observed bookkeeping without automatically
+  becoming a user-visible **updated** event. Inventory generic `updated_at`
+  fields and labels across videos, playlists, channels, history, plugins, and
+  admin status surfaces; retain distinct change timestamps only where a durable
+  before/after comparison or source timestamp supports them.
 - Foreign playlist continuation work remains fixture-driven; current best-nonzero preservation is the safe behavior.
 
 ## Suggested Order

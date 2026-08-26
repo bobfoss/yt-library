@@ -61,7 +61,9 @@ facts, transient PIDs, or other runtime-only data here.
   while its coverage is surveyed.
 - Explicit playlist metadata-only queue jobs stop after authenticated header
   metadata. They do not enumerate or rewrite member videos, update the
-  membership scan record, or enqueue video metadata or placeholder recovery.
+  membership scan record, enqueue video metadata or placeholder recovery, or
+  advance `last_changed_at`; only `metadata_checked_at` and generic persistence
+  bookkeeping record the check.
 - Supported databases upgrade through ordered migrations. The fresh schema and
   every supported upgrade path must describe the same current model. The
   schema version at this snapshot is 35.

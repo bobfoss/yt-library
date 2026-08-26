@@ -7986,21 +7986,6 @@ def save_playlist_metadata_observation(
     ).fetchone()
     if not existing_playlist:
         return False
-    previous_signature = _playlist_change_signature(conn, playlist_id)
-    previous_scan = conn.execute(
-        "SELECT scan_status FROM playlist_scans WHERE playlist_id = ?",
-        (playlist_id,),
-    ).fetchone()
-    had_change_baseline = bool(
-        previous_scan
-        and (
-            previous_scan["scan_status"] == "ok"
-            or conn.execute(
-                "SELECT 1 FROM playlist_items WHERE playlist_id = ? LIMIT 1",
-                (playlist_id,),
-            ).fetchone()
-        )
-    )
     now = utc_now()
     metadata = {
         key: str(playlist_metadata.get(key) or "").strip()
@@ -8113,12 +8098,6 @@ def save_playlist_metadata_observation(
             playlist_id,
         ),
     )
-    if (
-        had_change_baseline
-        and previous_signature is not None
-        and previous_signature != _playlist_change_signature(conn, playlist_id)
-    ):
-        _record_playlist_change(conn, playlist_id, now)
     return bool(cursor.rowcount)
 
 

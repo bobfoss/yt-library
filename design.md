@@ -1290,7 +1290,10 @@ Playlist queue entries may carry a `metadata_only` payload for an explicit
 header-only refresh. That mode fetches and stores authenticated playlist header
 metadata, records diagnostic progress, and removes its queue row without
 enumerating membership, rewriting `playlist_items` or `playlist_scans`, or
-enqueuing member metadata and placeholder-recovery work.
+enqueuing member metadata and placeholder-recovery work. It records the check in
+`metadata_checked_at` and persistence bookkeeping in `updated_at`, but it never
+advances `last_changed_at`: a header refresh alone has no comparable playlist
+state observation that proves when a change occurred.
 
 Nullable categorical and text video features use a deliberate three-way state.
 `NULL` means the feature has not been authoritatively observed, an empty string

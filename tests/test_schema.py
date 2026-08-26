@@ -1878,7 +1878,7 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(row["youtube_updated_date"], "2026-08-25")
         self.assertEqual(row["last_changed_at"], "2026-08-20T12:34:56Z")
 
-    def test_playlist_metadata_observation_does_not_scan_or_enqueue_members(self) -> None:
+    def test_playlist_metadata_observation_is_a_check_not_a_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
             try:
@@ -1919,16 +1919,17 @@ class SchemaTests(unittest.TestCase):
                         conn,
                         "PLmetadataonly",
                         {
-                            "title": "Metadata only",
-                            "visibility": "private",
-                            "video_count": 1,
+                            "title": "Metadata refreshed",
+                            "visibility": "unlisted",
+                            "video_count": 2,
                             "has_video_count": True,
                             "youtube_updated_date": "2026-08-26",
                         },
                     )
                 playlist = conn.execute(
                     """
-                    SELECT youtube_updated_date, metadata_checked_at, last_changed_at
+                    SELECT title, visibility, video_count, youtube_updated_date,
+                           metadata_checked_at, last_changed_at
                     FROM playlists
                     WHERE playlist_id = 'PLmetadataonly'
                     """
@@ -1952,6 +1953,9 @@ class SchemaTests(unittest.TestCase):
                 conn.close()
 
         self.assertTrue(saved)
+        self.assertEqual(playlist["title"], "Metadata refreshed")
+        self.assertEqual(playlist["visibility"], "unlisted")
+        self.assertEqual(playlist["video_count"], 2)
         self.assertEqual(playlist["youtube_updated_date"], "2026-08-26")
         self.assertTrue(playlist["metadata_checked_at"])
         self.assertEqual(playlist["last_changed_at"], "2026-08-20T12:34:56Z")
