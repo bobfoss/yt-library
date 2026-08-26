@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -1876,6 +1877,148 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(row["description"], "Real description")
         self.assertEqual(row["youtube_updated_date"], "2026-08-25")
         self.assertEqual(row["last_changed_at"], "2026-08-20T12:34:56Z")
+
+    def test_playlist_metadata_observation_does_not_scan_or_enqueue_members(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, visibility, video_count, last_changed_at
+                        ) VALUES (
+                          'PLmetadataonly', 'Metadata only', 'private', 1,
+                          '2026-08-20T12:34:56Z'
+                        )
+                        """
+                    )
+                    core.upsert_video(
+                        conn,
+                        "member00001",
+                        title="Existing member",
+                        source="playlist",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_items(playlist_id, position, video_id)
+                        VALUES ('PLmetadataonly', 1, 'member00001')
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scans(
+                          playlist_id, scanned_at, video_count, unavailable_count,
+                          scan_status
+                        ) VALUES (
+                          'PLmetadataonly', '2026-08-20T12:34:56Z', 1, 0, 'ok'
+                        )
+                        """
+                    )
+                    saved = core.save_playlist_metadata_observation(
+                        conn,
+                        "PLmetadataonly",
+                        {
+                            "title": "Metadata only",
+                            "visibility": "private",
+                            "video_count": 1,
+                            "has_video_count": True,
+                            "youtube_updated_date": "2026-08-26",
+                        },
+                    )
+                playlist = conn.execute(
+                    """
+                    SELECT youtube_updated_date, metadata_checked_at, last_changed_at
+                    FROM playlists
+                    WHERE playlist_id = 'PLmetadataonly'
+                    """
+                ).fetchone()
+                items = conn.execute(
+                    """
+                    SELECT position, video_id
+                    FROM playlist_items
+                    WHERE playlist_id = 'PLmetadataonly'
+                    """
+                ).fetchall()
+                scan = conn.execute(
+                    """
+                    SELECT scanned_at, video_count, scan_status
+                    FROM playlist_scans
+                    WHERE playlist_id = 'PLmetadataonly'
+                    """
+                ).fetchone()
+                queue_count = core.worker_queue_count(conn)
+            finally:
+                conn.close()
+
+        self.assertTrue(saved)
+        self.assertEqual(playlist["youtube_updated_date"], "2026-08-26")
+        self.assertTrue(playlist["metadata_checked_at"])
+        self.assertEqual(playlist["last_changed_at"], "2026-08-20T12:34:56Z")
+        self.assertEqual([tuple(row) for row in items], [(1, "member00001")])
+        self.assertEqual(
+            dict(scan),
+            {
+                "scanned_at": "2026-08-20T12:34:56Z",
+                "video_count": 1,
+                "scan_status": "ok",
+            },
+        )
+        self.assertEqual(queue_count, 0)
+
+    def test_all_playlist_metadata_queue_uses_metadata_only_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.executemany(
+                        """
+                        INSERT INTO playlists(playlist_id, title, fetch_status)
+                        VALUES (?, ?, ?)
+                        """,
+                        [
+                            ("PLmetadata1", "First", "ok"),
+                            ("PLmetadata2", "Second", "ok"),
+                            ("PLremoved", "Removed", "removed"),
+                        ],
+                    )
+                    stats = core.enqueue_all_playlist_metadata_scan_items(conn)
+                rows = conn.execute(
+                    """
+                    SELECT playlist_id, worker_type, task_type, manual, payload_json
+                    FROM worker_queue
+                    ORDER BY priority, queue_id
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(
+            stats,
+            {
+                "mode": "metadata_only",
+                "selected": 2,
+                "cleared": 0,
+                "inserted": 2,
+                "queued": 2,
+            },
+        )
+        self.assertEqual(
+            [
+                (
+                    row["playlist_id"],
+                    row["worker_type"],
+                    row["task_type"],
+                    row["manual"],
+                    json.loads(row["payload_json"]),
+                )
+                for row in rows
+            ],
+            [
+                ("PLmetadata1", "playlist", "scan", 1, {"metadata_only": True}),
+                ("PLmetadata2", "playlist", "scan", 1, {"metadata_only": True}),
+            ],
+        )
 
     def test_playlist_last_changed_advances_only_after_a_detected_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

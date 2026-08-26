@@ -1858,6 +1858,116 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_playlist_worker_metadata_only_skips_members_and_related_queues(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(playlist_id, title, video_count)
+                        VALUES ('PLmetadataonly', 'Metadata only', 1)
+                        """
+                    )
+                    core.upsert_video(
+                        conn,
+                        "member00001",
+                        title="Existing member",
+                        source="playlist",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_items(playlist_id, position, video_id)
+                        VALUES ('PLmetadataonly', 1, 'member00001')
+                        """
+                    )
+                    core.enqueue_playlist_scan_item(
+                        conn,
+                        "PLmetadataonly",
+                        title="Metadata only",
+                        manual=True,
+                        payload={"metadata_only": True},
+                    )
+            finally:
+                conn.close()
+
+            header = {
+                "title": "Metadata only",
+                "video_count": 1,
+                "has_video_count": True,
+                "visibility": "private",
+                "youtube_updated_date": "2026-08-26",
+            }
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch("yt_library.workers.request_text", return_value="header page"),
+                patch(
+                    "yt_library.workers.extract_playlist_metadata",
+                    return_value=header,
+                ),
+                patch(
+                    "yt_library.workers.fetch_playlist_collaboration_metadata",
+                    return_value={},
+                ),
+                patch("yt_library.workers.scan_playlist_ytdlp") as scan_ytdlp,
+                patch("yt_library.workers.scan_playlist_videos") as scan_web,
+                patch(
+                    "yt_library.workers.enqueue_playlist_metadata_targets"
+                ) as enqueue_members,
+                patch(
+                    "yt_library.workers.enqueue_placeholder_recovery_targets"
+                ) as enqueue_placeholders,
+            ):
+                worker._run(
+                    "test-playlist-metadata-only",
+                    db_path,
+                    Path(temp_dir) / "cookies.txt",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    record_summary=False,
+                )
+
+            scan_ytdlp.assert_not_called()
+            scan_web.assert_not_called()
+            enqueue_members.assert_not_called()
+            enqueue_placeholders.assert_not_called()
+            conn = core.connect(db_path)
+            try:
+                playlist = conn.execute(
+                    """
+                    SELECT youtube_updated_date, metadata_checked_at
+                    FROM playlists
+                    WHERE playlist_id = 'PLmetadataonly'
+                    """
+                ).fetchone()
+                members = conn.execute(
+                    """
+                    SELECT video_id
+                    FROM playlist_items
+                    WHERE playlist_id = 'PLmetadataonly'
+                    """
+                ).fetchall()
+                queue_count = core.worker_queue_count(conn)
+                log = conn.execute(
+                    """
+                    SELECT level, message
+                    FROM playlist_scan_worker_log
+                    WHERE run_id = 'test-playlist-metadata-only'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(playlist["youtube_updated_date"], "2026-08-26")
+        self.assertTrue(playlist["metadata_checked_at"])
+        self.assertEqual([row["video_id"] for row in members], ["member00001"])
+        self.assertEqual(queue_count, 0)
+        self.assertEqual(log["level"], "info")
+        self.assertIn("member videos skipped", log["message"])
+
     def test_playlist_worker_scans_new_manual_playlist(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

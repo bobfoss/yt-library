@@ -209,7 +209,8 @@ playlists in **Newest** order. `playlists.youtube_updated_date` separately store
 YouTube's own displayed playlist-update date when the authenticated web surface
 provides one. Relative labels such as `Updated today` are resolved in the
 configured display timezone and stored as an ISO date without inventing a time;
-this source does not yet drive the card label or playlist ordering.
+the separate **YT Last updated** value is temporarily shown on playlist cards
+and playlist detail pages for comparison, but does not drive playlist ordering.
 
 The default host binds only to the local loopback interface. To expose the app
 through Tailscale without binding other interfaces, set `host` to the machine's

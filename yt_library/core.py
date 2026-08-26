@@ -7975,6 +7975,153 @@ def save_playlist_scan(
     return len(videos), unavailable_count
 
 
+def save_playlist_metadata_observation(
+    conn: sqlite3.Connection,
+    playlist_id: str,
+    playlist_metadata: dict[str, Any],
+) -> bool:
+    existing_playlist = conn.execute(
+        "SELECT ownership FROM playlists WHERE playlist_id = ?",
+        (playlist_id,),
+    ).fetchone()
+    if not existing_playlist:
+        return False
+    previous_signature = _playlist_change_signature(conn, playlist_id)
+    previous_scan = conn.execute(
+        "SELECT scan_status FROM playlist_scans WHERE playlist_id = ?",
+        (playlist_id,),
+    ).fetchone()
+    had_change_baseline = bool(
+        previous_scan
+        and (
+            previous_scan["scan_status"] == "ok"
+            or conn.execute(
+                "SELECT 1 FROM playlist_items WHERE playlist_id = ? LIMIT 1",
+                (playlist_id,),
+            ).fetchone()
+        )
+    )
+    now = utc_now()
+    metadata = {
+        key: str(playlist_metadata.get(key) or "").strip()
+        for key in (
+            "title",
+            "description",
+            "owner_channel_id",
+            "owner_thumbnail_url",
+            "owner_thumbnail_path",
+            "visibility",
+            "thumbnail_url",
+            "thumbnail_path",
+            "youtube_updated_date",
+        )
+    }
+    if metadata["owner_channel_id"]:
+        metadata["owner_channel_id"] = upsert_channel(
+            conn,
+            metadata["owner_channel_id"],
+            title=str(playlist_metadata.get("owner") or "").strip(),
+            thumbnail_url=metadata["owner_thumbnail_url"],
+            thumbnail_path=metadata["owner_thumbnail_path"],
+            source="playlist_owner",
+            updated_at=now,
+        )
+    ownership = playlist_ownership_for_owner(
+        conn,
+        metadata["owner_channel_id"],
+        str(playlist_metadata.get("owner") or "").strip(),
+        existing=str(existing_playlist["ownership"] or "unknown"),
+    )
+    if playlist_metadata.get("collaborators_authoritative"):
+        collaborators = playlist_metadata.get("collaborators") or []
+        conn.execute(
+            "DELETE FROM playlist_collaborators WHERE playlist_id = ?",
+            (playlist_id,),
+        )
+        seen_collaborator_ids: set[str] = set()
+        for position, collaborator in enumerate(collaborators):
+            if not isinstance(collaborator, dict):
+                continue
+            channel_id = str(collaborator.get("channel_id") or "").strip()
+            if (
+                not channel_id
+                or channel_id == metadata["owner_channel_id"]
+                or channel_id in seen_collaborator_ids
+            ):
+                continue
+            seen_collaborator_ids.add(channel_id)
+            channel_id = upsert_channel(
+                conn,
+                channel_id,
+                title=str(collaborator.get("title") or "").strip(),
+                thumbnail_url=str(collaborator.get("thumbnail_url") or "").strip(),
+                thumbnail_path=str(collaborator.get("thumbnail_path") or "").strip(),
+                source="playlist_collaborator",
+                updated_at=now,
+            )
+            conn.execute(
+                """
+                INSERT INTO playlist_collaborators(playlist_id, channel_id, position)
+                VALUES (?, ?, ?)
+                """,
+                (playlist_id, channel_id, position),
+            )
+    video_count = max(0, int(playlist_metadata.get("video_count") or 0))
+    has_video_count = bool(playlist_metadata.get("has_video_count"))
+    cursor = conn.execute(
+        """
+        UPDATE playlists
+        SET title=COALESCE(NULLIF(?, ''), title),
+            description=COALESCE(NULLIF(?, ''), description),
+            youtube_updated_date=CASE
+              WHEN NULLIF(?, '') IS NOT NULL
+               AND (
+                 youtube_updated_date IS NULL
+                 OR ? > youtube_updated_date
+               )
+              THEN ?
+              ELSE youtube_updated_date
+            END,
+            owner_channel_id=COALESCE(?, owner_channel_id),
+            visibility=COALESCE(NULLIF(?, ''), visibility),
+            ownership=CASE WHEN ? <> 'unknown' THEN ? ELSE ownership END,
+            video_count=CASE WHEN ? THEN ? ELSE video_count END,
+            thumbnail_url=COALESCE(NULLIF(?, ''), thumbnail_url),
+            thumbnail_path=COALESCE(NULLIF(?, ''), thumbnail_path),
+            metadata_checked_at=?,
+            fetch_status='ok',
+            fetch_error='',
+            updated_at=?
+        WHERE playlist_id = ?
+        """,
+        (
+            metadata["title"],
+            metadata["description"],
+            metadata["youtube_updated_date"],
+            metadata["youtube_updated_date"],
+            metadata["youtube_updated_date"],
+            metadata["owner_channel_id"] or None,
+            metadata["visibility"],
+            ownership,
+            ownership,
+            1 if has_video_count else 0,
+            video_count,
+            metadata["thumbnail_url"],
+            metadata["thumbnail_path"],
+            now,
+            now,
+            playlist_id,
+        ),
+    )
+    if (
+        had_change_baseline
+        and previous_signature is not None
+        and previous_signature != _playlist_change_signature(conn, playlist_id)
+    ):
+        _record_playlist_change(conn, playlist_id, now)
+    return bool(cursor.rowcount)
+
+
 def save_liked_video_reactions(
     conn: sqlite3.Connection,
     videos: list[dict[str, Any]],
@@ -9161,6 +9308,39 @@ def enqueue_all_playlist_scan_items(
         )
     queued_after = playlist_scan_queue_count(conn)
     return {
+        "cleared": 0,
+        "inserted": max(0, queued_after - queued_before),
+        "queued": queued_after,
+    }
+
+
+def enqueue_all_playlist_metadata_scan_items(
+    conn: sqlite3.Connection,
+) -> dict[str, int | str]:
+    rows = conn.execute(
+        """
+        SELECT playlist_id, title
+        FROM playlists
+        WHERE playlist_id <> ''
+          AND fetch_status <> 'removed'
+        ORDER BY title COLLATE NOCASE, playlist_id
+        """
+    ).fetchall()
+    queued_before = playlist_scan_queue_count(conn)
+    for index, row in enumerate(rows, start=1):
+        enqueue_playlist_scan_item(
+            conn,
+            row["playlist_id"] or "",
+            title=row["title"] or "",
+            source_key="playlist_metadata_only",
+            priority=index,
+            manual=True,
+            payload={"metadata_only": True},
+        )
+    queued_after = playlist_scan_queue_count(conn)
+    return {
+        "mode": "metadata_only",
+        "selected": len(rows),
         "cleared": 0,
         "inserted": max(0, queued_after - queued_before),
         "queued": queued_after,

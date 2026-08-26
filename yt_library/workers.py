@@ -96,6 +96,7 @@ from .core import (
     save_liked_video_reactions,
     save_my_activity_events,
     save_playlist_missing_status,
+    save_playlist_metadata_observation,
     save_playlist_scan,
     save_playlist_scan_error,
     save_video_recovery,
@@ -1308,6 +1309,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 playlist_metadata: dict[str, Any] = {}
                 header_metadata: dict[str, Any] = {}
                 header_page = ""
+                header_fetch_error = ""
                 header_page_requires_login = False
                 missing_status = ""
                 youtube_debug = ""
@@ -1323,6 +1325,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     )
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                     header_metadata = {}
+                    header_fetch_error = str(exc)
                     youtube_debug = youtube_request_error_diagnostics(exc, "playlist header")
                 if header_page:
                     try:
@@ -1341,6 +1344,113 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                             "playlist collaborators",
                         )
                 header_count_available = bool(header_metadata.get("has_video_count"))
+                metadata_only = payload.get("metadata_only") is True
+                if metadata_only:
+                    if header_page_requires_login and not header_count_available:
+                        status = "error"
+                        error = "skipping: YouTube login session is not accepted by YouTube"
+                    elif not header_page:
+                        status = "error"
+                        error = "skipping: YouTube playlist metadata request failed"
+                        if header_fetch_error:
+                            error += f": {header_fetch_error[:500]}"
+                    elif not any(
+                        (
+                            header_metadata.get("title"),
+                            header_count_available,
+                            header_metadata.get("visibility"),
+                            header_metadata.get("owner_channel_id"),
+                            header_metadata.get("youtube_updated_date"),
+                        )
+                    ):
+                        status = "error"
+                        error = "skipping: YouTube playlist metadata was unavailable"
+                    with conn:
+                        processed += 1
+                        if status == "ok":
+                            save_playlist_metadata_observation(
+                                conn,
+                                playlist_id,
+                                header_metadata,
+                            )
+                            found += 1
+                            record_cookie_auth_status(
+                                conn,
+                                "youtube",
+                                "valid",
+                                "Authenticated YouTube playlist metadata request accepted.",
+                            )
+                            youtube_updated_date = str(
+                                header_metadata.get("youtube_updated_date") or ""
+                            ).strip()
+                            log_playlist_scan_event(
+                                conn,
+                                run_id,
+                                "info",
+                                (
+                                    f"{title}: playlist metadata updated; "
+                                    "YT Last updated "
+                                    f"{youtube_updated_date or 'not exposed'}; "
+                                    "member videos skipped"
+                                ),
+                                playlist_id,
+                            )
+                        else:
+                            failed += 1
+                            if header_page_requires_login:
+                                record_cookie_auth_status(
+                                    conn,
+                                    "youtube",
+                                    cookie_auth_failure_status(error),
+                                    error.removeprefix("skipping: "),
+                                )
+                            log_playlist_scan_event(
+                                conn,
+                                run_id,
+                                "error",
+                                f"{title}: {error}",
+                                playlist_id,
+                            )
+                            if youtube_debug:
+                                log_playlist_scan_event(
+                                    conn,
+                                    run_id,
+                                    "debug",
+                                    f"{title}: YouTube diagnostics: {youtube_debug}",
+                                    playlist_id,
+                                )
+                        if collaboration_debug:
+                            log_playlist_scan_event(
+                                conn,
+                                run_id,
+                                "debug",
+                                (
+                                    f"{title}: YouTube collaborator diagnostics: "
+                                    f"{collaboration_debug}"
+                                ),
+                                playlist_id,
+                            )
+                        if queue_id:
+                            conn.execute(
+                                "DELETE FROM worker_queue WHERE queue_id = ?",
+                                (queue_id,),
+                            )
+                        remaining = worker_queue_type_count(conn, "playlist")
+                        runs.update(
+                            run_id,
+                            total=run_total,
+                            processed=processed,
+                            found=found,
+                            failed=failed,
+                            last_playlist_id=playlist_id,
+                            message=(
+                                f"Processed {processed} of {run_total}; "
+                                f"{remaining} playlist metadata jobs remain queued"
+                            ),
+                        )
+                    if delay and worker_queue_type_count(conn, "playlist") > 0:
+                        time.sleep(delay)
+                    continue
                 if not header_count_available and header_page_requires_login:
                     status = "error"
                     error = "skipping: YouTube login session is not accepted by YouTube"

@@ -2553,6 +2553,17 @@ function playlistLastUpdatedHtml(playlist) {
     : '';
 }
 
+function playlistYoutubeLastUpdatedLabel(playlist) {
+  return cardTimestampLabel(playlist?.youtube_updated_date);
+}
+
+function playlistYoutubeLastUpdatedHtml(playlist) {
+  const updatedAt = playlistYoutubeLastUpdatedLabel(playlist);
+  return updatedAt
+    ? `<div class="details yt-last-updated-line"><span>YT Last updated ${escapeHtml(updatedAt)}</span></div>`
+    : '';
+}
+
 function youtubeWatchUrl(video) {
   if (!video.video_id) return '';
   const list = video.playlist_id ? `&list=${encodeURIComponent(video.playlist_id)}` : '';
@@ -6727,6 +6738,9 @@ async function renderCurrentView() {
       playlistCount ? `<span>${escapeHtml(playlistCount)}</span>` : '',
       playlistVisibilityLabelHtml(playlist),
       playlistStatusLabelHtml(playlist),
+      playlistYoutubeLastUpdatedLabel(playlist)
+        ? `<span>YT Last updated ${escapeHtml(playlistYoutubeLastUpdatedLabel(playlist))}</span>`
+        : '',
     ].filter(Boolean).join('');
     title.innerHTML = `
       <span class="playlist-page-heading">
@@ -6823,7 +6837,7 @@ function cardFor(playlist, options = {}) {
       ${playlistCreatedHtml(playlist)}
     </div>
     `,
-    lastUpdatedHtml: playlistLastUpdatedHtml(playlist),
+    lastUpdatedHtml: `${playlistLastUpdatedHtml(playlist)}${playlistYoutubeLastUpdatedHtml(playlist)}`,
   });
 }
 

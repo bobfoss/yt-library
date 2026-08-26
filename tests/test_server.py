@@ -19,6 +19,38 @@ from tests.support import migrated_connection
 
 
 class AdminServerTests(unittest.TestCase):
+    def test_playlist_metadata_only_start_queues_all_playlists_and_starts_dispatcher(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.executemany(
+                        """
+                        INSERT INTO playlists(playlist_id, title)
+                        VALUES (?, ?)
+                        """,
+                        [
+                            ("PLmetadata1", "First"),
+                            ("PLmetadata2", "Second"),
+                        ],
+                    )
+            finally:
+                conn.close()
+            handler = object.__new__(server.LibraryHandler)
+            handler.db_path = db_path
+            handler._start_worker_queue = Mock(return_value={"started": True})
+            handler.send_json = Mock()
+
+            handler._handle_playlist_scan_start({"metadata_only": ["1"]})
+
+            handler._start_worker_queue.assert_called_once_with()
+            payload = handler.send_json.call_args.args[0]
+            self.assertEqual(payload["queue"]["mode"], "metadata_only")
+            self.assertEqual(payload["queue"]["selected"], 2)
+            self.assertEqual(payload["queue"]["inserted"], 2)
+            self.assertEqual(payload["dispatcher"], {"started": True})
+
     def test_individual_video_scan_notifies_plugin_workers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"

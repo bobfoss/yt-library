@@ -84,6 +84,7 @@ from .core import (
     clear_worker_queue,
     connect,
     enqueue_account_sync_task,
+    enqueue_all_playlist_metadata_scan_items,
     enqueue_all_playlist_scan_items,
     enqueue_clip_item,
     enqueue_feature_backfill,
@@ -925,12 +926,25 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
         )
         self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
 
-    def _handle_playlist_scan_start(self) -> None:
+    def _handle_playlist_scan_start(
+        self,
+        params: dict[str, list[str]],
+    ) -> None:
+        metadata_only = (params.get("metadata_only") or [""])[0].strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         queue_stats, dispatcher = self._enqueue_and_start(
-            lambda conn: enqueue_all_playlist_scan_items(
-                conn,
-                force=True,
-                discover_current=True,
+            (
+                enqueue_all_playlist_metadata_scan_items
+                if metadata_only
+                else lambda conn: enqueue_all_playlist_scan_items(
+                    conn,
+                    force=True,
+                    discover_current=True,
+                )
             )
         )
         self.send_json({"queue": queue_stats, "dispatcher": dispatcher})
@@ -2613,7 +2627,7 @@ class LibraryHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": True, **result})
             return
         if parsed.path == "/api/admin/playlists/start":
-            self._handle_playlist_scan_start()
+            self._handle_playlist_scan_start(params)
             return
         if parsed.path == "/api/admin/playlists/reconcile":
             conn = connect(self.db_path)

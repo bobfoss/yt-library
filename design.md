@@ -1281,7 +1281,16 @@ configured display timezone. Store only `YYYY-MM-DD` in
 `playlists.youtube_updated_date`; do not fabricate midnight or another timestamp
 when YouTube provides date-level precision. When authenticated account and
 direct-playlist surfaces disagree, retain the later parsed YouTube date without
-advancing `last_changed_at`. Keep the raw presentation label transient.
+advancing `last_changed_at`. Keep the raw presentation label transient. During
+the source-evaluation period, show the normalized date separately as **YT Last
+updated** on every playlist card and playlist detail page without changing the
+primary **Last updated** value or playlist sorting.
+
+Playlist queue entries may carry a `metadata_only` payload for an explicit
+header-only refresh. That mode fetches and stores authenticated playlist header
+metadata, records diagnostic progress, and removes its queue row without
+enumerating membership, rewriting `playlist_items` or `playlist_scans`, or
+enqueuing member metadata and placeholder-recovery work.
 
 Nullable categorical and text video features use a deliberate three-way state.
 `NULL` means the feature has not been authoritatively observed, an empty string

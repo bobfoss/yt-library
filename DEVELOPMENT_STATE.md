@@ -55,8 +55,13 @@ facts, transient PIDs, or other runtime-only data here.
 - `playlists.youtube_updated_date` separately stores YouTube's displayed
   date-only playlist update evidence. Exact and relative authenticated web
   labels are normalized to `YYYY-MM-DD` in the configured display timezone;
-  the raw label is transient, no timestamp is invented, and the field neither
-  advances `last_changed_at` nor drives current card display or sorting.
+  the raw label is transient and no timestamp is invented. The field does not
+  advance `last_changed_at` or drive sorting; it is temporarily displayed as a
+  separate **YT Last updated** value on shared playlist cards and detail pages
+  while its coverage is surveyed.
+- Explicit playlist metadata-only queue jobs stop after authenticated header
+  metadata. They do not enumerate or rewrite member videos, update the
+  membership scan record, or enqueue video metadata or placeholder recovery.
 - Supported databases upgrade through ordered migrations. The fresh schema and
   every supported upgrade path must describe the same current model. The
   schema version at this snapshot is 35.
@@ -203,7 +208,7 @@ The following areas were implemented and committed before this consolidation:
   decorator, filter, and shared decorator styling (`769f500`, `bfc23b0`).
 - Advanced Search is planned and documented, not implemented (`16656e7`).
 
-The latest implementation milestone reported 505 Python tests and 109 browser
+The latest implementation milestone reported 509 Python tests and 109 browser
 asset tests passing, plus Ruff, API smoke checks, and live browser QA. Those
 counts are evidence for that milestone, not permanent expectations.
 

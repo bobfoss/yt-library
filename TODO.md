@@ -298,9 +298,10 @@ The left-navigation library lists are named omni-search presets. Search returns 
   per-item chronology remains unfinished: capture a reliable membership-added
   or first-seen timestamp on `playlist_items` if future features need to say
   when an individual video joined a playlist. YouTube's separate displayed
-  update date is now captured in `playlists.youtube_updated_date`; survey its
-  coverage and conflicts across the library before deciding whether it should
-  replace the observed value for display and sorting.
+  update date is now captured in `playlists.youtube_updated_date` and is
+  temporarily shown as **YT Last updated**. Survey its coverage and conflicts
+  across the library before deciding whether it should replace the observed
+  value for display and sorting, then remove or promote the temporary label.
 - Foreign playlist continuation work remains fixture-driven; current best-nonzero preservation is the safe behavior.
 
 ## Suggested Order

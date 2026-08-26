@@ -244,7 +244,7 @@ test('video cards and details render server availability separately from Archiva
   );
 });
 
-test('only playlist cards render the last detected playlist change', () => {
+test('playlist cards render observed and temporary YouTube update dates', () => {
   const indexSource = source('index.js');
   const context = {
     Date,
@@ -260,7 +260,9 @@ test('only playlist cards render the last detected playlist change', () => {
   };
   vm.runInNewContext(
     `${namedFunctionSource(indexSource, 'cardTimestampLabel')}\n`
-      + `${namedFunctionSource(indexSource, 'playlistLastUpdatedHtml')}`,
+      + `${namedFunctionSource(indexSource, 'playlistLastUpdatedHtml')}\n`
+      + `${namedFunctionSource(indexSource, 'playlistYoutubeLastUpdatedLabel')}\n`
+      + `${namedFunctionSource(indexSource, 'playlistYoutubeLastUpdatedHtml')}`,
     context,
   );
 
@@ -271,10 +273,20 @@ test('only playlist cards render the last detected playlist change', () => {
   assert.match(rendered, /class="details last-updated-line"/);
   assert.match(rendered, /Last updated Aug 25, 2026 8:34 PM/);
   assert.equal(context.playlistLastUpdatedHtml({ updated_at: '2026-08-27T03:34:17Z' }), '');
+  const youtubeRendered = context.playlistYoutubeLastUpdatedHtml({
+    youtube_updated_date: '2026-08-26',
+  });
+  assert.match(youtubeRendered, /class="details yt-last-updated-line"/);
+  assert.match(youtubeRendered, /YT Last updated date:2026-08-26/);
+  assert.equal(context.playlistYoutubeLastUpdatedHtml({}), '');
 
   assert.doesNotMatch(source('video-card.js'), /lastUpdatedHtml/);
   assert.match(source('collection-card.js'), /primaryMetadata[\s\S]{0,100}lastUpdatedHtml/);
-  assert.match(namedFunctionSource(indexSource, 'cardFor'), /lastUpdatedHtml: playlistLastUpdatedHtml\(playlist\)/);
+  assert.match(
+    namedFunctionSource(indexSource, 'cardFor'),
+    /lastUpdatedHtml: `\$\{playlistLastUpdatedHtml\(playlist\)\}\$\{playlistYoutubeLastUpdatedHtml\(playlist\)\}`/,
+  );
+  assert.match(indexSource, /playlistHeadingMeta[\s\S]{0,350}YT Last updated/);
   assert.doesNotMatch(namedFunctionSource(indexSource, 'clipCardFor'), /lastUpdatedHtml/);
   assert.doesNotMatch(namedFunctionSource(indexSource, 'channelCardFor'), /lastUpdatedHtml/);
   assert.doesNotMatch(namedFunctionSource(indexSource, 'videoDetailCardFor'), /lastUpdatedHtml/);
