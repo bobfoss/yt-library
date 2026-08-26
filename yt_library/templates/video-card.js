@@ -281,6 +281,7 @@
       ${options.recoveryHtml || ''}
       ${options.watchDateHtml || ''}
       ${options.latestWatchDateHtml || ''}
+      ${options.lastUpdatedHtml || ''}
       ${options.watchedHtml || ''}
       ${options.sparklineHtml || ''}
       ${options.reactionHtml || ''}

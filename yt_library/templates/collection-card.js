@@ -39,6 +39,7 @@
       </div>
       ${options.bodyHtml || ''}
       <span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>
+      ${options.lastUpdatedHtml || ''}
       <div class="entity-card-decoration-row">
         <div class="entity-card-slot entity-card-secondary-metadata" data-entity-card-slot="secondaryMetadata"></div>
         ${options.annotationMetaHtml || ''}

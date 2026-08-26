@@ -4150,7 +4150,8 @@ def history_search_data(
                    COALESCE(he.watch_resume_seconds, 0) AS watch_resume_seconds,
                    counts.watch_count,
                    counts.watch_dates AS watch_dates_text,
-                   v.fetch_status AS metadata_fetch_status
+                   v.fetch_status AS metadata_fetch_status,
+                   v.updated_at
             FROM page_events page
             JOIN history_events he ON he.event_id = page.event_id
             JOIN videos v ON v.video_id = he.video_id

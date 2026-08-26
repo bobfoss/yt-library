@@ -2519,24 +2519,37 @@ function displayVideoUploadDate(video) {
   return `${date} ${time}`;
 }
 
-function latestWatchedAtLabel(video) {
-  const value = String(video.latest_watch_at || '').trim();
-  if (!value) return '';
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return window.YTLibraryTime.formatDate(value);
+function cardTimestampLabel(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return window.YTLibraryTime.formatDate(normalized);
   }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return normalized;
   const timeZone = window.YTLibraryTime.timeZone || window.YTLibraryTime.detected();
   const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone }).format(parsed);
   const time = new Intl.DateTimeFormat(undefined, { timeStyle: 'short', timeZone }).format(parsed);
   return `${date} ${time}`;
 }
 
+function latestWatchedAtLabel(video) {
+  const value = String(video.latest_watch_at || '').trim();
+  if (!value) return '';
+  return cardTimestampLabel(value);
+}
+
 function latestWatchDateHtml(video) {
   const watchedAt = latestWatchedAtLabel(video);
   return watchedAt
     ? `<div class="details watch-date-line"><span>Last watched ${escapeHtml(watchedAt)}${compactWatchCountHtml(video)}</span></div>`
+    : '';
+}
+
+function lastUpdatedHtml(entity) {
+  const updatedAt = cardTimestampLabel(entity?.updated_at);
+  return updatedAt
+    ? `<div class="details last-updated-line"><span>Last updated ${escapeHtml(updatedAt)}</span></div>`
     : '';
 }
 
@@ -5790,6 +5803,7 @@ function videoDetailCardFor(video) {
         ])}
         ${archivarixStatusHtml(video)}
         ${latestWatchDateHtml(video)}
+        ${lastUpdatedHtml(video)}
         ${watchedLineHtml(video)}
         ${watchSparklineHtml(video, true)}
         ${reactionIconsHtml(video)}
@@ -5844,6 +5858,7 @@ function channelDetailCardFor(channel) {
           <span class="entity-card-slot entity-card-primary-metadata" data-entity-card-slot="primaryMetadata"></span>
         </div>
         ${channelDatesHtml(channel)}
+        ${lastUpdatedHtml(channel)}
         ${channel.status_reason ? `<div class="status">${escapeHtml(channel.status_reason)}</div>` : ''}
         ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
         ${featuredChannelsHtml(channel)}
@@ -6810,6 +6825,7 @@ function cardFor(playlist, options = {}) {
       ${playlistCreatedHtml(playlist)}
     </div>
     `,
+    lastUpdatedHtml: lastUpdatedHtml(playlist),
   });
 }
 
@@ -6960,6 +6976,9 @@ function playlistVideoCardFor(video, options = {}) {
     playlistSourcesHtml: options.playlistSourcesHtml === undefined ? playlistSourceLinksHtml(video) : options.playlistSourcesHtml,
     watchDateHtml: options.watchDateHtml || '',
     latestWatchDateHtml: options.latestWatchDateHtml || '',
+    lastUpdatedHtml: options.lastUpdatedHtml === undefined
+      ? lastUpdatedHtml(video)
+      : options.lastUpdatedHtml,
     availabilityHtml: videoAvailabilityHtml(video),
     typeDecoratorHtml: videoTypeDecoratorHtml(video),
     aiDisclosureDecoratorHtml: aiDisclosureDecoratorHtml(video),
@@ -7103,6 +7122,7 @@ function clipCardFor(clip, options = {}) {
       ${reactionIconsHtml(clip)}
       ${uploaderCategoryHtml(clip.uploader_category)}
     `,
+    lastUpdatedHtml: lastUpdatedHtml(clip),
     tailHtml: sourceHref && sourceTitle
       ? `<div class="details"><a class="playlist-link" href="${sourceHref}">Source video: ${escapeHtml(sourceTitle)}</a></div>`
       : '',
@@ -7205,6 +7225,7 @@ function channelCardFor(channel, options = {}) {
     ${channel.aliases ? `<div class="details"><span>${escapeHtml(channel.aliases)}</span></div>` : ''}
     ${featuredChannelsHtml(channel)}
     `,
+    lastUpdatedHtml: lastUpdatedHtml(channel),
     tailHtml: `
     ${channel.description ? `<div class="description">${escapeHtml(channel.description)}</div>` : ''}
     <div class="details channel-card-links">

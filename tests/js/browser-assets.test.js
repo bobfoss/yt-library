@@ -244,6 +244,43 @@ test('video cards and details render server availability separately from Archiva
   );
 });
 
+test('all native entity cards render the last observed update in the temporal slot', () => {
+  const indexSource = source('index.js');
+  const context = {
+    Date,
+    Intl,
+    escapeHtml: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;'),
+    window: {
+      YTLibraryTime: {
+        detected: () => 'America/Los_Angeles',
+        formatDate: value => `date:${value}`,
+        timeZone: 'America/Los_Angeles',
+      },
+    },
+  };
+  vm.runInNewContext(
+    `${namedFunctionSource(indexSource, 'cardTimestampLabel')}\n`
+      + `${namedFunctionSource(indexSource, 'lastUpdatedHtml')}`,
+    context,
+  );
+
+  const rendered = context.lastUpdatedHtml({ updated_at: '2026-08-26T03:34:17Z' });
+  assert.match(rendered, /class="details last-updated-line"/);
+  assert.match(rendered, /Last updated Aug 25, 2026 8:34 PM/);
+  assert.equal(context.lastUpdatedHtml({ updated_at: '' }), '');
+
+  assert.match(
+    source('video-card.js'),
+    /latestWatchDateHtml[\s\S]{0,80}lastUpdatedHtml[\s\S]{0,80}watchedHtml/,
+  );
+  assert.match(source('collection-card.js'), /primaryMetadata[\s\S]{0,100}lastUpdatedHtml/);
+  assert.match(namedFunctionSource(indexSource, 'cardFor'), /lastUpdatedHtml: lastUpdatedHtml\(playlist\)/);
+  assert.match(namedFunctionSource(indexSource, 'clipCardFor'), /lastUpdatedHtml: lastUpdatedHtml\(clip\)/);
+  assert.match(namedFunctionSource(indexSource, 'channelCardFor'), /lastUpdatedHtml: lastUpdatedHtml\(channel\)/);
+  assert.match(namedFunctionSource(indexSource, 'videoDetailCardFor'), /\$\{lastUpdatedHtml\(video\)\}/);
+  assert.match(namedFunctionSource(indexSource, 'channelDetailCardFor'), /\$\{lastUpdatedHtml\(channel\)\}/);
+});
+
 test('timezone reset persists the detected zone in one request', () => {
   const timezoneSource = source('timezone.js');
 

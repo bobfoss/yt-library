@@ -155,7 +155,11 @@ class NormalizedReadModelTests(unittest.TestCase):
     def test_video_read_models_expose_uploader_category(self) -> None:
         self.add_video("category123", "Category Video")
         self.conn.execute(
-            "UPDATE videos SET uploader_category = 'Music' WHERE video_id = 'category123'"
+            """
+            UPDATE videos
+            SET uploader_category = 'Music', updated_at = '2026-08-03T12:34:56Z'
+            WHERE video_id = 'category123'
+            """
         )
         self.conn.execute(
             """
@@ -176,6 +180,9 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.assertEqual(detail["uploader_category"], "Music")
         self.assertEqual(search_item["uploader_category"], "Music")
         self.assertEqual(history_item["uploader_category"], "Music")
+        self.assertEqual(detail["updated_at"], "2026-08-03T12:34:56Z")
+        self.assertEqual(search_item["updated_at"], "2026-08-03T12:34:56Z")
+        self.assertEqual(history_item["updated_at"], "2026-08-03T12:34:56Z")
 
     def test_video_read_models_expose_movie_metadata(self) -> None:
         core.upsert_video(
