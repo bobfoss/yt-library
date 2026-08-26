@@ -82,7 +82,63 @@ utility:
 The restart action preserves the worker queue's running state, launches the
 project venv without a visible console window, redirects service output under
 `.codex\service-logs`, verifies the replacement process, and records control
-transitions in `.codex\service-logs\service-control.log`.
+transitions in `.codex\service-logs\service-control.log`. Previous runs remain
+available under `.codex\service-logs\archive`; retention is bounded to the most
+recent 20 runs and 250 MiB, while always retaining the newest archived run.
+
+### Optional Windows auto-start service
+
+The same controller can use Windows Service Control Manager for startup at
+boot, persistence across interactive/RDP sessions, and crash recovery. The
+Windows service is only the lifecycle host: `scripts\service.ps1` remains the
+single operational interface and retains its queue handling, readiness checks,
+cross-session lock, and contention feedback.
+
+Installation is opt-in and must be run once from an elevated PowerShell window:
+
+```powershell
+Set-Location "C:\path\to\YT Library"
+.\scripts\windows-service.ps1 install
+.\scripts\service.ps1 status
+```
+
+The installer prompts for the current Windows account's actual password. A
+Windows Hello PIN is not an account password and will not work. It grants that
+account **Log on as a service**, registers an automatic delayed-start service,
+allows the same non-elevated user to query/start/stop it through the controller,
+configures SCM crash recovery, preserves the queue's current run/stop intent,
+and verifies the live API. The password is passed as a `PSCredential`; it is
+not written to repository files, logs, or command-line arguments.
+
+After installation, use the ordinary controller from any thread without an
+elevated shell:
+
+```powershell
+.\scripts\service.ps1 status
+.\scripts\service.ps1 restart
+```
+
+If the Windows account password changes, refresh the credential from an
+elevated PowerShell window:
+
+```powershell
+.\scripts\windows-service.ps1 update-credential
+```
+
+To remove auto-start and return to the existing direct background mode, run:
+
+```powershell
+.\scripts\windows-service.ps1 uninstall
+```
+
+Uninstall restores direct mode and preserves whether the worker queue was
+running. It intentionally leaves the **Log on as a service** right in place
+because that account-level right may be used by another service. Status is
+read-only and never needs elevation:
+
+```powershell
+.\scripts\windows-service.ps1 status
+```
 
 With no command, the app creates `yt_library.config.json` if needed, initializes
 or migrates `yt_library.sqlite3`, and serves the local UI. Defaults can be edited

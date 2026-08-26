@@ -405,7 +405,13 @@ def service_restart_command() -> list[str]:
     ]
 
 
+WINDOWS_SERVICE_ENVIRONMENT_KEY = "YT_LIBRARY_WINDOWS_SERVICE"
+WINDOWS_SERVICE_RESTART_EXIT_CODE = 75
+
+
 def launch_service_replacement() -> None:
+    if os.environ.get(WINDOWS_SERVICE_ENVIRONMENT_KEY) == "1":
+        raise SystemExit(WINDOWS_SERVICE_RESTART_EXIT_CODE)
     creationflags = 0
     if os.name == "nt":
         creationflags = subprocess.CREATE_NO_WINDOW

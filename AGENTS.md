@@ -18,8 +18,11 @@ development chat. `TODO.md` is the source for unfinished or deferred work;
   status or smoke check succeeds; include the PID when reporting a restart.
 - Use `scripts\service.ps1` for Windows service status, start, restart, and stop
   operations. Its comment-based help is the source of truth for process and
-  queue handling; do not assemble an ad hoc replacement or use the Admin
-  restart endpoint. The script serializes mutating calls from concurrent chats.
+  queue handling; do not assemble an ad hoc replacement, call SCM directly, or
+  use the Admin restart endpoint. The script serializes mutating calls from
+  concurrent chats and across Windows sessions. If the opt-in SCM service is
+  installed, it supplies auto-start and process supervision while this script
+  still owns queue intent, contention reporting, readiness, and verification.
 - Restart after server, worker, served HTML/JS, schema/bootstrap, or source
   config changes. Database-only updates normally do not require a restart.
 - Run the full local checks below for code changes. UI and settings changes also
@@ -128,9 +131,12 @@ $code | & "C:\Users\michael.keenan\.cache\codex-runtimes\codex-primary-runtime\d
 For service process troubleshooting, use `scripts\service.ps1 status` and read
 `.codex\service-logs\service-control.log` plus the current run's
 `service.stdout.log` and `service.stderr.log`. These are stable paths: the
-controller log is bounded and rolling, while a new run replaces the two stream
-logs. Keep service-operation fixes in that utility so future chats share one
-verified procedure.
+controller log is bounded and rolling, while completed stream logs and their
+run manifests move to the bounded `.codex\service-logs\archive` directory. The
+SCM host also writes `service-host.log`. Keep service-operation fixes in that
+utility so future chats share one verified procedure. Install, credential
+refresh, and removal are handled by elevated `scripts\windows-service.ps1`;
+ordinary lifecycle operations still go through `scripts\service.ps1`.
 
 SQLite can be held open by long-running ad hoc probes. If schema initialization or imports fail with `database is locked`, inspect local `python.exe`/`pwsh.exe` processes for stale diagnostic scripts before changing application code. Stop only the stale probe, not the active server, unless a server restart is needed.
 

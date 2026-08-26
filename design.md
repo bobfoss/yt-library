@@ -30,6 +30,18 @@ The app is intentionally compact but no longer single-file. `yt_library_manager.
   browser-side modules for timezone, card rendering, History workflow state,
   and Admin request transport.
 
+On Windows, service lifecycle has two layers. `scripts/service.ps1` is the
+authoritative controller for queue intent, serialized start/stop/restart,
+process ownership checks, readiness, recovery state, and caller-visible
+contention. By default it launches the project venv as a hidden background
+process. An opt-in, per-repository SCM registration can instead launch the
+standard-library `scripts/windows_service_host.py` supervisor under the user's
+Windows account. SCM provides boot startup and session-independent lifetime;
+the host captures and archives child streams, retries failed children with
+bounded backoff, and converts in-app restart requests into supervised child
+replacement. This layer does not replace or bypass the controller's operational
+contract.
+
 Primary surfaces:
 
 - `/` normalizes to `/search`.

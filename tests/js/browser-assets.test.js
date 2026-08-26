@@ -884,6 +884,21 @@ test('service controller preserves restart intent and reports contention', () =>
   assert.match(serviceSource, /Service-operation contention:/);
   assert.match(serviceSource, /ContendedOperationStage/);
   assert.match(serviceSource, /ContendedControllerPid/);
+  assert.match(serviceSource, /Global\\YTLibraryServiceControl-/);
+  assert.match(serviceSource, /function Get-WindowsServiceRecord/);
+  assert.match(serviceSource, /WindowsServiceInstalled/);
+  assert.match(serviceSource, /service-queue-intent\.json/);
+  assert.match(serviceSource, /Prepare-ServiceRunLogs/);
+
+  const installerSource = fs.readFileSync(
+    path.join(process.cwd(), 'scripts', 'windows-service.ps1'),
+    'utf8',
+  );
+  assert.match(installerSource, /Get-Credential/);
+  assert.match(installerSource, /SeServiceLogonRight/);
+  assert.match(installerSource, /-StartupType AutomaticDelayedStart/);
+  assert.match(installerSource, /Configure-ServiceRecovery/);
+  assert.doesNotMatch(installerSource, /password=/i);
 });
 
 test('history heatmaps track the first fully visible card', () => {

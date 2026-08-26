@@ -2647,6 +2647,20 @@ class AdminServerTests(unittest.TestCase):
             self.assertTrue(kwargs["stdout"].closed)
             self.assertTrue(kwargs["stderr"].closed)
 
+    def test_service_replacement_delegates_to_windows_service_host(self) -> None:
+        with (
+            patch.dict(
+                server.os.environ,
+                {server.WINDOWS_SERVICE_ENVIRONMENT_KEY: "1"},
+            ),
+            patch.object(server.subprocess, "Popen") as popen,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            server.launch_service_replacement()
+
+        self.assertEqual(raised.exception.code, server.WINDOWS_SERVICE_RESTART_EXIT_CODE)
+        popen.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

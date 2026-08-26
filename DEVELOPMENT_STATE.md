@@ -125,8 +125,18 @@ facts, transient PIDs, or other runtime-only data here.
 - Run the service from the project `.venv`; do not infer the active Python from
   `PATH` or a standalone `yt-dlp.exe`.
 - Use `scripts\service.ps1` for status, start, restart, and stop. It serializes
-  mutations, launches the service hidden, waits for listener and API readiness,
-  and owns stable control and stream logs.
+  mutations across threads and Windows sessions, waits for listener and API
+  readiness, and owns stable control and stream logs. It launches the service
+  hidden when the optional SCM service is absent and controls that service when
+  installed; callers do not invoke SCM directly.
+- `scripts\windows-service.ps1` provides opt-in elevated installation under the
+  current user's Windows account, automatic delayed startup, SCM host recovery,
+  credential refresh, and reversible removal back to direct mode. The Python
+  service host supervises the project venv process; the existing controller
+  retains queue semantics and rich contention feedback.
+- The current stdout/stderr paths remain stable. Before each child launch, the
+  previous run and manifest are moved to `.codex\service-logs\archive`, bounded
+  to 20 runs and 250 MiB while retaining at least the newest run.
 - A restart preserves the dispatcher state only when the queue was running
   before the restart. Always record the old and new service PID and verify the
   queue state after readiness.

@@ -5,11 +5,11 @@ Controls the local YT Library background service on Windows.
 .DESCRIPTION
 This script is the source of truth for service process handling. It reads the
 configured host and port, records the queue state, stops the queue cleanly,
-stops the listener and its venv launcher, confirms that the port is closed,
-launches .venv\Scripts\python.exe directly with a hidden window, redirects the
-service streams to .codex\service-logs, verifies the listener/venv process
-chain, and resumes the queue only when it was running before a restart.
-Repository-scoped locking serializes mutating operations from concurrent chats.
+stops the listener, confirms that the port is closed, starts either the
+installed Windows service or the fallback hidden venv process, redirects and
+archives service streams, verifies the listener/process chain, and resumes the
+queue only when it was running before a restart. Cross-session repository-scoped
+locking serializes mutating operations from concurrent chats.
 When a call encounters an active operation, it emits a warning before waiting
 and reports the lock wait plus any known operation ID, action, and stage in the
 returned result. Restart intent is persisted before shutdown so a later start
@@ -17,8 +17,8 @@ can finish an interrupted restart and restore a previously running queue.
 
 Mutating operations write transitions and failures to the bounded rolling
 .codex\service-logs\service-control.log. The current service run writes to the
-fixed service.stdout.log and service.stderr.log paths in that directory. New
-launches replace the stream logs and remove legacy service-launch files.
+fixed service.stdout.log and service.stderr.log paths in that directory. Prior
+runs are retained in a bounded .codex\service-logs\archive directory.
 
 .PARAMETER Action
 status, start, restart, or stop. The default is status.
@@ -66,15 +66,19 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $configPath = Join-Path $repoRoot "yt_library.config.json"
 $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
 $managerScript = "yt_library_manager.py"
+$serviceRuntimeScript = Join-Path $PSScriptRoot "service_runtime.py"
 $logDirectory = Join-Path $repoRoot ".codex\service-logs"
 $controlLogPath = Join-Path $logDirectory "service-control.log"
 $recoveryStatePath = Join-Path $logDirectory "service-recovery.json"
+$queueIntentPath = Join-Path $logDirectory "service-queue-intent.json"
+$runManifestPath = Join-Path $logDirectory "service-run.json"
 $controlLogMaxBytes = 262144
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 $repoNameBytes = [System.Text.Encoding]::UTF8.GetBytes($repoRoot.ToLowerInvariant())
 $repoNameHash = [System.Security.Cryptography.SHA256]::HashData($repoNameBytes)
 $repoNameToken = [System.Convert]::ToHexString($repoNameHash).Substring(0, 16)
-$operationMutexName = "Local\YTLibraryServiceControl-$repoNameToken"
+$windowsServiceName = "YTLibraryManager-$repoNameToken"
+$operationMutexName = "Global\YTLibraryServiceControl-$repoNameToken"
 $operationLockWaited = $false
 $operationLockWaitSeconds = 0.0
 $contendedOperationId = ""
@@ -102,17 +106,51 @@ function Write-ControlLog {
     Write-Verbose $line
 }
 
-function Reset-ServiceRunLogs {
-    Get-ChildItem -LiteralPath $logDirectory -File -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.Name -in @(
-                "service.stdout.log",
-                "service.stderr.log",
-                "latest-launcher-pid.txt"
-            ) -or
-            $_.Name -match '^(service|yt-library|ytl).*[-.](out|err|stdout|stderr)\.log$'
-        } |
-        Remove-Item -Force
+function Invoke-ServiceRuntime {
+    param([string[]]$Arguments)
+
+    if (-not (Test-Path -LiteralPath $serviceRuntimeScript -PathType Leaf)) {
+        throw "Service runtime helper was not found: $serviceRuntimeScript"
+    }
+    $output = & $venvPython $serviceRuntimeScript --log-directory $logDirectory @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Service runtime helper failed with exit code $LASTEXITCODE"
+    }
+    return $output
+}
+
+function Prepare-ServiceRunLogs {
+    $null = Invoke-ServiceRuntime -Arguments @("prepare", "--mode", "direct", "--archive-reason", "direct-launch")
+}
+
+function Update-ServiceRunManifest {
+    param([string[]]$Arguments)
+
+    $null = Invoke-ServiceRuntime -Arguments (@("update") + $Arguments)
+}
+
+function Set-ServiceQueueIntent {
+    param(
+        [bool]$ShouldRun,
+        [string]$Source
+    )
+
+    $value = if ($ShouldRun) { "running" } else { "stopped" }
+    $null = Invoke-ServiceRuntime -Arguments @("queue-intent", $value, "--source", $Source)
+}
+
+function Get-ServiceQueueIntent {
+    if (-not (Test-Path -LiteralPath $queueIntentPath -PathType Leaf)) {
+        return $false
+    }
+    try {
+        $state = Get-Content -LiteralPath $queueIntentPath -Raw | ConvertFrom-Json
+        return [bool](Get-ObjectValue $state "queueShouldRun" $false)
+    }
+    catch {
+        Write-ControlLog "WARN" "Could not read durable queue intent: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 function Get-ObjectValue {
@@ -246,6 +284,10 @@ function Get-ServiceConfiguration {
 
 $serviceConfig = Get-ServiceConfiguration
 
+function Get-WindowsServiceRecord {
+    return Get-CimInstance -ClassName Win32_Service -Filter "Name='$windowsServiceName'" -ErrorAction SilentlyContinue
+}
+
 function Get-PersistentQueueCount {
     if (
         -not (Test-Path -LiteralPath $venvPython -PathType Leaf) -or
@@ -354,6 +396,29 @@ function Get-VenvLauncherRecord {
     return $null
 }
 
+function Test-ProcessDescendsFrom {
+    param(
+        [int]$ProcessId,
+        [int]$AncestorProcessId
+    )
+
+    if ($ProcessId -le 0 -or $AncestorProcessId -le 0) {
+        return $false
+    }
+    $current = Get-ProcessRecord $ProcessId
+    for ($depth = 0; $depth -lt 10 -and $null -ne $current; $depth++) {
+        if ([int]$current.ProcessId -eq $AncestorProcessId) {
+            return $true
+        }
+        $parentProcessId = [int]$current.ParentProcessId
+        if ($parentProcessId -le 0 -or $parentProcessId -eq [int]$current.ProcessId) {
+            break
+        }
+        $current = Get-ProcessRecord $parentProcessId
+    }
+    return $false
+}
+
 function Wait-ForCondition {
     param(
         [scriptblock]$Condition,
@@ -396,10 +461,32 @@ function Wait-ForServiceStartup {
     throw "Venv launcher PID $($Launcher.Id) remains alive, but the service did not become healthy within $TimeoutSeconds seconds; see $StderrPath"
 }
 
+function Wait-ForWindowsServiceStartup {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $windowsService = Get-WindowsServiceRecord
+        if ($null -eq $windowsService) {
+            throw "Windows service $windowsServiceName disappeared during startup"
+        }
+        if ([string]$windowsService.State -eq "Stopped") {
+            throw "Windows service $windowsServiceName stopped before the API became healthy; see $logDirectory"
+        }
+        $currentStatus = Get-ServiceStatus
+        if ($null -ne $currentStatus -and $currentStatus.service.status -eq "running") {
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    $windowsService = Get-WindowsServiceRecord
+    throw "Windows service $windowsServiceName state=$($windowsService.State), but the API did not become healthy within $TimeoutSeconds seconds; see $logDirectory"
+}
+
 function Stop-QueueIfRunning {
     param([object]$Status)
 
     if ($null -eq $Status -or -not [bool]$Status.workerQueueRunning) {
+        Set-ServiceQueueIntent $false "controller-observed-stopped"
         return
     }
 
@@ -417,6 +504,7 @@ function Stop-QueueIfRunning {
             -not [bool]$current.workerQueueRunning -and
             -not [bool]$current.workerQueueStopping
     } "Worker queue did not stop within $TimeoutSeconds seconds"
+    Set-ServiceQueueIntent $false "controller-stop"
     Write-ControlLog "INFO" "Worker queue stopped cleanly."
 }
 
@@ -424,9 +512,43 @@ function Stop-RunningService {
     param([object]$Status)
 
     $listenerProcessId = Get-ListenerProcessId
+    $windowsService = Get-WindowsServiceRecord
+    if ($null -ne $windowsService -and [string]$windowsService.State -ne "Stopped") {
+        $windowsServiceProcessId = [int]$windowsService.ProcessId
+        if (
+            $listenerProcessId -and
+            $windowsServiceProcessId -and
+            -not (Test-ProcessDescendsFrom $listenerProcessId $windowsServiceProcessId) -and
+            -not $Force
+        ) {
+            throw "Listener PID $listenerProcessId is not owned by Windows service $windowsServiceName PID $windowsServiceProcessId"
+        }
+        Write-ControlLog "INFO" "Stopping Windows service $windowsServiceName PID $windowsServiceProcessId; listener PID $listenerProcessId."
+        Stop-Service -Name $windowsServiceName -ErrorAction Stop
+        Wait-ForCondition {
+            $current = Get-WindowsServiceRecord
+            $null -ne $current -and [string]$current.State -eq "Stopped"
+        } "Windows service $windowsServiceName did not stop within $TimeoutSeconds seconds"
+        Wait-ForCondition {
+            -not (Get-ListenerProcessId)
+        } "Port $($serviceConfig.Port) remained open after stopping Windows service $windowsServiceName"
+        Write-ControlLog "INFO" "Windows service stopped; port $($serviceConfig.Port) is closed."
+        return [pscustomobject]@{
+            ServiceProcessId = $listenerProcessId
+            LauncherProcessId = 0
+            WindowsServiceProcessId = $windowsServiceProcessId
+            Mode = "windows-service"
+        }
+    }
+
     if (-not $listenerProcessId) {
         Write-ControlLog "INFO" "No service listener is running on port $($serviceConfig.Port)."
-        return [pscustomobject]@{ ServiceProcessId = 0; LauncherProcessId = 0 }
+        return [pscustomobject]@{
+            ServiceProcessId = 0
+            LauncherProcessId = 0
+            WindowsServiceProcessId = 0
+            Mode = "direct"
+        }
     }
 
     $serviceProcessId = if ($null -ne $Status) { [int]$Status.service.pid } else { $listenerProcessId }
@@ -464,11 +586,19 @@ function Stop-RunningService {
     Wait-ForCondition {
         -not (Get-ListenerProcessId)
     } "Port $($serviceConfig.Port) remained open after stopping the service"
+    if (Test-Path -LiteralPath $runManifestPath -PathType Leaf) {
+        Update-ServiceRunManifest -Arguments @(
+            "--stopped",
+            "--stop-reason", "controller-stop"
+        )
+    }
     Write-ControlLog "INFO" "Service stopped; port $($serviceConfig.Port) is closed."
 
     return [pscustomobject]@{
         ServiceProcessId = $serviceProcessId
         LauncherProcessId = $launcherProcessId
+        WindowsServiceProcessId = 0
+        Mode = "direct"
     }
 }
 
@@ -482,9 +612,68 @@ function Start-ServiceProcess {
         throw "Port $($serviceConfig.Port) is already in use"
     }
 
-    Reset-ServiceRunLogs
     $stdoutPath = Join-Path $logDirectory "service.stdout.log"
     $stderrPath = Join-Path $logDirectory "service.stderr.log"
+    $windowsService = Get-WindowsServiceRecord
+    if ($null -ne $windowsService) {
+        Write-ControlLog "INFO" "Starting installed Windows service $windowsServiceName."
+        try {
+            if ([string]$windowsService.State -eq "Stopped") {
+                Start-Service -Name $windowsServiceName -ErrorAction Stop
+            }
+            Wait-ForWindowsServiceStartup
+
+            $healthyStatus = Get-ServiceStatus
+            if ($null -eq $healthyStatus) {
+                throw "Windows service health was lost after startup; see $logDirectory"
+            }
+            $serviceProcessId = [int]$healthyStatus.service.pid
+            $listenerProcessId = Get-ListenerProcessId
+            if ($listenerProcessId -ne $serviceProcessId) {
+                throw "Healthy service PID $serviceProcessId does not own port $($serviceConfig.Port)"
+            }
+            $windowsService = Get-WindowsServiceRecord
+            $windowsServiceProcessId = [int]$windowsService.ProcessId
+            if (
+                $windowsServiceProcessId -le 0 -or
+                -not (Test-ProcessDescendsFrom $serviceProcessId $windowsServiceProcessId)
+            ) {
+                throw "Service PID $serviceProcessId is not a child of Windows service host PID $windowsServiceProcessId"
+            }
+            $venvLauncher = Get-VenvLauncherRecord $serviceProcessId
+            if ($null -eq $venvLauncher) {
+                throw "Service PID $serviceProcessId was not launched through $venvPython"
+            }
+            $recoveryStage = if (
+                $null -ne $RecoveryState -and
+                [bool](Get-ObjectValue $RecoveryState "queueWasRunning" $false)
+            ) { "queue_resume_pending" } else { "verifying" }
+            Update-RecoveryState $RecoveryState $recoveryStage @{
+                servicePid = $serviceProcessId
+                launcherPid = [int]$venvLauncher.ProcessId
+            }
+            Write-ControlLog "INFO" "Windows service healthy at $($serviceConfig.BaseUrl); host PID $windowsServiceProcessId; service PID $serviceProcessId; venv launcher PID $([int]$venvLauncher.ProcessId)."
+            return [pscustomobject]@{
+                Status = $healthyStatus
+                ServiceProcessId = $serviceProcessId
+                LauncherProcessId = [int]$venvLauncher.ProcessId
+                WindowsServiceProcessId = $windowsServiceProcessId
+                Mode = "windows-service"
+                Stdout = $stdoutPath
+                Stderr = $stderrPath
+            }
+        }
+        catch {
+            Write-ControlLog "ERROR" "Windows service launch verification failed: $($_.Exception.Message)"
+            $currentWindowsService = Get-WindowsServiceRecord
+            if ($null -ne $currentWindowsService -and [string]$currentWindowsService.State -ne "Stopped") {
+                Stop-Service -Name $windowsServiceName -ErrorAction SilentlyContinue
+            }
+            throw
+        }
+    }
+
+    Prepare-ServiceRunLogs
     $start = @{
         FilePath = $venvPython
         ArgumentList = $managerScript
@@ -495,6 +684,7 @@ function Start-ServiceProcess {
         PassThru = $true
     }
     $launcher = Start-Process @start
+    Update-ServiceRunManifest -Arguments @("--launcher-pid", [string]$launcher.Id)
     Write-ControlLog "INFO" "Started venv launcher PID $($launcher.Id); stdout=$stdoutPath; stderr=$stderrPath."
     Update-RecoveryState $RecoveryState "launching" @{
         launcherPid = [int]$launcher.Id
@@ -525,12 +715,18 @@ function Start-ServiceProcess {
             servicePid = $serviceProcessId
             launcherPid = [int]$launcher.Id
         }
+        Update-ServiceRunManifest -Arguments @(
+            "--service-pid", [string]$serviceProcessId,
+            "--healthy"
+        )
 
         Write-ControlLog "INFO" "Service healthy at $($serviceConfig.BaseUrl); PID $serviceProcessId; venv launcher PID $($launcher.Id)."
         return [pscustomobject]@{
             Status = $healthyStatus
             ServiceProcessId = $serviceProcessId
             LauncherProcessId = [int]$venvLauncher.ProcessId
+            WindowsServiceProcessId = 0
+            Mode = "direct"
             Stdout = $stdoutPath
             Stderr = $stderrPath
         }
@@ -547,6 +743,12 @@ function Start-ServiceProcess {
         if (Get-ProcessRecord $launcher.Id) {
             Stop-Process -Id $launcher.Id -ErrorAction SilentlyContinue
         }
+        if (Test-Path -LiteralPath $runManifestPath -PathType Leaf) {
+            Update-ServiceRunManifest -Arguments @(
+                "--stopped",
+                "--stop-reason", "launch-failed"
+            )
+        }
         throw
     }
 }
@@ -562,8 +764,10 @@ function Resume-Queue {
     $response = Invoke-RestMethod @request
     $blocked = [bool](Get-ObjectValue $response.dispatcher "blocked" $false)
     if ($blocked) {
+        Set-ServiceQueueIntent $true "controller-resume-blocked"
         throw "Service restarted, but queue resume was blocked: $($response.dispatcher.message)"
     }
+    Set-ServiceQueueIntent $true "controller-resume"
     Write-ControlLog "INFO" "Worker queue resume accepted: $($response.dispatcher.message)"
     return $response.dispatcher
 }
@@ -574,7 +778,7 @@ function Complete-Recovery {
         [object]$CurrentStatus
     )
 
-    $queueShouldRun = (
+    $queueShouldRun = (Get-ServiceQueueIntent) -or (
         $null -ne $RecoveryState -and
         [bool](Get-ObjectValue $RecoveryState "queueWasRunning" $false)
     )
@@ -676,9 +880,20 @@ try {
 
     $initialStatus = Get-ServiceStatus
     $initialListenerProcessId = Get-ListenerProcessId
+    $initialWindowsService = Get-WindowsServiceRecord
+    $windowsServiceInstalled = $null -ne $initialWindowsService
+    $windowsServiceState = if ($windowsServiceInstalled) { [string]$initialWindowsService.State } else { "not installed" }
+    $windowsServiceProcessId = if ($windowsServiceInstalled) { [int]$initialWindowsService.ProcessId } else { 0 }
+    $configuredServiceMode = if ($windowsServiceInstalled) { "windows-service" } else { "direct" }
+    $activeServiceMode = if (
+        $initialListenerProcessId -and
+        $windowsServiceProcessId -gt 0 -and
+        (Test-ProcessDescendsFrom $initialListenerProcessId $windowsServiceProcessId)
+    ) { "windows-service" } else { "direct" }
     $recoveryState = Get-RecoveryState
     $queueIsRunning = $null -ne $initialStatus -and [bool]$initialStatus.workerQueueRunning
-    $recoveryExpectedQueue = (
+    $durableQueueExpected = Get-ServiceQueueIntent
+    $recoveryExpectedQueue = $durableQueueExpected -or (
         $null -ne $recoveryState -and
         [bool](Get-ObjectValue $recoveryState "queueWasRunning" $false)
     )
@@ -703,6 +918,9 @@ try {
                 }
             }
             elseif ($null -ne $initialStatus) { "running" }
+            elseif ($windowsServiceInstalled -and $windowsServiceState -eq "Start Pending") { "starting" }
+            elseif ($windowsServiceInstalled -and $windowsServiceState -eq "Stop Pending") { "stopping" }
+            elseif ($windowsServiceInstalled -and $windowsServiceState -eq "Running") { "unhealthy" }
             elseif ($initialListenerProcessId) { "unhealthy" }
             else { "stopped" }
             $launcher = if ($initialListenerProcessId) { Get-VenvLauncherRecord $initialListenerProcessId } else { $null }
@@ -716,6 +934,11 @@ try {
                 Url = $serviceConfig.BaseUrl
                 ServicePid = $initialListenerProcessId
                 LauncherPid = if ($null -ne $launcher) { [int]$launcher.ProcessId } else { $recoveryLauncherPid }
+                ServiceMode = if ($initialListenerProcessId) { $activeServiceMode } else { $configuredServiceMode }
+                WindowsServiceInstalled = $windowsServiceInstalled
+                WindowsServiceName = $windowsServiceName
+                WindowsServiceState = $windowsServiceState
+                WindowsServicePid = $windowsServiceProcessId
                 QueueRunning = $queueIsRunning
                 QueueCount = $queueCount
                 QueueResumePending = $recoveryExpectedQueue -and -not $queueIsRunning
@@ -730,7 +953,7 @@ try {
         "start" {
             $activeRecoveryState = $recoveryState
             if ($null -ne $initialStatus) {
-                $completed = if ($null -ne $recoveryState) {
+                $completed = if ($null -ne $recoveryState -or $durableQueueExpected) {
                     Write-ControlLog "INFO" "Healthy service found with pending restart recovery; completing queue restoration."
                     Complete-Recovery $recoveryState $initialStatus
                 }
@@ -745,6 +968,9 @@ try {
                     State = if ($null -ne $recoveryState) { "recovered" } else { "already running" }
                     Url = $serviceConfig.BaseUrl
                     ServicePid = [int]$finalStatus.service.pid
+                    ServiceMode = $activeServiceMode
+                    WindowsServiceName = $windowsServiceName
+                    WindowsServicePid = $windowsServiceProcessId
                     QueueRecovered = [bool]$completed.QueueResumed
                     QueueRunning = [bool]$finalStatus.workerQueueRunning
                     QueueCount = [int]$finalStatus.workerQueueCount
@@ -756,7 +982,7 @@ try {
                 throw "Port $($serviceConfig.Port) is occupied by an unhealthy process; use restart -Force after inspecting it"
             }
             $started = Start-ServiceProcess $recoveryState
-            $completed = if ($null -ne $recoveryState) {
+            $completed = if ($null -ne $recoveryState -or $durableQueueExpected) {
                 Complete-Recovery $recoveryState $started.Status
             }
             else {
@@ -771,6 +997,9 @@ try {
                 Url = $serviceConfig.BaseUrl
                 ServicePid = $started.ServiceProcessId
                 LauncherPid = $started.LauncherProcessId
+                ServiceMode = $started.Mode
+                WindowsServiceName = $windowsServiceName
+                WindowsServicePid = $started.WindowsServiceProcessId
                 QueueRecovered = [bool]$completed.QueueResumed
                 QueueRunning = [bool]$finalStatus.workerQueueRunning
                 QueueCount = [int]$finalStatus.workerQueueCount
@@ -793,6 +1022,9 @@ try {
                 Url = $serviceConfig.BaseUrl
                 PreviousServicePid = $stopped.ServiceProcessId
                 PreviousLauncherPid = $stopped.LauncherProcessId
+                ServiceMode = $stopped.Mode
+                WindowsServiceName = $windowsServiceName
+                PreviousWindowsServicePid = $stopped.WindowsServiceProcessId
                 QueueWasRunning = $queueWasRunning
                 QueueCount = $queueCount
                 ControlLog = $controlLogPath
@@ -819,6 +1051,10 @@ try {
                 PreviousServicePid = $stopped.ServiceProcessId
                 ServicePid = $started.ServiceProcessId
                 LauncherPid = $started.LauncherProcessId
+                ServiceMode = $started.Mode
+                WindowsServiceName = $windowsServiceName
+                PreviousWindowsServicePid = $stopped.WindowsServiceProcessId
+                WindowsServicePid = $started.WindowsServiceProcessId
                 QueueWasRunning = $queueWasRunning
                 QueueResumed = [bool]$completed.QueueResumed
                 QueueRunning = $null -ne $finalStatus -and [bool]$finalStatus.workerQueueRunning
