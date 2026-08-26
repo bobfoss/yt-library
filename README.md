@@ -205,7 +205,11 @@ after an authoritative baseline. First observations and identical rescans leave
 the value unknown or unchanged; `playlist_scans.scanned_at` remains the separate
 last-observed scan time. The playlist **Newest** and **Oldest** search sorts use
 this same displayed value; playlists without change evidence sort after dated
-playlists in **Newest** order.
+playlists in **Newest** order. `playlists.youtube_updated_date` separately stores
+YouTube's own displayed playlist-update date when the authenticated web surface
+provides one. Relative labels such as `Updated today` are resolved in the
+configured display timezone and stored as an ISO date without inventing a time;
+this source does not yet drive the card label or playlist ordering.
 
 The default host binds only to the local loopback interface. To expose the app
 through Tailscale without binding other interfaces, set `host` to the machine's

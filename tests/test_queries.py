@@ -2257,20 +2257,22 @@ class NormalizedReadModelTests(unittest.TestCase):
         self.conn.executemany(
             """
             INSERT INTO playlists(
-              playlist_id, title, last_changed_at, updated_at
-            ) VALUES (?, ?, ?, ?)
+              playlist_id, title, last_changed_at, youtube_updated_date, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
             """,
             [
                 (
                     "PLchanged-old",
                     "Older detected change",
                     "2026-08-01T00:00:00Z",
+                    "2026-08-25",
                     "2026-08-25T00:00:00Z",
                 ),
                 (
                     "PLchanged-new",
                     "Newer detected change",
                     "2026-08-20T00:00:00Z",
+                    "2026-03-09",
                     "2026-08-02T00:00:00Z",
                 ),
             ],
@@ -2298,7 +2300,10 @@ class NormalizedReadModelTests(unittest.TestCase):
             ["PLchanged-old", "PLchanged-new"],
         )
         self.assertEqual(detail["last_changed_at"], "2026-08-20T00:00:00Z")
+        self.assertEqual(detail["youtube_updated_date"], "2026-03-09")
         self.assertEqual(searched["last_changed_at"], "2026-08-20T00:00:00Z")
+        self.assertEqual(searched["youtube_updated_date"], "2026-03-09")
+        self.assertEqual(newest[0]["youtube_updated_date"], "2026-03-09")
 
     def test_playlist_summaries_use_current_video_availability(self) -> None:
         self.conn.execute(

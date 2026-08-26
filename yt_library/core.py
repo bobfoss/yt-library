@@ -1897,6 +1897,99 @@ def parse_youtube_playlist_video_count(value: str) -> int:
     return int(found.group(1).replace(",", "")) if found else 0
 
 
+def parse_youtube_playlist_updated_date(
+    value: str,
+    *,
+    observed_at: str = "",
+    timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
+) -> str:
+    text = re.sub(r"\s+", " ", value or "").strip()
+    if not text:
+        return ""
+
+    exact = re.fullmatch(
+        r"(?:last\s+)?updated\s+on\s+([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})",
+        text,
+        re.I,
+    )
+    if exact:
+        month_names = {
+            name: number
+            for number, names in enumerate(
+                (
+                    (),
+                    ("jan", "january"),
+                    ("feb", "february"),
+                    ("mar", "march"),
+                    ("apr", "april"),
+                    ("may",),
+                    ("jun", "june"),
+                    ("jul", "july"),
+                    ("aug", "august"),
+                    ("sep", "sept", "september"),
+                    ("oct", "october"),
+                    ("nov", "november"),
+                    ("dec", "december"),
+                )
+            )
+            for name in names
+        }
+        month = month_names.get(exact.group(1).casefold())
+        if month:
+            try:
+                return date(
+                    int(exact.group(3)),
+                    month,
+                    int(exact.group(2)),
+                ).isoformat()
+            except ValueError:
+                return ""
+
+    relative = re.fullmatch(
+        r"(?:last\s+)?updated\s+(today|yesterday|(\d+)\s+days?\s+ago)",
+        text,
+        re.I,
+    )
+    if not relative:
+        return ""
+    try:
+        zone = ZoneInfo(timezone_name or DEFAULT_DISPLAY_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        zone = timezone.utc
+    try:
+        observed = datetime.fromisoformat(
+            (observed_at or utc_now()).replace("Z", "+00:00")
+        )
+    except ValueError:
+        return ""
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    observed_date = observed.astimezone(zone).date()
+    label = relative.group(1).casefold()
+    if label == "today":
+        days_ago = 0
+    elif label == "yesterday":
+        days_ago = 1
+    else:
+        days_ago = int(relative.group(2))
+    return (observed_date - timedelta(days=days_ago)).isoformat()
+
+
+def playlist_updated_text_from_initial_data(initial_data: Any) -> str:
+    for node in walk(initial_data):
+        renderer = node.get("playlistSidebarPrimaryInfoRenderer")
+        if not isinstance(renderer, dict):
+            continue
+        for stat in renderer.get("stats", []) or []:
+            text = text_from_runs(stat).strip()
+            if parse_youtube_playlist_updated_date(
+                text,
+                observed_at="2000-01-02T12:00:00Z",
+            ):
+                return text
+    return ""
+
+
 def playlist_visibility_from_initial_data(initial_data: Any) -> str:
     for node in walk(initial_data):
         renderer = node.get("playlistSidebarPrimaryInfoRenderer")
@@ -1931,7 +2024,12 @@ def playlist_visibility_from_initial_data(initial_data: Any) -> str:
     return ""
 
 
-def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, Any] | None:
+def parse_playlist_lockup(
+    lockup: dict[str, Any],
+    *,
+    observed_at: str = "",
+    timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
+) -> dict[str, Any] | None:
     playlist_id = lockup.get("contentId")
     if not isinstance(playlist_id, str) or not playlist_id:
         return None
@@ -1951,7 +2049,11 @@ def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, Any] | None:
             visibility = normalize_playlist_visibility(parts[0])
         if not video_count:
             video_count = parse_youtube_playlist_video_count(joined)
-        if joined.lower().startswith("updated"):
+        if parse_youtube_playlist_updated_date(
+            joined,
+            observed_at=observed_at,
+            timezone_name=timezone_name,
+        ):
             updated_text = joined
     if not video_count:
         for node in walk(lockup):
@@ -1968,7 +2070,13 @@ def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "playlist_id": playlist_id,
         "title": title or playlist_id,
-        "description": updated_text,
+        "description": "",
+        "youtube_updated_text": updated_text,
+        "youtube_updated_date": parse_youtube_playlist_updated_date(
+            updated_text,
+            observed_at=observed_at,
+            timezone_name=timezone_name,
+        ),
         "owner": "",
         "visibility": visibility,
         "video_count": video_count,
@@ -1977,8 +2085,15 @@ def parse_playlist_lockup(lockup: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any]:
+def extract_playlist_metadata(
+    html_text: str,
+    playlist_id: str,
+    *,
+    observed_at: str = "",
+    timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
+) -> dict[str, Any]:
     initial_data = extract_json_assignment(html_text, "ytInitialData")
+    updated_text = playlist_updated_text_from_initial_data(initial_data)
     metadata = {
         "playlist_id": playlist_id,
         "title": "",
@@ -1986,6 +2101,12 @@ def extract_playlist_metadata(html_text: str, playlist_id: str) -> dict[str, Any
         "owner": "",
         "owner_channel_id": "",
         "owner_thumbnail_url": "",
+        "youtube_updated_text": updated_text,
+        "youtube_updated_date": parse_youtube_playlist_updated_date(
+            updated_text,
+            observed_at=observed_at,
+            timezone_name=timezone_name,
+        ),
         "visibility": "",
         "video_count": 0,
         "has_video_count": False,
@@ -4849,6 +4970,7 @@ def import_playlists(args: argparse.Namespace) -> None:
     db_path = Path(args.db)
     thumb_dir = Path(args.thumbs)
     proxy_url = configured_proxy(getattr(args, "config_data", {}))
+    timezone_name = effective_display_timezone(getattr(args, "config_data", {}))
     _, groups, memberships = load_pockettube(Path(args.pockettube))
     all_playlist_ids = []
     seen: set[str] = set()
@@ -4879,7 +5001,11 @@ def import_playlists(args: argparse.Namespace) -> None:
         error = ""
         try:
             page = request_text(opener, url)
-            metadata = extract_playlist_metadata(page, playlist_id)
+            metadata = extract_playlist_metadata(
+                page,
+                playlist_id,
+                timezone_name=timezone_name,
+            )
             thumbnail_path = cache_thumbnail(
                 opener, playlist_id, metadata["thumbnail_url"], thumb_dir
             )
@@ -4923,13 +5049,23 @@ def import_playlists(args: argparse.Namespace) -> None:
             conn.execute(
                 """
                 INSERT INTO playlists(
-                  playlist_id, title, description, owner_channel_id, visibility, video_count,
-                  thumbnail_url, thumbnail_path, fetch_status, fetch_error, updated_at
+                  playlist_id, title, description, owner_channel_id, visibility,
+                  youtube_updated_date, video_count, thumbnail_url, thumbnail_path,
+                  fetch_status, fetch_error, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(playlist_id) DO UPDATE SET
                   title=excluded.title,
                   description=excluded.description,
+                  youtube_updated_date=CASE
+                    WHEN NULLIF(excluded.youtube_updated_date, '') IS NOT NULL
+                     AND (
+                       playlists.youtube_updated_date IS NULL
+                       OR excluded.youtube_updated_date > playlists.youtube_updated_date
+                     )
+                    THEN excluded.youtube_updated_date
+                    ELSE playlists.youtube_updated_date
+                  END,
                   owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
                   visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
                   video_count=excluded.video_count,
@@ -4945,6 +5081,7 @@ def import_playlists(args: argparse.Namespace) -> None:
                     metadata["description"],
                     owner_channel_id or None,
                     metadata["visibility"],
+                    metadata.get("youtube_updated_date") or None,
                     metadata["video_count"],
                     metadata["thumbnail_url"],
                     thumbnail_path,
@@ -4995,7 +5132,9 @@ def fetch_current_youtube_playlists(
     cookie_file: Path,
     browse_id: str = "FEplaylist_aggregation",
     proxy_url: str = "",
+    timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
 ) -> tuple[urllib.request.OpenerDirector, list[dict[str, str]]]:
+    observed_at = utc_now()
     jar = load_cookie_jar(cookie_file)
     opener = urllib.request.build_opener(
         urllib.request.HTTPCookieProcessor(jar),
@@ -5012,7 +5151,7 @@ def fetch_current_youtube_playlists(
         raise RuntimeError("Could not find YouTube web API configuration in the playlists page.")
 
     payload = {
-        "context": youtube_web_context(config),
+        "context": youtube_web_context(config, timezone_name),
         "browseId": browse_id,
     }
     pages = [
@@ -5027,7 +5166,10 @@ def fetch_current_youtube_playlists(
                 opener,
                 jar,
                 api_key,
-                {"context": youtube_web_context(config), "continuation": token},
+                {
+                    "context": youtube_web_context(config, timezone_name),
+                    "continuation": token,
+                },
                 referer,
                 client_version,
             )
@@ -5043,7 +5185,11 @@ def fetch_current_youtube_playlists(
             lockup = node.get("lockupViewModel")
             if not isinstance(lockup, dict):
                 continue
-            record = parse_playlist_lockup(lockup)
+            record = parse_playlist_lockup(
+                lockup,
+                observed_at=observed_at,
+                timezone_name=timezone_name,
+            )
             if not record:
                 continue
             playlist_id = record["playlist_id"]
@@ -5737,13 +5883,23 @@ def save_discovered_playlists(
             """
             INSERT INTO playlists(
               playlist_id, title, description, owner_channel_id, visibility,
-              ownership, in_library, video_count, thumbnail_url, thumbnail_path,
+              youtube_updated_date, ownership, in_library, video_count,
+              thumbnail_url, thumbnail_path,
               fetch_status, fetch_error, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'ok', '', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'ok', '', ?)
             ON CONFLICT(playlist_id) DO UPDATE SET
               title=excluded.title,
-              description=excluded.description,
+              description=COALESCE(NULLIF(excluded.description, ''), playlists.description),
+              youtube_updated_date=CASE
+                WHEN NULLIF(excluded.youtube_updated_date, '') IS NOT NULL
+                 AND (
+                   playlists.youtube_updated_date IS NULL
+                   OR excluded.youtube_updated_date > playlists.youtube_updated_date
+                 )
+                THEN excluded.youtube_updated_date
+                ELSE playlists.youtube_updated_date
+              END,
               ownership=CASE
                 WHEN excluded.ownership <> 'unknown' THEN excluded.ownership
                 ELSE playlists.ownership
@@ -5765,6 +5921,7 @@ def save_discovered_playlists(
                 record.get("description", ""),
                 owner_channel_id or None,
                 record.get("visibility", ""),
+                record.get("youtube_updated_date") or None,
                 ownership,
                 max(0, int(record.get("video_count") or 0)),
                 record.get("thumbnail_url", ""),
@@ -5802,6 +5959,7 @@ def discover_current_playlists(args: argparse.Namespace) -> None:
         Path(args.cookies),
         args.browse_id,
         proxy_url,
+        effective_display_timezone(getattr(args, "config_data", {})),
     )
     if not args.include_system:
         records = [record for record in records if not is_system_playlist(record["playlist_id"])]
@@ -7687,6 +7845,7 @@ def save_playlist_scan(
                 "visibility",
                 "thumbnail_url",
                 "thumbnail_path",
+                "youtube_updated_date",
             )
         }
         if metadata["owner_channel_id"]:
@@ -7747,13 +7906,23 @@ def save_playlist_scan(
         conn.execute(
             """
             INSERT INTO playlists(
-              playlist_id, title, description, owner_channel_id, visibility, ownership, video_count,
-              thumbnail_url, thumbnail_path, fetch_status, fetch_error, updated_at
+              playlist_id, title, description, owner_channel_id, visibility,
+              youtube_updated_date, ownership, video_count, thumbnail_url,
+              thumbnail_path, fetch_status, fetch_error, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(playlist_id) DO UPDATE SET
               title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
               description=COALESCE(NULLIF(excluded.description, ''), playlists.description),
+              youtube_updated_date=CASE
+                WHEN NULLIF(excluded.youtube_updated_date, '') IS NOT NULL
+                 AND (
+                   playlists.youtube_updated_date IS NULL
+                   OR excluded.youtube_updated_date > playlists.youtube_updated_date
+                 )
+                THEN excluded.youtube_updated_date
+                ELSE playlists.youtube_updated_date
+              END,
               owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
               visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
               ownership=CASE
@@ -7777,6 +7946,7 @@ def save_playlist_scan(
                 metadata["description"],
                 metadata["owner_channel_id"] or None,
                 metadata["visibility"],
+                metadata["youtube_updated_date"] or None,
                 ownership,
                 metadata["video_count"],
                 metadata["thumbnail_url"],

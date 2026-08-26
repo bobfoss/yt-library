@@ -1242,7 +1242,9 @@ The database models the best-known current state of YouTube. Imports and scans r
 - `channels` owns canonical channel metadata and subscription state.
 - `playlists`, `groups`, and `group_playlists` model the current library
   organization. `playlists.last_changed_at` records the latest defensible
-  playlist-change evidence, while `playlists.updated_at` remains persistence
+  locally observed playlist-change evidence,
+  `playlists.youtube_updated_date` separately stores YouTube's displayed
+  date-only update evidence, and `playlists.updated_at` remains persistence
   bookkeeping.
 - `playlist_items` links playlists to videos and retains only membership, position, unavailable-slot, and reconciliation facts.
 - `history_events` stores watch events. Exact Takeout timestamps and date-only live observations share this table without fabricating precision.
@@ -1270,6 +1272,16 @@ changes, but never generic row `updated_at` or scan timestamps; absent evidence
 remains `NULL`. Playlist Newest and Oldest search ordering uses this same
 user-visible `last_changed_at` evidence, never a member upload date or scan
 time. Unknown change dates sort after dated playlists in Newest order.
+
+YouTube playlist update labels are a separate source rather than inputs to the
+local change signature. Parse exact labels such as `Last updated on Mar 9,
+2026` directly, and resolve relative labels such as `Updated today`, `Updated
+yesterday`, or `Updated 4 days ago` against the observation date in the
+configured display timezone. Store only `YYYY-MM-DD` in
+`playlists.youtube_updated_date`; do not fabricate midnight or another timestamp
+when YouTube provides date-level precision. When authenticated account and
+direct-playlist surfaces disagree, retain the later parsed YouTube date without
+advancing `last_changed_at`. Keep the raw presentation label transient.
 
 Nullable categorical and text video features use a deliberate three-way state.
 `NULL` means the feature has not been authoritatively observed, an empty string

@@ -1293,7 +1293,11 @@ class WorkerQueueTests(unittest.TestCase):
                     record_summary=False,
                 )
 
-            discover.assert_called_once_with(cookie_file, proxy_url="")
+            discover.assert_called_once_with(
+                cookie_file,
+                proxy_url="",
+                timezone_name="UTC",
+            )
             conn = core.connect(db_path)
             try:
                 playlist = conn.execute(
@@ -1790,6 +1794,7 @@ class WorkerQueueTests(unittest.TestCase):
                 "video_count": 1,
                 "has_video_count": True,
                 "visibility": "public",
+                "youtube_updated_date": "2026-08-24",
                 "thumbnail_url": "https://example.test/playlist.jpg",
             }
             videos = [
@@ -1810,7 +1815,10 @@ class WorkerQueueTests(unittest.TestCase):
             with (
                 patch("yt_library.workers.load_cookie_opener", return_value=opener),
                 patch("yt_library.workers.request_text", return_value="header page"),
-                patch("yt_library.workers.extract_playlist_metadata", return_value=header),
+                patch(
+                    "yt_library.workers.extract_playlist_metadata",
+                    return_value=header,
+                ) as extract_header,
                 patch("yt_library.workers.scan_playlist_ytdlp", return_value=(videos, {})),
                 patch("yt_library.workers.scan_playlist_videos") as scan_web,
                 patch("yt_library.workers.cache_thumbnail", return_value="thumbs/PLexample.jpg") as cache_thumb,
@@ -1827,6 +1835,11 @@ class WorkerQueueTests(unittest.TestCase):
                 )
 
             scan_web.assert_not_called()
+            extract_header.assert_called_once_with(
+                "header page",
+                "PLexample",
+                timezone_name="UTC",
+            )
             cache_thumb.assert_called_once_with(
                 opener,
                 "PLexample",
@@ -1836,10 +1849,12 @@ class WorkerQueueTests(unittest.TestCase):
             conn = core.connect(db_path)
             try:
                 row = conn.execute(
-                    "SELECT thumbnail_url, thumbnail_path FROM playlists WHERE playlist_id = 'PLexample'"
+                    "SELECT thumbnail_url, thumbnail_path, youtube_updated_date "
+                    "FROM playlists WHERE playlist_id = 'PLexample'"
                 ).fetchone()
                 self.assertEqual(row["thumbnail_url"], "https://example.test/playlist.jpg")
                 self.assertEqual(row["thumbnail_path"], "thumbs/PLexample.jpg")
+                self.assertEqual(row["youtube_updated_date"], "2026-08-24")
             finally:
                 conn.close()
 

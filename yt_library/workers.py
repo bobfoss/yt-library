@@ -1054,6 +1054,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
         record_summary: bool = True,
         queue_id: int = 0,
         proxy_url: str = "",
+        timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
     ) -> dict[str, Any]:
         return self._start_background(
             self._run,
@@ -1067,6 +1068,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                 record_summary,
                 queue_id,
                 proxy_url,
+                timezone_name,
             ),
             started_message="Playlist scan started",
             already_running_message="Playlist scan already running",
@@ -1089,6 +1091,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
         record_summary: bool,
         queue_id: int = 0,
         proxy_url: str = "",
+        timezone_name: str = DEFAULT_DISPLAY_TIMEZONE,
     ) -> None:
         conn = connect(db_path)
         runs = WorkerRunRecorder(conn, "playlist")
@@ -1156,6 +1159,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                         _opener, discovered_records = fetch_current_youtube_playlists(
                             row_cookie_file,
                             proxy_url=proxy_url,
+                            timezone_name=timezone_name,
                         )
                         discovered_records = [
                             record
@@ -1312,7 +1316,11 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     playlist_url = f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}"
                     header_page = request_text(opener, playlist_url)
                     header_page_requires_login = youtube_page_requires_login(header_page)
-                    header_metadata = extract_playlist_metadata(header_page, playlist_id)
+                    header_metadata = extract_playlist_metadata(
+                        header_page,
+                        playlist_id,
+                        timezone_name=timezone_name,
+                    )
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                     header_metadata = {}
                     youtube_debug = youtube_request_error_diagnostics(exc, "playlist header")
@@ -1387,6 +1395,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                     "collaborators_authoritative",
                     "thumbnail_url",
                     "url",
+                    "youtube_updated_date",
                 ):
                     if header_metadata.get(key):
                         playlist_metadata[key] = header_metadata[key]
@@ -3395,6 +3404,7 @@ class WorkerQueueDispatcher(_ThreadWorkerLifecycle):
                         record_summary=False,
                         queue_id=queue_id,
                         proxy_url=proxy_url,
+                        timezone_name=timezone_name,
                     )
                     launched = bool(result.get("started"))
                     if launched:

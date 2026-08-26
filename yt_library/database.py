@@ -17,7 +17,7 @@ CHANNEL_SUBSCRIPTION_CAPTURE_START = "2026-07-30T20:34:50Z"
 CHANNEL_NOTIFICATION_CAPTURE_START = "2026-07-30T20:55:56Z"
 
 SCHEMA = load_schema()
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 
 
 _DATABASE_BOOTSTRAP_LOCK = threading.Lock()
@@ -1318,6 +1318,27 @@ def _migrate_database(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (34, utc_now()),
+        )
+    if current_version < 35:
+        playlist_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(playlists)")
+        }
+        if "youtube_updated_date" not in playlist_columns:
+            conn.execute(
+                "ALTER TABLE playlists ADD COLUMN youtube_updated_date TEXT"
+            )
+        conn.execute(
+            """
+            UPDATE playlists
+            SET description = ''
+            WHERE lower(trim(description)) IN ('updated today', 'updated yesterday')
+               OR lower(trim(description)) GLOB 'updated [0-9] day ago'
+               OR lower(trim(description)) GLOB 'updated [0-9] days ago'
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (35, utc_now()),
         )
 
 

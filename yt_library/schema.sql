@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS playlists (
   visibility TEXT NOT NULL DEFAULT '',
   created_at TEXT,
   last_changed_at TEXT,
+  youtube_updated_date TEXT,
   metadata_checked_at TEXT,
   ownership TEXT NOT NULL DEFAULT 'unknown'
     CHECK (ownership IN ('mine', 'others', 'unknown')),

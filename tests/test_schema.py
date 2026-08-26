@@ -1823,6 +1823,60 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(item["video_id"], "newscanvid1")
         self.assertEqual(foreign_key_errors, [])
 
+    def test_youtube_updated_date_is_separate_from_playlist_change_detection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, description, in_library, video_count,
+                          last_changed_at
+                        ) VALUES (
+                          'PLyoutubeupdated', 'YouTube dated', 'Real description',
+                          1, 3, '2026-08-20T12:34:56Z'
+                        )
+                        """
+                    )
+                    core.save_discovered_playlists(
+                        conn,
+                        [
+                            {
+                                "playlist_id": "PLyoutubeupdated",
+                                "title": "YouTube dated",
+                                "description": "",
+                                "youtube_updated_date": "2026-08-25",
+                                "video_count": "3",
+                            }
+                        ],
+                    )
+                    core.save_discovered_playlists(
+                        conn,
+                        [
+                            {
+                                "playlist_id": "PLyoutubeupdated",
+                                "title": "YouTube dated",
+                                "description": "",
+                                "youtube_updated_date": "2026-03-09",
+                                "video_count": "3",
+                            }
+                        ],
+                    )
+                row = conn.execute(
+                    """
+                    SELECT description, youtube_updated_date, last_changed_at
+                    FROM playlists
+                    WHERE playlist_id = 'PLyoutubeupdated'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(row["description"], "Real description")
+        self.assertEqual(row["youtube_updated_date"], "2026-08-25")
+        self.assertEqual(row["last_changed_at"], "2026-08-20T12:34:56Z")
+
     def test_playlist_last_changed_advances_only_after_a_detected_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")

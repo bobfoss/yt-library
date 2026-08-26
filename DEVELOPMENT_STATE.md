@@ -52,9 +52,14 @@ facts, transient PIDs, or other runtime-only data here.
   timestamps can advance it; after an authoritative baseline, a detected
   membership, order, collaborator, or meaningful metadata difference advances
   it at observation time. Failed, first-baseline, and no-op scans do not.
+- `playlists.youtube_updated_date` separately stores YouTube's displayed
+  date-only playlist update evidence. Exact and relative authenticated web
+  labels are normalized to `YYYY-MM-DD` in the configured display timezone;
+  the raw label is transient, no timestamp is invented, and the field neither
+  advances `last_changed_at` nor drives current card display or sorting.
 - Supported databases upgrade through ordered migrations. The fresh schema and
   every supported upgrade path must describe the same current model. The
-  schema version at this snapshot is 34.
+  schema version at this snapshot is 35.
 
 ## Browser And Search Model
 
@@ -198,7 +203,7 @@ The following areas were implemented and committed before this consolidation:
   decorator, filter, and shared decorator styling (`769f500`, `bfc23b0`).
 - Advanced Search is planned and documented, not implemented (`16656e7`).
 
-The latest implementation milestone reported 491 Python tests and 84 browser
+The latest implementation milestone reported 505 Python tests and 109 browser
 asset tests passing, plus Ruff, API smoke checks, and live browser QA. Those
 counts are evidence for that milestone, not permanent expectations.
 

@@ -942,6 +942,57 @@ class DatabaseModuleTests(unittest.TestCase):
         self.assertEqual(rows["PLlog"], "2023-04-05T06:07:08Z")
         self.assertIsNone(rows["PLscanonly"])
 
+    def test_database_module_migrates_youtube_playlist_updated_dates_from_version_34(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                with conn:
+                    conn.executemany(
+                        """
+                        INSERT INTO playlists(playlist_id, title, description)
+                        VALUES (?, ?, ?)
+                        """,
+                        [
+                            ("PLtoday", "Relative today", "Updated today"),
+                            ("PLdays", "Relative days", "Updated 7 days ago"),
+                            ("PLreal", "Real description", "A meaningful description"),
+                            ("PLsimilar", "Similar description", "Updated notes ago"),
+                        ],
+                    )
+                    conn.execute(
+                        "ALTER TABLE playlists DROP COLUMN youtube_updated_date"
+                    )
+                    conn.execute("DELETE FROM schema_migrations WHERE version >= 35")
+            finally:
+                conn.close()
+
+            database.migrate_database(db_path)
+            conn = database.connect(db_path)
+            try:
+                version = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(playlists)")
+                }
+                descriptions = {
+                    row["playlist_id"]: row["description"]
+                    for row in conn.execute(
+                        "SELECT playlist_id, description FROM playlists"
+                    )
+                }
+            finally:
+                conn.close()
+
+        self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertIn("youtube_updated_date", columns)
+        self.assertEqual(descriptions["PLtoday"], "")
+        self.assertEqual(descriptions["PLdays"], "")
+        self.assertEqual(descriptions["PLreal"], "A meaningful description")
+        self.assertEqual(descriptions["PLsimilar"], "Updated notes ago")
+
 
 if __name__ == "__main__":
     unittest.main()

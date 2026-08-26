@@ -1277,6 +1277,87 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(visibility_only["owner"], "")
         self.assertEqual(visibility_only["visibility"], "unlisted")
 
+    def test_playlist_updated_labels_parse_to_dates_without_inventing_times(self) -> None:
+        observed_at = "2026-08-26T06:30:00Z"
+        timezone_name = "America/Los_Angeles"
+
+        self.assertEqual(
+            core.parse_youtube_playlist_updated_date(
+                "Updated today",
+                observed_at=observed_at,
+                timezone_name=timezone_name,
+            ),
+            "2026-08-25",
+        )
+        self.assertEqual(
+            core.parse_youtube_playlist_updated_date(
+                "Updated yesterday",
+                observed_at=observed_at,
+                timezone_name=timezone_name,
+            ),
+            "2026-08-24",
+        )
+        self.assertEqual(
+            core.parse_youtube_playlist_updated_date(
+                "Updated 4 days ago",
+                observed_at=observed_at,
+                timezone_name=timezone_name,
+            ),
+            "2026-08-21",
+        )
+        self.assertEqual(
+            core.parse_youtube_playlist_updated_date(
+                "Last updated on Mar 9, 2026",
+                observed_at=observed_at,
+                timezone_name=timezone_name,
+            ),
+            "2026-03-09",
+        )
+        self.assertEqual(
+            core.parse_youtube_playlist_updated_date(
+                "Updated recently",
+                observed_at=observed_at,
+                timezone_name=timezone_name,
+            ),
+            "",
+        )
+
+        lockup = {
+            "contentId": "PLupdated",
+            "contentType": "LOCKUP_CONTENT_TYPE_PLAYLIST",
+            "metadata": {
+                "lockupMetadataViewModel": {
+                    "title": {"content": "Updated playlist"},
+                    "metadata": {
+                        "contentMetadataViewModel": {
+                            "metadataRows": [
+                                {
+                                    "metadataParts": [
+                                        {"text": {"content": "Private"}},
+                                        {"text": {"content": "Playlist"}},
+                                    ]
+                                },
+                                {
+                                    "metadataParts": [
+                                        {"text": {"content": "Updated today"}}
+                                    ]
+                                },
+                            ]
+                        }
+                    },
+                }
+            },
+        }
+        parsed = core.parse_playlist_lockup(
+            lockup,
+            observed_at=observed_at,
+            timezone_name=timezone_name,
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["youtube_updated_text"], "Updated today")
+        self.assertEqual(parsed["youtube_updated_date"], "2026-08-25")
+        self.assertEqual(parsed["description"], "")
+
     def test_extract_playlist_metadata_reads_page_header_count_and_visibility(self) -> None:
         initial_data = {
             "header": {
@@ -1345,6 +1426,15 @@ class CoreHelperTests(unittest.TestCase):
                     "items": [
                         {
                             "playlistSidebarPrimaryInfoRenderer": {
+                                "stats": [
+                                    {"simpleText": "2 videos"},
+                                    {"simpleText": "14 views"},
+                                    {
+                                        "runs": [
+                                            {"text": "Last updated on Aug 17, 2026"}
+                                        ]
+                                    },
+                                ],
                                 "badges": [
                                     {
                                         "metadataBadgeRenderer": {
@@ -1360,13 +1450,19 @@ class CoreHelperTests(unittest.TestCase):
             },
         }
         sidebar_html = f"<script>var ytInitialData = {json.dumps(sidebar_data)};</script>"
-        sidebar_metadata = core.extract_playlist_metadata(sidebar_html, "PLforeign")
+        sidebar_metadata = core.extract_playlist_metadata(
+            sidebar_html,
+            "PLforeign",
+            observed_at="2026-08-26T17:00:00Z",
+            timezone_name="America/Los_Angeles",
+        )
         self.assertEqual(sidebar_metadata["owner"], "Other Channel")
         self.assertEqual(
             sidebar_metadata["owner_channel_id"],
             "UCabcdefghijklmnopqrstuv",
         )
         self.assertEqual(sidebar_metadata["visibility"], "unlisted")
+        self.assertEqual(sidebar_metadata["youtube_updated_date"], "2026-08-17")
 
         microformat_data = {
             "header": owner_data["header"],
