@@ -4122,19 +4122,28 @@ def youtube_ai_disclosure_metadata(
             "ai_disclosure": None,
             "ai_disclosure_text": None,
         }
-    disclosure = _first_youtube_renderer(
-        initial_data,
-        "howThisWasMadeSectionViewModel",
-    )
-    if not disclosure:
-        return {
-            "ai_disclosure": False,
-            "ai_disclosure_text": "",
-        }
-    body_text = text_from_runs(disclosure.get("bodyText") or {}).strip()
+    for node in walk(initial_data):
+        disclosure = (
+            node.get("howThisWasMadeSectionViewModel")
+            if isinstance(node, dict)
+            else None
+        )
+        if not isinstance(disclosure, dict):
+            continue
+        header_text = text_from_runs(disclosure.get("bodyHeader") or {}).strip()
+        body_text = text_from_runs(disclosure.get("bodyText") or {}).strip()
+        normalized_header = re.sub(r"\s+", " ", header_text).strip().casefold()
+        normalized_body = re.sub(r"\s+", " ", body_text).strip().casefold()
+        if normalized_header == "made with ai" or (
+            "sounds or visuals were altered or fully generated" in normalized_body
+        ):
+            return {
+                "ai_disclosure": True,
+                "ai_disclosure_text": body_text,
+            }
     return {
-        "ai_disclosure": True,
-        "ai_disclosure_text": body_text,
+        "ai_disclosure": False,
+        "ai_disclosure_text": "",
     }
 
 

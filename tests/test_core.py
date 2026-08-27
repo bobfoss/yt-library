@@ -3645,6 +3645,80 @@ class CoreHelperTests(unittest.TestCase):
             "Sounds or visuals were altered or fully generated. Learn more",
         )
 
+    def test_watch_metadata_does_not_treat_auto_dubbing_as_made_with_ai(self) -> None:
+        player = {
+            "playabilityStatus": {"status": "OK"},
+            "videoDetails": {"videoId": "autodub12345", "title": "Auto-dubbed"},
+        }
+        initial = {
+            "howThisWasMadeSectionViewModel": {
+                "sectionTitle": {"content": "How this was made"},
+                "bodyHeader": {"content": "Auto-dubbed"},
+                "bodyText": {
+                    "content": (
+                        "Audio tracks for some languages were automatically "
+                        "generated. Learn more"
+                    )
+                },
+            }
+        }
+        html = (
+            "<script>var ytInitialPlayerResponse = "
+            + json.dumps(player)
+            + "; var ytInitialData = "
+            + json.dumps(initial)
+            + ";</script>"
+        )
+
+        metadata = core.extract_watch_metadata(html, "autodub12345")
+
+        self.assertFalse(metadata["ai_disclosure"])
+        self.assertEqual(metadata["ai_disclosure_text"], "")
+
+    def test_ai_disclosure_checks_all_how_this_was_made_sections(self) -> None:
+        metadata = core.youtube_ai_disclosure_metadata(
+            {
+                "playabilityStatus": {"status": "OK"},
+                "videoDetails": {"title": "Multiple disclosures"},
+            },
+            {
+                "sections": [
+                    {
+                        "howThisWasMadeSectionViewModel": {
+                            "bodyHeader": {"content": "Auto-dubbed"},
+                            "bodyText": {
+                                "content": (
+                                    "Audio tracks for some languages were "
+                                    "automatically generated. Learn more"
+                                )
+                            },
+                        }
+                    },
+                    {
+                        "howThisWasMadeSectionViewModel": {
+                            "bodyHeader": {"content": "Made with AI"},
+                            "bodyText": {
+                                "content": (
+                                    "Sounds or visuals were altered or fully "
+                                    "generated. Learn more"
+                                )
+                            },
+                        }
+                    },
+                ]
+            },
+        )
+
+        self.assertEqual(
+            metadata,
+            {
+                "ai_disclosure": True,
+                "ai_disclosure_text": (
+                    "Sounds or visuals were altered or fully generated. Learn more"
+                ),
+            },
+        )
+
     def test_ai_disclosure_uses_three_way_observation_state(self) -> None:
         observed = core.youtube_ai_disclosure_metadata(
             {

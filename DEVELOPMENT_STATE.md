@@ -210,7 +210,10 @@ The following areas were implemented and committed before this consolidation:
 - Explicit playlist playability observations plus repair of unsupported
   inferred-positive rows (`6839161`).
 - YouTube AI-disclosure extraction with a three-way stored state, native
-  decorator, filter, and shared decorator styling (`769f500`, `bfc23b0`).
+  decorator, filter, and shared decorator styling (`769f500`, `bfc23b0`). The
+  extractor distinguishes YouTube's separate **Auto-dubbed** disclosure from
+  **Made with AI** rather than treating the shared `How this was made` container
+  as the category signal.
 - Advanced Search is planned and documented, not implemented (`16656e7`).
 
 The latest implementation milestone reported 509 Python tests and 109 browser

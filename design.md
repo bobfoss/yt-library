@@ -1304,6 +1304,11 @@ means a successful scan observed the ordinary or absent state, and a named value
 means the feature was present. Numeric observations such as maximum video height
 are either `NULL` or the measured value. Failed or unavailable scans preserve
 prior observations instead of collapsing unknown and absent into the same value.
+YouTube's `howThisWasMadeSectionViewModel` is a container for distinct source
+disclosures rather than proof of one category. Only its explicit **Made with
+AI** header or canonical altered/generated sounds-or-visuals text sets
+`videos.ai_disclosure`; **Auto-dubbed** remains an observed absence for that
+facet instead of being conflated with creator-content disclosure.
 
 Runtime settings, including the display timezone, request launch intervals, concurrency limits, cookie paths, and bind address, live in `yt_library.config.json`, not in SQLite. An empty display timezone is treated as UTC by the server until the browser detects an IANA timezone and saves it through the settings endpoint.
 
