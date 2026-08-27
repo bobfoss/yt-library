@@ -1897,6 +1897,10 @@ def parse_youtube_playlist_video_count(value: str) -> int:
     return int(found.group(1).replace(",", "")) if found else 0
 
 
+def has_youtube_playlist_video_count(value: str) -> bool:
+    return bool(re.search(r"([\d,]+)\s+videos?", value or "", re.I))
+
+
 def parse_youtube_playlist_updated_date(
     value: str,
     *,
@@ -2042,29 +2046,32 @@ def parse_playlist_lockup(
     rows = lockup_metadata_rows(lockup)
     visibility = ""
     video_count = 0
+    has_video_count = False
     updated_text = ""
     for parts in rows:
         joined = " • ".join(parts)
         if "Playlist" in parts and parts:
             visibility = normalize_playlist_visibility(parts[0])
-        if not video_count:
+        if not has_video_count and has_youtube_playlist_video_count(joined):
             video_count = parse_youtube_playlist_video_count(joined)
+            has_video_count = True
         if parse_youtube_playlist_updated_date(
             joined,
             observed_at=observed_at,
             timezone_name=timezone_name,
         ):
             updated_text = joined
-    if not video_count:
+    if not has_video_count:
         for node in walk(lockup):
             if not isinstance(node, dict):
                 continue
             badge = node.get("thumbnailBadgeViewModel")
             if isinstance(badge, dict):
                 text = badge.get("text")
-                if isinstance(text, str):
+                if isinstance(text, str) and has_youtube_playlist_video_count(text):
                     video_count = parse_youtube_playlist_video_count(text)
-                if video_count:
+                    has_video_count = True
+                if has_video_count:
                     break
 
     return {
@@ -2080,6 +2087,7 @@ def parse_playlist_lockup(
         "owner": "",
         "visibility": visibility,
         "video_count": video_count,
+        "has_video_count": has_video_count,
         "thumbnail_url": pick_lockup_thumbnail(lockup),
         "url": f"https://www.youtube.com/playlist?list={urllib.parse.quote(playlist_id)}",
     }
@@ -5833,7 +5841,7 @@ def reconcile_missing_library_playlists(
 
 def save_discovered_playlists(
     conn: sqlite3.Connection,
-    records: list[dict[str, str]],
+    records: list[dict[str, Any]],
     *,
     reconcile_missing: bool = False,
 ) -> dict[str, Any]:
@@ -5846,11 +5854,11 @@ def save_discovered_playlists(
     if not any(library_owner_identity):
         library_owner_identity = dominant_playlist_owner_identity(records)
     current_playlist_ids: set[str] = set()
+    change_candidate_ids: list[str] = []
     for record in records:
         playlist_id = (record.get("playlist_id") or "").strip()
         if not playlist_id:
             continue
-        previous_signature = _playlist_change_signature(conn, playlist_id)
         now = utc_now()
         current_playlist_ids.add(playlist_id)
         clear_playlist_tombstone(conn, playlist_id)
@@ -5869,9 +5877,21 @@ def save_discovered_playlists(
                 updated_at=now,
             )
         existing = conn.execute(
-            "SELECT ownership FROM playlists WHERE playlist_id = ?",
+            "SELECT ownership, video_count FROM playlists WHERE playlist_id = ?",
             (playlist_id,),
         ).fetchone()
+        has_video_count = (
+            bool(record.get("has_video_count"))
+            if "has_video_count" in record
+            else record.get("video_count") not in (None, "")
+        )
+        video_count = max(0, int(record.get("video_count") or 0))
+        if (
+            existing
+            and has_video_count
+            and video_count != int(existing["video_count"] or 0)
+        ):
+            change_candidate_ids.append(playlist_id)
         ownership = playlist_ownership_for_owner(
             conn,
             owner_channel_id,
@@ -5908,7 +5928,16 @@ def save_discovered_playlists(
               library_missing_at=NULL,
               owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
               visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
-              video_count=excluded.video_count,
+              video_count=CASE
+                WHEN ? = 0
+                  OR EXISTS (
+                    SELECT 1
+                    FROM playlist_scans
+                    WHERE playlist_id = playlists.playlist_id
+                  )
+                THEN playlists.video_count
+                ELSE excluded.video_count
+              END,
               thumbnail_url=COALESCE(NULLIF(excluded.thumbnail_url, ''), playlists.thumbnail_url),
               thumbnail_path=COALESCE(NULLIF(excluded.thumbnail_path, ''), playlists.thumbnail_path),
               fetch_status='ok',
@@ -5923,17 +5952,13 @@ def save_discovered_playlists(
                 record.get("visibility", ""),
                 record.get("youtube_updated_date") or None,
                 ownership,
-                max(0, int(record.get("video_count") or 0)),
+                video_count,
                 record.get("thumbnail_url", ""),
                 record.get("thumbnail_path", ""),
                 now,
+                1 if has_video_count else 0,
             ),
         )
-        if (
-            previous_signature is not None
-            and previous_signature != _playlist_change_signature(conn, playlist_id)
-        ):
-            _record_playlist_change(conn, playlist_id, now)
     reconciliation: dict[str, Any] = {
         "tombstoned": 0,
         "pending_verification": 0,
@@ -5947,6 +5972,7 @@ def save_discovered_playlists(
         "discovered": len(records),
         "inserted": inserted,
         "updated": max(0, len(records) - inserted),
+        "change_candidate_ids": change_candidate_ids,
         **reconciliation,
     }
 

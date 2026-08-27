@@ -1265,8 +1265,11 @@ Playlist observation time and playlist change time are distinct.
 observed. A first successful scan establishes the comparison baseline, and a
 failed or identical scan does not advance `playlists.last_changed_at`. Later
 membership, order, collaborator, title, description, owner, visibility,
-ownership, or reported-count differences advance it at detection time. Exact
-playlist creation and item-added timestamps are stronger evidence and may
+ownership, or reported-count differences confirmed by an authoritative scan
+advance it at detection time. Authenticated library discovery is a hint source:
+a missing reported count remains unknown, a differing reported count queues a
+confirming member scan, and discovery alone never advances `last_changed_at`.
+Exact playlist creation and item-added timestamps are stronger evidence and may
 advance it directly. Migration backfill may also use retained worker-log count
 changes, but never generic row `updated_at` or scan timestamps; absent evidence
 remains `NULL`. Playlist Newest and Oldest search ordering uses this same

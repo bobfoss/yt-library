@@ -1346,7 +1346,8 @@ class WorkerQueueTests(unittest.TestCase):
             try:
                 with conn:
                     conn.execute(
-                        "INSERT INTO playlists(playlist_id, title) VALUES ('PLexisting', 'Existing')"
+                        "INSERT INTO playlists(playlist_id, title, video_count) "
+                        "VALUES ('PLexisting', 'Existing', 2)"
                     )
                     core.enqueue_playlist_discovery_item(conn, mode="new")
             finally:
@@ -1398,6 +1399,92 @@ class WorkerQueueTests(unittest.TestCase):
             [(row["playlist_id"], row["manual"]) for row in queued],
             [("PLbrandnew", 1)],
         )
+
+    def test_playlist_discovery_queues_existing_reported_count_difference(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            cookie_file = Path(temp_dir) / "cookies.txt"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, in_library, video_count, last_changed_at
+                        ) VALUES (
+                          'PLcountcandidate', 'Count candidate', 1, 14,
+                          '2026-08-20T12:34:56Z'
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scans(
+                          playlist_id, scanned_at, video_count, unavailable_count,
+                          scan_status
+                        ) VALUES (
+                          'PLcountcandidate', '2026-08-20T12:34:56Z', 14, 0, 'ok'
+                        )
+                        """
+                    )
+                    core.enqueue_playlist_discovery_item(conn, mode="new")
+            finally:
+                conn.close()
+
+            records = [
+                {
+                    "playlist_id": "PLcountcandidate",
+                    "title": "Count candidate",
+                    "visibility": "public",
+                    "video_count": 15,
+                    "has_video_count": True,
+                }
+            ]
+            worker = PlaylistScanWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.fetch_current_youtube_playlists",
+                    return_value=(object(), records),
+                ),
+            ):
+                worker._run(
+                    "test-count-candidate-discovery",
+                    db_path,
+                    cookie_file,
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    record_summary=False,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                playlist = conn.execute(
+                    """
+                    SELECT video_count, last_changed_at
+                    FROM playlists
+                    WHERE playlist_id = 'PLcountcandidate'
+                    """
+                ).fetchone()
+                queued = core.playlist_scan_queue_rows(conn)
+                log = conn.execute(
+                    """
+                    SELECT message
+                    FROM playlist_scan_worker_log
+                    WHERE run_id = 'test-count-candidate-discovery'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(playlist["video_count"], 14)
+        self.assertEqual(playlist["last_changed_at"], "2026-08-20T12:34:56Z")
+        self.assertEqual(
+            [(row["playlist_id"], row["source_key"]) for row in queued],
+            [("PLcountcandidate", "discovery_change_candidate")],
+        )
+        self.assertIn("1 change candidates", log["message"])
 
     def test_playlist_discovery_deletes_accessible_foreign_playlist_removed_from_library(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

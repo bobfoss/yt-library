@@ -1357,6 +1357,20 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(parsed["youtube_updated_text"], "Updated today")
         self.assertEqual(parsed["youtube_updated_date"], "2026-08-25")
         self.assertEqual(parsed["description"], "")
+        self.assertFalse(parsed["has_video_count"])
+
+        lockup["metadata"]["lockupMetadataViewModel"]["metadata"][
+            "contentMetadataViewModel"
+        ]["metadataRows"].append(
+            {
+                "metadataParts": [
+                    {"text": {"content": "0 videos"}},
+                ]
+            }
+        )
+        empty = core.parse_playlist_lockup(lockup)
+        self.assertEqual(empty["video_count"], 0)
+        self.assertTrue(empty["has_video_count"])
 
     def test_extract_playlist_metadata_reads_page_header_count_and_visibility(self) -> None:
         initial_data = {

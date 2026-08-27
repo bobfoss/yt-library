@@ -52,6 +52,9 @@ facts, transient PIDs, or other runtime-only data here.
   timestamps can advance it; after an authoritative baseline, a detected
   membership, order, collaborator, or meaningful metadata difference advances
   it at observation time. Failed, first-baseline, and no-op scans do not.
+- Authenticated playlist discovery never advances `last_changed_at`. Missing
+  discovery counts remain unknown and cannot overwrite authoritative scan
+  counts; a differing reported count queues a confirming membership scan.
 - `playlists.youtube_updated_date` separately stores YouTube's displayed
   date-only playlist update evidence. Exact and relative authenticated web
   labels are normalized to `YYYY-MM-DD` in the configured display timezone;

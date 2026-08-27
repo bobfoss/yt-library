@@ -1878,6 +1878,69 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(row["youtube_updated_date"], "2026-08-25")
         self.assertEqual(row["last_changed_at"], "2026-08-20T12:34:56Z")
 
+    def test_playlist_discovery_preserves_authoritative_count_and_change_time(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, in_library, video_count, last_changed_at
+                        ) VALUES (
+                          'PLdiscoveryhint', 'Authoritative title', 1, 14,
+                          '2026-08-20T12:34:56Z'
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO playlist_scans(
+                          playlist_id, scanned_at, video_count, unavailable_count,
+                          scan_status
+                        ) VALUES (
+                          'PLdiscoveryhint', '2026-08-20T12:34:56Z', 14, 0, 'ok'
+                        )
+                        """
+                    )
+                    missing_count = core.save_discovered_playlists(
+                        conn,
+                        [
+                            {
+                                "playlist_id": "PLdiscoveryhint",
+                                "title": "Discovery title",
+                                "video_count": 0,
+                                "has_video_count": False,
+                            }
+                        ],
+                    )
+                    differing_count = core.save_discovered_playlists(
+                        conn,
+                        [
+                            {
+                                "playlist_id": "PLdiscoveryhint",
+                                "title": "Discovery title",
+                                "video_count": 15,
+                                "has_video_count": True,
+                            }
+                        ],
+                    )
+                playlist = conn.execute(
+                    """
+                    SELECT title, video_count, last_changed_at
+                    FROM playlists
+                    WHERE playlist_id = 'PLdiscoveryhint'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(playlist["title"], "Discovery title")
+        self.assertEqual(playlist["video_count"], 14)
+        self.assertEqual(playlist["last_changed_at"], "2026-08-20T12:34:56Z")
+        self.assertEqual(missing_count["change_candidate_ids"], [])
+        self.assertEqual(differing_count["change_candidate_ids"], ["PLdiscoveryhint"])
+
     def test_playlist_metadata_observation_is_a_check_not_a_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")

@@ -1190,6 +1190,9 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 discovered_records,
                                 reconcile_missing=True,
                             )
+                            change_candidate_ids = set(
+                                discovery_stats["change_candidate_ids"]
+                            )
                             verification_records = [
                                 dict(existing)
                                 for existing in conn.execute(
@@ -1210,12 +1213,16 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 [
                                     record
                                     for record in discovered_records
-                                    if record.get("playlist_id", "") not in known_playlist_ids
+                                    if (
+                                        record.get("playlist_id", "") not in known_playlist_ids
+                                        or record.get("playlist_id", "")
+                                        in change_candidate_ids
+                                    )
                                 ]
                                 if discovery_mode == "new"
                                 else discovered_records
                             )
-                            scan_records = [*scan_records, *verification_records]
+                            scan_records = [*verification_records, *scan_records]
                             verification_ids = set(discovery_stats["verify_ids"])
                             for index, record in enumerate(scan_records, start=1):
                                 is_new = record.get("playlist_id", "") not in known_playlist_ids
@@ -1226,6 +1233,9 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                     source_key=(
                                         "library_membership"
                                         if record.get("playlist_id", "") in verification_ids
+                                        else "discovery_change_candidate"
+                                        if record.get("playlist_id", "")
+                                        in change_candidate_ids
                                         else "update" if discovery_mode == "new" else ""
                                     ),
                                     priority=index,
@@ -1247,6 +1257,7 @@ class PlaylistScanWorker(_ThreadWorkerLifecycle):
                                 f"{discovery_stats['tombstoned']} owned removed, "
                                 f"{discovery_stats['pending_verification']} foreign awaiting verification, "
                                 f"{discovery_stats['unavailable']} unknown unavailable; "
+                                f"{len(change_candidate_ids)} change candidates, "
                                 f"{len(scan_records)} scans added, "
                                 f"{remaining} playlist scans queued"
                             )
