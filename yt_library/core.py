@@ -1979,6 +1979,35 @@ def parse_youtube_playlist_updated_date(
     return (observed_date - timedelta(days=days_ago)).isoformat()
 
 
+def merge_youtube_playlist_updated_date(
+    existing_date: str | None,
+    observed_date: str | None,
+    observed_text: str = "",
+) -> str:
+    existing = str(existing_date or "").strip()
+    observed = str(observed_date or "").strip()
+    if not observed:
+        return existing
+    if not existing or observed >= existing:
+        return observed
+
+    relative = re.fullmatch(
+        r"(?:last\s+)?updated\s+(?:today|yesterday|\d+\s+days?\s+ago)",
+        re.sub(r"\s+", " ", observed_text or "").strip(),
+        re.I,
+    )
+    if not relative:
+        return existing
+    try:
+        is_rollover_correction = (
+            date.fromisoformat(existing) - date.fromisoformat(observed)
+            == timedelta(days=1)
+        )
+    except ValueError:
+        return existing
+    return observed if is_rollover_correction else existing
+
+
 def playlist_updated_text_from_initial_data(initial_data: Any) -> str:
     for node in walk(initial_data):
         renderer = node.get("playlistSidebarPrimaryInfoRenderer")
@@ -5063,6 +5092,19 @@ def import_playlists(args: argparse.Namespace) -> None:
                     source="playlist_owner",
                     updated_at=utc_now(),
                 )
+            existing_playlist = conn.execute(
+                "SELECT youtube_updated_date FROM playlists WHERE playlist_id = ?",
+                (playlist_id,),
+            ).fetchone()
+            metadata["youtube_updated_date"] = merge_youtube_playlist_updated_date(
+                (
+                    existing_playlist["youtube_updated_date"]
+                    if existing_playlist
+                    else ""
+                ),
+                metadata.get("youtube_updated_date"),
+                str(metadata.get("youtube_updated_text") or ""),
+            )
             conn.execute(
                 """
                 INSERT INTO playlists(
@@ -5074,15 +5116,10 @@ def import_playlists(args: argparse.Namespace) -> None:
                 ON CONFLICT(playlist_id) DO UPDATE SET
                   title=excluded.title,
                   description=excluded.description,
-                  youtube_updated_date=CASE
-                    WHEN NULLIF(excluded.youtube_updated_date, '') IS NOT NULL
-                     AND (
-                       playlists.youtube_updated_date IS NULL
-                       OR excluded.youtube_updated_date > playlists.youtube_updated_date
-                     )
-                    THEN excluded.youtube_updated_date
-                    ELSE playlists.youtube_updated_date
-                  END,
+                  youtube_updated_date=COALESCE(
+                    NULLIF(excluded.youtube_updated_date, ''),
+                    playlists.youtube_updated_date
+                  ),
                   owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
                   visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
                   video_count=excluded.video_count,
@@ -5886,7 +5923,11 @@ def save_discovered_playlists(
                 updated_at=now,
             )
         existing = conn.execute(
-            "SELECT ownership, video_count FROM playlists WHERE playlist_id = ?",
+            """
+            SELECT ownership, video_count, youtube_updated_date
+            FROM playlists
+            WHERE playlist_id = ?
+            """,
             (playlist_id,),
         ).fetchone()
         has_video_count = (
@@ -5908,6 +5949,11 @@ def save_discovered_playlists(
             existing=str(existing["ownership"] or "unknown") if existing else "unknown",
             library_owner_identity=library_owner_identity,
         )
+        youtube_updated_date = merge_youtube_playlist_updated_date(
+            existing["youtube_updated_date"] if existing else "",
+            record.get("youtube_updated_date"),
+            str(record.get("youtube_updated_text") or ""),
+        )
         conn.execute(
             """
             INSERT INTO playlists(
@@ -5920,15 +5966,10 @@ def save_discovered_playlists(
             ON CONFLICT(playlist_id) DO UPDATE SET
               title=excluded.title,
               description=COALESCE(NULLIF(excluded.description, ''), playlists.description),
-              youtube_updated_date=CASE
-                WHEN NULLIF(excluded.youtube_updated_date, '') IS NOT NULL
-                 AND (
-                   playlists.youtube_updated_date IS NULL
-                   OR excluded.youtube_updated_date > playlists.youtube_updated_date
-                 )
-                THEN excluded.youtube_updated_date
-                ELSE playlists.youtube_updated_date
-              END,
+              youtube_updated_date=COALESCE(
+                NULLIF(excluded.youtube_updated_date, ''),
+                playlists.youtube_updated_date
+              ),
               ownership=CASE
                 WHEN excluded.ownership <> 'unknown' THEN excluded.ownership
                 ELSE playlists.ownership
@@ -5959,7 +6000,7 @@ def save_discovered_playlists(
                 record.get("description", ""),
                 owner_channel_id or None,
                 record.get("visibility", ""),
-                record.get("youtube_updated_date") or None,
+                youtube_updated_date or None,
                 ownership,
                 video_count,
                 record.get("thumbnail_url", ""),
@@ -7748,7 +7789,11 @@ def save_playlist_scan(
     )
     now = utc_now()
     existing_playlist = conn.execute(
-        "SELECT ownership, library_missing_at FROM playlists WHERE playlist_id = ?",
+        """
+        SELECT ownership, library_missing_at, youtube_updated_date
+        FROM playlists
+        WHERE playlist_id = ?
+        """,
         (playlist_id,),
     ).fetchone()
     if (
@@ -7883,6 +7928,11 @@ def save_playlist_scan(
                 "youtube_updated_date",
             )
         }
+        metadata["youtube_updated_date"] = merge_youtube_playlist_updated_date(
+            existing_playlist["youtube_updated_date"] if existing_playlist else "",
+            metadata["youtube_updated_date"],
+            str(playlist_metadata.get("youtube_updated_text") or ""),
+        )
         if metadata["owner_channel_id"]:
             metadata["owner_channel_id"] = upsert_channel(
                 conn,
@@ -7949,15 +7999,10 @@ def save_playlist_scan(
             ON CONFLICT(playlist_id) DO UPDATE SET
               title=COALESCE(NULLIF(excluded.title, ''), playlists.title),
               description=COALESCE(NULLIF(excluded.description, ''), playlists.description),
-              youtube_updated_date=CASE
-                WHEN NULLIF(excluded.youtube_updated_date, '') IS NOT NULL
-                 AND (
-                   playlists.youtube_updated_date IS NULL
-                   OR excluded.youtube_updated_date > playlists.youtube_updated_date
-                 )
-                THEN excluded.youtube_updated_date
-                ELSE playlists.youtube_updated_date
-              END,
+              youtube_updated_date=COALESCE(
+                NULLIF(excluded.youtube_updated_date, ''),
+                playlists.youtube_updated_date
+              ),
               owner_channel_id=COALESCE(excluded.owner_channel_id, playlists.owner_channel_id),
               visibility=COALESCE(NULLIF(excluded.visibility, ''), playlists.visibility),
               ownership=CASE
@@ -8016,7 +8061,7 @@ def save_playlist_metadata_observation(
     playlist_metadata: dict[str, Any],
 ) -> bool:
     existing_playlist = conn.execute(
-        "SELECT ownership FROM playlists WHERE playlist_id = ?",
+        "SELECT ownership, youtube_updated_date FROM playlists WHERE playlist_id = ?",
         (playlist_id,),
     ).fetchone()
     if not existing_playlist:
@@ -8036,6 +8081,11 @@ def save_playlist_metadata_observation(
             "youtube_updated_date",
         )
     }
+    metadata["youtube_updated_date"] = merge_youtube_playlist_updated_date(
+        existing_playlist["youtube_updated_date"],
+        metadata["youtube_updated_date"],
+        str(playlist_metadata.get("youtube_updated_text") or ""),
+    )
     if metadata["owner_channel_id"]:
         metadata["owner_channel_id"] = upsert_channel(
             conn,
@@ -8093,15 +8143,7 @@ def save_playlist_metadata_observation(
         UPDATE playlists
         SET title=COALESCE(NULLIF(?, ''), title),
             description=COALESCE(NULLIF(?, ''), description),
-            youtube_updated_date=CASE
-              WHEN NULLIF(?, '') IS NOT NULL
-               AND (
-                 youtube_updated_date IS NULL
-                 OR ? > youtube_updated_date
-               )
-              THEN ?
-              ELSE youtube_updated_date
-            END,
+            youtube_updated_date=COALESCE(NULLIF(?, ''), youtube_updated_date),
             owner_channel_id=COALESCE(?, owner_channel_id),
             visibility=COALESCE(NULLIF(?, ''), visibility),
             ownership=CASE WHEN ? <> 'unknown' THEN ? ELSE ownership END,
@@ -8117,8 +8159,6 @@ def save_playlist_metadata_observation(
         (
             metadata["title"],
             metadata["description"],
-            metadata["youtube_updated_date"],
-            metadata["youtube_updated_date"],
             metadata["youtube_updated_date"],
             metadata["owner_channel_id"] or None,
             metadata["visibility"],

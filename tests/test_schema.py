@@ -1657,12 +1657,13 @@ class SchemaTests(unittest.TestCase):
                             """
                             INSERT INTO playlists(
                               playlist_id, title, description, visibility, video_count,
-                              thumbnail_url, thumbnail_path, fetch_status, fetch_error, updated_at
+                              thumbnail_url, thumbnail_path, fetch_status, fetch_error,
+                              youtube_updated_date, updated_at
                             )
                             VALUES (
                               'PLrename', 'Old name', 'Old description', 'public', 1,
                               'https://example.test/old.jpg', 'thumbs/PLrename.jpg',
-                              'ok', '', '2026-07-01T00:00:00Z'
+                              'ok', '', '2026-08-27', '2026-07-01T00:00:00Z'
                             )
                             """
                         )
@@ -1704,18 +1705,21 @@ class SchemaTests(unittest.TestCase):
                                 ],
                                 "visibility": "unlisted",
                                 "video_count": 1,
+                                "youtube_updated_text": "Updated yesterday",
+                                "youtube_updated_date": "2026-08-26",
                                 "thumbnail_url": "https://example.test/new.jpg",
                                 "url": "https://www.youtube.com/playlist?list=PLrename",
                             },
                         )
                     row = conn.execute(
-                        "SELECT title, description, owner_channel_id, visibility, video_count, thumbnail_url, thumbnail_path, metadata_checked_at FROM playlists WHERE playlist_id = 'PLrename'"
+                        "SELECT title, description, owner_channel_id, visibility, video_count, youtube_updated_date, thumbnail_url, thumbnail_path, metadata_checked_at FROM playlists WHERE playlist_id = 'PLrename'"
                     ).fetchone()
                     self.assertEqual(row["title"], "New name")
                     self.assertEqual(row["description"], "New description")
                     self.assertEqual(row["owner_channel_id"], "UCnewownerchannel123456789")
                     self.assertEqual(row["visibility"], "unlisted")
                     self.assertEqual(row["video_count"], 1)
+                    self.assertEqual(row["youtube_updated_date"], "2026-08-26")
                     self.assertEqual(row["thumbnail_url"], "https://example.test/new.jpg")
                     self.assertEqual(row["thumbnail_path"], "thumbs/PLrename.jpg")
                     self.assertTrue(row["metadata_checked_at"])
@@ -1878,6 +1882,46 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(row["youtube_updated_date"], "2026-08-25")
         self.assertEqual(row["last_changed_at"], "2026-08-20T12:34:56Z")
 
+    def test_playlist_discovery_corrects_relative_youtube_date_rollover(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO playlists(
+                          playlist_id, title, youtube_updated_date, last_changed_at
+                        ) VALUES (
+                          'PLrollover', 'Rollover', '2026-08-27',
+                          '2026-08-20T12:34:56Z'
+                        )
+                        """
+                    )
+                    core.save_discovered_playlists(
+                        conn,
+                        [
+                            {
+                                "playlist_id": "PLrollover",
+                                "title": "Rollover",
+                                "youtube_updated_text": "Updated yesterday",
+                                "youtube_updated_date": "2026-08-26",
+                                "video_count": 1,
+                            }
+                        ],
+                    )
+                row = conn.execute(
+                    """
+                    SELECT youtube_updated_date, last_changed_at
+                    FROM playlists
+                    WHERE playlist_id = 'PLrollover'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(row["youtube_updated_date"], "2026-08-26")
+        self.assertEqual(row["last_changed_at"], "2026-08-20T12:34:56Z")
+
     def test_playlist_discovery_preserves_authoritative_count_and_change_time(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
@@ -1949,10 +1993,11 @@ class SchemaTests(unittest.TestCase):
                     conn.execute(
                         """
                         INSERT INTO playlists(
-                          playlist_id, title, visibility, video_count, last_changed_at
+                          playlist_id, title, visibility, video_count,
+                          youtube_updated_date, last_changed_at
                         ) VALUES (
                           'PLmetadataonly', 'Metadata only', 'private', 1,
-                          '2026-08-20T12:34:56Z'
+                          '2026-08-27', '2026-08-20T12:34:56Z'
                         )
                         """
                     )
@@ -1986,6 +2031,7 @@ class SchemaTests(unittest.TestCase):
                             "visibility": "unlisted",
                             "video_count": 2,
                             "has_video_count": True,
+                            "youtube_updated_text": "Updated yesterday",
                             "youtube_updated_date": "2026-08-26",
                         },
                     )

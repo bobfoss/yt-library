@@ -58,7 +58,10 @@ facts, transient PIDs, or other runtime-only data here.
 - `playlists.youtube_updated_date` separately stores YouTube's displayed
   date-only playlist update evidence. Exact and relative authenticated web
   labels are normalized to `YYYY-MM-DD` in the configured display timezone;
-  the raw label is transient and no timestamp is invented. The field does not
+  the raw label is transient and no timestamp is invented. A relative label may
+  correct the stored date backward by one day after its post-midnight wording
+  advances from `today` to `yesterday` (or another relative-day increment),
+  while larger source disagreements retain the later date. The field does not
   advance `last_changed_at` or drive sorting; it is temporarily displayed as a
   separate **YT Last updated** value on shared playlist cards and detail pages
   while its coverage is surveyed.

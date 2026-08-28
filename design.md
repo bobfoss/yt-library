@@ -1282,9 +1282,13 @@ local change signature. Parse exact labels such as `Last updated on Mar 9,
 yesterday`, or `Updated 4 days ago` against the observation date in the
 configured display timezone. Store only `YYYY-MM-DD` in
 `playlists.youtube_updated_date`; do not fabricate midnight or another timestamp
-when YouTube provides date-level precision. When authenticated account and
-direct-playlist surfaces disagree, retain the later parsed YouTube date without
-advancing `last_changed_at`. Keep the raw presentation label transient. During
+when YouTube provides date-level precision. Preserve a later parsed date across
+larger account/direct-surface disagreements, but allow a relative label to
+correct the stored value backward by one day. That narrow correction handles
+YouTube continuing to say `Updated today` after local midnight and later aging
+the same observation to `Updated yesterday` or another incremented relative
+label. These corrections never advance `last_changed_at`. Keep the raw
+presentation label transient. During
 the source-evaluation period, show the normalized date separately as **YT Last
 updated** on every playlist card and playlist detail page without changing the
 primary **Last updated** value or playlist sorting.

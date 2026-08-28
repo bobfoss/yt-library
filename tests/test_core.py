@@ -1372,6 +1372,40 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(empty["video_count"], 0)
         self.assertTrue(empty["has_video_count"])
 
+    def test_youtube_updated_date_merge_corrects_relative_label_rollover(self) -> None:
+        self.assertEqual(
+            core.merge_youtube_playlist_updated_date(
+                "2026-08-27",
+                "2026-08-26",
+                "Updated yesterday",
+            ),
+            "2026-08-26",
+        )
+        self.assertEqual(
+            core.merge_youtube_playlist_updated_date(
+                "2026-08-27",
+                "2026-08-26",
+                "Updated 2 days ago",
+            ),
+            "2026-08-26",
+        )
+        self.assertEqual(
+            core.merge_youtube_playlist_updated_date(
+                "2026-08-27",
+                "2026-03-09",
+                "Last updated on Mar 9, 2026",
+            ),
+            "2026-08-27",
+        )
+        self.assertEqual(
+            core.merge_youtube_playlist_updated_date(
+                "2026-08-27",
+                "",
+                "",
+            ),
+            "2026-08-27",
+        )
+
     def test_extract_playlist_metadata_reads_page_header_count_and_visibility(self) -> None:
         initial_data = {
             "header": {
