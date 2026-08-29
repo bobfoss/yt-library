@@ -250,6 +250,11 @@ The left-navigation library lists are named omni-search presets. Search returns 
   field, date-range, exact-phrase, exclusion, and facet criteria through the UI
   without requiring users to edit URL parameters directly; keep the resulting
   state shareable in the URL and compatible with future saved searches.
+- **YTLLM:** Add a general natural-language interface for asking questions
+  against YT Library data. Keep database access bounded and read-only through
+  the plugin host rather than opening or writing the core database directly,
+  and make answers traceable to the underlying library records or query
+  criteria.
 - Persist scheduled Update last-run and failure status across service restarts; the daily schedule and next-run status are available now.
 - Make parent-child relationships in hierarchical filters more visually obvious, including enabled, disabled, selected, and partially selected states.
 - Begin publishing versioned releases through GitHub with a defined versioning and release process.
