@@ -6237,6 +6237,26 @@ def placeholder_queue_subject_key(video_id: str) -> str:
     return f"placeholder:{(video_id or '').strip()}"
 
 
+def placeholder_recovery_is_complete(conn: sqlite3.Connection, video_id: str) -> bool:
+    video_id = (video_id or "").strip()
+    if not video_id:
+        return False
+    row = conn.execute(
+        """
+        SELECT search_status, archivarix_status
+        FROM video_recovery
+        WHERE video_id = ?
+        """,
+        (video_id,),
+    ).fetchone()
+    if not row:
+        return False
+    return (
+        str(row["search_status"] or "") in {"found", "thumbnail_only", "not_found"}
+        or bool(str(row["archivarix_status"] or "").strip())
+    )
+
+
 def enqueue_placeholder_recovery_targets(
     conn: sqlite3.Connection,
     playlist_id: str,
@@ -6287,6 +6307,8 @@ def enqueue_placeholder_recovery_item(
 ) -> bool:
     video_id = (video_id or "").strip()
     if not video_id:
+        return False
+    if not manual and placeholder_recovery_is_complete(conn, video_id):
         return False
     subject_key = placeholder_queue_subject_key(video_id)
     task_type = "thumbnail" if task_type == "thumbnail" else "recover"
@@ -6432,8 +6454,14 @@ def save_video_recovery(
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(video_id) DO UPDATE SET
-          archivarix_status=excluded.archivarix_status,
-          archivarix_channel_id=excluded.archivarix_channel_id,
+          archivarix_status=COALESCE(
+            NULLIF(excluded.archivarix_status, ''),
+            video_recovery.archivarix_status
+          ),
+          archivarix_channel_id=COALESCE(
+            NULLIF(excluded.archivarix_channel_id, ''),
+            video_recovery.archivarix_channel_id
+          ),
           archive_capture_at=COALESCE(excluded.archive_capture_at, video_recovery.archive_capture_at),
           media_available=COALESCE(excluded.media_available, video_recovery.media_available),
           searched_at=excluded.searched_at,

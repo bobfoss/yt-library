@@ -190,6 +190,11 @@ facts, transient PIDs, or other runtime-only data here.
   entry into a non-valid state without repeating identical warnings. A service
   block caused by timeout, proxy, or quota evidence is separate from cookie
   validity.
+- Inconclusive YouTube metadata checks do not automatically requeue videos with
+  completed Archivarix recovery evidence; explicit manual recovery remains
+  available. A later transient Archivarix failure updates the latest search
+  outcome but preserves prior recovered status, channel, capture, and media
+  evidence.
 - Admin polling, queue/log streams, visibility changes, and wake refreshes are
   designed to tolerate a frozen or sleeping browser page. A wake refresh may
   replace stale work rather than waiting indefinitely for a pre-sleep request.

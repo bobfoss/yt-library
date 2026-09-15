@@ -5047,6 +5047,55 @@ class CoreHelperTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_transient_recovery_failure_preserves_archivarix_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = migrated_connection(Path(tmp) / "library.sqlite3")
+            try:
+                with conn:
+                    core.save_video_recovery(
+                        conn,
+                        "preserve001",
+                        {
+                            "status": "DELETED_FULL_META",
+                            "channelId": "archivarix-channel-1",
+                            "archiveUrl": "https://web.archive.org/web/20260812161701/https://youtube.com/watch?v=preserve001",
+                            "videoFileUrl": "https://archive.example/media.mp4",
+                        },
+                        "found",
+                        "",
+                    )
+                    core.save_video_recovery(
+                        conn,
+                        "preserve001",
+                        None,
+                        "rate_limited",
+                        "Archivarix daily search limit reached",
+                    )
+
+                recovery = conn.execute(
+                    """
+                    SELECT archivarix_status, archivarix_channel_id,
+                           archive_capture_at, media_available,
+                           search_status, search_error
+                    FROM video_recovery
+                    WHERE video_id = 'preserve001'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    dict(recovery),
+                    {
+                        "archivarix_status": "DELETED_FULL_META",
+                        "archivarix_channel_id": "archivarix-channel-1",
+                        "archive_capture_at": "2026-08-12T16:17:01Z",
+                        "media_available": 1,
+                        "search_status": "rate_limited",
+                        "search_error": "Archivarix daily search limit reached",
+                    },
+                )
+                self.assertTrue(core.placeholder_recovery_is_complete(conn, "preserve001"))
+            finally:
+                conn.close()
+
     def test_refresh_exact_history_dates_uses_iana_timezone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             conn = migrated_connection(Path(tmp) / "library.sqlite3")

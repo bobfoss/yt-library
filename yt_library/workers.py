@@ -76,6 +76,7 @@ from .core import (
     log_worker_event,
     log_worker_queue_event,
     metadata_queue_rows,
+    placeholder_recovery_is_complete,
     placeholder_worker_queue_rows,
     playlist_duplicate_counts,
     playlist_missing_status,
@@ -659,20 +660,23 @@ class MetadataWorker(_ThreadWorkerLifecycle):
                             worker_type="metadata",
                         )
                         if status == "no_metadata":
-                            placeholder_was_queued = enqueue_placeholder_recovery_item(
-                                conn,
-                                video_id=video_id,
-                                current_title=row["current_title"] or "",
-                                source_key=row["source_key"] or "",
-                                playlist_count=int(row["playlist_count"] or 0),
-                                priority=int(row["priority"] or 0),
-                                updated_at=now,
-                            )
-                            placeholder_queue_message = (
-                                "placeholder recovery queued"
-                                if placeholder_was_queued
-                                else "placeholder recovery already queued"
-                            )
+                            if placeholder_recovery_is_complete(conn, video_id):
+                                placeholder_queue_message = "completed placeholder recovery already recorded"
+                            else:
+                                placeholder_was_queued = enqueue_placeholder_recovery_item(
+                                    conn,
+                                    video_id=video_id,
+                                    current_title=row["current_title"] or "",
+                                    source_key=row["source_key"] or "",
+                                    playlist_count=int(row["playlist_count"] or 0),
+                                    priority=int(row["priority"] or 0),
+                                    updated_at=now,
+                                )
+                                placeholder_queue_message = (
+                                    "placeholder recovery queued"
+                                    if placeholder_was_queued
+                                    else "placeholder recovery already queued"
+                                )
                     processed += 1
                     channel_subject_id = (
                         str(metadata.get("channel_id") or "").strip()

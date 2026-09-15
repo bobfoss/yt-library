@@ -1064,6 +1064,98 @@ class WorkerQueueTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_no_youtube_metadata_does_not_requeue_completed_archivarix_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            conn = migrated_connection(db_path)
+            try:
+                with conn:
+                    core.save_video_recovery(
+                        conn,
+                        "unavailable1",
+                        {"title": "Recovered title", "status": "DELETED_FULL_META"},
+                        "found",
+                        "",
+                    )
+                    core.enqueue_metadata_item(
+                        conn,
+                        video_id="unavailable1",
+                        current_title="Unavailable example",
+                        metadata_source="history",
+                        priority=7,
+                    )
+            finally:
+                conn.close()
+
+            worker = MetadataWorker()
+            with (
+                patch("yt_library.workers.load_cookie_opener", return_value=object()),
+                patch(
+                    "yt_library.workers.fetch_watch_metadata",
+                    return_value={"video_id": "unavailable1", "title": "", "yt_status": "ERROR"},
+                ),
+            ):
+                worker._run(
+                    "test-completed-archivarix-handoff",
+                    db_path,
+                    Path(temp_dir) / "missing-youtube-cookies.txt",
+                    Path(temp_dir) / "thumbs",
+                    delay=0,
+                    limit=1,
+                    force=False,
+                    stale_days=30,
+                    record_summary=False,
+                )
+
+            conn = core.connect(db_path)
+            try:
+                self.assertEqual(core.worker_queue_type_count(conn, "metadata"), 0)
+                self.assertEqual(core.worker_queue_type_count(conn, "placeholder"), 0)
+                log = conn.execute(
+                    """
+                    SELECT message
+                    FROM metadata_worker_log
+                    WHERE run_id = 'test-completed-archivarix-handoff'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    log["message"],
+                    "no metadata from YouTube; completed placeholder recovery already recorded",
+                )
+            finally:
+                conn.close()
+
+    def test_automatic_placeholder_enqueue_skips_completed_recovery_but_manual_does_not(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            conn = migrated_connection(Path(temp_dir) / "library.sqlite3")
+            try:
+                with conn:
+                    core.save_video_recovery(
+                        conn,
+                        "completed01",
+                        None,
+                        "not_found",
+                        "",
+                    )
+                    automatic_inserted = core.enqueue_placeholder_recovery_item(
+                        conn,
+                        video_id="completed01",
+                    )
+                    manual_inserted = core.enqueue_placeholder_recovery_item(
+                        conn,
+                        video_id="completed01",
+                        manual=True,
+                    )
+
+                self.assertFalse(automatic_inserted)
+                self.assertTrue(manual_inserted)
+                row = conn.execute(
+                    "SELECT manual FROM worker_queue WHERE video_id = 'completed01'"
+                ).fetchone()
+                self.assertEqual(row["manual"], 1)
+            finally:
+                conn.close()
+
     def test_successful_video_metadata_notifies_plugin_workers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "library.sqlite3"
